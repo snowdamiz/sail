@@ -379,9 +379,11 @@ const layerSpawner = SpawnWorker.layerServer.pipe(Layer.provide(NodeServices.lay
 
 // Cookies ignore ports, so a browser sends this server every cookie its host's other servers
 // set, and Node's 16 KiB default answers pairing with 431. Chromium keeps up to 180 cookies
-// per host, and a T3 session cookie is about 700 bytes. The cost: until headersTimeout, a slow
-// client can hold this much per connection.
+// per host, and a T3 session cookie is about 700 bytes. A client that never finishes its
+// headers holds that much memory, so evict it within seconds instead of Node's 60 to 90.
 const MAX_REQUEST_HEADER_BYTES = 256 * 1024;
+const HEADERS_TIMEOUT_MS = 10_000;
+const CONNECTIONS_CHECKING_INTERVAL_MS = 1_000;
 
 const layerHttpServer = Layer.unwrap(
   Effect.gen(function* () {
@@ -402,7 +404,11 @@ const layerHttpServer = Layer.unwrap(
         const server = rejectRequestsUntilServing(
           keepIdleConnections(
             guardHttpResponseWriteErrors(
-              NodeHttp.createServer({ maxHeaderSize: MAX_REQUEST_HEADER_BYTES }),
+              NodeHttp.createServer({
+                maxHeaderSize: MAX_REQUEST_HEADER_BYTES,
+                headersTimeout: HEADERS_TIMEOUT_MS,
+                connectionsCheckingInterval: CONNECTIONS_CHECKING_INTERVAL_MS,
+              }),
             ),
           ),
           () => Ref.getUnsafe(migrationProgress.current),
