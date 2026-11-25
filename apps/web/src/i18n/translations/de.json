@@ -12709,6 +12709,7 @@
   ],
   "8367779e149f723b": "Anfrage an die primäre Umgebung während {operation} fehlgeschlagen (HTTP {status}).",
   "c5cd027743a2b5a6": "Ungültiges Kopplungstoken. Prüfe das Token und versuch es erneut.",
+  "bb18f0c340c9356e": "Dieser Kopplungslink wurde bereits verwendet oder ist abgelaufen. Um einen neuen zu erhalten, führe {command} auf dem Server aus oder frag den Besitzer des Servers.",
   "0e4b49c8203aae81": "Zeitüberschreitung beim Warten auf eine authentifizierte Sitzung nach dem Bootstrap.",
   "d7ffde2874d60d4f": "Gib ein Kopplungstoken ein, um fortzufahren.",
   "5d18537f82794deb": "Die lokale Umgebung ist deaktiviert.",

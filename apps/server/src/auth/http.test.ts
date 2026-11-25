@@ -173,6 +173,46 @@ it.effect("sets the selected browser session cookies through the HTTP route", ()
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
+it.effect("tells a browser that a pairing link was already used", () =>
+  Effect.gen(function* () {
+    const random = yield* SecureRandom.SecureRandom;
+    const requestContext = Context.make(SecureRandom.SecureRandom, random);
+    return yield* Effect.acquireUseRelease(
+      Effect.sync(() => HttpRouter.toWebHandler(layerRoutes, { disableLogger: true })),
+      (environment) =>
+        Effect.promise(async () => {
+          const exchange = (credential: string) =>
+            environment.handler(
+              postJson("/api/auth/browser-session", { credential }),
+              requestContext,
+            );
+          const dev = await exchange(DEV_TOKEN);
+          const devCookie = dev.headers
+            .getSetCookie()
+            .find((cookie) => cookie.startsWith("t3_dev_session_"))
+            ?.split(";", 1)[0];
+          const minted = await environment.handler(
+            postJson("/api/auth/pairing-token", {}, { cookie: devCookie ?? "" }),
+            requestContext,
+          );
+          const { credential } = (await minted.json()) as { credential: string };
+          expect((await exchange(credential)).status).toBe(200);
+
+          const reused = await exchange(credential);
+          expect(reused.status).toBe(401);
+          expect(await reused.json()).toMatchObject({
+            reason: "invalid_credential",
+            pairingFailureReason: "used_or_expired",
+          });
+          const unknown = await exchange("ZZZZZZZZZZZZ");
+          expect(unknown.status).toBe(401);
+          expect(await unknown.json()).not.toHaveProperty("pairingFailureReason");
+        }),
+      (environment) => Effect.promise(() => environment.dispose()),
+    );
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
+
 it.effect.each(["DPoP", "dpop"])("challenges a refused %s request with DPoP", (scheme) =>
   Effect.gen(function* () {
     const random = yield* SecureRandom.SecureRandom;

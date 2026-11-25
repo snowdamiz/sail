@@ -446,4 +446,26 @@ describe("resolveInitialServerAuthGateState", () => {
     });
     expect(testApi.calls.browserSession).toEqual([{ credential: "rejected-token" }]);
   });
+
+  it("tells the user a URL token was already used or has expired", async () => {
+    const cause = new EnvironmentAuthInvalidError({
+      code: "auth_invalid",
+      reason: "invalid_credential",
+      pairingFailureReason: "used_or_expired",
+      traceId: "trace-used-url-credential",
+    });
+    await installAuthApi({
+      session: sequence(authenticatedSession(LOOPBACK_AUTH), unauthenticatedSession(LOOPBACK_AUTH)),
+      browserSession: () => Effect.fail(cause),
+    });
+    installTestBrowser("http://localhost/#token=used-token");
+    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
+
+    await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
+      status: "requires-auth",
+      auth: LOOPBACK_AUTH,
+      errorMessage:
+        "This pairing link was already used or has expired. To get a new one, run t3 pair on the server, or ask its owner.",
+    });
+  });
 });

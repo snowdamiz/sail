@@ -8,7 +8,11 @@ import type {
   AuthSessionId,
   AuthSessionState,
 } from "@t3tools/contracts";
-import { EnvironmentHttpCommonError, PRIMARY_LOCAL_ENVIRONMENT_ID } from "@t3tools/contracts";
+import {
+  EnvironmentHttpCommonError,
+  EnvironmentPairingFailureReason,
+  PRIMARY_LOCAL_ENVIRONMENT_ID,
+} from "@t3tools/contracts";
 import type { EnvironmentHttpCommonError as EnvironmentHttpCommonErrorType } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -75,15 +79,23 @@ export class PrimaryEnvironmentRequestError extends Schema.TaggedError<PrimaryEn
 
 const isPrimaryEnvironmentRequestError = Schema.is(PrimaryEnvironmentRequestError);
 
+const usedPairingLinkMessage = msg(
+  "This pairing link was already used or has expired. To get a new one, run {command} on the server, or ask its owner.",
+  { command: "t3 pair" },
+);
+
 export class PrimaryEnvironmentPairingCredentialRejectedError extends Schema.TaggedError<PrimaryEnvironmentPairingCredentialRejectedError>()(
   "PrimaryEnvironmentPairingCredentialRejectedError",
   {
     providedLength: Schema.Number,
+    pairingFailureReason: Schema.optional(EnvironmentPairingFailureReason),
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return m(msg("Invalid pairing token. Check the token and try again."));
+    return this.pairingFailureReason === "used_or_expired"
+      ? m(usedPairingLinkMessage)
+      : m(msg("Invalid pairing token. Check the token and try again."));
   }
 }
 
@@ -239,6 +251,7 @@ async function exchangeBootstrapCredential(credential: string): Promise<AuthBrow
       ) {
         throw new PrimaryEnvironmentPairingCredentialRejectedError({
           providedLength: credential.length,
+          pairingFailureReason: error.pairingFailureReason,
           cause: error,
         });
       }

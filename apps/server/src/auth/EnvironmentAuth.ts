@@ -23,6 +23,7 @@ import {
   type AuthWebSocketTicketUse,
   DpopFailureReason,
   type DpopFailureReason as DpopFailureReasonType,
+  EnvironmentPairingFailureReason,
   mcpClientScopes,
 } from "@t3tools/contracts";
 import { isLocalLoopbackHost } from "@t3tools/shared/hostClassification";
@@ -408,6 +409,7 @@ export class ServerAuthInvalidCredentialError extends Schema.TaggedError<ServerA
   {
     diagnostic: Schema.optional(Schema.String),
     dpopFailureReason: Schema.optionalKey(DpopFailureReason),
+    pairingFailureReason: Schema.optionalKey(EnvironmentPairingFailureReason),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
@@ -431,6 +433,9 @@ export const serverAuthDpopFailureReason = (
   error: ServerAuthCredentialError,
 ): DpopFailureReasonType | undefined =>
   error._tag === "ServerAuthInvalidCredentialError" ? error.dpopFailureReason : undefined;
+
+export const serverAuthPairingFailureReason = (error: ServerAuthCredentialError) =>
+  error._tag === "ServerAuthInvalidCredentialError" ? error.pairingFailureReason : undefined;
 
 export class ServerAuthInvalidScopeError extends Schema.TaggedError<ServerAuthInvalidScopeError>()(
   "ServerAuthInvalidScopeError",
@@ -709,8 +714,13 @@ function toBootstrapExchangeError(
     return new ServerAuthBootstrapCredentialValidationError({ cause });
   }
 
+  // A 12-character random code cannot be guessed, so naming a spent link only helps its owner.
+  const spent =
+    cause._tag === "SpentBootstrapCredentialError" ||
+    cause._tag === "ExpiredBootstrapCredentialError";
   return new ServerAuthInvalidCredentialError({
     cause,
+    ...(spent ? { pairingFailureReason: "used_or_expired" as const } : {}),
   });
 }
 

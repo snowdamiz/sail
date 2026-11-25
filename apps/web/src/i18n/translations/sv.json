@@ -12715,6 +12715,7 @@
   ],
   "8367779e149f723b": "Begäran till den primära miljön misslyckades under {operation} (HTTP {status}).",
   "c5cd027743a2b5a6": "Ogiltig parkopplingstoken. Kontrollera token och försök igen.",
+  "bb18f0c340c9356e": "Den här parkopplingslänken har redan använts eller gått ut. Om du vill ha en ny kör du {command} på servern eller ber dess ägare om en.",
   "0e4b49c8203aae81": "Tidsgränsen överskreds i väntan på en autentiserad session efter uppstart.",
   "d7ffde2874d60d4f": "Ange en parkopplingstoken för att fortsätta.",
   "5d18537f82794deb": "Den lokala miljön är inaktiverad.",

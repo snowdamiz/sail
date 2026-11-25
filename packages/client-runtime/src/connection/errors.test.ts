@@ -10,6 +10,7 @@ import {
   isHostCredentialRefusal,
   mapManagedRelayError,
   mapRemoteDpopEnvironmentError,
+  mapRemoteEnvironmentError,
 } from "./errors.ts";
 import { DPOP_UNKNOWN_HINT } from "../relay/errorPresentation.ts";
 import { ManagedRelayRequestFailedError } from "../relay/managedRelay.ts";
@@ -122,5 +123,25 @@ describe("mapRemoteDpopEnvironmentError", () => {
     );
     expect(mapped).toMatchObject({ via: "direct", failureCause: "clock_skew" });
     expect(isHostCredentialRefusal(mapped)).toBe(false);
+  });
+
+  it("says a pairing link was already used or has expired", () => {
+    const usedLink = new EnvironmentAuthInvalidError({
+      code: "auth_invalid",
+      reason: "invalid_credential",
+      pairingFailureReason: "used_or_expired",
+      traceId: "trace-used-link",
+    });
+    for (const mapped of [
+      mapRemoteDpopEnvironmentError(usedLink, "direct"),
+      mapRemoteEnvironmentError(usedLink, "direct"),
+    ]) {
+      expect(mapped).toMatchObject({
+        _tag: "ConnectionBlockedError",
+        reason: "authentication",
+        detail:
+          "This pairing link was already used or has expired. To get a new one, run t3 pair on the server, or ask its owner.",
+      });
+    }
   });
 });

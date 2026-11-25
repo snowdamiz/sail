@@ -12702,6 +12702,7 @@
   ],
   "8367779e149f723b": "Falló una solicitud al entorno principal durante {operation} (HTTP {status}).",
   "c5cd027743a2b5a6": "El token de emparejamiento no es válido. Revísalo e inténtalo de nuevo.",
+  "bb18f0c340c9356e": "Este enlace de emparejamiento ya se usó o caducó. Para obtener uno nuevo, ejecuta {command} en el servidor o pídeselo a su propietario.",
   "0e4b49c8203aae81": "Se agotó el tiempo de espera de la sesión autenticada tras el arranque.",
   "d7ffde2874d60d4f": "Introduce un token de emparejamiento para continuar.",
   "5d18537f82794deb": "El entorno local está desactivado.",

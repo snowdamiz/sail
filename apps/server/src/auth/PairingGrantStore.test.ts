@@ -60,8 +60,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("PairingGrantStor
       expect(first.subject).toBe("one-time-token");
       expect(first.label).toBe("Julius iPhone");
       expect(issued.label).toBe("Julius iPhone");
-      expect(second._tag).toBe("UnknownBootstrapCredentialError");
-      expect(second.message).toContain("Unknown bootstrap credential");
+      expect(second._tag).toBe("SpentBootstrapCredentialError");
+      expect(second.message).toContain("already used");
     }).pipe(
       Effect.provide(layerPairingGrantStore()),
       Effect.provideService(
@@ -110,8 +110,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("PairingGrantStor
       expect(successes).toHaveLength(1);
       expect(failures).toHaveLength(7);
       for (const failure of failures) {
-        expect(failure.failure._tag).toBe("UnknownBootstrapCredentialError");
-        expect(failure.failure.message).toContain("Unknown bootstrap credential");
+        expect(failure.failure._tag).toBe("SpentBootstrapCredentialError");
+        expect(failure.failure.message).toContain("already used");
       }
     }).pipe(Effect.provide(layerPairingGrantStore())),
   );

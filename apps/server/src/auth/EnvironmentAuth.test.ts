@@ -638,6 +638,37 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
       }).pipe(Effect.provide(layerEnvironmentAuth())),
     );
 
+    it.effect("names a used or expired pairing link, and says nothing about an unknown one", () =>
+      Effect.gen(function* () {
+        const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+        const used = yield* serverAuth.issuePairingCredential({ scopes: ["orchestration:read"] });
+        yield* serverAuth.createBrowserSession(used.credential, requestMetadata);
+        const reused = yield* Effect.flip(
+          serverAuth.createBrowserSession(used.credential, requestMetadata),
+        );
+        const expiring = yield* serverAuth.issuePairingCredential({
+          scopes: ["orchestration:read"],
+          ttlMs: 60_000,
+        });
+        yield* TestClock.adjust("2 minutes");
+        const expired = yield* Effect.flip(
+          serverAuth.createBrowserSession(expiring.credential, requestMetadata),
+        );
+        const unknown = yield* Effect.flip(
+          serverAuth.createBrowserSession("ZZZZZZZZZZZZ", requestMetadata),
+        );
+
+        for (const error of [reused, expired]) {
+          expect(error).toMatchObject({
+            _tag: "ServerAuthInvalidCredentialError",
+            pairingFailureReason: "used_or_expired",
+          });
+        }
+        expect(unknown._tag).toBe("ServerAuthInvalidCredentialError");
+        expect(unknown).not.toHaveProperty("pairingFailureReason");
+      }).pipe(Effect.provide(layerEnvironmentAuth())),
+    );
+
     it.effect.each([
       { label: "omits scope", requestedScopes: undefined },
       {
