@@ -17,7 +17,6 @@ const TEST_EXCLUDE = [
 // owns the kde-snap-shot tests through its `include`.
 const TEST_CONFIG_PACKAGES = [
   "apps/desktop",
-  "apps/mobile",
   "apps/server",
   "apps/web",
   "packages/client-runtime",

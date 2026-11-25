@@ -11,6 +11,11 @@ const trimNonEmptyOption = (value: string): Option.Option<string> => {
 export const trimmedString = (name: string) =>
   Config.String(name).pipe(Config.option, Config.map(Option.flatMap(trimNonEmptyOption)));
 
+const firstTrimmedString = (primary: string, fallback: string) =>
+  Config.all([trimmedString(primary), trimmedString(fallback)]).pipe(
+    Config.map(([first, second]) => Option.orElse(first, () => second)),
+  );
+
 const optionalBoolean = (name: string) =>
   Config.Boolean(name).pipe(Config.option, Config.map(Option.getOrElse(() => false)));
 
@@ -37,7 +42,7 @@ export const DesktopConfig = Config.all({
   appDataDirectory: trimmedString("APPDATA"),
   xdgConfigHome: trimmedString("XDG_CONFIG_HOME"),
   xdgDataHome: trimmedString("XDG_DATA_HOME"),
-  t3Home: trimmedString("T3CODE_HOME"),
+  t3Home: firstTrimmedString("SAIL_HOME", "T3CODE_HOME"),
   devServerUrl: Config.URL("VITE_DEV_SERVER_URL").pipe(Config.option),
   appUserModelIdOverride: trimmedString("T3CODE_DESKTOP_APP_USER_MODEL_ID"),
   devRemoteT3ServerEntryPath: trimmedString("T3CODE_DEV_REMOTE_T3_SERVER_ENTRY_PATH"),

@@ -192,7 +192,7 @@ async function sendDesktopAppActivationRequest(input: {
 }
 
 const appEnvironment = Config.all({
-  t3Home: Config.String("T3CODE_HOME").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  t3Home: Config.all([Config.String("SAIL_HOME").pipe(Config.option), Config.String("T3CODE_HOME").pipe(Config.option)]).pipe(Config.map(([sail, t3]) => Option.getOrUndefined(Option.orElse(sail, () => t3)))),
   sshConnection: Config.String("SSH_CONNECTION").pipe(Config.option),
   sshTty: Config.String("SSH_TTY").pipe(Config.option),
 });
