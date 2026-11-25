@@ -73,8 +73,7 @@ export const threadNotFound = Effect.fn("OrchestratorMcpService.threadNotFound")
   message: string,
 ) {
   let suggested: ThreadId | null = null;
-  // Only a hint, for a thread that exists here, so a bare web link is read at its own origin.
-  const hostedOrigin = webOrigin(threadId) ?? webOrigin(scope.client?.hostedAppUrl ?? scope.origin);
+  const hostedOrigin = webOrigin(scope.client?.hostedAppUrl ?? scope.origin);
   for (const candidate of candidateThreadIds(threadId, scope.environmentId, hostedOrigin)) {
     const shell = yield* threads.getThreadShell(candidate).pipe(Effect.orElseSucceed(() => null));
     if (shell !== null && shell.deletedAt === null) {

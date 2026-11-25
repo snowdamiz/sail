@@ -5366,9 +5366,7 @@ describe("OrchestratorMcpService thread lookup", () => {
         for (const [caller, link] of [
           [client, `t3-thread://v2/${ref.environmentId}/${ref.threadId}`],
           [client, formatThreadLink(ref, "Delegated task")],
-          [client, hostedThreadLink(ref, "https://elsewhere.example.test")],
           [reached, `See ${hostedThreadLink(ref, "https://sail.example.test")}.`],
-          [reached, hostedThreadLink(ref, "https://elsewhere.example.test")],
           [inThread, `[Task](${hostedThreadLink(ref, "http://127.0.0.1:3773")})`],
         ] as const) {
           const read = yield* mcp
@@ -5378,6 +5376,17 @@ describe("OrchestratorMcpService thread lookup", () => {
           assert.include(read.message, `\`${delegated.id}\``);
           assert.include(read.message, "is a thread link");
           assert.notInclude(read.message, "no longer available");
+        }
+        for (const [caller, link] of [
+          [client, hostedThreadLink(ref, "https://sail.example.test")],
+          [reached, hostedThreadLink(ref, "https://app.t3.codes")],
+          [inThread, `See ${hostedThreadLink(ref, "https://elsewhere.example.test")}.`],
+        ] as const) {
+          const read = yield* mcp
+            .readThread(caller, { threadId: ThreadId.make(link) })
+            .pipe(Effect.flip);
+          assert.equal(read.code, "thread_not_found");
+          assert.notInclude(read.message, "is a thread link");
         }
       }).pipe(Effect.provide(service([delegated], sent)));
     }),
