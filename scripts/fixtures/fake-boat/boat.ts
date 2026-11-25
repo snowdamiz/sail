@@ -499,6 +499,7 @@ function commitSnapshot(sandboxId: string, name: string): void {
   const imageId = docker(
     [
       "commit",
+      "--no-pause",
       "--change",
       `LABEL ${FIXTURE_LABEL}=boat-snapshot`,
       "--change",
