@@ -1,3 +1,4 @@
+import { PRIMARY_LOCAL_ENVIRONMENT_ID } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
@@ -59,5 +60,40 @@ describe("hostedPairing", () => {
     vi.stubGlobal("window", { location: new URL("https://sail.example.test/") });
 
     expect(linkOrigin()).toBe("https://hosted.example.test");
+  });
+
+  it("links to the desktop's local server from the desktop window, read once", async () => {
+    vi.resetModules();
+    const getLocalEnvironmentBootstraps = vi.fn(() => [
+      {
+        id: PRIMARY_LOCAL_ENVIRONMENT_ID,
+        httpBaseUrl: "http://127.0.0.1:3773/",
+        wsBaseUrl: "ws://127.0.0.1:3773/",
+      },
+    ]);
+    vi.stubGlobal("window", {
+      // Electron gives the registered app scheme a real origin; Node's URL reports "null".
+      location: { origin: "sail://app", href: "sail://app/settings" },
+      desktopBridge: { getLocalEnvironmentEnabled: () => true, getLocalEnvironmentBootstraps },
+    });
+    const { linkOrigin: freshLinkOrigin } = await import("./hostedPairing");
+
+    expect(freshLinkOrigin()).toBe("http://127.0.0.1:3773");
+    expect(freshLinkOrigin()).toBe("http://127.0.0.1:3773");
+    expect(getLocalEnvironmentBootstraps).toHaveBeenCalledTimes(1);
+  });
+
+  it("has no link origin on a desktop with no local server", async () => {
+    vi.resetModules();
+    vi.stubGlobal("window", {
+      location: { origin: "sail://app", href: "sail://app/settings" },
+      desktopBridge: {
+        getLocalEnvironmentEnabled: () => false,
+        getLocalEnvironmentBootstraps: () => [],
+      },
+    });
+    const { linkOrigin: freshLinkOrigin } = await import("./hostedPairing");
+
+    expect(freshLinkOrigin()).toBeUndefined();
   });
 });

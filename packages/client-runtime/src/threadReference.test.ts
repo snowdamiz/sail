@@ -114,6 +114,14 @@ describe("resolveThreadReferenceCopyTarget", () => {
     });
   });
 
+  it("copies a t3-thread link when there is no web app to link into", () => {
+    for (const linkOrigin of [undefined, "", "sail://app"]) {
+      expect(resolveThreadReferenceCopyTarget({ ...thread, linkOrigin })?.value).toBe(
+        "[Fix the login flow](t3-thread://v2/env-1/thread-1)",
+      );
+    }
+  });
+
   it("links through the web app it is given", () => {
     expect(
       resolveThreadReferenceCopyTarget({ ...thread, linkOrigin: "https://hosted.example.test" })

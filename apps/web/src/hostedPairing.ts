@@ -1,4 +1,5 @@
 import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "@t3tools/shared/remote";
+import { webOrigin } from "@t3tools/shared/url";
 
 import { readPrimaryEnvironmentTarget } from "./environments/primary/target";
 
@@ -14,11 +15,25 @@ function configuredHostedAppUrl(): string | undefined {
   return import.meta.env.VITE_HOSTED_APP_URL?.trim() || undefined;
 }
 
-export function linkOrigin(): string {
-  const hostedAppUrl = configuredHostedAppUrl();
-  if (hostedAppUrl) return hostedAppUrl;
-  const serverUrl = readPrimaryEnvironmentTarget()?.target.httpBaseUrl;
-  return serverUrl ? new URL(serverUrl).origin : window.location.origin;
+// The desktop window's own origin is an app scheme, so it links to its local server instead. That
+// read is synchronous IPC, made once: threads render only after the server is known.
+let desktopServer: { readonly origin: string | undefined } | undefined;
+
+/** Without one, as on a desktop with no local server, links stay `t3-thread://` links. */
+export function linkOrigin(): string | undefined {
+  return (
+    webOrigin(configuredHostedAppUrl()) ??
+    webOrigin(typeof window === "undefined" ? undefined : window.location?.origin) ??
+    (desktopServer ??= { origin: readDesktopServerOrigin() }).origin
+  );
+}
+
+function readDesktopServerOrigin(): string | undefined {
+  try {
+    return webOrigin(readPrimaryEnvironmentTarget()?.target.httpBaseUrl);
+  } catch {
+    return undefined;
+  }
 }
 
 function configuredBackendUrl(): string {
@@ -28,15 +43,6 @@ function configuredBackendUrl(): string {
 function configuredHostedAppChannel(): HostedAppChannel | null {
   const channel = import.meta.env.VITE_HOSTED_APP_CHANNEL?.trim().toLowerCase();
   return channel === "latest" || channel === "nightly" ? channel : null;
-}
-
-function originFromUrl(value: string | undefined): string | null {
-  if (!value) return null;
-  try {
-    return new URL(value).origin;
-  } catch {
-    return null;
-  }
 }
 
 export function isHostedStaticApp(url?: URL): boolean {
@@ -52,8 +58,10 @@ export function isHostedStaticApp(url?: URL): boolean {
     return false;
   }
 
-  const hostedOrigin = originFromUrl(configuredHostedAppUrl());
-  return hostedOrigin !== null && (url ?? new URL(window.location.href)).origin === hostedOrigin;
+  const hostedOrigin = webOrigin(configuredHostedAppUrl());
+  return (
+    hostedOrigin !== undefined && (url ?? new URL(window.location.href)).origin === hostedOrigin
+  );
 }
 
 export function readHostedPairingRequest(url: URL = new URL(window.location.href)) {

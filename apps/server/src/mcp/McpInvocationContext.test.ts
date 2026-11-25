@@ -105,3 +105,32 @@ it("acts at an administrator's ceiling for a client approved above it", () => {
     ).runtimeModeCeiling,
   ).toBe("auto");
 });
+
+it("links outside clients into the configured hosted app, else the server they reached", () => {
+  const threadId = ThreadId.make("thread-1");
+  const environmentId = EnvironmentId.make("environment-1");
+  const outside = { sessionId: "s", label: "Claude Code", access: "full-access" } as const;
+  const linkFor = (scope: Partial<McpInvocationContext.McpInvocationScope>) =>
+    McpInvocationContext.threadLinkFor(
+      { environmentId, client: undefined, origin: undefined, ...scope },
+      threadId,
+      "Fix",
+    );
+
+  expect(linkFor({ client: outside, origin: "https://sail.example.test" })).toBe(
+    "https://sail.example.test/threads/environment-1/thread-1",
+  );
+  expect(
+    linkFor({
+      client: { ...outside, hostedAppUrl: "https://hosted.example.test" },
+      origin: "https://sail.example.test",
+    }),
+  ).toBe("https://hosted.example.test/threads/environment-1/thread-1");
+  expect(linkFor({ client: outside })).toBe("[Fix](t3-thread://v2/environment-1/thread-1)");
+  expect(
+    linkFor({ client: { ...outside, linked: true }, origin: "https://sail.example.test" }),
+  ).toBe("[Fix](t3-thread://v2/environment-1/thread-1)");
+  expect(linkFor({ origin: "https://sail.example.test" })).toBe(
+    "[Fix](t3-thread://v2/environment-1/thread-1)",
+  );
+});

@@ -441,7 +441,7 @@ function safeUrl(value: string): string {
 function markdownUrlTransform(href: string) {
   if (parseAssistantCitationHref(href)) return href;
   if (parseComposerContextHref(href)) return href;
-  if (parseThreadLinkHref(href, linkOrigin())) return href;
+  if (parseThreadLinkHref(href)) return href;
   if (isWindowsDrivePathHref(href)) return href;
   if (isLocalEditorFileHref(href)) return href;
   return rewriteMarkdownFileUriHref(href) ?? safeUrl(href);
@@ -1301,11 +1301,12 @@ const CHAT_MARKDOWN_COMPONENTS = {
     if (citation) {
       return <AssistantCitationEmbed citation={citation} leading={leading} trailing={trailing} />;
     }
-    const threadLink = href ? parseThreadLinkHref(href, linkOrigin()) : null;
+    const origin = href ? linkOrigin() : undefined;
+    const threadLink = href ? parseThreadLinkHref(href, origin) : null;
     if (threadLink) {
       const written = hastPlainTextDeep(node);
       // An autolink's text is its own URL, which is no label.
-      const label = written && parseThreadLinkHref(written, linkOrigin()) === null ? written : null;
+      const label = written && parseThreadLinkHref(written, origin) === null ? written : null;
       return environmentId ? (
         <MarkdownThreadLink
           environmentId={environmentId}

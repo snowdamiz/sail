@@ -7,7 +7,6 @@ import {
   EnvironmentHttpApi,
   mcpClientScopes,
 } from "@t3tools/contracts";
-import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
@@ -18,7 +17,7 @@ import * as HttpEffect from "effect/http/HttpEffect";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
 import * as CloudLink from "../cloud/CloudLink.ts";
-import { hostedAppUrlConfig } from "../cloud/publicConfig.ts";
+import { optionalHostedAppUrlConfig } from "../cloud/publicConfig.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as EnvironmentAuth from "./EnvironmentAuth.ts";
 import * as McpOAuth from "./McpOAuth.ts";
@@ -79,9 +78,7 @@ export const layer = HttpApiBuilder.group(
     const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
     const cloudLink = yield* CloudLink.CloudLink;
     const serverEnvironment = yield* ServerEnvironment.ServerEnvironmentIdentity;
-    const hostedAppUrl = yield* Config.option(hostedAppUrlConfig).pipe(
-      Effect.orElseSucceed(Option.none),
-    );
+    const hostedAppUrl = yield* optionalHostedAppUrlConfig.pipe(Effect.orElseSucceed(Option.none));
     // T3 Connect serves this host, so the owner can approve on the hosted app by signing in there.
     const hostedApprovalUrl = (issuer: string, search: string) =>
       cloudLink.linkState().pipe(

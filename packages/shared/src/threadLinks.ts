@@ -2,6 +2,8 @@ import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contract
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { webOrigin } from "./url.ts";
+
 export const THREAD_LINK_PROTOCOL = "t3-thread";
 const V1_PREFIX = `${THREAD_LINK_PROTOCOL}://v1/`;
 const V2_PREFIX = `${THREAD_LINK_PROTOCOL}://v2/`;
@@ -14,12 +16,12 @@ const NOT_INSIDE_A_LONGER_URL = {
   after: String.raw`(?![\w%/?#-])`,
 };
 
-interface ThreadLinkSyntax {
-  readonly hostedPrefix: string | undefined;
-  readonly pattern: RegExp;
+function hostedThreadPrefix(hostedOrigin: string | undefined): string | undefined {
+  const origin = webOrigin(hostedOrigin);
+  return origin === undefined ? undefined : `${origin}/threads/`;
 }
 
-function makeThreadLinkSyntax(hostedPrefix: string | undefined): ThreadLinkSyntax {
+function makeThreadLinkPattern(hostedPrefix: string | undefined): RegExp {
   const hostedLink =
     hostedPrefix === undefined
       ? undefined
@@ -40,29 +42,18 @@ function makeThreadLinkSyntax(hostedPrefix: string | undefined): ThreadLinkSynta
     const { before, after } = NOT_INSIDE_A_LONGER_URL;
     alternatives.push(String.raw`${before}(?<bare>${hostedLink})${after}`);
   }
-  return { hostedPrefix, pattern: new RegExp(alternatives.join("|"), "g") };
+  return new RegExp(alternatives.join("|"), "g");
 }
 
-const threadLinkSyntaxes = new Map<string, ThreadLinkSyntax>();
+const THREAD_LINK_PATTERN = makeThreadLinkPattern(undefined);
+let lastHostedPattern: { readonly prefix: string; readonly pattern: RegExp } | undefined;
 
-function threadLinkSyntax(hostedOrigin: string | undefined): ThreadLinkSyntax {
-  const key = webOrigin(hostedOrigin) ?? "";
-  let syntax = threadLinkSyntaxes.get(key);
-  if (syntax === undefined) {
-    syntax = makeThreadLinkSyntax(key === "" ? undefined : `${key}/threads/`);
-    threadLinkSyntaxes.set(key, syntax);
+function threadLinkPattern(hostedPrefix: string | undefined): RegExp {
+  if (hostedPrefix === undefined) return THREAD_LINK_PATTERN;
+  if (lastHostedPattern?.prefix !== hostedPrefix) {
+    lastHostedPattern = { prefix: hostedPrefix, pattern: makeThreadLinkPattern(hostedPrefix) };
   }
-  return syntax;
-}
-
-function webOrigin(value: string | undefined): string | null {
-  if (!value) return null;
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:" ? url.origin : null;
-  } catch {
-    return null;
-  }
+  return lastHostedPattern.pattern;
 }
 
 const decodeThreadId = Schema.decodeUnknownOption(ThreadId);
@@ -105,7 +96,7 @@ function parseHostedThreadLink(href: string, hostedPrefix: string): ThreadLink |
  * except in a hosted link, which escapes them itself.
  */
 export function parseThreadLinkHref(href: string, hostedOrigin?: string): ThreadLink | null {
-  const { hostedPrefix } = threadLinkSyntax(hostedOrigin);
+  const hostedPrefix = hostedThreadPrefix(hostedOrigin);
   if (hostedPrefix !== undefined && href.startsWith(hostedPrefix)) {
     return parseHostedThreadLink(href, hostedPrefix);
   }
@@ -181,19 +172,21 @@ export function formatThreadLink(ref: ThreadLink, label?: string): string {
   return cleaned ? `[${cleaned}](${destination})` : `<${href}>`;
 }
 
-/** What a person copies out of T3 Code: a Markdown link to the thread in the web app at `origin`. */
+/** What a person copies out of T3 Code: a link into the web app at `origin`, else a v2 link. */
 export function formatHostedThreadLink(
   ref: ScopedThreadRef,
   label: string,
-  origin: string,
+  origin: string | undefined,
 ): string {
-  const href = hostedThreadLink(ref, origin);
+  const webAppOrigin = webOrigin(origin);
+  if (webAppOrigin === undefined) return formatThreadLink(ref, label);
+  const href = hostedThreadLink(ref, webAppOrigin);
   const cleaned = linkLabel(label);
   return cleaned ? `[${cleaned}](${href})` : href;
 }
 
 export function hasThreadLinks(markdown: string, hostedOrigin?: string): boolean {
-  const { hostedPrefix } = threadLinkSyntax(hostedOrigin);
+  const hostedPrefix = hostedThreadPrefix(hostedOrigin);
   return (
     markdown.includes(`${THREAD_LINK_PROTOCOL}://v`) ||
     (hostedPrefix !== undefined && markdown.includes(hostedPrefix))
@@ -208,7 +201,7 @@ export function threadLinkRefs(
 ): ReadonlyArray<ScopedThreadRef> {
   const refs = new Map<string, ScopedThreadRef>();
   // Hermes' matchAll yields matches without `groups`; exec keeps them.
-  const pattern = new RegExp(threadLinkSyntax(hostedOrigin).pattern);
+  const pattern = new RegExp(threadLinkPattern(hostedThreadPrefix(hostedOrigin)));
   for (let match = pattern.exec(markdown); match !== null; match = pattern.exec(markdown)) {
     const href =
       match.groups?.angleHref ?? match.groups?.href ?? match.groups?.autolink ?? match.groups?.bare;
@@ -228,12 +221,15 @@ export function replaceThreadLinks(
   hostedOrigin?: string,
 ): string {
   if (!hasThreadLinks(markdown, hostedOrigin)) return markdown;
-  return markdown.replace(threadLinkSyntax(hostedOrigin).pattern, (source, ...args) => {
-    const groups = args.at(-1) as Partial<
-      Record<"angleHref" | "href" | "autolink" | "bare" | "label", string>
-    >;
-    const href = groups.angleHref ?? groups.href ?? groups.autolink ?? groups.bare;
-    const link = href === undefined ? null : parseThreadLinkHref(href, hostedOrigin);
-    return (link && replace(link, groups.label)) ?? source;
-  });
+  return markdown.replace(
+    threadLinkPattern(hostedThreadPrefix(hostedOrigin)),
+    (source, ...args) => {
+      const groups = args.at(-1) as Partial<
+        Record<"angleHref" | "href" | "autolink" | "bare" | "label", string>
+      >;
+      const href = groups.angleHref ?? groups.href ?? groups.autolink ?? groups.bare;
+      const link = href === undefined ? null : parseThreadLinkHref(href, hostedOrigin);
+      return (link && replace(link, groups.label)) ?? source;
+    },
+  );
 }

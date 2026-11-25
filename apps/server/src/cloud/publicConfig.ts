@@ -5,6 +5,7 @@ import { normalizeSecureRelayUrl } from "@t3tools/shared/relayUrl";
 import * as Config from "effect/Config";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 
@@ -110,7 +111,18 @@ export const hostedAppUrlConfig = Config.NonEmptyString("T3CODE_HOSTED_APP_URL")
   Config.mapEffect(validateHostedAppUrl),
 );
 
-function validateHostedAppUrl(value: string) {
+/** Unset or blank is none; a value that is not an HTTPS origin still fails. */
+export const optionalHostedAppUrlConfig = Config.String("T3CODE_HOSTED_APP_URL").pipe(
+  Config.option,
+  Config.mapEffect((value) => {
+    const trimmed = Option.getOrElse(value, () => "").trim();
+    return trimmed === ""
+      ? Effect.succeed(Option.none<string>())
+      : validateHostedAppUrl(trimmed).pipe(Effect.asSome);
+  }),
+);
+
+function validateHostedAppUrl(value: string): Effect.Effect<string, Config.ConfigError> {
   try {
     const url = new URL(value);
     const isLoopbackHttp =

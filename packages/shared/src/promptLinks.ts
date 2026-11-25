@@ -1,4 +1,4 @@
-import { parseUrl } from "./url.ts";
+import { parseUrl, webOrigin } from "./url.ts";
 
 export const PROMPT_LINK_MAX_PROMPT_LENGTH = 8_000;
 
@@ -218,9 +218,8 @@ export function promptLinkAppPath(value: string, webAppUrl?: string): string | n
     const thread = url.host === "threads" ? THREAD_PATH.exec(url.pathname) : null;
     return thread ? `/${thread[1]}/${thread[2]}${url.search}` : null;
   }
-  if (!/^https?:$/.test(url.protocol) || url.origin !== parseUrl(webAppUrl ?? "")?.origin) {
-    return null;
-  }
+  const webAppOrigin = webOrigin(webAppUrl);
+  if (webAppOrigin === undefined || url.origin !== webAppOrigin) return null;
   if (url.pathname === "/new") return `/new${url.search}`;
   // The web app's own thread route is a link only with a prompt, so reloading a tab never asks.
   const thread = url.pathname.startsWith("/threads/")

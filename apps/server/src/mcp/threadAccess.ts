@@ -21,6 +21,7 @@ import {
   threadLinkRefs,
 } from "@t3tools/shared/threadLinks";
 import { hasPendingBackgroundSubagent } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import { webOrigin } from "@t3tools/shared/url";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 
@@ -72,7 +73,8 @@ export const threadNotFound = Effect.fn("OrchestratorMcpService.threadNotFound")
   message: string,
 ) {
   let suggested: ThreadId | null = null;
-  const hostedOrigin = scope.client?.hostedAppUrl;
+  // In-process callers reach no web origin, so a pasted web link is read at its own.
+  const hostedOrigin = McpInvocationContext.clientWebOrigin(scope) ?? webOrigin(threadId);
   for (const candidate of candidateThreadIds(threadId, scope.environmentId, hostedOrigin)) {
     const shell = yield* threads.getThreadShell(candidate).pipe(Effect.orElseSucceed(() => null));
     if (shell !== null && shell.deletedAt === null) {

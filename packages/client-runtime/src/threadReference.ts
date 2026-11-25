@@ -4,7 +4,8 @@ import type {
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
-import { hostedThreadLink } from "@t3tools/shared/threadLinks";
+import { formatThreadLink, hostedThreadLink } from "@t3tools/shared/threadLinks";
+import { webOrigin } from "@t3tools/shared/url";
 
 import { resolveThreadCurrentPullRequestLink } from "./threadPullRequests.ts";
 import { mFallback, msg } from "gt-i18n";
@@ -27,13 +28,17 @@ export interface ThreadReferenceCopyTarget {
 export function threadChipCopyTarget(
   threadRef: ScopedThreadRef,
   title: string,
-  linkOrigin: string,
+  linkOrigin: string | undefined,
   resolve: MFunctionType = mFallback,
 ): ThreadReferenceCopyTarget {
   const record = threadContextRecord(threadRef, title);
+  const origin = webOrigin(linkOrigin);
   return {
     kind: "thread",
-    value: hostedThreadLink(threadRef, linkOrigin),
+    value:
+      origin === undefined
+        ? formatThreadLink(threadRef, record.title)
+        : hostedThreadLink(threadRef, origin),
     description: record.title,
     fragment: { version: 1, source: { environmentId: threadRef.environmentId }, records: [record] },
     clipboardTarget: "thread",
@@ -50,7 +55,7 @@ export function resolveThreadReferenceCopyTarget(
     readonly openPanelPullRequestUrl?: string | null | undefined;
     readonly pullRequests?: ReadonlyArray<ThreadPullRequestLink> | undefined;
     readonly linkedPullRequestUrl?: string | null;
-    readonly linkOrigin: string;
+    readonly linkOrigin: string | undefined;
   },
   resolve: MFunctionType = mFallback,
 ): ThreadReferenceCopyTarget | null {

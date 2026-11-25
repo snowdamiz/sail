@@ -256,6 +256,11 @@ describe("hosted thread links", () => {
       `[Fix ci](${web}/threads/e/t1)`,
     );
     expect(formatHostedThreadLink(ref("e", "t1"), " ", web)).toBe(`${web}/threads/e/t1`);
+    for (const origin of [undefined, "", "sail://app"]) {
+      expect(formatHostedThreadLink(ref("e", "t1"), "Fix", origin)).toBe(
+        "[Fix](t3-thread://v2/e/t1)",
+      );
+    }
   });
 
   it("titles hosted links in every Markdown form and writes them as v2 links", () => {
