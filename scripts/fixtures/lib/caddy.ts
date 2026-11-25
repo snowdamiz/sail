@@ -1,30 +1,44 @@
 // @effect-diagnostics nodeBuiltinImport:off - Local stand-ins drive the Docker CLI directly.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
-import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { docker, ensureNetwork, exists, FIXTURE_LABEL, inspect, NETWORK } from "./docker.ts";
+import { fixturesRoot } from "./state.ts";
 
 export const CADDY_CONTAINER = "sail-fixtures-caddy";
 const CADDY_IMAGE = "caddy:2";
 const CONFIG_DIR = "/etc/caddy";
 export const DOMAIN = "localtest.me";
+export const AUTH_HOST = `auth.${DOMAIN}`;
+const AUTH_LOG = "auth-access.log";
+const RESERVED_HOSTS: ReadonlySet<string> = new Set([DOMAIN, AUTH_HOST]);
 
-const AUTH_SITE = `auth.${DOMAIN} {
+/**
+ * Sign-in pages for the fake `boat`, `claude`, and `codex`. A device code counts as approved once
+ * its `/approve` URL shows up in the access log, which the fakes read. Query values are echoed into
+ * HTML, so anything that could break out of an attribute is refused.
+ */
+const AUTH_SITE = `${AUTH_HOST} {
 	tls internal
+	log {
+		output file ${CONFIG_DIR}/${AUTH_LOG} {
+			roll_disabled
+		}
+		format json
+	}
 	header Content-Type "text/html; charset=utf-8"
-	@authorize path /claude/authorize /codex/authorize
-	handle @authorize {
-		respond \`<!doctype html><title>Fake sign-in</title><h1>Fake sign-in</h1><p><a id="authorize" href="{http.request.uri.query.redirect_uri}?code=fake-code&state={http.request.uri.query.state}">Authorize</a></p>\`
+	route {
+		@unsafe vars_regexp {http.request.uri.query} (?i)(%3C|%3E|%22|%27|%60|<|>)
+		respond @unsafe 400
+		@authorize path /claude/authorize /codex/authorize
+		respond @authorize \`<!doctype html><title>Fake sign-in</title><h1>Fake sign-in</h1><p><a id="authorize" href="{http.request.uri.query.redirect_uri}?code=fake-code&state={http.request.uri.query.state}">Authorize</a></p>\`
+		respond /claude/code/callback \`<!doctype html><title>Fake sign-in code</title><h1>Paste this code into Claude Code</h1><pre id="code">{http.request.uri.query.code}#{http.request.uri.query.state}</pre>\`
+		@approve path_regexp approve ^/(boat|codex)/device/approve$
+		respond @approve \`<!doctype html><title>Device approved</title><h1>Approved</h1><p>Code <code id="code">{http.request.uri.query.code}</code> is approved. Return to the app.</p>\`
+		@device path_regexp device ^/(boat|codex)/device$
+		respond @device \`<!doctype html><title>Fake device sign-in</title><h1>Fake device sign-in</h1><form action="{http.request.uri.path}/approve"><label>Code <input id="code" name="code" value="{http.request.uri.query.code}"></label> <button id="approve">Approve</button></form>\`
+		respond 404
 	}
-	handle /claude/code/callback {
-		respond \`<!doctype html><title>Fake sign-in code</title><h1>Paste this code into Claude Code</h1><pre id="code">{http.request.uri.query.code}#{http.request.uri.query.state}</pre>\`
-	}
-	@device path /codex/device /boat/device
-	handle @device {
-		respond \`<!doctype html><title>Fake device sign-in</title><h1>Fake device sign-in</h1><p>Code <code id="code">{http.request.uri.query.code}</code> is approved on its own.</p>\`
-	}
-	respond 404
 }
 `;
 
@@ -46,21 +60,14 @@ ${AUTH_SITE}
 import sites/*.caddy
 `;
 
-function defaultDir(): string {
-  const state = process.env.XDG_STATE_HOME ?? NodePath.join(NodeOS.homedir(), ".local", "state");
-  return NodePath.join(
-    process.env.SAIL_FIXTURES_HOME ?? NodePath.join(state, "sail-fixtures"),
-    "caddy",
-  );
+/** One fixed place, so a test's temp home can never become the directory every lane serves from. */
+export function caddyDir(): string {
+  return NodePath.join(fixturesRoot(), "caddy");
 }
 
-export function caddyDirInUse(): string {
-  if (!exists("container", CADDY_CONTAINER)) return defaultDir();
-  const mounts = inspect<ReadonlyArray<{ Source: string; Destination: string }>>(
-    CADDY_CONTAINER,
-    ".Mounts",
-  );
-  return mounts.find((m) => m.Destination === CONFIG_DIR)?.Source ?? defaultDir();
+/** Caddy's JSON access log for the sign-in pages, which the fakes read to see approvals. */
+export function authLogPath(): string {
+  return NodePath.join(caddyDir(), AUTH_LOG);
 }
 
 function port(name: string, fallback: number): string {
@@ -111,17 +118,19 @@ function ensureRootCa(dir: string): boolean {
 
 export function ensureCaddy(): void {
   ensureNetwork();
-  const dir = caddyDirInUse();
+  const dir = caddyDir();
   NodeFS.mkdirSync(NodePath.join(dir, "sites"), { recursive: true });
+  // A bind mount of a missing file would become a directory.
+  NodeFS.appendFileSync(authLogPath(), "");
   // Certificates the old root issued sit in Caddy's data volume, so a new root starts it fresh.
-  if (ensureRootCa(dir) && exists("container", CADDY_CONTAINER)) {
-    docker(["rm", "--force", CADDY_CONTAINER]);
-    docker(["volume", "rm", `${CADDY_CONTAINER}-data`]);
+  if (ensureRootCa(dir)) {
+    if (exists("container", CADDY_CONTAINER)) docker(["rm", "--force", CADDY_CONTAINER]);
+    docker(["volume", "rm", "--force", `${CADDY_CONTAINER}-data`]);
   }
   const caddyfile = NodePath.join(dir, "Caddyfile");
   const configChanged =
     !NodeFS.existsSync(caddyfile) || NodeFS.readFileSync(caddyfile, "utf8") !== CADDYFILE;
-  if (configChanged) NodeFS.writeFileSync(caddyfile, CADDYFILE);
+  if (configChanged) writeAtomically(caddyfile, CADDYFILE);
   if (!exists("container", CADDY_CONTAINER)) {
     try {
       docker([
@@ -161,6 +170,33 @@ export function ensureCaddy(): void {
   } else if (configChanged) {
     reload();
   }
+  waitForAdmin();
+}
+
+function waitForAdmin(): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      docker([
+        "exec",
+        CADDY_CONTAINER,
+        "wget",
+        "-q",
+        "-O",
+        "/dev/null",
+        "http://127.0.0.1:2019/config/",
+      ]);
+      return;
+    } catch (error) {
+      if (attempt >= 100) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
+  }
+}
+
+function writeAtomically(file: string, body: string): void {
+  const temporary = `${file}.${process.pid}.tmp`;
+  NodeFS.writeFileSync(temporary, body);
+  NodeFS.renameSync(temporary, file);
 }
 
 export function publicUrl(host: string, scheme: "https" | "http" = "https"): string {
@@ -183,10 +219,11 @@ export interface Site {
 
 function siteFile(id: string): string {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) throw new Error(`bad site id: ${id}`);
-  return NodePath.join(caddyDirInUse(), "sites", `${id}.caddy`);
+  return NodePath.join(caddyDir(), "sites", `${id}.caddy`);
 }
 
 export function publishSite(site: Site): string {
+  if (RESERVED_HOSTS.has(site.host)) throw new Error(`${site.host} is reserved for the fixtures`);
   ensureCaddy();
   const address = site.plainHttp ? `http://${site.host}, https://${site.host}` : site.host;
   const headers = Object.entries(site.headers ?? {})
@@ -194,9 +231,16 @@ export function publishSite(site: Site): string {
     .join("");
   const body = `${address} {\n\ttls internal\n\treverse_proxy ${site.upstream} {\n${headers}\t}\n}\n`;
   const file = siteFile(site.id);
-  NodeFS.writeFileSync(`${file}.tmp`, body);
-  NodeFS.renameSync(`${file}.tmp`, file);
-  reload();
+  const previous = NodeFS.existsSync(file) ? NodeFS.readFileSync(file, "utf8") : undefined;
+  writeAtomically(file, body);
+  try {
+    reload();
+  } catch (error) {
+    // A file Caddy refuses would break every later reload, for every lane.
+    if (previous === undefined) NodeFS.rmSync(file);
+    else writeAtomically(file, previous);
+    throw error;
+  }
   return publicUrl(site.host);
 }
 
@@ -208,10 +252,13 @@ export function removeSite(id: string): void {
   reload();
 }
 
+/** Serialized inside the container, so a reload that read older site files never lands last. */
 function reload(): void {
   docker([
     "exec",
     CADDY_CONTAINER,
+    "flock",
+    "/data/reload.lock",
     "caddy",
     "reload",
     "--config",
@@ -222,5 +269,5 @@ function reload(): void {
 }
 
 export function rootCertPath(): string {
-  return NodePath.join(caddyDirInUse(), "ca", "root.crt");
+  return NodePath.join(caddyDir(), "ca", "root.crt");
 }

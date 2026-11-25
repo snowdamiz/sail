@@ -8,7 +8,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
-import { caddyDirInUse, removeSite, rootCertPath } from "./lib/caddy.ts";
+import { caddyDir, removeSite, rootCertPath } from "./lib/caddy.ts";
 import { dockerSucceeds, hasDocker } from "./lib/docker.ts";
 
 const FAKE_DIR = NodePath.join(import.meta.dirname, "fake-boat");
@@ -731,7 +731,7 @@ describe.skipIf(!hasDocker())("fake boat", () => {
       expect((await json(["delete", id, "--yes"])).status).toBe(0);
       expect(dockerSucceeds(["container", "inspect", `sail-boat-${id}`])).toBe(false);
       expect(
-        NodeFS.existsSync(NodePath.join(caddyDirInUse(), "sites", `boat-${id}-${WEB_PORT}.caddy`)),
+        NodeFS.existsSync(NodePath.join(caddyDir(), "sites", `boat-${id}-${WEB_PORT}.caddy`)),
       ).toBe(false);
     }
     expect(lastJson((await json(["list", "--all"])).stdout)).toEqual({ sandboxes: [] });
