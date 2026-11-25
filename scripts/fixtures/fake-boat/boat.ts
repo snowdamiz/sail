@@ -35,7 +35,7 @@ import {
 } from "./sandbox/outbox.ts";
 
 const HERE = import.meta.dirname;
-const DEFAULT_IMAGE = "sail-fake-boat-sandbox:local";
+const IMAGE_REPOSITORY = "sail-fake-boat-sandbox";
 const SNAPSHOT_REPO = "sail-fake-boat-snapshot";
 /** Boat's longest lifetime on a free trial (`native/sail-boat/src/boat.rs`). */
 const TRIAL_TTL_SECS = 7200;
@@ -300,7 +300,7 @@ function contextHash(): string {
   return hash.digest("hex").slice(0, 16);
 }
 
-/** Rebuilt when the sandbox files change, so lanes never run a stale fake. */
+/** Tagged by the sandbox files' hash, so lanes at different heads never rebuild each other's image. */
 function sandboxImage(): string {
   const named = process.env.FAKE_BOAT_IMAGE;
   if (named) {
@@ -309,22 +309,16 @@ function sandboxImage(): string {
     }
     return named;
   }
-  const context = contextHash();
-  const label = `${FIXTURE_LABEL}.context`;
-  const built = exists("image", DEFAULT_IMAGE)
-    ? inspect<string | null>(DEFAULT_IMAGE, `(index .Config.Labels "${label}")`)
-    : null;
-  if (built !== context) {
-    print({ progress: "building", image: DEFAULT_IMAGE });
+  const image = `${IMAGE_REPOSITORY}:${contextHash()}`;
+  if (!exists("image", image)) {
+    print({ progress: "building", image });
     docker(
       [
         "build",
         "--label",
         `${FIXTURE_LABEL}=boat-image`,
-        "--label",
-        `${label}=${context}`,
         "--tag",
-        DEFAULT_IMAGE,
+        image,
         "--file",
         NodePath.join(HERE, "sandbox.Dockerfile"),
         HERE,
@@ -332,7 +326,7 @@ function sandboxImage(): string {
       { timeoutMs: 20 * 60_000 },
     );
   }
-  return DEFAULT_IMAGE;
+  return image;
 }
 
 function runContainer(record: SandboxRecord, image: string): void {
