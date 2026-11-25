@@ -69,7 +69,7 @@ const TABLE: ReadonlyArray<Command> = [
         name,
         requestedAt: new Date().toISOString(),
       };
-      const file = NodePath.join(OUTBOX_DIR, requestFile(name));
+      const file = NodePath.join(OUTBOX_DIR, requestFile({ stage: "pending", base: name }));
       NodeFS.writeFileSync(`${file}.${process.pid}.tmp`, JSON.stringify(request));
       NodeFS.renameSync(`${file}.${process.pid}.tmp`, file);
     },
@@ -79,6 +79,12 @@ const TABLE: ReadonlyArray<Command> = [
 function main(argv: ReadonlyArray<string>): number {
   try {
     const invocation = parse(TABLE, argv, ["--json"]);
+    if (!invocation.global.has("--json")) {
+      throw new BoatError(
+        "json_required",
+        "The fake boat prints only JSON: pass --json before any --",
+      );
+    }
     invocation.command.run(invocation.args);
     console.log("{}");
     return 0;

@@ -1,49 +1,128 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - Fake sign-ins for the fake boat, claude, and codex CLIs, which run on plain Node.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import * as NodeHttp from "node:http";
 import * as NodeReadline from "node:readline";
 
-export const AUTH_ORIGIN = "https://auth.localtest.me";
+import { isObject } from "./jsonl.ts";
+
+const DEFAULT_AUTH_ORIGIN = "https://auth.localtest.me";
 export const FAKE_IDENTITY = "fake-user@localtest.me";
 const LOGIN_TIMEOUT_MS = 10 * 60_000;
+const APPROVAL_POLL_MS = 250;
 
-export interface DeviceCodeSchedule {
+/** The sign-in pages' origin. The host `boat` passes Caddy's into every `boat exec`. */
+export function authOrigin(): string {
+  return process.env.FAKE_AUTH_ORIGIN || DEFAULT_AUTH_ORIGIN;
+}
+
+type DeviceKind = "boat" | "codex";
+
+export interface DeviceCode {
+  readonly kind: DeviceKind;
+  readonly code: string;
+  readonly issuedAtMs: number;
+  /** Set only by FAKE_AUTH_APPROVE_SECS; otherwise only the sign-in page approves the code. */
   readonly approveAtMs: number | null;
   readonly expiresAtMs: number;
 }
 
-function seconds(name: string, fallback: number): number {
+type Approval = "approved" | "expired" | "cancelled";
+
+function seconds(name: string): number | undefined {
   const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
+  if (raw === undefined || raw === "") return undefined;
   const value = Number(raw);
   if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be seconds, got ${raw}`);
   return value;
 }
 
-export function deviceCodeSchedule(issuedAt: number): DeviceCodeSchedule {
-  const approve = process.env.FAKE_AUTH_APPROVE_SECS;
+export function issueDeviceCode(kind: DeviceKind): DeviceCode {
+  const issuedAt = Date.now();
+  const approve =
+    process.env.FAKE_AUTH_APPROVE_SECS === "never" ? undefined : seconds("FAKE_AUTH_APPROVE_SECS");
   return {
-    approveAtMs:
-      approve === "never" ? null : issuedAt + seconds("FAKE_AUTH_APPROVE_SECS", 3) * 1000,
-    expiresAtMs: issuedAt + seconds("FAKE_AUTH_CODE_TTL_SECS", 900) * 1000,
+    kind,
+    code: userCode(),
+    issuedAtMs: issuedAt,
+    approveAtMs: approve === undefined ? null : issuedAt + approve * 1000,
+    expiresAtMs: issuedAt + (seconds("FAKE_AUTH_CODE_TTL_SECS") ?? 900) * 1000,
   };
 }
 
+function readFrom(file: string, offset: number): Buffer | undefined {
+  let fd: number;
+  try {
+    fd = NodeFS.openSync(file, "r");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+    throw error;
+  }
+  try {
+    const chunk = Buffer.alloc(Math.max(0, NodeFS.fstatSync(fd).size - offset));
+    return chunk.subarray(0, NodeFS.readSync(fd, chunk, 0, chunk.length, offset));
+  } finally {
+    NodeFS.closeSync(fd);
+  }
+}
+
+function approves(line: string, device: DeviceCode): boolean {
+  let entry: unknown;
+  try {
+    entry = JSON.parse(line);
+  } catch {
+    return false;
+  }
+  if (!isObject(entry) || entry.status !== 200 || !isObject(entry.request)) return false;
+  const { uri } = entry.request;
+  if (typeof uri !== "string") return false;
+  if (typeof entry.ts === "number" && entry.ts * 1000 > device.expiresAtMs) return false;
+  const url = new URL(uri, DEFAULT_AUTH_ORIGIN);
+  return (
+    url.pathname === `/${device.kind}/device/approve` &&
+    url.searchParams.get("code") === device.code
+  );
+}
+
+/** Reads Caddy's access log for the sign-in pages only as far as it grew since the last look. */
+function approvalWatcher(authLog: string, device: DeviceCode): () => boolean {
+  let offset = 0;
+  let partial = "";
+  return () => {
+    const fresh = readFrom(authLog, offset);
+    if (!fresh) return false;
+    offset += fresh.length;
+    const lines = `${partial}${fresh.toString("utf8")}`.split("\n");
+    partial = lines.pop() ?? "";
+    return lines.some((line) => approves(line, device));
+  };
+}
+
+/**
+ * Until someone approves the code on the sign-in page (its `/approve` request in `authLog`), it
+ * expires, or `stillCurrent` says a logout or a newer attempt replaced it.
+ */
 export async function waitForApproval(
-  schedule: DeviceCodeSchedule,
-): Promise<"approved" | "expired"> {
-  const { approveAtMs, expiresAtMs } = schedule;
-  if (Date.now() >= expiresAtMs) return "expired";
-  const approves = approveAtMs !== null && approveAtMs < expiresAtMs;
-  const until = approves ? approveAtMs : expiresAtMs;
-  await new Promise((resolve) => setTimeout(resolve, Math.max(0, until - Date.now())));
-  return approves ? "approved" : "expired";
+  device: DeviceCode,
+  authLog: string,
+  stillCurrent: () => boolean = () => true,
+): Promise<Approval> {
+  const approvedOnPage = approvalWatcher(authLog, device);
+  for (;;) {
+    if (!stillCurrent()) return "cancelled";
+    const now = Date.now();
+    if (approvedOnPage() || (device.approveAtMs !== null && now >= device.approveAtMs)) {
+      return "approved";
+    }
+    if (now >= device.expiresAtMs) return "expired";
+    await new Promise((resolve) => setTimeout(resolve, APPROVAL_POLL_MS));
+  }
 }
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-export function userCode(): string {
+function userCode(): string {
   const chars = [...NodeCrypto.randomBytes(8)].map((byte) => CODE_ALPHABET[byte % 32]);
   return `${chars.slice(0, 4).join("")}-${chars.slice(4).join("")}`;
 }

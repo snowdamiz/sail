@@ -422,6 +422,8 @@ r='{RECORDED}'
 case "$1" in
   new) case " $* " in *" --no-auto-stop "*) cat "$r/new-trial-refused.stderr" >&2; exit 1 ;; esac
     cat "$r/new.jsonl" ;;
+  resume) case " $* " in *" --no-auto-stop "*) cat "$r/new-trial-refused.stderr" >&2; exit 1 ;; esac
+    cat "$r/resume-expired.stderr" >&2; exit 1 ;;
   info) if [ "$2" = stopped ]; then cat "$r/info-stopped.jsonl"; else cat "$r/info.jsonl"; fi ;;
   status|onboard|list|snapshots|host|exec|usage|limits) cat "$r/$1.jsonl" ;;
   *) exit 1 ;;
@@ -453,6 +455,7 @@ esac
         assert_eq!((stopped.id.as_str(), stopped.state.as_str()), (id.as_str(), "stopped"));
         assert!(stopped.stopped_at.is_some());
         assert_eq!(stopped.archive_after, None);
+        assert_eq!(boat.resume(&id, "small").await.unwrap(), Resume::DataExpired);
 
         let names = boat.named_snapshots().await.unwrap();
         assert!(matches!(names.as_slice(), [n] if n.starts_with("fake-boat-test-")), "{names:?}");
@@ -463,7 +466,7 @@ esac
         assert!(ran.stdout.starts_with("user\n"), "{}", ran.stdout);
         assert_eq!(boat.usage_since(&id, 0).await.unwrap().dollars, 0.0);
         let starts = boat.starts().await.unwrap();
-        assert_eq!((starts.used_today, starts.limit_today), (4, 100));
+        assert_eq!((starts.used_today, starts.limit_today), (3, 100));
         let sign_in = boat.start_sign_in().await.unwrap();
         let code = sign_in.code.unwrap();
         assert_eq!(sign_in.url, format!("https://auth.localtest.me/boat/device?code={code}"));

@@ -3,13 +3,21 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeNet from "node:net";
-import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-import { DOMAIN, publicUrl, publishSite, removeSite } from "../lib/caddy.ts";
+import {
+  AUTH_HOST,
+  authLogPath,
+  DOMAIN,
+  ensureCaddy,
+  publicUrl,
+  publishSite,
+  removeSite,
+} from "../lib/caddy.ts";
 import {
   docker,
   DockerError,
+  dockerSucceeds,
   ensureNetwork,
   exists,
   FIXTURE_LABEL,
@@ -17,26 +25,38 @@ import {
   NETWORK,
 } from "../lib/docker.ts";
 import {
-  AUTH_ORIGIN,
-  type DeviceCodeSchedule,
-  deviceCodeSchedule,
+  createJsonExclusive,
+  homeId,
+  logCall,
+  readJson,
+  standInHome,
+  writeJsonAtomic,
+} from "../lib/state.ts";
+import {
+  type DeviceCode,
   FAKE_IDENTITY,
-  userCode,
+  issueDeviceCode,
   waitForApproval,
 } from "./sandbox/auth.ts";
 import { type CommandSpec, type Invocation, parse, UsageError } from "./sandbox/cli.ts";
 import {
+  AUTH_LOG,
+  DEADLINE_FILE,
   ID_FILE,
-  isRequestFile,
+  LIFETIME_DIR,
   OUTBOX_DIR,
   parseRequest,
+  parseRequestFile,
+  requestFile,
+  type RequestFile,
   SNAPSHOT_NAME,
-  type SnapshotRequest,
 } from "./sandbox/outbox.ts";
 
 const HERE = import.meta.dirname;
 const IMAGE_REPOSITORY = "sail-fake-boat-sandbox";
 const SNAPSHOT_REPO = "sail-fake-boat-snapshot";
+const HOME_LABEL = `${FIXTURE_LABEL}.home`;
+const WORKER_ARG = "--outbox-worker";
 /** Boat's longest lifetime on a free trial (`native/sail-boat/src/boat.rs`). */
 const TRIAL_TTL_SECS = 7200;
 const STARTS_PER_DAY = 100;
@@ -67,11 +87,6 @@ interface AccountRecord {
   readonly signedInAt: string;
 }
 
-interface SignInRecord extends DeviceCodeSchedule {
-  readonly code: string;
-  readonly issuedAt: number;
-}
-
 interface SandboxRecord {
   readonly id: string;
   readonly name: string;
@@ -86,6 +101,15 @@ interface SnapshotRecord {
   readonly name: string;
   readonly sandboxId: string;
   readonly createdAt: string;
+  /** What `new --from` runs, so a later commit under the same tag never changes it. */
+  readonly imageId: string;
+}
+
+interface SnapshotFailure {
+  readonly name: string;
+  readonly sandboxId: string;
+  readonly failedAt: string;
+  readonly error: string;
 }
 
 interface DockerState {
@@ -111,20 +135,21 @@ const STATES: Readonly<Record<string, State>> = {
   dead: "stopped",
 };
 
-const fixturesRoot =
-  process.env.SAIL_FIXTURES_HOME ??
-  NodePath.join(
-    process.env.XDG_STATE_HOME ?? NodePath.join(NodeOS.homedir(), ".local", "state"),
-    "sail-fixtures",
-  );
-const HOME = process.env.FAKE_BOAT_HOME ?? NodePath.join(fixturesRoot, "boat");
+const HOME = standInHome("boat", "FAKE_BOAT_HOME");
+const HOME_ID = homeId(HOME);
 const at = (...parts: ReadonlyArray<string>) => NodePath.join(HOME, ...parts);
 const ACCOUNT_FILE = at("account.json");
-const SIGN_IN_FILE = at("sign-in.json");
+const SIGN_INS = at("sign-ins");
+const WORKER_LOCK = at("worker.json");
 const now = () => new Date().toISOString();
 const container = (id: string) => `sail-boat-${id}`;
 const siteId = (id: string, port: number) => `boat-${id}-${port}`;
-const snapshotImage = (name: string) => `${SNAPSHOT_REPO}:${name}`;
+const snapshotTag = (name: string) => `${SNAPSHOT_REPO}:${HOME_ID}-${name}`;
+const sandboxFile = (id: string) => at("sandboxes", `${id}.json`);
+const snapshotFile = (name: string) => at("snapshots", `${name}.json`);
+const signInFile = (code: string) => NodePath.join(SIGN_INS, `${code}.json`);
+const outboxDir = (id: string) => at("outbox", id);
+const lifetimeDir = (id: string) => at("lifetime", id);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const print = (value: unknown) => console.log(JSON.stringify(value));
 
@@ -140,20 +165,13 @@ function isNoSuch(error: unknown): boolean {
   return error instanceof DockerError && /no such (object|container|image)/i.test(error.stderr);
 }
 
-function readJson<T>(file: string): T | undefined {
+function isAlive(pid: number): boolean {
   try {
-    return JSON.parse(NodeFS.readFileSync(file, "utf8")) as T;
+    process.kill(pid, 0);
+    return true;
   } catch (error) {
-    if (isMissingFile(error)) return undefined;
-    throw error;
+    return error instanceof Error && "code" in error && error.code === "EPERM";
   }
-}
-
-function writeJsonAtomic(file: string, value: unknown): void {
-  NodeFS.mkdirSync(NodePath.dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.${NodeCrypto.randomBytes(4).toString("hex")}.tmp`;
-  NodeFS.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`);
-  NodeFS.renameSync(temp, file);
 }
 
 function listDir(dir: string): ReadonlyArray<string> {
@@ -163,6 +181,12 @@ function listDir(dir: string): ReadonlyArray<string> {
     if (isMissingFile(error)) return [];
     throw error;
   }
+}
+
+function records<T>(dir: string): ReadonlyArray<T> {
+  return listDir(dir)
+    .filter((file) => file.endsWith(".json"))
+    .flatMap((file) => readJson<T>(NodePath.join(dir, file)) ?? []);
 }
 
 function integer(value: string | true | undefined, name: string, min = 0, max = 2 ** 53): number {
@@ -191,6 +215,18 @@ function snapshotName(name: string | undefined): string {
     throw new BoatError("invalid_name", "Use lowercase letters, digits and dashes");
   }
   return name;
+}
+
+function diskTtlSeconds(): number {
+  const raw = process.env.FAKE_BOAT_DISK_TTL_SECS;
+  if (raw === undefined || raw === "") return DISK_TTL_SECS;
+  if (!/^\d+$/.test(raw)) {
+    throw new BoatError(
+      "invalid_arguments",
+      `FAKE_BOAT_DISK_TTL_SECS must be whole seconds, got ${raw}`,
+    );
+  }
+  return Number(raw);
 }
 
 function trialRefusal(): BoatError {
@@ -229,8 +265,33 @@ function plan(): Plan {
   return value;
 }
 
-function sandboxFile(id: string): string {
-  return at("sandboxes", `${id}.json`);
+/** The newest attempt; a logout or a fresh code removes the older ones. */
+function currentSignIn(): DeviceCode | undefined {
+  return records<DeviceCode>(SIGN_INS).toSorted((a, b) => b.issuedAtMs - a.issuedAtMs)[0];
+}
+
+/** True for exactly one caller, so an attempt signs in at most once and never after a logout. */
+function claimFile(path: string): boolean {
+  const claimed = `${path}.claimed-${process.pid}`;
+  try {
+    NodeFS.renameSync(path, claimed);
+  } catch (error) {
+    if (isMissingFile(error)) return false;
+    throw error;
+  }
+  NodeFS.rmSync(claimed, { force: true });
+  return true;
+}
+
+/** Caddy's sign-in origin, with its port, for the sandbox's own CLIs to print. */
+function authOrigin(): string {
+  try {
+    return publicUrl(AUTH_HOST);
+  } catch (error) {
+    if (!(error instanceof DockerError)) throw error;
+  }
+  ensureCaddy();
+  return publicUrl(AUTH_HOST);
 }
 
 function sandboxRecord(id: string | undefined): SandboxRecord {
@@ -240,10 +301,15 @@ function sandboxRecord(id: string | undefined): SandboxRecord {
 }
 
 function sandboxRecords(): ReadonlyArray<SandboxRecord> {
-  return listDir(at("sandboxes"))
-    .filter((file) => file.endsWith(".json"))
-    .flatMap((file) => readJson<SandboxRecord>(at("sandboxes", file)) ?? [])
-    .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return records<SandboxRecord>(at("sandboxes")).toSorted((a, b) =>
+    a.createdAt.localeCompare(b.createdAt),
+  );
+}
+
+function snapshotRecord(name: string): SnapshotRecord {
+  const record = readJson<SnapshotRecord>(snapshotFile(name));
+  if (!record) throw new BoatError("not_found", `Snapshot ${name} not found`);
+  return record;
 }
 
 function live(id: string): Live | null {
@@ -324,6 +390,28 @@ function sandboxImage(): string {
   return image;
 }
 
+/** The directories a sandbox mounts: its outbox, which it writes, and its lifetime, which it reads. */
+function prepareMounts(id: string): void {
+  const outbox = outboxDir(id);
+  NodeFS.mkdirSync(outbox, { recursive: true });
+  // The sandbox writes as uid 1000, whatever uid owns this directory (CI runners use 1001).
+  NodeFS.chmodSync(outbox, 0o777);
+  NodeFS.writeFileSync(NodePath.join(outbox, ID_FILE), id);
+  NodeFS.mkdirSync(lifetimeDir(id), { recursive: true });
+}
+
+/** The sandbox powers itself off at this time (`sandbox/lifetime.sh`), as Boat stops it. */
+function setDeadline(id: string, archiveAfter: string | null): void {
+  const file = NodePath.join(lifetimeDir(id), DEADLINE_FILE);
+  if (archiveAfter === null) NodeFS.rmSync(file, { force: true });
+  else writeJsonAtomic(file, Math.ceil(Date.parse(archiveAfter) / 1000));
+}
+
+function resize(id: string, type: Size): void {
+  const memory = SIZES[type];
+  docker(["update", "--memory", memory, "--memory-swap", memory, container(id)]);
+}
+
 function runContainer(record: SandboxRecord, image: string): void {
   const memory = SIZES[record.type];
   ensureNetwork();
@@ -350,10 +438,16 @@ function runContainer(record: SandboxRecord, image: string): void {
     `${FIXTURE_LABEL}=boat-sandbox`,
     "--label",
     `${FIXTURE_LABEL}.boat-sandbox=${record.id}`,
+    "--label",
+    `${HOME_LABEL}=${HOME_ID}`,
     "--network",
     NETWORK,
     "--volume",
-    `${at("outbox", record.id)}:${OUTBOX_DIR}`,
+    `${outboxDir(record.id)}:${OUTBOX_DIR}`,
+    "--volume",
+    `${lifetimeDir(record.id)}:${LIFETIME_DIR}:ro`,
+    "--volume",
+    `${authLogPath()}:${AUTH_LOG}:ro`,
     image,
   ]);
 }
@@ -395,29 +489,27 @@ function removeSandbox(id: string): void {
     if (!isNoSuch(error)) throw error;
   }
   for (const port of hostedPorts(id)) removeSite(siteId(id, port));
-  for (const path of [at("hosts", id), at("outbox", id), sandboxFile(id)]) {
+  for (const path of [at("hosts", id), outboxDir(id), lifetimeDir(id), sandboxFile(id)]) {
     NodeFS.rmSync(path, { recursive: true, force: true });
   }
 }
 
-function imageId(tag: string): string | null {
-  try {
-    return docker(["image", "inspect", "--format", "{{.Id}}", tag]).trim();
-  } catch (error) {
-    if (isNoSuch(error)) return null;
-    throw error;
-  }
-}
-
 function commitSnapshot(sandboxId: string, name: string): void {
-  const tag = snapshotImage(name);
-  const previous = imageId(tag);
-  docker(
-    ["commit", "--change", `LABEL ${FIXTURE_LABEL}=boat-snapshot`, container(sandboxId), tag],
+  const previous = readJson<SnapshotRecord>(snapshotFile(name))?.imageId;
+  const imageId = docker(
+    [
+      "commit",
+      "--change",
+      `LABEL ${FIXTURE_LABEL}=boat-snapshot`,
+      "--change",
+      `LABEL ${HOME_LABEL}=${HOME_ID}`,
+      container(sandboxId),
+      snapshotTag(name),
+    ],
     { timeoutMs: 10 * 60_000 },
-  );
-  writeJsonAtomic(at("snapshots", `${name}.json`), { name, sandboxId, createdAt: now() });
-  if (!previous || previous === imageId(tag)) return;
+  ).trim();
+  writeJsonAtomic(snapshotFile(name), { name, sandboxId, createdAt: now(), imageId });
+  if (!previous || previous === imageId) return;
   try {
     docker(["image", "rm", previous]);
   } catch (error) {
@@ -427,40 +519,157 @@ function commitSnapshot(sandboxId: string, name: string): void {
 }
 
 function snapshotRecords(): ReadonlyArray<SnapshotRecord> {
-  return listDir(at("snapshots"))
-    .filter((file) => file.endsWith(".json"))
-    .flatMap((file) => readJson<SnapshotRecord>(at("snapshots", file)) ?? [])
-    .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return records<SnapshotRecord>(at("snapshots")).toSorted((a, b) =>
+    a.createdAt.localeCompare(b.createdAt),
+  );
 }
 
-function claimRequest(path: string): SnapshotRequest | undefined {
+interface QueuedRequest {
+  readonly sandboxId: string;
+  readonly file: RequestFile;
+}
+
+/** Snapshots asked for inside sandboxes that nobody is saving: new, or held by a worker that died. */
+function queuedRequests(only?: string): ReadonlyArray<QueuedRequest> {
+  return (only === undefined ? listDir(at("outbox")) : [only]).flatMap((sandboxId) =>
+    listDir(outboxDir(sandboxId)).flatMap((name) => {
+      const file = parseRequestFile(name);
+      const queued = file?.stage === "pending" || (file?.stage === "claimed" && !isAlive(file.pid));
+      return file && queued ? [{ sandboxId, file }] : [];
+    }),
+  );
+}
+
+function claimRequest(queued: QueuedRequest): string | undefined {
+  const dir = outboxDir(queued.sandboxId);
+  const claimed = NodePath.join(
+    dir,
+    requestFile({ stage: "claimed", base: queued.file.base, pid: process.pid }),
+  );
   try {
-    return parseRequest(NodeFS.readFileSync(path, "utf8"));
+    NodeFS.renameSync(NodePath.join(dir, requestFile(queued.file)), claimed);
   } catch (error) {
     if (isMissingFile(error)) return undefined;
-    NodeFS.rmSync(path, { force: true });
-    throw new BoatError("bad_snapshot_request", errorMessage(error));
+    throw error;
   }
+  return claimed;
 }
 
-function processOutboxes(): void {
-  for (const id of listDir(at("outbox"))) {
-    for (const file of listDir(at("outbox", id)).filter(isRequestFile)) {
-      const path = at("outbox", id, file);
-      const request = claimRequest(path);
-      if (request?.sandboxId === id && live(id) !== null) commitSnapshot(id, request.name);
-      NodeFS.rmSync(path, { force: true });
+/** Saves a claimed request, or sets it aside as failed with the reason, never silently. */
+function fulfilRequest(queued: QueuedRequest, claimed: string): void {
+  const { sandboxId } = queued;
+  const failed = NodePath.join(
+    outboxDir(sandboxId),
+    requestFile({ stage: "failed", base: queued.file.base }),
+  );
+  try {
+    const request = parseRequest(NodeFS.readFileSync(claimed, "utf8"));
+    if (request.sandboxId !== sandboxId) {
+      throw new Error(`sandbox ${sandboxId} asked to save sandbox ${request.sandboxId}`);
+    }
+    if (!exists("container", container(sandboxId))) {
+      throw new Error(`sandbox ${sandboxId} no longer exists`);
+    }
+    commitSnapshot(sandboxId, request.name);
+    NodeFS.rmSync(failed, { force: true });
+  } catch (error) {
+    const failure: SnapshotFailure = {
+      name: queued.file.base,
+      sandboxId,
+      failedAt: now(),
+      error: errorMessage(error),
+    };
+    writeJsonAtomic(failed, failure);
+  }
+  NodeFS.rmSync(claimed, { force: true });
+}
+
+function drainOutboxes(only?: string): void {
+  for (let queued = queuedRequests(only); queued.length > 0; queued = queuedRequests(only)) {
+    for (const request of queued) {
+      const claimed = claimRequest(request);
+      if (claimed) fulfilRequest(request, claimed);
     }
   }
 }
 
-function stopSandboxesPastLifetime(): void {
-  for (const record of sandboxRecords()) {
-    if (record.archiveAfter === null || Date.parse(record.archiveAfter) > Date.now()) continue;
-    if (live(record.id)?.state === "running") {
-      docker(["stop", "--time", "30", container(record.id)], { timeoutMs: 60_000 });
+function snapshotFailures(only?: string): ReadonlyArray<SnapshotFailure> {
+  return (only === undefined ? listDir(at("outbox")) : [only]).flatMap((sandboxId) =>
+    listDir(outboxDir(sandboxId)).flatMap((name) =>
+      parseRequestFile(name)?.stage === "failed"
+        ? (readJson<SnapshotFailure>(NodePath.join(outboxDir(sandboxId), name)) ?? [])
+        : [],
+    ),
+  );
+}
+
+function workerPid(): number | undefined {
+  return readJson<{ readonly pid: number }>(WORKER_LOCK)?.pid;
+}
+
+function takeWorkerLock(): boolean {
+  if (createJsonExclusive(WORKER_LOCK, { pid: process.pid })) return true;
+  const holder = workerPid();
+  if (holder !== undefined && isAlive(holder)) return false;
+  NodeFS.rmSync(WORKER_LOCK, { force: true });
+  return createJsonExclusive(WORKER_LOCK, { pid: process.pid });
+}
+
+/**
+ * Hands queued snapshot requests to a detached worker, so no command waits on another sandbox's
+ * `docker commit`. The worker exits once the queue is empty.
+ */
+function startWorker(): void {
+  if (queuedRequests().length === 0) return;
+  const holder = workerPid();
+  if (holder !== undefined && isAlive(holder)) return;
+  const log = NodeFS.openSync(at("worker.log"), "a");
+  try {
+    const worker = NodeChildProcess.spawn(process.execPath, [import.meta.filename, WORKER_ARG], {
+      detached: true,
+      stdio: ["ignore", log, log],
+      env: { ...process.env, FAKE_BOAT_HOME: HOME },
+    });
+    // The queue stays put for the next command to try again.
+    worker.on("error", (error) =>
+      console.error(JSON.stringify({ code: "worker_not_started", error: error.message })),
+    );
+    worker.unref();
+  } finally {
+    NodeFS.closeSync(log);
+  }
+}
+
+function reportFailures(failures: ReadonlyArray<SnapshotFailure>): void {
+  for (const failure of failures) {
+    console.error(JSON.stringify({ code: "snapshot_failed", ...failure }));
+  }
+}
+
+function runWorker(): void {
+  while (queuedRequests().length > 0 && takeWorkerLock()) {
+    try {
+      drainOutboxes();
+    } finally {
+      if (workerPid() === process.pid) NodeFS.rmSync(WORKER_LOCK, { force: true });
     }
   }
+}
+
+/**
+ * Saves this sandbox's queued snapshots and waits out one a worker is saving, within `boat.rs`'s
+ * two minutes for `delete`. Then reports its failures, which go with its outbox.
+ */
+async function settleOutbox(id: string): Promise<void> {
+  drainOutboxes(id);
+  const saving = () =>
+    listDir(outboxDir(id)).some((name) => {
+      const file = parseRequestFile(name);
+      return file?.stage === "claimed" && isAlive(file.pid);
+    });
+  const give = Date.now() + 100_000;
+  while (saving() && Date.now() < give) await sleep(250);
+  reportFailures(snapshotFailures(id));
 }
 
 interface Ran {
@@ -544,15 +753,38 @@ function listen(server: NodeNet.Server, port: number): Promise<void> {
   });
 }
 
-function logCall(argv: ReadonlyArray<string>, mutating: boolean, exitCode: number | null): void {
-  NodeFS.mkdirSync(HOME, { recursive: true });
-  const line = { time: now(), argv, cwd: process.cwd(), mutating, exitCode };
-  NodeFS.appendFileSync(at("calls.jsonl"), `${JSON.stringify(line)}\n`);
+/** One `docker exec` per connection, ended with it so none outlives the connection it carried. */
+function pipeInto(
+  id: string,
+  remote: number,
+  socket: NodeNet.Socket,
+): NodeChildProcess.ChildProcess {
+  const pipe = NodeChildProcess.spawn(
+    "docker",
+    ["exec", "-i", container(id), "socat", "-", `TCP:127.0.0.1:${remote}`],
+    { stdio: ["pipe", "pipe", "ignore"] },
+  );
+  socket.pipe(pipe.stdin);
+  pipe.stdout.pipe(socket);
+  pipe.stdin.on("error", () => {});
+  pipe.on("error", () => socket.destroy());
+  socket.on("error", () => socket.destroy());
+  // Ending stdin lets socat flush what the client sent; the kill only catches a pipe that hangs.
+  socket.on("close", () => {
+    pipe.stdin.end();
+    setTimeout(() => pipe.kill(), 2000).unref();
+  });
+  pipe.on("close", () => socket.end());
+  return pipe;
 }
 
 type Inv = Invocation<Command>;
 
-type Command = CommandSpec & { readonly mutating: boolean } & (
+type Command = CommandSpec & {
+  readonly mutating: boolean;
+  /** Everything prints JSON, which the fake requires `--json` for, except `forward`. */
+  readonly prints: "json" | "nothing";
+} & (
     | { readonly signedIn: false; readonly run: (invocation: Inv) => Promise<number> }
     | {
         readonly signedIn: true;
@@ -564,6 +796,7 @@ const TABLE: ReadonlyArray<Command> = [
   {
     path: ["status"],
     mutating: false,
+    prints: "json",
     signedIn: false,
     run: async () => {
       const signedIn = account();
@@ -579,20 +812,29 @@ const TABLE: ReadonlyArray<Command> = [
     path: ["onboard"],
     flags: { wait: "boolean" },
     mutating: true,
+    prints: "json",
     signedIn: false,
     run: async (invocation) => {
-      const pending = readJson<SignInRecord>(SIGN_IN_FILE);
+      const pending = currentSignIn();
       if (invocation.flags.has("wait")) {
         if (!pending) {
           if (account()) return (print({}), 0);
           throw new BoatError("sign_in_not_started", "No sign-in is pending. Run boat onboard.");
         }
-        const outcome = await waitForApproval(pending);
-        if (readJson<SignInRecord>(SIGN_IN_FILE)?.code === pending.code) {
-          NodeFS.rmSync(SIGN_IN_FILE, { force: true });
-        }
+        print({ progress: "waiting", userCode: pending.code });
+        const file = signInFile(pending.code);
+        const outcome = await waitForApproval(pending, authLogPath(), () =>
+          NodeFS.existsSync(file),
+        );
         if (outcome === "expired") {
+          NodeFS.rmSync(file, { force: true });
           throw new BoatError("sign_in_expired", "The sign-in code expired. Run boat onboard.");
+        }
+        if (outcome === "cancelled" || !claimFile(file)) {
+          throw new BoatError(
+            "sign_in_cancelled",
+            "A logout or a newer boat onboard replaced this sign-in.",
+          );
         }
         writeJsonAtomic(ACCOUNT_FILE, {
           identifier: FAKE_IDENTITY,
@@ -602,27 +844,30 @@ const TABLE: ReadonlyArray<Command> = [
         print({});
         return 0;
       }
+      ensureCaddy();
       const signedIn = account();
       if (signedIn) {
         throw new BoatError("already_signed_in", `Already signed in as ${signedIn.identifier}`);
       }
       let signIn = pending && pending.expiresAtMs > Date.now() ? pending : undefined;
       if (!signIn) {
-        const issuedAt = Date.now();
-        signIn = { code: userCode(), issuedAt, ...deviceCodeSchedule(issuedAt) };
-        writeJsonAtomic(SIGN_IN_FILE, signIn);
+        signIn = issueDeviceCode("boat");
+        NodeFS.rmSync(SIGN_INS, { recursive: true, force: true });
+        createJsonExclusive(signInFile(signIn.code), signIn);
       }
-      print({ url: `${AUTH_ORIGIN}/boat/device?code=${signIn.code}`, userCode: signIn.code });
+      const url = `${publicUrl(AUTH_HOST)}/boat/device?code=${signIn.code}`;
+      print({ url, userCode: signIn.code });
       return 0;
     },
   },
   {
     path: ["logout"],
     mutating: true,
+    prints: "json",
     signedIn: false,
     run: async () => {
       NodeFS.rmSync(ACCOUNT_FILE, { force: true });
-      NodeFS.rmSync(SIGN_IN_FILE, { force: true });
+      NodeFS.rmSync(SIGN_INS, { recursive: true, force: true });
       print({});
       return 0;
     },
@@ -637,6 +882,7 @@ const TABLE: ReadonlyArray<Command> = [
       "no-auto-stop": "boolean",
     },
     mutating: true,
+    prints: "json",
     signedIn: true,
     run: async (invocation, signedIn) => {
       const type = size(invocation.flags.get("type"));
@@ -645,10 +891,10 @@ const TABLE: ReadonlyArray<Command> = [
       if (!life) throw new BoatError("lifetime_required", "Pass --ttl <seconds> or --no-auto-stop");
       const from = invocation.flags.get("from");
       const image =
-        from === undefined ? sandboxImage() : snapshotImage(snapshotName(text(from, "--from")));
-      if (from !== undefined && !readJson(at("snapshots", `${String(from)}.json`))) {
-        throw new BoatError("not_found", `Snapshot ${String(from)} not found`);
-      }
+        from === undefined
+          ? sandboxImage()
+          : snapshotRecord(snapshotName(text(from, "--from"))).imageId;
+      ensureCaddy();
       const id = `bx-${NodeCrypto.randomBytes(6).toString("hex")}`;
       const record: SandboxRecord = {
         id,
@@ -659,8 +905,8 @@ const TABLE: ReadonlyArray<Command> = [
         archiveAfter: deadline(life.ttlSeconds),
       };
       print({ progress: "creating", id });
-      NodeFS.mkdirSync(at("outbox", id), { recursive: true });
-      NodeFS.writeFileSync(at("outbox", id, ID_FILE), id);
+      prepareMounts(id);
+      setDeadline(id, record.archiveAfter);
       writeJsonAtomic(sandboxFile(id), record);
       try {
         runContainer(record, image);
@@ -681,6 +927,7 @@ const TABLE: ReadonlyArray<Command> = [
     path: ["info"],
     args: ["sandbox"],
     mutating: false,
+    prints: "json",
     signedIn: true,
     run: async (invocation) => {
       const record = sandboxRecord(invocation.args.sandbox);
@@ -692,6 +939,7 @@ const TABLE: ReadonlyArray<Command> = [
     path: ["list"],
     flags: { all: "boolean" },
     mutating: false,
+    prints: "json",
     signedIn: true,
     run: async (invocation) => {
       const all = invocation.flags.has("all");
@@ -707,6 +955,7 @@ const TABLE: ReadonlyArray<Command> = [
     path: ["stop"],
     args: ["sandbox"],
     mutating: true,
+    prints: "json",
     signedIn: true,
     run: async (invocation) => {
       const record = sandboxRecord(invocation.args.sandbox);
@@ -721,34 +970,44 @@ const TABLE: ReadonlyArray<Command> = [
     args: ["sandbox"],
     flags: { type: "string", ttl: "string", "no-auto-stop": "boolean" },
     mutating: true,
+    prints: "json",
     signedIn: true,
     run: async (invocation, signedIn) => {
+      const diskTtl = diskTtlSeconds();
       const record = sandboxRecord(invocation.args.sandbox);
       const state = requireLive(record);
       const type = invocation.flags.has("type") ? size(invocation.flags.get("type")) : record.type;
       const life = lifetime(invocation, signedIn.plan) ?? { ttlSeconds: record.ttlSeconds };
-      const diskTtl = Number(process.env.FAKE_BOAT_DISK_TTL_SECS ?? DISK_TTL_SECS);
       if (state.state === "stopped" && Date.now() - Date.parse(state.finishedAt) > diskTtl * 1000) {
         throw new BoatError(
           "snapshot_data_expired",
           "This sandbox's disk was deleted after it stayed stopped too long",
         );
       }
-      const memory = SIZES[type];
-      docker(["update", "--memory", memory, "--memory-swap", memory, container(record.id)]);
       const next: SandboxRecord = {
         ...record,
         type,
         ttlSeconds: life.ttlSeconds,
         archiveAfter: deadline(life.ttlSeconds),
       };
-      writeJsonAtomic(sandboxFile(record.id), next);
+      resize(record.id, type);
+      setDeadline(record.id, next.archiveAfter);
       if (state.state !== "running") {
         print({ progress: "resuming", id: record.id });
-        docker(["start", container(record.id)]);
-        await waitForBoot(record.id);
+        try {
+          docker(["start", container(record.id)]);
+          await waitForBoot(record.id);
+        } catch (error) {
+          dockerSucceeds(["stop", "--time", "30", container(record.id)]);
+          resize(record.id, record.type);
+          setDeadline(record.id, record.archiveAfter);
+          throw error instanceof BoatError
+            ? error
+            : new BoatError("resume_failed", errorMessage(error));
+        }
         recordStart(record.id);
       }
+      writeJsonAtomic(sandboxFile(record.id), next);
       print(view(next, requireLive(next)));
       return 0;
     },
@@ -758,17 +1017,16 @@ const TABLE: ReadonlyArray<Command> = [
     args: ["sandbox"],
     flags: { ttl: "string" },
     mutating: true,
+    prints: "json",
     signedIn: true,
     run: async (invocation, signedIn) => {
       const record = sandboxRecord(invocation.args.sandbox);
       requireLive(record);
       const ttl = integer(invocation.flags.get("ttl"), "--ttl", 1);
       if (signedIn.plan === "trial" && ttl > TRIAL_TTL_SECS) throw trialRefusal();
-      writeJsonAtomic(sandboxFile(record.id), {
-        ...record,
-        ttlSeconds: ttl,
-        archiveAfter: deadline(ttl),
-      });
+      const next: SandboxRecord = { ...record, ttlSeconds: ttl, archiveAfter: deadline(ttl) };
+      setDeadline(record.id, next.archiveAfter);
+      writeJsonAtomic(sandboxFile(record.id), next);
       print({});
       return 0;
     },
@@ -778,12 +1036,15 @@ const TABLE: ReadonlyArray<Command> = [
     args: ["sandbox"],
     flags: { yes: "boolean" },
     mutating: true,
+    prints: "json",
     signedIn: true,
     run: async (invocation) => {
       if (!invocation.flags.has("yes")) {
         throw new BoatError("confirmation_required", "Pass --yes to delete without a prompt");
       }
-      removeSandbox(sandboxRecord(invocation.args.sandbox).id);
+      const { id } = sandboxRecord(invocation.args.sandbox);
+      await settleOutbox(id);
+      removeSandbox(id);
       print({});
       return 0;
     },
@@ -792,6 +1053,7 @@ const TABLE: ReadonlyArray<Command> = [
     path: ["snapshot"],
     args: ["sandbox", "name"],
     mutating: true,
+    prints: "json",
     signedIn: true,
     run: async (invocation) => {
       const name = snapshotName(invocation.args.name);
@@ -806,18 +1068,16 @@ const TABLE: ReadonlyArray<Command> = [
     path: ["snapshot", "rm"],
     args: ["name"],
     mutating: true,
+    prints: "json",
     signedIn: true,
     run: async (invocation) => {
-      const name = snapshotName(invocation.args.name);
-      if (!readJson(at("snapshots", `${name}.json`))) {
-        throw new BoatError("not_found", `Snapshot ${name} not found`);
-      }
+      const name = snapshotRecord(snapshotName(invocation.args.name)).name;
       try {
-        docker(["image", "rm", "--force", snapshotImage(name)]);
+        docker(["image", "rm", "--force", snapshotTag(name)]);
       } catch (error) {
         if (!isNoSuch(error)) throw error;
       }
-      NodeFS.rmSync(at("snapshots", `${name}.json`), { force: true });
+      NodeFS.rmSync(snapshotFile(name), { force: true });
       print({});
       return 0;
     },
@@ -825,9 +1085,16 @@ const TABLE: ReadonlyArray<Command> = [
   {
     path: ["snapshots"],
     mutating: false,
+    prints: "json",
     signedIn: true,
     run: async () => {
-      print({ named: snapshotRecords() });
+      const named = snapshotRecords().map(({ name, sandboxId, createdAt }) => ({
+        name,
+        sandboxId,
+        createdAt,
+      }));
+      print({ named });
+      reportFailures(snapshotFailures());
       return 0;
     },
   },
@@ -837,6 +1104,7 @@ const TABLE: ReadonlyArray<Command> = [
     flags: { timeout: "string" },
     afterDoubleDash: true,
     mutating: true,
+    prints: "json",
     signedIn: true,
     run: async (invocation) => {
       const record = sandboxRecord(invocation.args.sandbox);
@@ -848,7 +1116,9 @@ const TABLE: ReadonlyArray<Command> = [
         throw new BoatError("invalid_arguments", "exec needs a command after --");
       }
       const env = Object.entries(process.env).flatMap(([key, value]) =>
-        key.startsWith("FAKE_AUTH_") && value !== undefined ? ["-e", `${key}=${value}`] : [],
+        key.startsWith("FAKE_AUTH_") && key !== "FAKE_AUTH_ORIGIN" && value !== undefined
+          ? ["-e", `${key}=${value}`]
+          : [],
       );
       const started = Date.now();
       const ran = await run(
@@ -860,6 +1130,8 @@ const TABLE: ReadonlyArray<Command> = [
           "/home/user",
           "-e",
           "HOME=/home/user",
+          "-e",
+          `FAKE_AUTH_ORIGIN=${authOrigin()}`,
           ...env,
           container(record.id),
           "timeout",
@@ -883,6 +1155,7 @@ const TABLE: ReadonlyArray<Command> = [
     path: ["scp"],
     args: ["from", "to"],
     mutating: true,
+    prints: "json",
     signedIn: true,
     run: async ({ args: { from = "", to = "" } }) => {
       const up = REMOTE_PATH.exec(to);
@@ -900,6 +1173,7 @@ const TABLE: ReadonlyArray<Command> = [
     args: ["sandbox", "port"],
     flags: { public: "boolean", localhost: "boolean" },
     mutating: true,
+    prints: "json",
     signedIn: true,
     run: async (invocation) => {
       const record = sandboxRecord(invocation.args.sandbox);
@@ -930,26 +1204,33 @@ const TABLE: ReadonlyArray<Command> = [
     args: ["sandbox"],
     flags: { remote: "string", local: "string" },
     mutating: false,
+    prints: "nothing",
     signedIn: true,
     run: async (invocation) => {
       const record = sandboxRecord(invocation.args.sandbox);
       requireRunning(record);
       const remote = integer(invocation.flags.get("remote"), "--remote", 1, 65535);
       const local = integer(invocation.flags.get("local"), "--local", 1, 65535);
+      const sockets = new Set<NodeNet.Socket>();
+      const pipes = new Set<NodeChildProcess.ChildProcess>();
       const server = NodeNet.createServer((socket) => {
-        const pipe = NodeChildProcess.spawn(
-          "docker",
-          ["exec", "-i", container(record.id), "socat", "-", `TCP:127.0.0.1:${remote}`],
-          { stdio: ["pipe", "pipe", "ignore"] },
-        );
-        socket.pipe(pipe.stdin);
-        pipe.stdout.pipe(socket);
-        pipe.stdin.on("error", () => {});
-        socket.on("error", () => pipe.stdin.end());
-        pipe.on("close", () => socket.end());
+        const pipe = pipeInto(record.id, remote, socket);
+        sockets.add(socket);
+        pipes.add(pipe);
+        socket.on("close", () => sockets.delete(socket));
+        pipe.on("close", () => pipes.delete(pipe));
       });
       await listen(server, local);
-      logCall(process.argv.slice(2), false, null);
+      // Logged now: Sail Boat ends a forward with SIGKILL, which no exit handler sees.
+      logCall(HOME, { argv: process.argv.slice(2), mutating: false, exitCode: 0 });
+      const close = () => {
+        server.close();
+        for (const socket of sockets) socket.destroy();
+        for (const pipe of pipes) pipe.kill();
+        process.exit(0);
+      };
+      process.once("SIGTERM", close);
+      process.once("SIGINT", close);
       return new Promise<number>(() => {});
     },
   },
@@ -958,6 +1239,7 @@ const TABLE: ReadonlyArray<Command> = [
     args: ["sandbox"],
     flags: { since: "string" },
     mutating: false,
+    prints: "json",
     signedIn: true,
     run: async (invocation) => {
       const record = sandboxRecord(invocation.args.sandbox);
@@ -973,6 +1255,7 @@ const TABLE: ReadonlyArray<Command> = [
     path: ["limits"],
     flags: { all: "boolean" },
     mutating: false,
+    prints: "json",
     signedIn: true,
     run: async () => {
       const today = now().slice(0, 10);
@@ -993,10 +1276,15 @@ async function main(argv: ReadonlyArray<string>): Promise<{ code: number; mutati
   let mutating = false;
   try {
     const invocation = parse(TABLE, argv, ["--json"]);
-    mutating = invocation.command.mutating;
-    processOutboxes();
-    stopSandboxesPastLifetime();
     const command = invocation.command;
+    mutating = command.mutating;
+    if (command.prints === "json" && !invocation.global.has("--json")) {
+      throw new BoatError(
+        "json_required",
+        "The fake boat prints only JSON: pass --json before any --",
+      );
+    }
+    startWorker();
     if (!command.signedIn) return { code: await command.run(invocation), mutating };
     const signedIn = account();
     if (!signedIn) throw new BoatError("not_signed_in", "Not signed in. Run boat onboard.");
@@ -1009,7 +1297,17 @@ async function main(argv: ReadonlyArray<string>): Promise<{ code: number; mutati
   }
 }
 
-const argv = process.argv.slice(2);
-const result = await main(argv);
-logCall(argv, result.mutating, result.code);
-process.exitCode = result.code;
+if (process.argv[2] === WORKER_ARG) {
+  runWorker();
+} else {
+  const argv = process.argv.slice(2);
+  const result = await main(argv);
+  logCall(HOME, { argv, mutating: result.mutating, exitCode: result.code });
+  try {
+    // Requests this command's own work queued, such as an in-sandbox `boat snapshot` it ran.
+    startWorker();
+  } catch (error) {
+    console.error(JSON.stringify({ code: "worker_not_started", error: errorMessage(error) }));
+  }
+  process.exitCode = result.code;
+}

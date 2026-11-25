@@ -4,16 +4,16 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import {
-  AUTH_ORIGIN,
+  authOrigin,
   callbackLogin,
-  deviceCodeSchedule,
   FAKE_IDENTITY,
   fakeToken,
-  userCode,
+  issueDeviceCode,
   waitForApproval,
 } from "./auth.ts";
 import { type CommandSpec, parse, UsageError } from "./cli.ts";
 import { type JsonObject, serveJsonLines } from "./jsonl.ts";
+import { AUTH_LOG } from "./outbox.ts";
 
 const VERSION = "0.200.0";
 const CALLBACK_PORT = 1455;
@@ -49,20 +49,19 @@ function signIn(): void {
 
 function authorizeUrl(redirectUri: string, state: string): string {
   const query = new URLSearchParams({ response_type: "code", redirect_uri: redirectUri, state });
-  return `${AUTH_ORIGIN}/codex/authorize?${query.toString()}`;
+  return `${authOrigin()}/codex/authorize?${query.toString()}`;
 }
 
 async function deviceLogin(): Promise<number> {
-  const code = userCode();
-  const schedule = deviceCodeSchedule(Date.now());
-  const minutes = Math.round((schedule.expiresAtMs - Date.now()) / 60_000);
+  const device = issueDeviceCode("codex");
+  const minutes = Math.round((device.expiresAtMs - Date.now()) / 60_000);
   console.log(`Welcome to Codex [v${VERSION}]\nOpenAI's command-line coding agent\n`);
   console.log("Follow these steps to sign in with ChatGPT using device code authorization:\n");
   console.log("1. Open this link in your browser and sign in to your account");
-  console.log(`   ${AUTH_ORIGIN}/codex/device?code=${code}\n`);
-  console.log(`2. Enter this one-time code (expires in ${minutes} minutes)\n   ${code}\n`);
+  console.log(`   ${authOrigin()}/codex/device\n`);
+  console.log(`2. Enter this one-time code (expires in ${minutes} minutes)\n   ${device.code}\n`);
   console.log("Device codes are a common phishing target. Never share this code.\n");
-  if ((await waitForApproval(schedule)) === "expired") {
+  if ((await waitForApproval(device, AUTH_LOG)) !== "approved") {
     console.error("Error logging in with device code: device code expired");
     return 1;
   }

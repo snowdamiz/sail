@@ -24,7 +24,7 @@ RUN systemctl mask \
 RUN useradd --create-home --uid 1000 --shell /bin/bash user \
   && echo 'user ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/user \
   && chmod 440 /etc/sudoers.d/user \
-  && mkdir -p /var/lib/systemd/linger /var/lib/fake-boat/outbox \
+  && mkdir -p /var/lib/systemd/linger /var/lib/fake-boat/outbox /var/lib/fake-boat/lifetime \
   && touch /var/lib/systemd/linger/user \
   && : > /etc/machine-id
 
@@ -32,6 +32,8 @@ COPY sandbox/ /opt/fake-boat/
 RUN echo '{"type":"module"}' > /opt/fake-boat/package.json \
   && install -m 644 /opt/fake-boat/fake-boat.sh /etc/profile.d/fake-boat.sh \
   && install -m 644 /opt/fake-boat/fake-boat-host@.service /etc/systemd/system/fake-boat-host@.service \
+  && install -m 644 /opt/fake-boat/fake-boat-lifetime.service /etc/systemd/system/fake-boat-lifetime.service \
+  && systemctl enable fake-boat-lifetime.service \
   && for name in boat claude codex; do \
     printf '#!/bin/sh\nexec node /opt/fake-boat/%s.ts "$@"\n' "$name" > "/usr/local/bin/$name"; \
     chmod 755 "/usr/local/bin/$name"; \

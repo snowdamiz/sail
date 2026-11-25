@@ -4,12 +4,11 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-import { AUTH_ORIGIN, callbackLogin, FAKE_IDENTITY, fakeToken } from "./auth.ts";
+import { authOrigin, callbackLogin, FAKE_IDENTITY, fakeToken } from "./auth.ts";
 import { type CommandSpec, parse, UsageError } from "./cli.ts";
 import { isObject, type JsonObject, serveJsonLines } from "./jsonl.ts";
 
 const VERSION = "2.1.400";
-const MANUAL_REDIRECT = `${AUTH_ORIGIN}/claude/code/callback`;
 
 interface Command extends CommandSpec {
   readonly run: (flags: ReadonlyMap<string, string | true>) => Promise<number> | number;
@@ -119,7 +118,7 @@ function answerSdk(message: JsonObject): ReadonlyArray<JsonObject> {
 
 function authorizeUrl(redirectUri: string, state: string): string {
   const query = new URLSearchParams({ code: "true", redirect_uri: redirectUri, state });
-  return `${AUTH_ORIGIN}/claude/authorize?${query.toString()}`;
+  return `${authOrigin()}/claude/authorize?${query.toString()}`;
 }
 
 const TABLE: ReadonlyArray<Command> = [
@@ -175,7 +174,7 @@ const TABLE: ReadonlyArray<Command> = [
         announce: (state) => {
           console.log("Opening browser to sign in…");
           console.log("Browser didn't open? Use the url below to sign in (c to copy)\n");
-          console.log(`${authorizeUrl(MANUAL_REDIRECT, state)}\n`);
+          console.log(`${authorizeUrl(`${authOrigin()}/claude/code/callback`, state)}\n`);
           process.stdout.write("Paste code here if prompted > ");
         },
       });

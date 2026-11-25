@@ -6,19 +6,22 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
-import { caddyDir, removeSite, rootCertPath } from "./lib/caddy.ts";
-import { dockerSucceeds, hasDocker } from "./lib/docker.ts";
+import { AUTH_HOST, caddyDir, publicUrl, removeSite, rootCertPath } from "./lib/caddy.ts";
+import { docker, dockerSucceeds, hasDocker } from "./lib/docker.ts";
+import { homeId } from "./lib/state.ts";
 
 const FAKE_DIR = NodePath.join(import.meta.dirname, "fake-boat");
 const RECORDED = NodePath.join(FAKE_DIR, "recorded");
 const RECORD = process.env.FAKE_BOAT_RECORD === "1";
 const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/;
 const SANDBOX_ID = /^bx-[0-9a-f]{12}$/;
+const USER_CODE = /^[A-Z2-9]{4}-[A-Z2-9]{4}$/;
 const WEB_PORT = 8123;
 const WEB_BODY = "hello from the sandbox\n";
 const POLL = { timeout: 30_000, interval: 250 };
+const OTHER_ORIGIN = "https://auth.localtest.me:8443";
 
 interface Ran {
   readonly status: number | null;
@@ -28,6 +31,7 @@ interface Ran {
 
 interface SandboxJson {
   readonly id: string;
+  readonly type: string;
   readonly state: string;
   readonly stoppedAt: string | null;
   readonly archiveAfter: string | null;
@@ -38,6 +42,11 @@ interface ExecJson {
   readonly exitCode: number | null;
   readonly stdout: string;
   readonly stderr: string;
+}
+
+interface Failure {
+  readonly code: string;
+  readonly error: string;
 }
 
 function run(command: string, args: ReadonlyArray<string>, env: NodeJS.ProcessEnv): Promise<Ran> {
@@ -67,17 +76,39 @@ function lastJson<T>(text: string): T {
   return line as T;
 }
 
-function shapeOf(value: unknown): unknown {
-  if (value === null) return "null";
-  if (Array.isArray(value)) return value.length === 0 ? [] : [shapeOf(value[0])];
-  if (typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value)
-        .toSorted(([a], [b]) => a.localeCompare(b))
-        .map(([key, field]) => [key, shapeOf(field)]),
+/** What changes from run to run, so recorded output can be compared by value. */
+const VOLATILE: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z/g, "<time>"],
+  [/bx-[0-9a-f]{12}/g, "<sandbox>"],
+  [/[A-Z2-9]{4}-[A-Z2-9]{4}/g, "<code>"],
+  [/fake-boat-test-[0-9a-f]{6}/g, "fake-boat-test-<run>"],
+  [/(\.localtest\.me):\d+/g, "$1"],
+];
+const VOLATILE_NUMBERS: ReadonlySet<string> = new Set(["seconds"]);
+
+function stable(value: unknown, key = ""): unknown {
+  if (typeof value === "string") {
+    return VOLATILE.reduce(
+      (text, [pattern, placeholder]) => text.replace(pattern, placeholder),
+      value,
     );
   }
-  return typeof value;
+  if (typeof value === "number" && VOLATILE_NUMBERS.has(key)) return "<number>";
+  if (Array.isArray(value)) return value.map((item) => stable(item));
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([name, field]) => [name, stable(field, name)]),
+    );
+  }
+  return value;
+}
+
+function stableLines(text: string): ReadonlyArray<unknown> {
+  const building = (line: unknown) =>
+    typeof line === "object" && line !== null && "progress" in line && line.progress === "building";
+  return jsonLines(text)
+    .filter((line) => !building(line))
+    .map((line) => stable(line));
 }
 
 async function matchesRecordedResult(file: string, output: string): Promise<void> {
@@ -87,7 +118,7 @@ async function matchesRecordedResult(file: string, output: string): Promise<void
     return;
   }
   const recorded = await NodeFSP.readFile(path, "utf8");
-  expect(shapeOf(lastJson(output)), file).toEqual(shapeOf(lastJson(recorded)));
+  expect(stableLines(output), file).toEqual(stableLines(recorded));
 }
 
 async function freePort(): Promise<number> {
@@ -109,6 +140,24 @@ function refuses(port: number): Promise<boolean> {
     socket.once("error", () => resolve(true));
   });
 }
+
+function connected(port: number): Promise<NodeNet.Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = NodeNet.connect(port, "127.0.0.1");
+    socket.once("connect", () => resolve(socket));
+    socket.once("error", reject);
+  });
+}
+
+function strippedEnv(): Record<string, string | undefined> {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) => !key.startsWith("FAKE_BOAT_") && !key.startsWith("FAKE_AUTH_"),
+    ),
+  );
+}
+
+const BOAT_PATH = `${FAKE_DIR}${NodePath.delimiter}${process.env.PATH ?? ""}`;
 
 const SANDBOX = NodePath.join(FAKE_DIR, "sandbox");
 const CLAUDE_PROBE_ARGV = [
@@ -145,12 +194,15 @@ describe("fake claude and codex answering T3's provider probes", () => {
 
   beforeAll(async () => {
     home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "fake-probe-test-"));
-    const inherited = Object.entries(process.env).filter(
-      ([key]) =>
-        !["CLAUDE_CONFIG_DIR", "CODEX_HOME", "BROWSER"].includes(key) &&
-        !key.startsWith("FAKE_AUTH_"),
+    const inherited = Object.entries(strippedEnv()).filter(
+      ([key]) => !["CLAUDE_CONFIG_DIR", "CODEX_HOME", "BROWSER"].includes(key),
     );
-    env = { ...Object.fromEntries(inherited), HOME: home, FAKE_AUTH_APPROVE_SECS: "0" };
+    env = {
+      ...Object.fromEntries(inherited),
+      HOME: home,
+      FAKE_AUTH_APPROVE_SECS: "0",
+      FAKE_AUTH_ORIGIN: OTHER_ORIGIN,
+    };
   });
 
   afterAll(async () => {
@@ -208,8 +260,13 @@ describe("fake claude and codex answering T3's provider probes", () => {
     let printed = "";
     login.stdout.on("data", (chunk: Buffer) => (printed += chunk.toString()));
     await expect.poll(() => printed, POLL).toContain("Paste code here if prompted > ");
-    const state = /[?&]state=([^&\s]+)/.exec(printed)?.[1] ?? "";
-    login.stdin.write(`fake-code#${decodeURIComponent(state)}\n`);
+    const manual = /https:\/\/\S+\/claude\/authorize\?\S+/.exec(printed)?.[0] ?? "";
+    expect(manual.startsWith(`${OTHER_ORIGIN}/claude/authorize?`), manual).toBe(true);
+    expect(new URL(manual).searchParams.get("redirect_uri")).toBe(
+      `${OTHER_ORIGIN}/claude/code/callback`,
+    );
+    const state = new URL(manual).searchParams.get("state") ?? "";
+    login.stdin.write(`fake-code#${state}\n`);
     expect(await new Promise((resolve) => login.once("close", resolve))).toBe(0);
 
     const signedIn = await probe();
@@ -275,6 +332,8 @@ describe("fake claude and codex answering T3's provider probes", () => {
       env,
     );
     expect(login.status, login.stderr).toBe(0);
+    expect(login.stdout).toContain(`\n   ${OTHER_ORIGIN}/codex/device\n`);
+    expect(login.stdout).toMatch(/\n {3}[A-Z2-9]{4}-[A-Z2-9]{4}\n/);
     const signedIn = await appServer();
     expect(signedIn.replies[2]).toEqual({
       id: 2,
@@ -289,26 +348,69 @@ describe("fake claude and codex answering T3's provider probes", () => {
   });
 });
 
+describe("fake boat records and output", () => {
+  let state: string;
+
+  beforeAll(async () => {
+    state = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "fake-boat-state-test-"));
+  });
+
+  afterAll(async () => {
+    if (state) await NodeFSP.rm(state, { recursive: true, force: true });
+  });
+
+  it("keeps each checkout's records in a home of its own unless FAKE_BOAT_HOME names one", async () => {
+    const env = { ...strippedEnv(), XDG_STATE_HOME: state, PATH: BOAT_PATH };
+    expect((await run("boat", ["--json", "status"], env)).status).toBe(0);
+    const boatDir = NodePath.join(state, "sail-fixtures", "boat");
+    const homes = await NodeFSP.readdir(boatDir);
+    expect(homes).toEqual([expect.stringMatching(/^[0-9a-f]{12}$/)]);
+    const calls = await NodeFSP.readFile(
+      NodePath.join(boatDir, homes[0] ?? "", "calls.jsonl"),
+      "utf8",
+    );
+    expect(calls).toContain('"argv":["--json","status"]');
+  });
+
+  it("prints JSON only when --json comes before any --", async () => {
+    const env = { ...strippedEnv(), FAKE_BOAT_HOME: state, PATH: BOAT_PATH };
+    const plain = await run("boat", ["status"], env);
+    expect(plain.status).toBe(1);
+    expect(lastJson<Failure>(plain.stderr)).toEqual({
+      code: "json_required",
+      error: expect.stringContaining("--json"),
+    });
+    expect((await run("boat", ["status", "--json"], env)).status).toBe(0);
+    const late = await run("boat", ["exec", "bx-000000000000", "--", "echo", "--json"], env);
+    expect(lastJson<Failure>(late.stderr).code).toBe("json_required");
+  });
+});
+
 describe.skipIf(!hasDocker())("fake boat", () => {
   let home: string;
+  let otherHome: string;
   let env: NodeJS.ProcessEnv;
+  let otherEnv: NodeJS.ProcessEnv;
   let sandbox: string;
+  let otherSandbox: string;
   let fromSnapshot: string;
   let hostedUrl: string;
   const sandboxes: Array<string> = [];
-  const forwards: Array<NodeChildProcess.ChildProcess> = [];
+  const children: Array<NodeChildProcess.ChildProcess> = [];
   const suffix = NodeCrypto.randomBytes(3).toString("hex");
   const snapshot = `fake-boat-test-${suffix}-a`;
   const insideSnapshot = `fake-boat-test-${suffix}-b`;
   const curl = (args: ReadonlyArray<string>) =>
     run("curl", ["-sS", "--max-time", "5", ...args], env);
+  const snapshotImage = (forHome: string, name: string) =>
+    `sail-fake-boat-snapshot:${homeId(forHome)}-${name}`;
 
   const json = (args: ReadonlyArray<string>, extra: NodeJS.ProcessEnv = {}) =>
     run("boat", ["--json", ...args], { ...env, ...extra });
   const failure = async (args: ReadonlyArray<string>, extra?: NodeJS.ProcessEnv) => {
     const ran = await json(args, extra);
     expect(ran.status, ran.stdout).toBe(1);
-    return lastJson<{ code: string; error: string }>(ran.stderr);
+    return lastJson<Failure>(ran.stderr);
   };
   const exec = async (script: string, extra?: NodeJS.ProcessEnv, id = sandbox) => {
     const ran = await json(["exec", id, "--timeout", "60", "--", "bash", "-lc", script], extra);
@@ -318,26 +420,75 @@ describe.skipIf(!hasDocker())("fake boat", () => {
   };
   const info = async (id = sandbox) =>
     lastJson<{ sandbox: SandboxJson }>((await json(["info", id])).stdout).sandbox;
-  const signIn = async (plan: "paid" | "trial") => {
-    expect((await json(["onboard"])).status).toBe(0);
-    expect((await json(["onboard", "--wait"], { FAKE_BOAT_PLAN: plan })).status).toBe(0);
+  const signIn = async (plan: "paid" | "trial", extra: NodeJS.ProcessEnv = {}) => {
+    const approveNow = { ...extra, FAKE_AUTH_APPROVE_SECS: "0" };
+    expect((await run("boat", ["--json", "onboard"], { ...env, ...approveNow })).status).toBe(0);
+    const waited = await run("boat", ["--json", "onboard", "--wait"], {
+      ...env,
+      ...approveNow,
+      FAKE_BOAT_PLAN: plan,
+    });
+    expect(waited.status, waited.stderr).toBe(0);
+  };
+  const background = (args: ReadonlyArray<string>, extra: NodeJS.ProcessEnv = {}) => {
+    const child = NodeChildProcess.spawn("boat", args, { env: { ...env, ...extra } });
+    children.push(child);
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
+    child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+    const exited = new Promise<number | null>((resolve) => child.once("close", resolve));
+    return { child, exited, stdout: () => stdout, stderr: () => stderr };
+  };
+  const waitForSignIn = async (extra: NodeJS.ProcessEnv = {}) => {
+    const waiting = background(["--json", "onboard", "--wait"], extra);
+    await expect.poll(waiting.stdout, POLL).toContain('"progress":"waiting"');
+    return waiting;
   };
   const forward = async (remote: number) => {
     const local = await freePort();
-    const child = NodeChildProcess.spawn(
-      "boat",
-      ["forward", sandbox, "--remote", String(remote), "--local", String(local)],
-      { env, stdio: "ignore" },
-    );
-    forwards.push(child);
+    const forwarding = background([
+      "forward",
+      sandbox,
+      "--remote",
+      String(remote),
+      "--local",
+      String(local),
+    ]);
     await expect.poll(() => refuses(local), POLL).toBe(false);
-    return { local, child };
+    return { local, child: forwarding.child, exited: forwarding.exited };
   };
+  const pipesInside = async (port: number) =>
+    Number((await exec(`pgrep -fc '[s]ocat - TCP:127.0.0.1:${port}'`)).stdout.trim());
   const authorizeLink = async (url: string) => {
     const page = await curl(["--cacert", rootCertPath(), url]);
     const href = /id="authorize" href="([^"]+)"/.exec(page.stdout)?.[1];
     if (!href) throw new Error(`no Authorize link in ${page.stdout}`);
     return href.replaceAll("&amp;", "&");
+  };
+  /** Types the code into the device page's form and submits it, as a person in a browser does. */
+  const approveOnPage = async (pageUrl: string, code: string) => {
+    const page = await curl(["--cacert", rootCertPath(), pageUrl]);
+    const action = /<form action="([^"]+)"/.exec(page.stdout)?.[1];
+    const field = /<input id="code" name="([^"]+)"/.exec(page.stdout)?.[1];
+    if (!action || !field) throw new Error(`no approve form in ${page.stdout}`);
+    const target = new URL(action, pageUrl);
+    target.search = new URLSearchParams({ [field]: code }).toString();
+    const approved = await curl(["--cacert", rootCertPath(), "--fail", target.toString()]);
+    expect(approved.stdout, approved.stderr).toContain(code);
+  };
+  const running = (id: string) =>
+    docker(["inspect", "--format", "{{.State.Running}}", `sail-boat-${id}`]).trim() === "true";
+  const workerIdle = (forHome: string) => {
+    const lock = NodePath.join(forHome, "worker.json");
+    if (!NodeFS.existsSync(lock)) return true;
+    const { pid } = JSON.parse(NodeFS.readFileSync(lock, "utf8")) as { pid: number };
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch {
+      return true;
+    }
   };
   const startWeb = () =>
     exec(
@@ -346,20 +497,33 @@ describe.skipIf(!hasDocker())("fake boat", () => {
 
   beforeAll(async () => {
     home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "fake-boat-test-"));
-    const inherited = Object.entries(process.env).filter(
-      ([key]) => !key.startsWith("FAKE_BOAT_") && !key.startsWith("FAKE_AUTH_"),
-    );
-    env = {
-      ...Object.fromEntries(inherited),
-      FAKE_BOAT_HOME: home,
-      FAKE_AUTH_APPROVE_SECS: "1",
-      PATH: `${FAKE_DIR}${NodePath.delimiter}${process.env.PATH ?? ""}`,
-    };
-    if (process.env.FAKE_BOAT_IMAGE) env.FAKE_BOAT_IMAGE = process.env.FAKE_BOAT_IMAGE;
+    otherHome = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "fake-boat-test-other-"));
+    const image = process.env.FAKE_BOAT_IMAGE
+      ? { FAKE_BOAT_IMAGE: process.env.FAKE_BOAT_IMAGE }
+      : {};
+    env = { ...strippedEnv(), ...image, FAKE_BOAT_HOME: home, PATH: BOAT_PATH };
+    otherEnv = { ...env, FAKE_BOAT_HOME: otherHome };
   });
 
   afterAll(async () => {
-    for (const child of forwards) child.kill("SIGKILL");
+    for (const child of children) child.kill("SIGKILL");
+    for (const forHome of [home, otherHome].filter(Boolean)) {
+      await vi.waitFor(
+        () => {
+          if (!workerIdle(forHome)) throw new Error(`a snapshot worker for ${forHome} still runs`);
+        },
+        { timeout: 50_000, interval: 250 },
+      );
+      const label = `label=sail-fixture.home=${homeId(forHome)}`;
+      const ids = (kind: "ps" | "images") =>
+        docker(
+          kind === "ps" ? ["ps", "-aq", "--filter", label] : ["images", "-q", "--filter", label],
+        )
+          .split("\n")
+          .filter(Boolean);
+      for (const id of ids("ps")) dockerSucceeds(["rm", "--force", "--volumes", id]);
+      for (const id of new Set(ids("images"))) dockerSucceeds(["image", "rm", "--force", id]);
+    }
     for (const id of sandboxes) {
       dockerSucceeds(["rm", "--force", "--volumes", `sail-boat-${id}`]);
       removeSite(`boat-${id}-${WEB_PORT}`);
@@ -367,7 +531,9 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     for (const name of [snapshot, insideSnapshot]) {
       dockerSucceeds(["image", "rm", "--force", `sail-fake-boat-snapshot:${name}`]);
     }
-    if (home) await NodeFSP.rm(home, { recursive: true, force: true });
+    for (const forHome of [home, otherHome]) {
+      if (forHome) await NodeFSP.rm(forHome, { recursive: true, force: true });
+    }
   });
 
   it("refuses all but sign-in while signed out, and unknown commands and flags", async () => {
@@ -390,25 +556,54 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     ]);
   });
 
-  it("signs in through onboard and onboard --wait, and lets an unapproved code expire", async () => {
-    const neverApproved = { FAKE_AUTH_APPROVE_SECS: "never", FAKE_AUTH_CODE_TTL_SECS: "1" };
-    expect((await json(["onboard"], neverApproved)).status).toBe(0);
+  it("lets a code nobody approves expire instead of approving itself", async () => {
+    const shortLived = { FAKE_AUTH_CODE_TTL_SECS: "5" };
+    expect((await json(["onboard"], shortLived)).status).toBe(0);
     expect((await failure(["onboard", "--wait"])).code).toBe("sign_in_expired");
+    expect(lastJson((await json(["status"])).stdout)).toMatchObject({
+      account: { signedIn: false },
+    });
+  });
 
+  it("signs in once someone approves the code on the sign-in page", async () => {
     const started = await json(["onboard"]);
     const signIn = lastJson<{ url: string; userCode: string }>(started.stdout);
-    expect(signIn.userCode).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
-    expect(signIn.url).toBe(`https://auth.localtest.me/boat/device?code=${signIn.userCode}`);
+    expect(signIn.userCode).toMatch(USER_CODE);
+    expect(signIn.url).toBe(`${publicUrl(AUTH_HOST)}/boat/device?code=${signIn.userCode}`);
     expect(lastJson((await json(["onboard"])).stdout)).toEqual(signIn);
     await matchesRecordedResult("onboard.jsonl", started.stdout);
 
-    expect((await json(["onboard", "--wait"], { FAKE_BOAT_PLAN: "trial" })).status).toBe(0);
+    const waiting = await waitForSignIn({ FAKE_BOAT_PLAN: "trial" });
+    await approveOnPage(signIn.url, signIn.userCode);
+    expect(await waiting.exited, waiting.stderr()).toBe(0);
     const status = await json(["status"]);
     expect(lastJson(status.stdout)).toEqual({
       account: { identifier: "fake-user@localtest.me", signedIn: true, plan: "trial" },
     });
     await matchesRecordedResult("status.jsonl", status.stdout);
     expect((await failure(["onboard"])).code).toBe("already_signed_in");
+  });
+
+  it("never signs in from an attempt that a logout or a newer onboard replaced", async () => {
+    expect((await json(["logout"])).status).toBe(0);
+    const first = lastJson<{ url: string; userCode: string }>((await json(["onboard"])).stdout);
+    const stale = await waitForSignIn({ FAKE_BOAT_PLAN: "trial" });
+    expect((await json(["logout"])).status).toBe(0);
+    const second = lastJson<{ url: string; userCode: string }>((await json(["onboard"])).stdout);
+    expect(second.userCode).not.toBe(first.userCode);
+    await approveOnPage(first.url, first.userCode);
+    expect(await stale.exited).toBe(1);
+    expect(lastJson<Failure>(stale.stderr()).code).toBe("sign_in_cancelled");
+    expect(lastJson((await json(["status"])).stdout)).toMatchObject({
+      account: { signedIn: false },
+    });
+
+    const current = await waitForSignIn({ FAKE_BOAT_PLAN: "trial" });
+    await approveOnPage(second.url, second.userCode);
+    expect(await current.exited, current.stderr()).toBe(0);
+    expect(lastJson((await json(["status"])).stdout)).toMatchObject({
+      account: { signedIn: true, plan: "trial" },
+    });
   });
 
   it("creates a trial sandbox only with a lifetime of two hours or less", async () => {
@@ -426,7 +621,7 @@ describe.skipIf(!hasDocker())("fake boat", () => {
 
     const created = await json([...create, "--ttl", "7200"]);
     expect(created.status, created.stderr).toBe(0);
-    const result = lastJson<SandboxJson & { name: string; type: string }>(created.stdout);
+    const result = lastJson<SandboxJson & { name: string }>(created.stdout);
     sandbox = result.id;
     sandboxes.push(sandbox);
     expect(result).toMatchObject({
@@ -439,6 +634,13 @@ describe.skipIf(!hasDocker())("fake boat", () => {
       ttlSeconds: 7200,
     });
     await matchesRecordedResult("new.jsonl", created.stdout);
+    const labels = docker([
+      "inspect",
+      "--format",
+      "{{json .Config.Labels}}",
+      `sail-boat-${sandbox}`,
+    ]);
+    expect(JSON.parse(labels)).toMatchObject({ "sail-fixture.home": homeId(home) });
   });
 
   it("reports the sandbox through info and list --all", async () => {
@@ -457,7 +659,7 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     expect((await failure(["info", "bx-000000000000"])).code).toBe("not_found");
   });
 
-  it("runs commands as user, with a systemd user manager and lingering", async () => {
+  it("runs commands as user, with a systemd user manager, lingering, and the sign-in origin", async () => {
     const script =
       'id -un; pwd; systemctl --user status >/dev/null && echo answered; loginctl show-user "$(id -u)" --property=Linger --value';
     const ran = await json(["exec", sandbox, "--timeout", "30", "--", "bash", "-lc", script]);
@@ -480,6 +682,7 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     expect((await exec("printenv FAKE_AUTH_PROBE", { FAKE_AUTH_PROBE: "through" })).stdout).toBe(
       "through\n",
     );
+    expect((await exec("printenv FAKE_AUTH_ORIGIN")).stdout).toBe(`${publicUrl(AUTH_HOST)}\n`);
     const slow = await json(["exec", sandbox, "--timeout", "1", "--", "sleep", "30"]);
     expect(lastJson<ExecJson>(slow.stdout).exitCode).toBeNull();
   });
@@ -520,11 +723,26 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     expect((await curl([httpUrl])).stdout).toBe(WEB_BODY);
   });
 
-  it("forwards a local port into the sandbox until killed", async () => {
+  it("forwards a local port into the sandbox until killed, closing each pipe with its connection", async () => {
     const { local, child } = await forward(WEB_PORT);
     expect((await curl([`http://127.0.0.1:${local}/`])).stdout).toBe(WEB_BODY);
+    const held = await connected(local);
+    await expect.poll(() => pipesInside(WEB_PORT), POLL).toBe(1);
+    held.destroy();
+    await expect.poll(() => pipesInside(WEB_PORT), POLL).toBe(0);
     child.kill("SIGKILL");
     await expect.poll(() => refuses(local), POLL).toBe(true);
+
+    for (const signal of ["SIGTERM", "SIGINT"] as const) {
+      const forwarding = await forward(WEB_PORT);
+      const open = await connected(forwarding.local);
+      await expect.poll(() => pipesInside(WEB_PORT), POLL).toBe(1);
+      forwarding.child.kill(signal);
+      await forwarding.exited;
+      await expect.poll(() => refuses(forwarding.local), POLL).toBe(true);
+      await expect.poll(() => pipesInside(WEB_PORT), POLL).toBe(0);
+      open.destroy();
+    }
   });
 
   it("saves, lists, and removes named snapshots, from here and from inside", async () => {
@@ -535,21 +753,33 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     });
     await matchesRecordedResult("snapshots.jsonl", listed.stdout);
 
+    expect((await exec("head -c 150M /dev/urandom > big")).exitCode).toBe(0);
     expect(await exec(`boat snapshot ${sandbox} ${insideSnapshot} --json`)).toEqual({
       exitCode: 0,
       stdout: "{}\n",
       stderr: "",
     });
-    const named = lastJson<{ named: Array<{ name: string }> }>((await json(["snapshots"])).stdout);
-    expect(named.named.map((row) => row.name)).toEqual([snapshot, insideSnapshot]);
-    expect(dockerSucceeds(["image", "inspect", `sail-fake-boat-snapshot:${insideSnapshot}`])).toBe(
-      true,
-    );
+    expect((await json(["status"])).status).toBe(0);
+    const before = lastJson<{ named: Array<{ name: string }> }>((await json(["snapshots"])).stdout);
+    expect(before.named.map((row) => row.name)).toEqual([snapshot]);
+    await expect
+      .poll(async () => {
+        const named = lastJson<{ named: Array<{ name: string }> }>(
+          (await json(["snapshots"])).stdout,
+        );
+        return named.named.map((row) => row.name);
+      }, POLL)
+      .toEqual([snapshot, insideSnapshot]);
+    await expect.poll(() => workerIdle(home), POLL).toBe(true);
+    expect((await exec("rm big")).exitCode).toBe(0);
+    for (const name of [snapshot, insideSnapshot]) {
+      expect(dockerSucceeds(["image", "inspect", snapshotImage(home, name)]), name).toBe(true);
+    }
+    const plain = await exec(`boat snapshot ${sandbox} ${insideSnapshot}`);
+    expect(lastJson<Failure>(plain.stderr).code).toBe("json_required");
 
     expect((await json(["snapshot", "rm", insideSnapshot])).status).toBe(0);
-    expect(dockerSucceeds(["image", "inspect", `sail-fake-boat-snapshot:${insideSnapshot}`])).toBe(
-      false,
-    );
+    expect(dockerSucceeds(["image", "inspect", snapshotImage(home, insideSnapshot)])).toBe(false);
     expect((await failure(["snapshot", "rm", insideSnapshot])).code).toBe("not_found");
     expect((await failure(["snapshot", sandbox, "Not_Valid"])).code).toBe("invalid_name");
   });
@@ -565,8 +795,16 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     await matchesRecordedResult("info-stopped.jsonl", stopped.stdout);
     expect((await failure(["exec", sandbox, "--", "true"])).code).toBe("sandbox_not_running");
 
+    const expired = await json(["resume", sandbox, "--ttl", "7200"], {
+      FAKE_BOAT_DISK_TTL_SECS: "0",
+    });
+    expect(expired.status).toBe(1);
+    expect(lastJson<Failure>(expired.stderr).code).toBe("snapshot_data_expired");
+    await matchesRecordedResult("resume-expired.stderr", expired.stderr);
+    expect((await info()).state).toBe("stopped");
+
     const resumed = await json(["resume", sandbox, "--type", "default", "--ttl", "7200"]);
-    expect(lastJson<SandboxJson & { type: string }>(resumed.stdout)).toMatchObject({
+    expect(lastJson<SandboxJson>(resumed.stdout)).toMatchObject({
       id: sandbox,
       type: "default",
       state: "running",
@@ -578,16 +816,11 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     await expect
       .poll(async () => (await curl(["--cacert", rootCertPath(), hostedUrl])).stdout, POLL)
       .toBe(WEB_BODY);
-  });
-
-  it("stops a sandbox once its lifetime ends", async () => {
-    expect((await failure(["extend", sandbox, "--ttl", "7201"])).code).toBe(
-      "trial_auto_stop_required",
-    );
-    expect((await json(["extend", sandbox, "--ttl", "2"])).status).toBe(0);
-    await expect.poll(async () => (await info()).state, POLL).toBe("stopped");
-    expect((await json(["resume", sandbox, "--ttl", "7200"])).status).toBe(0);
-    expect((await info()).state).toBe("running");
+    const garbled = await failure(["resume", sandbox], { FAKE_BOAT_DISK_TTL_SECS: "soon" });
+    expect(garbled).toEqual({
+      code: "invalid_arguments",
+      error: expect.stringContaining("FAKE_BOAT_DISK_TTL_SECS"),
+    });
   });
 
   it("stops itself from inside, as the watchdog does", async () => {
@@ -614,7 +847,7 @@ describe.skipIf(!hasDocker())("fake boat", () => {
       seconds: 0,
     });
     const limits = await json(["limits", "--all"]);
-    expect(lastJson(limits.stdout)).toEqual({ starts: { day: { used: 4, limit: 100 } } });
+    expect(lastJson(limits.stdout)).toEqual({ starts: { day: { used: 3, limit: 100 } } });
     await matchesRecordedResult("limits.jsonl", limits.stdout);
   });
 
@@ -626,6 +859,7 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     const dir = started.stdout.trim();
     await expect.poll(async () => (await exec(`cat ${dir}/url`)).stdout, POLL).toMatch(/^https:/);
     const url = new URL((await exec(`cat ${dir}/url`)).stdout.trim());
+    expect(url.origin).toBe(publicUrl(AUTH_HOST));
     const redirect = new URL(url.searchParams.get("redirect_uri") ?? "");
     expect(redirect.hostname).toBe("localhost");
     expect((await exec(`cat ${dir}/log`)).stdout).toContain("Paste code here if prompted > ");
@@ -662,12 +896,9 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     await expect.poll(async () => (await exec("claude auth status")).exitCode, POLL).toBe(0);
   });
 
-  it("signs Codex in with a device code, which can expire, and by callback", async () => {
+  it("signs Codex in once its device code is approved on the page, else lets it expire", async () => {
     expect((await exec("codex login status")).exitCode).toBe(1);
-    const expired = await exec("codex login --device-auth", {
-      FAKE_AUTH_APPROVE_SECS: "never",
-      FAKE_AUTH_CODE_TTL_SECS: "1",
-    });
+    const expired = await exec("codex login --device-auth", { FAKE_AUTH_CODE_TTL_SECS: "5" });
     expect(expired.exitCode).toBe(1);
     expect(expired.stderr).toContain("device code expired");
 
@@ -675,12 +906,16 @@ describe.skipIf(!hasDocker())("fake boat", () => {
       'd=$(mktemp -d); nohup codex login --device-auth > "$d/log" 2>&1 & echo "$d"',
     );
     const dir = started.stdout.trim();
+    const codeLine = /\n {3}([A-Z2-9]{4}-[A-Z2-9]{4})\n/;
+    await expect.poll(async () => (await exec(`cat ${dir}/log`)).stdout, POLL).toMatch(codeLine);
+    const log = (await exec(`cat ${dir}/log`)).stdout;
+    const link = `${publicUrl(AUTH_HOST)}/codex/device`;
+    expect(log).toContain(`\n   ${link}\n`);
+    expect((await exec("codex login status")).exitCode).toBe(1);
+    await approveOnPage(link, codeLine.exec(log)?.[1] ?? "");
     await expect
       .poll(async () => (await exec(`cat ${dir}/log`)).stdout, POLL)
       .toContain("Successfully logged in");
-    const log = (await exec(`cat ${dir}/log`)).stdout;
-    const code = /device\?code=([A-Z2-9]{4}-[A-Z2-9]{4})/.exec(log)?.[1];
-    expect(log).toContain(`\n   ${code}\n`);
     expect((await exec("codex login status")).exitCode).toBe(0);
 
     expect((await exec("codex logout")).exitCode).toBe(0);
@@ -701,7 +936,82 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     await expect.poll(async () => (await exec("codex login status")).exitCode, POLL).toBe(0);
   });
 
-  it("creates a paid sandbox from a snapshot with no lifetime", async () => {
+  it("stops a sandbox when its lifetime ends, with nobody calling boat", async () => {
+    expect((await failure(["extend", sandbox, "--ttl", "7201"])).code).toBe(
+      "trial_auto_stop_required",
+    );
+    expect((await json(["extend", sandbox, "--ttl", "2"])).status).toBe(0);
+    await expect.poll(() => running(sandbox), POLL).toBe(false);
+    expect((await info()).state).toBe("stopped");
+    expect((await json(["resume", sandbox, "--ttl", "7200"])).status).toBe(0);
+    expect((await info()).state).toBe("running");
+  });
+
+  it("keeps another home's sandboxes and same-named snapshots apart", async () => {
+    const other = (args: ReadonlyArray<string>) => run("boat", ["--json", ...args], otherEnv);
+    await signIn("paid", { FAKE_BOAT_HOME: otherHome });
+    const created = await other(["new", "--name", "other", "--type", "small", "--no-auto-stop"]);
+    expect(created.status, created.stderr).toBe(0);
+    otherSandbox = lastJson<SandboxJson>(created.stdout).id;
+    sandboxes.push(otherSandbox);
+    const marked = await other(["exec", otherSandbox, "--", "bash", "-lc", "echo other > marker"]);
+    expect(lastJson<ExecJson>(marked.stdout).exitCode).toBe(0);
+    expect((await other(["snapshot", otherSandbox, snapshot])).status).toBe(0);
+    const ids = async (ran: Promise<Ran>) =>
+      lastJson<{ sandboxes: Array<SandboxJson> }>((await ran).stdout).sandboxes.map(
+        (row) => row.id,
+      );
+    expect(await ids(other(["list", "--all"]))).toEqual([otherSandbox]);
+    expect(await ids(json(["list", "--all"]))).toEqual([sandbox]);
+    const labels = docker([
+      "inspect",
+      "--format",
+      "{{json .Config.Labels}}",
+      `sail-boat-${otherSandbox}`,
+    ]);
+    expect(JSON.parse(labels)).toMatchObject({ "sail-fixture.home": homeId(otherHome) });
+    expect(dockerSucceeds(["image", "inspect", snapshotImage(otherHome, snapshot)])).toBe(true);
+    expect(dockerSucceeds(["image", "inspect", snapshotImage(home, snapshot)])).toBe(true);
+  });
+
+  it("reports a snapshot request it cannot save instead of dropping it or failing later commands", async () => {
+    const other = (args: ReadonlyArray<string>) => run("boat", ["--json", ...args], otherEnv);
+    const outbox = NodePath.join(otherHome, "outbox", otherSandbox);
+    const gone = `fake-boat-test-${suffix}-gone`;
+    const request = {
+      sandboxId: otherSandbox,
+      name: gone,
+      requestedAt: "1970-01-01T00:00:00.000Z",
+    };
+    await NodeFSP.writeFile(
+      NodePath.join(outbox, `${gone}.snapshot.json`),
+      JSON.stringify(request),
+    );
+    await NodeFSP.writeFile(NodePath.join(outbox, "junk.snapshot.json"), "not json");
+    expect(dockerSucceeds(["rm", "--force", "--volumes", `sail-boat-${otherSandbox}`])).toBe(true);
+    const statuses: Array<number | null> = [];
+    const reported = async () => {
+      const listed = await other(["snapshots"]);
+      statuses.push(listed.status);
+      return jsonLines(listed.stderr);
+    };
+    await expect
+      .poll(reported, POLL)
+      .toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: "snapshot_failed", name: gone }),
+          expect.objectContaining({ code: "snapshot_failed", name: "junk" }),
+        ]),
+      );
+    expect(new Set(statuses)).toEqual(new Set([0]));
+    expect((await other(["status"])).status).toBe(0);
+    expect(dockerSucceeds(["image", "inspect", snapshotImage(otherHome, gone)])).toBe(false);
+    expect((await other(["delete", otherSandbox, "--yes"])).status).toBe(0);
+    expect(lastJson((await other(["list", "--all"])).stdout)).toEqual({ sandboxes: [] });
+    expect((await other(["snapshot", "rm", snapshot])).status).toBe(0);
+  });
+
+  it("creates a paid sandbox from its own home's snapshot with no lifetime", async () => {
     expect((await json(["logout"])).status).toBe(0);
     expect((await failure(["list", "--all"])).code).toBe("not_signed_in");
     await signIn("paid");
@@ -721,8 +1031,21 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     sandboxes.push(fromSnapshot);
     expect(result).toMatchObject({ state: "running", archiveAfter: null, ttlSeconds: null });
     expect((await exec("cat notes.txt", {}, fromSnapshot)).stdout).toBe("kept across stops\n");
+    expect((await exec("test -e marker", {}, fromSnapshot)).exitCode).toBe(1);
     expect((await json(["extend", fromSnapshot, "--ttl", "9000"])).status).toBe(0);
     expect((await info(fromSnapshot)).ttlSeconds).toBe(9000);
+  });
+
+  it("keeps the old size and lifetime when a resume cannot boot", async () => {
+    expect((await exec("sudo ln -sf /bin/false /sbin/init", {}, fromSnapshot)).exitCode).toBe(0);
+    expect((await json(["stop", fromSnapshot])).status).toBe(0);
+    const refused = await failure(["resume", fromSnapshot, "--type", "large", "--ttl", "60"]);
+    expect(refused.code).toBe("boot_failed");
+    expect(await info(fromSnapshot)).toMatchObject({
+      type: "small",
+      state: "stopped",
+      ttlSeconds: 9000,
+    });
   });
 
   it("deletes sandboxes with nothing left behind, keeping named snapshots", async () => {
