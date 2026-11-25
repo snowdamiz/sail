@@ -19,11 +19,8 @@ function configuredHostedAppUrl(): string | undefined {
 export function linkOrigin(): string {
   const hostedAppUrl = configuredHostedAppUrl();
   if (hostedAppUrl) return hostedAppUrl;
-  try {
-    const primary = readPrimaryEnvironmentTarget();
-    if (primary) return new URL(primary.target.httpBaseUrl).origin;
-  } catch {}
-  return window.location.origin;
+  const serverUrl = readPrimaryEnvironmentTarget()?.target.httpBaseUrl;
+  return serverUrl ? new URL(serverUrl).origin : window.location.origin;
 }
 
 function configuredBackendUrl(): string {

@@ -8,16 +8,17 @@ change your permission mode, branch, or worktree. Your own defaults apply.
 
 ## Make a link
 
-Open the command palette and choose **Copy prompt link**. It copies the draft in the composer.
+Open the command palette and choose **Copy prompt link**. It copies the draft in the composer, as
+a link to the server you use.
 When the project is on GitHub, **Copy prompt link with repo and model** also adds the repository
 and the model you picked. Sent messages have a **Copy prompt link** button too.
 
-You can also write a link by hand:
+You can also write a link by hand, with your server's address:
 
 ```
-https://app.t3.codes/new?prompt=Rate%20my%20swearing
-https://app.t3.codes/new?prompt=Fix%20the%20build&repo=owner/name&provider=codex&model=gpt-5.5
-https://app.t3.codes/new?pr=owner/name/123&prompt=Fix%20the%20failing%20check
+https://your-server.example/new?prompt=Rate%20my%20swearing
+https://your-server.example/new?prompt=Fix%20the%20build&repo=owner/name&provider=codex&model=gpt-5.5
+https://your-server.example/new?pr=owner/name/123&prompt=Fix%20the%20failing%20check
 ```
 
 | Parameter  | Meaning                                                                       |
@@ -32,7 +33,7 @@ Encode the prompt for a URL. In JavaScript, use `encodeURIComponent`.
 
 ## Open a link
 
-On app.t3.codes, the link first asks where to open it: the desktop or mobile app, this browser
+On a hosted web app, the link first asks where to open it: the desktop or mobile app, this browser
 when it is connected to a machine, or the download page. Select **Remember my choice** to skip
 this step next time.
 
@@ -47,7 +48,7 @@ this step next time.
   worktree. T3 Code checks the code out only after you confirm, because the checkout runs your
   setup script on it.
 
-A thread link with a prompt, such as `https://app.t3.codes/<environment>/<thread>?prompt=…`,
+A thread link with a prompt, such as `https://your-server.example/<environment>/<thread>?prompt=…`,
 puts the prompt in that thread's composer. If you already typed a draft there, T3 Code asks
 before it replaces it.
 
@@ -57,8 +58,8 @@ malicious.
 
 ## Share a thread
 
-**Copy thread** copies a link such as `https://app.t3.codes/threads/<environment>/<thread>`. Paste
-it anywhere, such as Slack, a GitHub comment, or your notes. On a phone with T3 Code installed, it
-opens the thread in the app. Elsewhere, opening it asks where to open it, like a prompt link, then
-opens the thread. Only someone connected to the machine that runs the thread can see it. In T3 Code,
-a thread link in a message opens the thread in the app.
+**Copy thread** copies a link to the thread on the server you use, such as
+`https://your-server.example/threads/<environment>/<thread>`. Paste it anywhere, such as Slack, a
+GitHub comment, or your notes. Opening it in a browser opens the thread in that server's web app.
+Only someone connected to the machine that runs the thread can see it. In T3 Code, a thread link in
+a message opens the thread in the app.
