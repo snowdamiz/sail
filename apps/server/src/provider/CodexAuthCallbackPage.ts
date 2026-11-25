@@ -1,7 +1,3 @@
-import { providerAuthReturnUrl } from "@t3tools/shared/providerAuthReturnUrl";
-
-export const codexAuthReturnUrl = providerAuthReturnUrl;
-
 const escapeHtml = (value: string) =>
   value.replace(
     /[&<>"']/gu,
@@ -9,12 +5,12 @@ const escapeHtml = (value: string) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!,
   );
 
+/** `destination` is a return address `providerAuthReturnUrl` already accepted. */
 export function codexAuthCallbackPage(
   success: boolean,
-  returnUrl: string | undefined,
+  destination: string | undefined,
   nonce: string,
 ) {
-  const destination = codexAuthReturnUrl(returnUrl);
   const title = success ? "You're signed in" : "Sign-in couldn't finish";
   const description = success
     ? destination

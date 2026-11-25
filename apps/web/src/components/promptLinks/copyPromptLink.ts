@@ -31,10 +31,8 @@ export function promptLinkFor(
   },
 ): string | null {
   const trimmed = isAttachmentOnlyBootstrapPrompt(prompt) ? "" : prompt.trim();
-  const origin = linkOrigin();
-  if (!origin || trimmed.length === 0 || trimmed.length > PROMPT_LINK_MAX_PROMPT_LENGTH)
-    return null;
-  return buildNewThreadLink({ prompt: trimmed, ...context, origin });
+  if (trimmed.length === 0 || trimmed.length > PROMPT_LINK_MAX_PROMPT_LENGTH) return null;
+  return buildNewThreadLink({ prompt: trimmed, ...context, origin: linkOrigin() });
 }
 
 export function promptLinkRepositoryOf(

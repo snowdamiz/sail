@@ -37,6 +37,7 @@ export interface ProviderAuthController {
     methodId?: string,
     returnUrl?: string,
     callbackMode?: "server" | "client",
+    returnOrigins?: ReadonlyArray<string | undefined>,
   ) => Effect.Effect<ProviderAuthState, ProviderSetupError>;
   readonly complete: (
     ownerSessionId: string,

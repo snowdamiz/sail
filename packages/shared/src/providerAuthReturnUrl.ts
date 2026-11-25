@@ -1,8 +1,16 @@
 import { isLoopbackHost } from "./preview.ts";
+import { parseUrl } from "./url.ts";
+
+// A delivery puts the one-time OAuth code in the return URL's fragment, so only HTTPS can carry it.
+const isTrustedOrigin = (origin: string, trustedOrigins: ReadonlyArray<string | undefined>) =>
+  trustedOrigins.some((trusted) => {
+    const url = trusted ? parseUrl(trusted) : null;
+    return url?.protocol === "https:" && url.origin === origin;
+  });
 
 export function providerAuthReturnUrl(
   value: string | undefined,
-  trustedOrigin?: string,
+  trustedOrigins: ReadonlyArray<string | undefined> = [],
 ): string | undefined {
   if (!value) return undefined;
   try {
@@ -11,8 +19,7 @@ export function providerAuthReturnUrl(
       ["sail:", "sail-dev:", "t3code:", "t3code-dev:"].includes(url.protocol) && url.host === "app";
     const web =
       ["http:", "https:"].includes(url.protocol) &&
-      (isLoopbackHost(url.hostname) ||
-        (!!trustedOrigin && url.origin === new URL(trustedOrigin).origin));
+      (isLoopbackHost(url.hostname) || isTrustedOrigin(url.origin, trustedOrigins));
     if (
       url.username ||
       url.password ||

@@ -27,6 +27,8 @@ export interface ProviderAuthFlowContext {
   readonly flowId: string;
   readonly expiresAt: number;
   readonly returnUrl?: string;
+  /** The web apps the requesting client is on; `returnUrl` may name only these or loopback. */
+  readonly returnOrigins?: ReadonlyArray<string | undefined>;
   readonly callbackMode?: "server" | "client";
   readonly setInteraction: (
     interaction: ProviderAuthInteraction,
@@ -250,7 +252,14 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
           );
         }),
       ),
-    start: (owner, stopSessions = Effect.void, selectedMethodId, returnUrl, callbackMode) =>
+    start: (
+      owner,
+      stopSessions = Effect.void,
+      selectedMethodId,
+      returnUrl,
+      callbackMode,
+      returnOrigins,
+    ) =>
       lock.withPermit(
         Effect.gen(function* () {
           if (operation === "auth" && active?.owner === owner) return snapshot.value.state;
@@ -302,6 +311,7 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
               flowId: id,
               expiresAt: flow.expiresAt,
               ...(returnUrl ? { returnUrl } : {}),
+              ...(returnOrigins ? { returnOrigins } : {}),
               ...(callbackMode ? { callbackMode } : {}),
               // Terminal sign-in updates this for every output chunk within the auth operation.
               setInteraction: Effect.fnUntraced(function* (interaction, respond, complete) {

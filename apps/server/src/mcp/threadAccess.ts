@@ -24,7 +24,9 @@ import { hasPendingBackgroundSubagent } from "@t3tools/shared/orchestrationV2Pen
 import { webOrigin } from "@t3tools/shared/url";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 
+import { optionalHostedAppUrlConfig } from "../cloud/publicConfig.ts";
 import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
@@ -42,22 +44,36 @@ const suggestedThreadId = (threadId: ThreadId) => {
   return encoded === rest ? null : ThreadId.make(`${delegatedTaskPrefix}${encoded}`);
 };
 
+const pastedLinkOrigins = Effect.fn("OrchestratorMcpService.pastedLinkOrigins")(function* (
+  scope: McpInvocationContext.McpInvocationScope,
+) {
+  const hostedAppUrl = yield* optionalHostedAppUrlConfig.pipe(
+    Effect.orElseSucceed(() => Option.none<string>()),
+  );
+  const origins = [scope.origin, Option.getOrUndefined(hostedAppUrl)].map(webOrigin);
+  return [...new Set(origins)];
+});
+
 // A pasted link (bare, Markdown, or hosted) names its thread; only this environment's can be read here.
 const candidateThreadIds = (
   threadId: ThreadId,
   environmentId: EnvironmentId,
-  hostedOrigin: string | undefined,
+  linkOrigins: ReadonlyArray<string | undefined>,
 ) => {
-  if (!hasThreadLinks(threadId, hostedOrigin)) {
+  if (!linkOrigins.some((origin) => hasThreadLinks(threadId, origin))) {
     const suggested = suggestedThreadId(threadId);
     return suggested === null ? [] : [suggested];
   }
-  const link = parseThreadLinkHref(threadId, hostedOrigin);
-  const refs =
-    link === null
-      ? threadLinkRefs(threadId, environmentId, hostedOrigin)
-      : threadLinkCandidates(link, environmentId);
-  return refs.filter((ref) => ref.environmentId === environmentId).map((ref) => ref.threadId);
+  const ids = new Set<ThreadId>();
+  for (const origin of linkOrigins) {
+    const link = parseThreadLinkHref(threadId, origin);
+    const refs =
+      link === null
+        ? threadLinkRefs(threadId, environmentId, origin)
+        : threadLinkCandidates(link, environmentId);
+    for (const ref of refs) if (ref.environmentId === environmentId) ids.add(ref.threadId);
+  }
+  return [...ids];
 };
 
 /**
@@ -73,15 +89,15 @@ export const threadNotFound = Effect.fn("OrchestratorMcpService.threadNotFound")
   message: string,
 ) {
   let suggested: ThreadId | null = null;
-  const hostedOrigin = webOrigin(scope.client?.hostedAppUrl ?? scope.origin);
-  for (const candidate of candidateThreadIds(threadId, scope.environmentId, hostedOrigin)) {
+  const linkOrigins = yield* pastedLinkOrigins(scope);
+  for (const candidate of candidateThreadIds(threadId, scope.environmentId, linkOrigins)) {
     const shell = yield* threads.getThreadShell(candidate).pipe(Effect.orElseSucceed(() => null));
     if (shell !== null && shell.deletedAt === null) {
       suggested = candidate;
       break;
     }
   }
-  if (suggested !== null && hasThreadLinks(threadId, hostedOrigin)) {
+  if (suggested !== null && linkOrigins.some((origin) => hasThreadLinks(threadId, origin))) {
     return yield* new OrchestratorMcpFailure({
       code: "thread_not_found",
       message: `\`${threadId}\` is a thread link, not a thread id. Pass \`${suggested}\` instead.`,

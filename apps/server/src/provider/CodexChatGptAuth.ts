@@ -7,6 +7,7 @@ import {
   type ProviderInstanceId,
 } from "@t3tools/contracts";
 import { codexCallbackUrl } from "@t3tools/shared/codexAuthHandoff";
+import { providerAuthReturnUrl } from "@t3tools/shared/providerAuthReturnUrl";
 import * as Clock from "effect/Clock";
 import * as Cause from "effect/Cause";
 import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
@@ -19,7 +20,7 @@ import * as Jwt from "effect/jose/Jwt";
 import * as Base64Url from "effect/encoding/Base64Url";
 import * as Hex from "effect/encoding/Hex";
 import * as Exit from "effect/Exit";
-import { codexAuthCallbackPage, codexAuthReturnUrl } from "./CodexAuthCallbackPage.ts";
+import { codexAuthCallbackPage } from "./CodexAuthCallbackPage.ts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -524,7 +525,8 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
     const nonce = yield* randomToken(32);
     const verifier = yield* randomToken(64);
     const returnUrl =
-      codexAuthReturnUrl(context.returnUrl) ?? codexAuthReturnUrl(options.defaultReturnUrl);
+      providerAuthReturnUrl(context.returnUrl, context.returnOrigins) ??
+      providerAuthReturnUrl(options.defaultReturnUrl, context.returnOrigins);
     const pageNonce = yield* randomToken(24);
     const callback = Promise.withResolvers<{ url: URL; response?: NodeHttp.ServerResponse }>();
     const clientCallback = context.callbackMode === "client";

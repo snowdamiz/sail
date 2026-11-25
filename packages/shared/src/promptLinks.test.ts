@@ -103,13 +103,23 @@ describe("link round trips", () => {
       model: "opus",
       origin: web,
     });
-    expect(link.startsWith(`${web}/new?`)).toBe(true);
-    const path = promptLinkAppPath(link, web);
-    expect(path).toBe(new URL(link).pathname + new URL(link).search);
-    const parsed = parseNewThreadLink(new URL(link).search);
+    expect(link?.startsWith(`${web}/new?`)).toBe(true);
+    const url = new URL(link!);
+    const path = promptLinkAppPath(url.toString(), web);
+    expect(path).toBe(url.pathname + url.search);
+    const parsed = parseNewThreadLink(url.search);
     expect(parsed.ok && parsed.value.kind === "new" && parsed.value.prompt.text).toBe(
       "Swear count & rating?",
     );
+  });
+
+  it.each([
+    ["absent", undefined],
+    ["empty", ""],
+    ["unreadable", "not a url"],
+    ["an app scheme", "sail://app"],
+  ])("builds no link with an %s origin", (_, origin) => {
+    expect(buildNewThreadLink({ prompt: "Fix it", origin })).toBeNull();
   });
 
   it("opens a copied thread link in the app at that thread", () => {

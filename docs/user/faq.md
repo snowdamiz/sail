@@ -41,7 +41,7 @@ It shouldn't anymore. T3 Code drives Claude through Anthropic's Agent SDK, and A
 
 ## How do I use T3 Code remotely?
 
-Your agents run wherever T3 Code runs: your desktop, a server, a VPS. You connect to it from anywhere. I do this constantly. Less than 5% of my prompts run on my laptop. Run `t3 up` on that machine and you get really good remote support. T3 Connect is the easy path. LAN pairing and Tailscale work too, and [app.t3.codes](https://app.t3.codes) is the web client. [Remote access](./remote-access.md)
+Your agents run wherever T3 Code runs: your desktop, a server, a VPS. You connect to it from anywhere. I do this constantly. Less than 5% of my prompts run on my laptop. Run `t3 up` on that machine and you get really good remote support. T3 Connect is the easy path. LAN pairing and Tailscale work too, and any browser can open the web app your server serves. [Remote access](./remote-access.md)
 
 ## How do I use T3 Code on my phone?
 

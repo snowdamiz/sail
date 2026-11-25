@@ -35,9 +35,11 @@ export class ProviderAuthService extends Context.Service<
     readonly importProfile: (
       input: ProviderAuthTarget & { profile: ChatGptTransferredProfile },
     ) => Effect.Effect<ProviderAuthState, ProviderSetupError>;
+    /** `returnOrigins` are the web apps the requesting connection is on, never the client's claim. */
     readonly start: (
       input: ProviderAuthStartInput,
       ownerSessionId: string,
+      returnOrigins?: ReadonlyArray<string | undefined>,
     ) => Effect.Effect<ProviderAuthState, ProviderSetupError>;
     readonly complete: (
       input: ProviderAuthTarget & { readonly flowId: string; readonly callbackUrl: string },
@@ -231,7 +233,7 @@ export const makeProviderAuthService = Effect.gen(function* () {
         }),
       );
     }),
-    start: Effect.fn("ProviderAuthService.start")(function* (input, ownerSessionId) {
+    start: Effect.fn("ProviderAuthService.start")(function* (input, ownerSessionId, returnOrigins) {
       return yield* credentialChanges.withPermit(
         Effect.gen(function* () {
           const auth = yield* getController(input.instanceId, "start");
@@ -242,6 +244,7 @@ export const makeProviderAuthService = Effect.gen(function* () {
             input.methodId,
             input.returnUrl,
             input.callbackMode,
+            returnOrigins,
           );
         }),
       );

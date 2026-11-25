@@ -8,9 +8,9 @@ change your permission mode, branch, or worktree. Your own defaults apply.
 
 ## Make a link
 
-Open the command palette and choose **Copy prompt link**. It copies the draft in the composer, as
-a link to the server you use. The desktop app offers it only while it runs a server on this
-computer.
+Open the command palette and choose **Copy prompt link**. It copies the draft in the composer as
+a link to your hosted web app when your build has one, else to the server you use. The desktop
+app offers it when it has a hosted web app or runs a server on this computer.
 When the project is on GitHub, **Copy prompt link with repo and model** also adds the repository
 and the model you picked. Sent messages have a **Copy prompt link** button too.
 
@@ -59,8 +59,11 @@ malicious.
 
 ## Share a thread
 
-**Copy thread** copies a link to the thread on the server you use, such as
-`https://your-server.example/threads/<environment>/<thread>`. Paste it anywhere, such as Slack, a
-GitHub comment, or your notes. Opening it in a browser opens the thread in that server's web app.
-Only someone connected to the machine that runs the thread can see it. In T3 Code, a thread link in
-a message opens the thread in the app.
+**Copy thread** copies a link to the thread on your hosted web app when your build has one, else
+on the server you use, such as `https://your-server.example/threads/<environment>/<thread>`.
+Paste it anywhere, such as Slack, a GitHub comment, or your notes. Opening it in a browser opens
+the thread in that web app. Only someone connected to the machine that runs the thread can see it.
+In T3 Code, a thread link in a message opens the thread in the app.
+
+The desktop app with no hosted web app and no server on this computer copies a
+`t3-thread://` link instead. Only T3 Code opens it.

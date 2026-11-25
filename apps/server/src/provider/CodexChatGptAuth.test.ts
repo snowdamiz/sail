@@ -94,6 +94,7 @@ const makeHarnessFor = Effect.fnUntraced(function* (
   const authorizationRequests: URL[] = [];
   const callbackResponses: { body: string; headers: Headers }[] = [];
   let returnUrl = "http://localhost:7001/welcome";
+  let returnOrigins: ReadonlyArray<string> = [];
   const server = yield* Effect.acquireRelease(
     Effect.promise(
       () =>
@@ -277,7 +278,14 @@ const makeHarnessFor = Effect.fnUntraced(function* (
     });
   const signInWithMethod = (methodId?: string) =>
     Effect.gen(function* () {
-      yield* auth.controller.start("owner", Effect.void, methodId, returnUrl);
+      yield* auth.controller.start(
+        "owner",
+        Effect.void,
+        methodId,
+        returnUrl,
+        undefined,
+        returnOrigins,
+      );
       const waiting = yield* phase("waiting");
       assert.strictEqual(waiting.interaction?.type, "browser");
       const callback = prepareCallback(waiting);
@@ -314,6 +322,7 @@ const makeHarnessFor = Effect.fnUntraced(function* (
           profile,
         },
         "owner",
+        [],
         { discoveryUrl: `${origin}/discovery`, resource: `${origin}/v1` },
       ).pipe(Stream.provideService(AnalyticsService.AnalyticsService, analytics)),
     finishCallback: (state: { authorizationUrl: string | null }) =>
@@ -370,8 +379,9 @@ const makeHarnessFor = Effect.fnUntraced(function* (
     exchanges,
     authorizationRequests,
     callbackResponses,
-    setReturnUrl: (value: string) => {
+    setReturnUrl: (value: string, origins: ReadonlyArray<string> = []) => {
       returnUrl = value;
+      returnOrigins = origins;
     },
     origin,
     storedRecords: () =>
@@ -708,6 +718,44 @@ it.effect(
         assert.notInclude(response.body, "hidden@example.test");
       }),
     ),
+);
+it.effect.each([
+  {
+    case: "an HTTPS page the client is on",
+    page: "https://sail.example.test/settings/providers?instanceId=codex_work",
+    origins: ["https://sail.example.test"],
+    returns: true,
+  },
+  {
+    case: "a look-alike of that page",
+    page: "https://sail.example.test.attacker.example/settings/providers",
+    origins: ["https://sail.example.test"],
+    returns: false,
+  },
+  {
+    case: "a plain HTTP page off this machine",
+    page: "http://192.168.1.42:3773/settings/providers",
+    origins: ["http://192.168.1.42:3773"],
+    returns: false,
+  },
+  {
+    case: "an HTTPS page with no trusted origin",
+    page: "https://sail.example.test/settings/providers",
+    origins: [],
+    returns: false,
+  },
+])("returns from the callback page to $case: $returns", ({ page, origins, returns }) =>
+  provision(
+    Effect.gen(function* () {
+      const h = yield* makeHarness;
+      h.setReturnUrl(page, origins);
+      yield* h.signIn;
+      yield* h.phase("succeeded");
+      const body = h.callbackResponses[0]!.body;
+      assert.strictEqual(body.includes(`content="1;url=${page}"`), returns);
+      assert.strictEqual(body.includes(new URL(page).host), returns);
+    }),
+  ),
 );
 it.effect(
   "does not redirect to an arbitrary return URL or claim success after verification fails",

@@ -9,7 +9,12 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
-import { codexAuthDeliveryUrl, readCodexAuthHandoff } from "@t3tools/shared/codexAuthHandoff";
+import { ConnectionCatalogDocument } from "@t3tools/client-runtime/platform";
+import {
+  codexAuthDeliveryUrl,
+  isCodexAuthHandoffLink,
+  readCodexAuthHandoff,
+} from "@t3tools/shared/codexAuthHandoff";
 import { receiveCodexAuthCallback, CodexAuthCallbackError } from "./CodexAuthCallback.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
 import { providerAuthReturnUrl } from "@t3tools/shared/providerAuthReturnUrl";
@@ -20,11 +25,21 @@ import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/rela
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
+import * as DesktopConnectionCatalogStore from "./DesktopConnectionCatalogStore.ts";
 import * as DesktopUserData from "./DesktopUserData.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopWebLinks from "./DesktopWebLinks.ts";
 
 declare const __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: string | undefined;
+declare const __T3CODE_BUILD_HOSTED_APP_URL__: string | undefined;
+
+const desktopHostedAppUrl =
+  typeof __T3CODE_BUILD_HOSTED_APP_URL__ === "undefined"
+    ? undefined
+    : __T3CODE_BUILD_HOSTED_APP_URL__.trim() || undefined;
+const decodeConnectionCatalog = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(ConnectionCatalogDocument),
+);
 
 export class DesktopClerkBridgeInitializationError extends Schema.TaggedError<DesktopClerkBridgeInitializationError>()(
   "DesktopClerkBridgeInitializationError",
@@ -61,6 +76,7 @@ export class DesktopClerk extends Context.Service<
       | ElectronApp.ElectronApp
       | ElectronWindow.ElectronWindow
       | DesktopWebLinks.DesktopWebLinks
+      | DesktopConnectionCatalogStore.DesktopConnectionCatalogStore
       | Scope.Scope
     >;
   }
@@ -167,22 +183,48 @@ export const make = Effect.gen(function* () {
       const electronApp = yield* ElectronApp.ElectronApp;
       const electronWindow = yield* ElectronWindow.ElectronWindow;
       const webLinks = yield* DesktopWebLinks.DesktopWebLinks;
+      const connectionCatalog = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
       const context = yield* Effect.context<ElectronWindow.ElectronWindow>();
       const runPromise = Effect.runPromiseWith(context);
 
+      // Any page can open a handoff link, so the code goes back only to the hosted app or a
+      // server this desktop has saved, never to wherever the link says.
+      const handoffReturnOrigins = connectionCatalog.get.pipe(
+        Effect.flatMap(
+          Option.match({
+            onNone: () => Effect.succeed([]),
+            onSome: (catalog) =>
+              decodeConnectionCatalog(catalog).pipe(
+                Effect.map(({ profiles }) =>
+                  profiles.flatMap((profile) =>
+                    profile._tag === "BearerConnectionProfile" ? [profile.httpBaseUrl] : [],
+                  ),
+                ),
+              ),
+          }),
+        ),
+        Effect.orElseSucceed(() => []),
+        Effect.map((saved) => [desktopHostedAppUrl, ...saved]),
+      );
+
       const startProviderAuthHandoff = (value: string | undefined) => {
-        if (!value) return false;
-        const request = readCodexAuthHandoff(value, environment.isDevelopment);
-        if (!request) return false;
+        if (!value || !isCodexAuthHandoffLink(value, environment.isDevelopment)) return false;
         void runPromise(
           Effect.gen(function* () {
             yield* electronApp.whenReady;
+            const trustedOrigins = yield* handoffReturnOrigins;
+            const request = readCodexAuthHandoff(value, environment.isDevelopment, trustedOrigins);
+            if (!request) {
+              return yield* Effect.logWarning(
+                "Ignored a ChatGPT desktop handoff to a page this desktop does not use.",
+              );
+            }
             yield* Effect.tryPromise({
               try: (signal) =>
                 receiveCodexAuthCallback(
                   request.authorizationUrl,
                   (url) => runPromise(shell.openExternal(url)),
-                  (callbackUrl) => codexAuthDeliveryUrl(request, callbackUrl),
+                  (callbackUrl) => codexAuthDeliveryUrl(request, callbackUrl, trustedOrigins),
                   signal,
                 ),
               catch: () =>

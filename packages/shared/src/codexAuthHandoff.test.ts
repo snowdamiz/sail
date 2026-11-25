@@ -63,6 +63,22 @@ describe("Codex desktop handoff", () => {
       ),
     ).toBeUndefined();
   });
+  it("returns the code to an HTTPS web app only when the reader trusts it", () => {
+    const hosted = { ...input, returnUrl: "https://sail.example.test/welcome#agents:remote" };
+    const trusted = ["https://sail.example.test"];
+    const link = codexAuthHandoffUrl(hosted);
+
+    expect(readCodexAuthHandoff(link, false, trusted)).toEqual(hosted);
+    const delivery = codexAuthDeliveryUrl(hosted, callbackUrl, trusted);
+    expect(new URL(delivery).origin).toBe("https://sail.example.test");
+    expect(readCodexAuthDelivery(delivery, trusted)?.returnUrl).toBe(hosted.returnUrl);
+
+    expect(readCodexAuthHandoff(link, false)).toBeUndefined();
+    expect(readCodexAuthHandoff(link, false, ["http://sail.example.test"])).toBeUndefined();
+    expect(readCodexAuthHandoff(link, false, ["https://other.example.test"])).toBeUndefined();
+    expect(() => codexAuthDeliveryUrl(hosted, callbackUrl)).toThrow();
+    expect(readCodexAuthDelivery(delivery)).toBeUndefined();
+  });
   it("rejects duplicated authorization parameters and non-loopback callback addresses", () => {
     expect(() =>
       codexAuthorizationRequest(

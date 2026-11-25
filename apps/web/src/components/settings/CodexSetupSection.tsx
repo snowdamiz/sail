@@ -30,6 +30,7 @@ import {
 } from "react";
 import { T, useGT, useMessages } from "gt-react";
 
+import { providerAuthReturnOrigins } from "../../hostedPairing";
 import { ensureLocalApi } from "../../localApi";
 import { managedInstanceLocks, useManagedPolicy } from "../../state/managedPolicy";
 import { ManagedControl } from "../ManagedPolicy";
@@ -685,7 +686,10 @@ function ManagedCodexSetup({
   );
 
   const handoffUrl =
-    needsManualCallback && url && auth?.flowId && providerAuthReturnUrl(returnUrl.toString())
+    needsManualCallback &&
+    url &&
+    auth?.flowId &&
+    providerAuthReturnUrl(returnUrl.toString(), providerAuthReturnOrigins())
       ? codexAuthHandoffUrl(
           {
             authorizationUrl: url,

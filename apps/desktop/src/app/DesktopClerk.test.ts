@@ -10,6 +10,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import { afterAll, beforeEach, vi } from "vite-plus/test";
 
 const clerkStateDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-desktop-clerk-"));
@@ -37,11 +38,13 @@ vi.mock("@clerk/electron/storage", () => ({
   storage: storageMock,
 }));
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as FileSystem from "effect/FileSystem";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopClerk from "./DesktopClerk.ts";
+import * as DesktopConnectionCatalogStore from "./DesktopConnectionCatalogStore.ts";
 import * as DesktopWebLinks from "./DesktopWebLinks.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopPreReadyFileSystem from "./DesktopPreReadyFileSystem.ts";
@@ -50,6 +53,29 @@ const ignoreWebLinks = DesktopWebLinks.DesktopWebLinks.of({
   receive: () => Effect.void,
   setRendererReady: () => Effect.void,
 });
+
+const savedServers = (...httpBaseUrls: ReadonlyArray<string>) =>
+  DesktopConnectionCatalogStore.DesktopConnectionCatalogStore.of({
+    get: Effect.sync(() =>
+      Option.some(
+        JSON.stringify({
+          schemaVersion: 1,
+          targets: [],
+          profiles: httpBaseUrls.map((httpBaseUrl, index) => ({
+            _tag: "BearerConnectionProfile",
+            connectionId: `saved-${index}`,
+            environmentId: `saved-${index}`,
+            label: "Saved",
+            httpBaseUrl,
+            wsBaseUrl: httpBaseUrl.replace(/^http/u, "ws"),
+          })),
+          credentials: [],
+          remoteDpopTokens: [],
+        }),
+      ),
+    ),
+    set: () => Effect.succeed(true),
+  });
 
 const layerDesktopClerk = (
   isDevelopment = true,
@@ -224,6 +250,10 @@ describe("DesktopClerk", () => {
         Effect.provide(layerDesktopClerk(true, [], "darwin", undefined, undefined, listeners)),
         Effect.provideService(ElectronApp.ElectronApp, electronApp),
         Effect.provideService(ElectronWindow.ElectronWindow, electronWindow),
+        Effect.provideService(
+          DesktopConnectionCatalogStore.DesktopConnectionCatalogStore,
+          savedServers(),
+        ),
         Effect.provideService(DesktopWebLinks.DesktopWebLinks, ignoreWebLinks),
       );
     },
@@ -265,6 +295,10 @@ describe("DesktopClerk", () => {
       Effect.provideService(
         ElectronWindow.ElectronWindow,
         {} as ElectronWindow.ElectronWindow["Service"],
+      ),
+      Effect.provideService(
+        DesktopConnectionCatalogStore.DesktopConnectionCatalogStore,
+        savedServers(),
       ),
       Effect.provideService(
         DesktopWebLinks.DesktopWebLinks,
@@ -352,9 +386,105 @@ it.effect(
       Effect.provide(layerDesktopClerk(true, [], "darwin", undefined, undefined, listeners)),
       Effect.provideService(ElectronApp.ElectronApp, electronApp),
       Effect.provideService(ElectronWindow.ElectronWindow, electronWindow),
+      Effect.provideService(
+        DesktopConnectionCatalogStore.DesktopConnectionCatalogStore,
+        savedServers(),
+      ),
       Effect.provideService(DesktopWebLinks.DesktopWebLinks, ignoreWebLinks),
     );
   },
+);
+
+it.effect.each([
+  { saved: ["https://sail.example.test/"], delivered: true },
+  { saved: ["http://sail.example.test/"], delivered: false },
+  { saved: [], delivered: false },
+])("returns web sign-in to an HTTPS server only when it is saved here: $saved", (input) =>
+  Effect.gen(function* () {
+    storageMock.mockReturnValue(storageAdapter);
+    createClerkBridgeMock.mockReturnValue({ cleanup: vi.fn(), isPrimaryInstance: true });
+    const port = yield* Effect.promise(async () => {
+      const server = NodeHttp.createServer();
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("address");
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      return address.port;
+    });
+    const authorize = new URL("https://auth.openai.com/api/accounts/authorize");
+    authorize.search = new URLSearchParams({
+      client_id: "dynamic_agent_client",
+      response_type: "code",
+      redirect_uri: `http://127.0.0.1:${port}/auth/callback`,
+      state: "a".repeat(43),
+      code_challenge_method: "S256",
+      code_challenge: "b".repeat(43),
+    }).toString();
+    const request = {
+      authorizationUrl: authorize.toString(),
+      returnUrl: "https://sail.example.test/settings/providers?instanceId=work",
+      environmentId: EnvironmentId.make("remote-one"),
+      instanceId: ProviderInstanceId.make("work"),
+      flowId: "flow-one",
+    };
+    const settled = Promise.withResolvers<string | null>();
+    const shell = ElectronShell.ElectronShell.of({
+      openExternal: (value) =>
+        Effect.promise(async () => {
+          const url = new URL(String(value));
+          const callback = new URL(url.searchParams.get("redirect_uri")!);
+          callback.search = new URLSearchParams({
+            state: url.searchParams.get("state")!,
+            code: "test-code",
+            client_id: "oaiapp_test",
+          }).toString();
+          const response = await fetch(callback, { redirect: "manual" });
+          settled.resolve(response.headers.get("location"));
+          return true;
+        }),
+      openSystemSettings: () => Effect.succeed(false),
+      copyText: () => Effect.void,
+    });
+    const logger = Logger.make(({ message }) => {
+      if (String(message).includes("Ignored a ChatGPT desktop handoff")) settled.resolve(null);
+    });
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    const electronApp = {
+      whenReady: Effect.void,
+      on: (name: string, listener: (...args: unknown[]) => void) =>
+        Effect.sync(() => {
+          listeners.set(name, listener);
+        }),
+    } as unknown as ElectronApp.ElectronApp["Service"];
+    yield* Effect.gen(function* () {
+      const clerk = yield* DesktopClerk.DesktopClerk;
+      yield* clerk.configure;
+      const delivered = yield* Effect.promise(() => settled.promise);
+      if (!input.delivered) {
+        assert.isNull(delivered);
+        return;
+      }
+      assert.strictEqual(new URL(delivered!).origin, "https://sail.example.test");
+      assert.strictEqual(
+        readCodexAuthDelivery(delivered!, ["https://sail.example.test"])?.returnUrl,
+        request.returnUrl,
+      );
+    }).pipe(
+      Effect.provide(layerDesktopClerk(true, [], "darwin", undefined, shell, listeners)),
+      Effect.provideService(HostProcess.Arguments, ["t3", codexAuthHandoffUrl(request, true)]),
+      Effect.provideService(ElectronApp.ElectronApp, electronApp),
+      Effect.provideService(
+        ElectronWindow.ElectronWindow,
+        {} as ElectronWindow.ElectronWindow["Service"],
+      ),
+      Effect.provideService(
+        DesktopConnectionCatalogStore.DesktopConnectionCatalogStore,
+        savedServers(...input.saved),
+      ),
+      Effect.provideService(DesktopWebLinks.DesktopWebLinks, ignoreWebLinks),
+      Effect.provide(Logger.layer([logger], { mergeWithExisting: true })),
+    );
+  }),
 );
 
 it.effect.each(["startup", "open-url", "early-second-instance"] as const)(
@@ -438,6 +568,10 @@ it.effect.each(["startup", "open-url", "early-second-instance"] as const)(
           ElectronWindow.ElectronWindow,
           {} as ElectronWindow.ElectronWindow["Service"],
         ),
+        Effect.provideService(
+          DesktopConnectionCatalogStore.DesktopConnectionCatalogStore,
+          savedServers(),
+        ),
         Effect.provideService(DesktopWebLinks.DesktopWebLinks, ignoreWebLinks),
       );
     }),
@@ -488,6 +622,10 @@ it.effect("hands web and app links to the renderer and leaves other links alone"
       Effect.provideService(
         ElectronWindow.ElectronWindow,
         {} as ElectronWindow.ElectronWindow["Service"],
+      ),
+      Effect.provideService(
+        DesktopConnectionCatalogStore.DesktopConnectionCatalogStore,
+        savedServers(),
       ),
       Effect.provideService(
         DesktopWebLinks.DesktopWebLinks,

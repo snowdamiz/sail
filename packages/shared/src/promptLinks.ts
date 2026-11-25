@@ -188,14 +188,17 @@ export function withoutPromptLinkParams(search: string): string {
   return rest ? `?${rest}` : "";
 }
 
+/** A link into the web app at `origin`, or null without one: an app scheme has no web route. */
 export function buildNewThreadLink(input: {
   readonly prompt: string;
   readonly repository?: PromptLinkRepository | null;
   readonly provider?: string | null;
   readonly model?: string | null;
-  readonly origin: string;
-}): string {
-  const url = new URL("/new", input.origin);
+  readonly origin: string | undefined;
+}): string | null {
+  const origin = webOrigin(input.origin);
+  if (origin === undefined) return null;
+  const url = new URL("/new", origin);
   url.searchParams.set("prompt", input.prompt);
   if (input.repository) {
     url.searchParams.set("repo", `${input.repository.owner}/${input.repository.name}`);

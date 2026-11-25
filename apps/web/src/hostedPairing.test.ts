@@ -1,10 +1,14 @@
 import { PRIMARY_LOCAL_ENVIRONMENT_ID } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
+import { providerAuthReturnUrl } from "@t3tools/shared/providerAuthReturnUrl";
+
 import {
+  buildHostedChannelSelectionUrl,
   buildHostedPairingUrl,
   hasHostedPairingRequest,
   linkOrigin,
+  providerAuthReturnOrigins,
   readHostedPairingRequest,
 } from "./hostedPairing";
 
@@ -53,6 +57,55 @@ describe("hostedPairing", () => {
 
     expect(buildHostedPairingUrl({ host: "https://backend.example.com", token: "t" })).toBeNull();
     expect(linkOrigin()).toBe("https://sail.example.test");
+  });
+
+  it.each(["not a url", "sail://app"])(
+    "builds no hosted pairing link and selects channels here with a hosted app of %s",
+    (hostedAppUrl) => {
+      vi.stubEnv("VITE_HOSTED_APP_URL", hostedAppUrl);
+      vi.stubGlobal("window", { location: new URL("https://sail.example.test/settings") });
+
+      expect(buildHostedPairingUrl({ host: "https://backend.example.com", token: "t" })).toBeNull();
+      expect(buildHostedChannelSelectionUrl({ channel: "nightly" })).toBe(
+        "https://sail.example.test/__t3code/channel?channel=nightly",
+      );
+    },
+  );
+
+  it("returns provider sign-in to the hosted app the build names and to this page", () => {
+    vi.stubEnv("VITE_HOSTED_APP_URL", "https://hosted.example.test");
+    vi.stubGlobal("window", { location: new URL("https://sail.example.test/settings/providers") });
+
+    expect(
+      providerAuthReturnUrl("https://hosted.example.test/welcome", providerAuthReturnOrigins()),
+    ).toBe("https://hosted.example.test/welcome");
+    expect(
+      providerAuthReturnUrl(
+        "https://sail.example.test/settings/providers",
+        providerAuthReturnOrigins(),
+      ),
+    ).toBe("https://sail.example.test/settings/providers");
+    expect(
+      providerAuthReturnUrl("https://other.example.test/welcome", providerAuthReturnOrigins()),
+    ).toBeUndefined();
+  });
+
+  it.each([
+    ["absent", undefined],
+    ["empty", ""],
+  ])("returns provider sign-in to no hosted app with an %s hosted app", (_, hostedAppUrl) => {
+    if (hostedAppUrl !== undefined) vi.stubEnv("VITE_HOSTED_APP_URL", hostedAppUrl);
+    vi.stubGlobal("window", { location: new URL("http://192.168.1.42:3773/settings/providers") });
+
+    expect(
+      providerAuthReturnUrl("https://hosted.example.test/welcome", providerAuthReturnOrigins()),
+    ).toBeUndefined();
+    expect(
+      providerAuthReturnUrl(
+        "http://192.168.1.42:3773/settings/providers",
+        providerAuthReturnOrigins(),
+      ),
+    ).toBeUndefined();
   });
 
   it("links to the hosted app the build names", () => {
@@ -110,6 +163,29 @@ describe("hostedPairing", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("reads a desktop server again when it was not ready yet", async () => {
+    vi.resetModules();
+    let bootstraps: Array<{ id: string; httpBaseUrl: string; wsBaseUrl: string }> = [];
+    vi.stubGlobal("window", {
+      location: { origin: "sail://app", href: "sail://app/settings" },
+      desktopBridge: {
+        getLocalEnvironmentEnabled: () => true,
+        getLocalEnvironmentBootstraps: () => bootstraps,
+      },
+    });
+    const { linkOrigin: freshLinkOrigin } = await import("./hostedPairing");
+    expect(freshLinkOrigin()).toBeUndefined();
+
+    bootstraps = [
+      {
+        id: PRIMARY_LOCAL_ENVIRONMENT_ID,
+        httpBaseUrl: "http://127.0.0.1:3773/",
+        wsBaseUrl: "ws://127.0.0.1:3773/",
+      },
+    ];
+    expect(freshLinkOrigin()).toBe("http://127.0.0.1:3773");
   });
 
   it("has no link origin on a desktop with no local server", async () => {

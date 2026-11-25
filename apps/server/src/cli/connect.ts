@@ -100,17 +100,29 @@ function formatDeviceAuthorizationPrompt(
   ].join("\n");
 }
 
+/**
+ * Without a terminal, no key press can open a browser, so sign in with a code. The browser
+ * sign-in starts on a hosted app, so a build without one signs in with a code too.
+ */
+export const signsInWithDeviceCode = Effect.fn("cloud.cli.signs_in_with_device_code")(
+  function* (options: { readonly headless: boolean; readonly interactive: boolean }) {
+    return (
+      options.headless ||
+      (yield* headlessSessionConfig) ||
+      !options.interactive ||
+      Option.isNone(yield* optionalHostedAppUrlConfig)
+    );
+  },
+);
+
 const authorizeCli = Effect.fn("cloud.cli.authorize")(function* (options: {
   readonly headless: boolean;
 }) {
   const tokens = yield* CliTokenManager.CloudCliTokenManager;
-  // Without a terminal, no key press can open a browser, so sign in with a code. The browser
-  // sign-in starts on a hosted app, so a build without one signs in with a code too.
-  const useOutOfBandOAuth =
-    options.headless ||
-    (yield* headlessSessionConfig) ||
-    !(process.stdin.isTTY && process.stdout.isTTY) ||
-    Option.isNone(yield* optionalHostedAppUrlConfig);
+  const useOutOfBandOAuth = yield* signsInWithDeviceCode({
+    headless: options.headless,
+    interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+  });
   if (!useOutOfBandOAuth) {
     const authorization = yield* tokens.get;
     if (authorization._tag === "Authorized") {

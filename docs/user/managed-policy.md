@@ -264,7 +264,7 @@ so restart T3 Code after that.
   project's `remove` command.
 - `telemetry: false`: the server and desktop app send no [product usage data](./telemetry.md) or
   relay connection traces, and neither does a browser opened from the server. A policy cannot turn
-  them on. The hosted web app at app.t3.codes and the mobile app still send their own relay traces.
+  them on. A separately hosted web app and the mobile app still send their own relay traces.
 
 ### Providers
 
