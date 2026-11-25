@@ -388,9 +388,8 @@ const browserTarget = (
                 return `${baseUrl}/pair#token=STARTUPTOKEN`;
               }),
           }),
-        ),
+        ).pipe(Layer.provide(NodeServices.layer)),
       ),
-      Effect.provide(NodeServices.layer),
     );
     return { target, issuedFor };
   });
