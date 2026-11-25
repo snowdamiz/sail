@@ -366,6 +366,15 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     publicUrl: flags.publicUrl ?? Option.none(),
     startupPairing: flags.startupPairing ?? Option.none(),
   } satisfies CliServerFlags;
+  const publicUrl = Option.getOrUndefined(
+    Option.isSome(normalizedFlags.publicUrl) ? normalizedFlags.publicUrl : yield* publicUrlConfig,
+  );
+  const startupPairing = Option.getOrElse(
+    Option.isSome(normalizedFlags.startupPairing)
+      ? normalizedFlags.startupPairing
+      : yield* startupPairingConfig,
+    (): ServerConfig.StartupPairing => "on",
+  );
   const bootstrapFd = Option.getOrUndefined(normalizedFlags.bootstrapFd) ?? env.bootstrapFd;
   const bootstrapEnvelope =
     bootstrapFd !== undefined
@@ -425,15 +434,6 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   const serverTracePath = env.traceFile ?? derivedPaths.serverTracePath;
   yield* fs.makeDirectory(path.dirname(serverTracePath), { recursive: true });
   const startupPresentation = options?.startupPresentation ?? "browser";
-  const publicUrl = Option.getOrUndefined(
-    Option.isSome(normalizedFlags.publicUrl) ? normalizedFlags.publicUrl : yield* publicUrlConfig,
-  );
-  const startupPairing = Option.getOrElse(
-    Option.isSome(normalizedFlags.startupPairing)
-      ? normalizedFlags.startupPairing
-      : yield* startupPairingConfig,
-    (): ServerConfig.StartupPairing => "on",
-  );
   const isHeadlessStartup = startupPresentation === "headless";
   const noBrowser = Option.getOrElse(
     resolveOptionPrecedence(

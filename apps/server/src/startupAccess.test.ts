@@ -230,6 +230,10 @@ describe("issueHeadlessServeAccessInfo", () => {
           ),
         ),
         Effect.provideService(HostProcess.Platform, "linux"),
+        Effect.provideService(HostProcess.Arguments, [
+          process.execPath,
+          "/home/dev/.npm/_npx/0123abcd/node_modules/t3/dist/bin.mjs",
+        ]),
         Effect.provide(NodeServices.layer),
       );
       return {
@@ -279,7 +283,11 @@ describe("issueHeadlessServeAccessInfo", () => {
       expect(issuedCredentials).toBe(0);
       expect(output).toContain("T3 Code server is ready.");
       expect(output).toContain("Connection string: https://demo.fly.dev");
-      expect(output).toContain(` pair --base-dir ${hostShellWord("linux", baseDir)}\``);
+      expect(output).toMatch(
+        new RegExp(
+          `\`npx t3\\S* pair --base-dir ${RegExp.escape(hostShellWord("linux", baseDir))}\``,
+        ),
+      );
       expect(output).not.toMatch(/#token=|Token:/);
     }),
   );
