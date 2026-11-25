@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - Local stand-ins drive the Docker CLI directly.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -11,7 +12,6 @@ import { docker, ensureNetwork, exists, FIXTURE_LABEL, inspect, NETWORK } from "
 export const CADDY_CONTAINER = "sail-fixtures-caddy";
 const CADDY_IMAGE = "caddy:2";
 const CONFIG_DIR = "/etc/caddy";
-const ROOT_CERT = "/data/caddy/pki/authorities/local/root.crt";
 export const DOMAIN = "localtest.me";
 
 /** Sign-in pages for the fake `boat`, `claude`, and `codex`. Query values are echoed as-is. */
@@ -37,6 +37,14 @@ const CADDYFILE = `{
 	admin localhost:2019
 	local_certs
 	skip_install_trust
+	pki {
+		ca local {
+			root {
+				cert ${CONFIG_DIR}/ca/root.crt
+				key ${CONFIG_DIR}/ca/root.key
+			}
+		}
+	}
 }
 
 ${AUTH_SITE}
@@ -65,13 +73,66 @@ function port(name: string, fallback: number): string {
   return process.env[name] ?? String(fallback);
 }
 
+/**
+ * A root that can sign only `localtest.me` names, so trusting it once (for a browser lane) cannot
+ * vouch for any other site. Built in a temp dir and renamed into place, so racing callers agree.
+ */
+function ensureRootCa(dir: string): boolean {
+  const ca = NodePath.join(dir, "ca");
+  if (NodeFS.existsSync(NodePath.join(ca, "root.crt"))) return false;
+  const staging = NodeFS.mkdtempSync(NodePath.join(dir, "ca-"));
+  const openssl = NodeChildProcess.spawnSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:P-256",
+      "-nodes",
+      "-keyout",
+      NodePath.join(staging, "root.key"),
+      "-out",
+      NodePath.join(staging, "root.crt"),
+      "-days",
+      "3650",
+      "-subj",
+      "/CN=Sail fixtures local CA",
+      "-addext",
+      "basicConstraints=critical,CA:TRUE",
+      "-addext",
+      "keyUsage=critical,keyCertSign,cRLSign",
+      "-addext",
+      `nameConstraints=critical,permitted;DNS:${DOMAIN}`,
+    ],
+    { encoding: "utf8" },
+  );
+  if (openssl.status !== 0)
+    throw new Error(`openssl could not make the fixture CA: ${openssl.stderr}`);
+  try {
+    NodeFS.renameSync(staging, ca);
+    return true;
+  } catch {
+    NodeFS.rmSync(staging, { recursive: true, force: true });
+    return false;
+  }
+}
+
 export function ensureCaddy(): void {
   ensureNetwork();
+  const dir = caddyDir();
+  NodeFS.mkdirSync(NodePath.join(dir, "sites"), { recursive: true });
+  // Certificates the old root issued sit in Caddy's data volume, so a new root starts it fresh.
+  if (ensureRootCa(dir) && exists("container", CADDY_CONTAINER)) {
+    docker(["rm", "--force", CADDY_CONTAINER]);
+    docker(["volume", "rm", `${CADDY_CONTAINER}-data`]);
+  }
+  const caddyfile = NodePath.join(dir, "Caddyfile");
+  const configChanged =
+    !NodeFS.existsSync(caddyfile) || NodeFS.readFileSync(caddyfile, "utf8") !== CADDYFILE;
+  if (configChanged) NodeFS.writeFileSync(caddyfile, CADDYFILE);
   if (!exists("container", CADDY_CONTAINER)) {
-    const dir = defaultDir();
-    NodeFS.mkdirSync(NodePath.join(dir, "sites"), { recursive: true });
-    NodeFS.writeFileSync(NodePath.join(dir, "Caddyfile"), CADDYFILE);
-    NodeFS.rmSync(NodePath.join(dir, "root.crt"), { force: true });
     try {
       docker([
         "run",
@@ -105,9 +166,11 @@ export function ensureCaddy(): void {
     } catch (error) {
       if (!exists("container", CADDY_CONTAINER)) throw error;
     }
+  } else if (!inspect<boolean>(CADDY_CONTAINER, ".State.Running")) {
+    docker(["start", CADDY_CONTAINER]);
+  } else if (configChanged) {
+    reload();
   }
-  if (!inspect<boolean>(CADDY_CONTAINER, ".State.Running")) docker(["start", CADDY_CONTAINER]);
-  exportRootCert();
 }
 
 /** `https://<host>`, with the published port when it is not 443. */
@@ -172,21 +235,7 @@ function reload(): void {
   ]);
 }
 
-/** Caddy's local root, for `curl --cacert` and `NODE_EXTRA_CA_CERTS`. */
+/** The fixture CA's root, for `curl --cacert`, `NODE_EXTRA_CA_CERTS`, and a one-time trust. */
 export function rootCertPath(): string {
-  return NodePath.join(caddyDir(), "root.crt");
-}
-
-function exportRootCert(): void {
-  const target = rootCertPath();
-  if (NodeFS.existsSync(target)) return;
-  for (let attempt = 0; attempt < 50; attempt++) {
-    try {
-      NodeFS.writeFileSync(target, docker(["exec", CADDY_CONTAINER, "cat", ROOT_CERT]));
-      return;
-    } catch {
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
-    }
-  }
-  throw new Error(`Caddy never wrote its root certificate to ${ROOT_CERT}`);
+  return NodePath.join(caddyDir(), "ca", "root.crt");
 }
