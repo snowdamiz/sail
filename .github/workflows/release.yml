@@ -1,0 +1,277 @@
+name: Sail Release (Unsigned macOS & Linux)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 0.1.0; defaults to apps/desktop/package.json)"
+        required: false
+        default: ""
+      draft:
+        description: "Publish as draft GitHub release"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sail-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Resolve version & build JS bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+      - name: Resolve release version
+        id: resolve
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.version }}" ]]; then
+            version="${{ inputs.version }}"
+          elif [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(node -p "require('./apps/desktop/package.json').version")"
+          fi
+          version="${version#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+      - name: Align workspace package versions
+        run: node scripts/update-release-package-versions.ts "${{ steps.resolve.outputs.version }}"
+      - name: Install Linux secret helper libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev pkg-config
+      - name: Build desktop JS bundles
+        run: vp run build:desktop
+      - name: Render CLI installer script
+        run: |
+          node scripts/build-desktop-installers.ts \
+            --version "${{ steps.resolve.outputs.version }}" \
+            --repository "${{ github.repository }}" \
+            --output-dir release-installers
+      - name: Upload JS bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: sail-js-bundle
+          path: |
+            apps/server/dist
+            apps/desktop/dist-electron
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload installer script
+        uses: actions/upload-artifact@v4
+        with:
+          name: sail-installers
+          path: release-installers/install-desktop.sh
+          if-no-files-found: error
+          retention-days: 1
+
+  desktop:
+    name: Build ${{ matrix.label }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS arm64 (unsigned)
+            runner: macos-15
+            platform: mac
+            target: dmg
+            arch: arm64
+            rust_target: aarch64-apple-darwin
+          - label: macOS x64 (unsigned)
+            runner: macos-15-intel
+            platform: mac
+            target: dmg
+            arch: x64
+            rust_target: x86_64-apple-darwin
+          - label: Linux x64
+            runner: ubuntu-24.04
+            platform: linux
+            target: AppImage
+            arch: x64
+            rust_target: x86_64-unknown-linux-gnu
+          - label: Linux arm64
+            runner: ubuntu-24.04-arm
+            platform: linux
+            target: AppImage
+            arch: arm64
+            rust_target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: rust-${{ matrix.rust_target }}
+          workspaces: |
+            native/resource-monitor -> target
+            native/sail-boat -> target
+      - name: Download JS bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: sail-js-bundle
+          path: .
+      - name: Align workspace package versions
+        run: node scripts/update-release-package-versions.ts "${{ needs.prepare.outputs.version }}"
+      - name: Install Linux desktop build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev pkg-config imagemagick
+      - name: Build Rust sidecars (t3-resource-monitor & sail-boatd)
+        run: |
+          set -euo pipefail
+          cargo build --manifest-path native/resource-monitor/Cargo.toml --release --target "${{ matrix.rust_target }}"
+          cargo build --manifest-path native/sail-boat/Cargo.toml --release --target "${{ matrix.rust_target }}"
+      - name: Package desktop artifact (unsigned ad-hoc on macOS)
+        env:
+          T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: "true"
+          SAIL_DESKTOP_REUSE_BOATD: "true"
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          vp run dist:desktop:artifact \
+            --platform "${{ matrix.platform }}" \
+            --target "${{ matrix.target }}" \
+            --arch "${{ matrix.arch }}" \
+            --build-version "${{ needs.prepare.outputs.version }}" \
+            --skip-build \
+            --verbose
+      - name: Collect release artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p release-publish
+          shopt -s nullglob
+          for pattern in "release/*.zip" "release/*.dmg" "release/*.AppImage" "release/*.blockmap" "release/*.yml"; do
+            for file in $pattern; do
+              cp "$file" release-publish/
+            done
+          done
+          if [[ "${{ matrix.platform }}" == "mac" && "${{ matrix.arch }}" != "arm64" ]]; then
+            for manifest in release-publish/*-mac.yml; do
+              mv "$manifest" "${manifest%.yml}-${{ matrix.arch }}.yml"
+            done
+          fi
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sail-desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release-publish/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release & SHA256SUMS
+    needs:
+      - prepare
+      - desktop
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+      - name: Assemble release assets, merge macOS update manifest, and compute SHA256SUMS
+        run: |
+          set -euo pipefail
+          mkdir -p release-final
+          find dist-artifacts -type f -exec cp {} release-final/ \;
+
+          if [[ -f release-final/latest-mac.yml && -f release-final/latest-mac-x64.yml ]]; then
+            node scripts/merge-update-manifests.ts \
+              --platform mac \
+              release-final/latest-mac.yml \
+              release-final/latest-mac-x64.yml \
+              release-final/latest-mac.yml
+            rm -f release-final/latest-mac-x64.yml
+          fi
+
+          node scripts/build-desktop-installers.ts \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --repository "${{ github.repository }}" \
+            --output-dir release-final \
+            --checksums
+
+          ls -lh release-final
+          cat release-final/SHA256SUMS
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          IS_DRAFT: ${{ inputs.draft }}
+        run: |
+          set -euo pipefail
+          NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+          cat > "$NOTES_FILE" <<EOF
+          ## Install Sail ${RELEASE_VERSION} on macOS or Linux (CLI, no signing required)
+
+          \`\`\`sh
+          curl -fsSL https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/install-desktop.sh | sh
+          \`\`\`
+
+          Or install the latest release:
+
+          \`\`\`sh
+          curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install-desktop.sh | sh
+          \`\`\`
+
+          macOS builds are ad-hoc signed (\`identity: "-"\`). The CLI installer verifies \`SHA256SUMS\`, extracts \`Sail.app\` into \`~/Applications/Sail.app\`, strips \`com.apple.quarantine\`, and installs the \`sail\` command into \`~/.local/bin/sail\`.
+          EOF
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-final/* --clobber
+            gh release edit "$RELEASE_TAG" --notes-file "$NOTES_FILE"
+          else
+            extra_args=()
+            if [[ "$IS_DRAFT" == "true" ]]; then
+              extra_args+=(--draft)
+            fi
+            if [[ "$RELEASE_VERSION" == *-* ]]; then
+              extra_args+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" release-final/* \
+              --title "Sail ${RELEASE_VERSION}" \
+              --notes-file "$NOTES_FILE" \
+              "${extra_args[@]}"
+          fi

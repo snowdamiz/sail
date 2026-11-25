@@ -19,7 +19,6 @@ import * as Sink from "effect/Sink";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { fromYaml } from "@t3tools/shared/schemaYaml";
 
 import {
   buildDesktopBundles,
@@ -566,7 +565,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         undefined,
       );
 
-      assert.nestedPropertyVal(linux, "linux.desktop.entry.StartupWMClass", "com.t3tools.T3Code");
+      assert.nestedPropertyVal(linux, "linux.desktop.entry.StartupWMClass", "com.sail.Desktop");
     }),
   );
 
@@ -1453,33 +1452,16 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ),
   );
 
-  it.effect("packages the macOS preview's PR bundle as untrusted", () =>
+  it.effect("builds unsigned macOS desktop artifacts in Sail release workflow", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const workflow = yield* fs.readFileString(
-        yield* path.fromFileUrl(
-          new URL("../.github/workflows/desktop-macos-preview-publish.yml", import.meta.url),
-        ),
+        yield* path.fromFileUrl(new URL("../.github/workflows/release.yml", import.meta.url)),
       );
-      const { jobs } = yield* Schema.decodeEffect(
-        fromYaml(
-          Schema.Struct({
-            jobs: Schema.Record(
-              Schema.String,
-              Schema.Struct({
-                uses: Schema.optional(Schema.String),
-                with: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-              }),
-            ),
-          }),
-        ),
-      )(workflow);
-      const packaging = Object.values(jobs).filter(
-        (job) => job.uses === "./.github/workflows/release-desktop.yml",
-      );
-      assert.isNotEmpty(packaging);
-      for (const job of packaging) assert.strictEqual(job.with?.untrusted_bundle, true);
+      assert.include(workflow, "dist:desktop:artifact");
+      assert.include(workflow, "build-desktop-installers.ts");
+      assert.notInclude(workflow, "--signed");
     }),
   );
 
@@ -1565,7 +1547,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     });
 
     assert.deepStrictEqual(configuration, {
-      appId: "com.t3tools.t3code",
+      appId: "com.sail.desktop",
       teamId: "ABC1234567",
       rpDomains: ["example.clerk.accounts.dev"],
       provisioningProfilePath: "/tmp/t3code.provisionprofile",
@@ -1588,7 +1570,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       "clerk.example.com",
       "example.clerk.accounts.dev",
     ]);
-    assert.include(entitlements, "<string>ABC1234567.com.t3tools.t3code</string>");
+    assert.include(entitlements, "<string>ABC1234567.com.sail.desktop</string>");
     assert.include(entitlements, "<string>webcredentials:clerk.example.com</string>");
     assert.include(entitlements, "<string>webcredentials:example.clerk.accounts.dev</string>");
     assert.include(entitlements, "<key>com.apple.security.cs.allow-jit</key>");
@@ -1603,7 +1585,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   });
 
   it("grants in-app browser passkey entitlements only when the provisioning profile does", () => {
-    const configuration = { appId: "com.t3tools.t3code", teamId: "ABC1234567" };
+    const configuration = { appId: "com.sail.desktop", teamId: "ABC1234567" };
     const profile = (entitlements: string, outside = "") =>
       `0\x82\x1f\x9a\x06\t*\x86H<?xml version="1.0"?><plist version="1.0"><dict>${outside}<key>Entitlements</key><dict>${entitlements}</dict></dict></plist>\x00\x01`;
     const teamWildcardGroups = `<key>keychain-access-groups</key>
@@ -1645,7 +1627,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         configuration,
       ),
       {
-        touchIdKeychainAccessGroup: "ABC1234567.com.t3tools.t3code.webauthn",
+        touchIdKeychainAccessGroup: "ABC1234567.com.sail.desktop.webauthn",
         browserPasskeys: true,
       },
     );
@@ -1661,7 +1643,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     );
     assert.match(
       entitlements,
-      /<key>keychain-access-groups<\/key>\s*<array>\s*<string>ABC1234567\.com\.t3tools\.t3code\.webauthn<\/string>\s*<\/array>/u,
+      /<key>keychain-access-groups<\/key>\s*<array>\s*<string>ABC1234567\.com\.sail\.desktop\.webauthn<\/string>\s*<\/array>/u,
     );
     assert.match(
       entitlements,

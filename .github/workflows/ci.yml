@@ -1,0 +1,92 @@
+name: Sail CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sail-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    name: Lint, format, icons, knip & typecheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+      - run: vp run icons:check
+      - run: vp fmt --check
+      - run: vp lint --report-unused-disable-directives
+      - run: vp run knip:check
+      - run: vp run typecheck
+
+  rust:
+    name: Rust sidecars (resource-monitor & sail-boatd)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            native/resource-monitor -> target
+            native/sail-boat -> target
+      - name: Test resource-monitor
+        run: cargo test --manifest-path native/resource-monitor/Cargo.toml
+      - name: Test sail-boatd
+        run: cargo test --manifest-path native/sail-boat/Cargo.toml
+
+  tests:
+    name: Unit tests (${{ matrix.suite }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - root
+          - desktop
+          - shared
+          - web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+      - name: Install Linux desktop test dependencies
+        if: matrix.suite == 'desktop'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev pkg-config
+      - name: Run root script tests
+        if: matrix.suite == 'root'
+        run: vp test run scripts/build-desktop-artifact.test.ts scripts/build-desktop-installers.test.ts scripts/merge-update-manifests.test.ts
+      - name: Run desktop unit tests
+        if: matrix.suite == 'desktop'
+        run: vp test run apps/desktop/src/updates/MacArchiveUpdater.test.ts apps/desktop/src/app/DesktopAppIdentity.test.ts apps/desktop/src/app/DesktopLinuxUrlHandler.test.ts apps/desktop/src/boat/
+      - name: Run shared package tests
+        if: matrix.suite == 'shared'
+        run: vp run --filter @t3tools/shared test
+      - name: Run web unit tests
+        if: matrix.suite == 'web'
+        run: vp test run --project unit apps/web/src/branding.test.ts apps/web/src/components/boats/

@@ -1,6 +1,6 @@
 export const SAIL_BACKGROUND = "#091524";
-export const SAIL_BACKGROUND_TOP = "#10253F";
-export const SAIL_BORDER = "#7DD3FC";
+const SAIL_BACKGROUND_TOP = "#10253F";
+const SAIL_BORDER = "#7DD3FC";
 export const SAIL_PRIMARY = "#38BDF8";
 export const SAIL_SECONDARY = "#E0F2FE";
 export const SAIL_WAKE = "#0EA5E9";
@@ -9,14 +9,10 @@ export const SAIL_WAKE = "#0EA5E9";
  * Geometric dual-sail + hull mark on a 128x128 viewBox.
  * Main spinnaker (right), forward jib (left), and sleek hull arc below.
  */
-export const SAIL_MAIN_PATH =
-  "M66 20C82 37 96 60 98 86L66 86Z";
-export const SAIL_JIB_PATH =
-  "M58 34C46 50 35 67 28 86L58 86Z";
+export const SAIL_MAIN_PATH = "M66 20C82 37 96 60 98 86L66 86Z";
+export const SAIL_JIB_PATH = "M58 34C46 50 35 67 28 86L58 86Z";
 export const SAIL_HULL_PATH =
   "M22 93C38 103 88 103 106 93C98 105 82 110 64 110C46 110 30 105 22 93Z";
-
-export const SAIL_MARK_PATH = `${SAIL_MAIN_PATH} ${SAIL_JIB_PATH} ${SAIL_HULL_PATH}`;
 
 export const SAIL_LOGO_CONTENT = [
   `<defs><linearGradient id="sail-bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${SAIL_BACKGROUND_TOP}"/><stop offset="100%" stop-color="${SAIL_BACKGROUND}"/></linearGradient></defs>`,
