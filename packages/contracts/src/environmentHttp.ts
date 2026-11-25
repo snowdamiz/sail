@@ -50,6 +50,7 @@ import {
 import {
   DpopFailureReason,
   AuthSessionId,
+  ForwardCompatibleOptional,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
@@ -187,7 +188,7 @@ export class EnvironmentAuthInvalidError extends Schema.TaggedError<EnvironmentA
     code: Schema.Literal("auth_invalid"),
     reason: EnvironmentAuthInvalidReason,
     dpopFailureReason: Schema.optionalKey(DpopFailureReason),
-    pairingFailureReason: Schema.optionalKey(EnvironmentPairingFailureReason),
+    pairingFailureReason: ForwardCompatibleOptional(EnvironmentPairingFailureReason),
     traceId: TrimmedNonEmptyString,
   },
   { httpApiStatus: 401 },

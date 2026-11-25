@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
@@ -666,6 +667,24 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
         }
         expect(unknown._tag).toBe("ServerAuthInvalidCredentialError");
         expect(unknown).not.toHaveProperty("pairingFailureReason");
+      }).pipe(Effect.provide(layerEnvironmentAuth())),
+    );
+
+    it.effect("points no T3 Connect code at t3 pair", () =>
+      Effect.gen(function* () {
+        const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+        const connect = yield* serverAuth.createPairingLink({
+          scopes: ["orchestration:read"],
+          subject: EnvironmentAuth.CLOUD_CONNECT_SUBJECT,
+          ttl: Duration.minutes(1),
+        });
+        yield* TestClock.adjust("2 minutes");
+        const expired = yield* Effect.flip(
+          serverAuth.createBrowserSession(connect.credential, requestMetadata),
+        );
+
+        expect(expired._tag).toBe("ServerAuthInvalidCredentialError");
+        expect(expired).not.toHaveProperty("pairingFailureReason");
       }).pipe(Effect.provide(layerEnvironmentAuth())),
     );
 

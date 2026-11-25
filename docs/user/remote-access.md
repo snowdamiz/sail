@@ -253,10 +253,11 @@ server's `--public-url`. If the server has none, pass `--base-url`, or the
 output has only the token.
 
 A reverse proxy in front of the server can refuse large request headers before
-they reach it. Caddy's default answers 431 to headers larger than about 20 KB,
-which a browser holding many cookies for that address can send. If a browser
-gets a 431 error through the proxy, raise the proxy's header limit or clear that
-site's cookies in the browser.
+they reach it. Caddy 2.11, for example, answers 431 to headers larger than about
+20 KB unless you raise its `max_header_size`, and a browser holding many cookies
+for that address can send that much. If a browser gets a 431 error through the
+proxy, raise the proxy's header limit or clear that site's cookies in the
+browser.
 
 ### Hosted web app
 

@@ -512,10 +512,12 @@ export const AuthRevokeConnectDeviceResult = Schema.Struct({
 });
 export type AuthRevokeConnectDeviceResult = typeof AuthRevokeConnectDeviceResult.Type;
 
+const MAX_PAIRING_TTL_MS = 365 * 24 * 60 * 60 * 1000;
+
 const pairingCredentialFields = {
   label: Schema.optionalKey(TrimmedNonEmptyString),
   scopes: Schema.optionalKey(AuthGrantScopes),
-  ttlMs: Schema.optionalKey(PositiveInt),
+  ttlMs: Schema.optionalKey(PositiveInt.check(Schema.isLessThanOrEqualTo(MAX_PAIRING_TTL_MS))),
 };
 
 export const AuthCreatePairingCredentialInput = Schema.Union([

@@ -46,6 +46,7 @@ export type ServerClient = HttpApiClient.ForApi<typeof EnvironmentHttpApi>;
 // The scope revokes the session; the TTL bounds it if that never runs.
 const SESSION_TTL = Duration.minutes(2);
 const REQUEST_TIMEOUT = Duration.seconds(30);
+const PROBE_TIMEOUT = Duration.seconds(5);
 
 /** A client of the server at `origin`, signed in as a short-lived session for the scope. */
 export const serverClient = Effect.fn("RunningServer.serverClient")(function* (
@@ -87,7 +88,6 @@ const isUnanswered = (cause: unknown) =>
   Cause.isTimeoutError(cause) ||
   (HttpClientError.isHttpClientError(cause) && cause.response === undefined);
 
-/** Sends a request to `origin`, telling a request that never reached it from one whose reply was lost. */
 const sendToServer = <A, E, R>(
   origin: string,
   scopes: ReadonlyArray<AuthEnvironmentScope>,
@@ -106,21 +106,13 @@ const sendToServer = <A, E, R>(
     ),
   );
 
-/** Sends a request to the server at `origin` only once it answers as this home's environment. */
-export const requestServer = Effect.fn("RunningServer.requestServer")(function* <A, E, R>({
-  origin,
-  scopes,
-  request,
-}: {
-  readonly origin: string;
-  readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
-  readonly request: (client: ServerClient) => Effect.Effect<A, E, R>;
-}) {
-  // A stale record's port may belong to another process by now, so send it no credential.
+const confirmHomeEnvironment = Effect.fn("RunningServer.confirmHomeEnvironment")(function* (
+  origin: string,
+) {
   const expected = yield* (yield* ServerEnvironment.ServerEnvironmentIdentity).getEnvironmentId;
   const descriptor = yield* HttpApiClient.make(EnvironmentHttpApi, { baseUrl: origin }).pipe(
     Effect.flatMap((client) => client.metadata.descriptor()),
-    Effect.timeout(REQUEST_TIMEOUT),
+    Effect.timeout(PROBE_TIMEOUT),
     Effect.provide(FetchHttpClient.layer),
     Effect.mapError((cause) => new RunningServerUnreachableError({ origin, cause })),
   );
@@ -130,7 +122,22 @@ export const requestServer = Effect.fn("RunningServer.requestServer")(function* 
       cause: `answered as environment ${descriptor.environmentId}, not ${expected}`,
     });
   }
-  return yield* sendToServer(origin, scopes, request);
+});
+
+export const requestServer = Effect.fn("RunningServer.requestServer")(function* <A, E, R>({
+  origin,
+  scopes,
+  request,
+}: {
+  readonly origin: string;
+  readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
+  readonly request: (client: ServerClient) => Effect.Effect<A, E, R>;
+}) {
+  // A redirect could answer for this environment from somewhere else.
+  return yield* confirmHomeEnvironment(origin).pipe(
+    Effect.andThen(sendToServer(origin, scopes, request)),
+    Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
+  );
 });
 
 /**

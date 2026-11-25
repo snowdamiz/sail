@@ -707,6 +707,12 @@ const bySessionPriority = (left: AuthClientSession, right: AuthClientSession) =>
   return right.issuedAt.epochMilliseconds - left.issuedAt.epochMilliseconds;
 };
 
+// Pairing links and startup links; T3 Connect, peer-link, and MCP codes have their own recovery.
+const OPENED_LINK_SUBJECTS = new Set([
+  PAIRING_LINK_SUBJECT,
+  INTERNAL_ADMINISTRATIVE_BOOTSTRAP_SUBJECT,
+]);
+
 function toBootstrapExchangeError(
   cause: PairingGrantStore.BootstrapCredentialError,
 ): ServerAuthInvalidCredentialError | ServerAuthInternalError {
@@ -714,10 +720,10 @@ function toBootstrapExchangeError(
     return new ServerAuthBootstrapCredentialValidationError({ cause });
   }
 
-  // A 12-character random code cannot be guessed, so naming a spent link only helps its owner.
   const spent =
-    cause._tag === "SpentBootstrapCredentialError" ||
-    cause._tag === "ExpiredBootstrapCredentialError";
+    (cause._tag === "SpentBootstrapCredentialError" ||
+      cause._tag === "ExpiredBootstrapCredentialError") &&
+    OPENED_LINK_SUBJECTS.has(cause.subject);
   return new ServerAuthInvalidCredentialError({
     cause,
     ...(spent ? { pairingFailureReason: "used_or_expired" as const } : {}),

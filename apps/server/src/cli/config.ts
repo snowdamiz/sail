@@ -340,7 +340,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     readonly startupPresentation?: ServerConfig.StartupPresentation;
     readonly forceAutoBootstrapProjectFromCwd?: boolean;
     readonly rejectRunningServer?: boolean;
-    readonly readPairingSettings?: boolean;
+    readonly servesHome?: boolean;
     readonly selectAutomaticPort?: (
       preferred: number,
       host: string | undefined,
@@ -384,17 +384,16 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     ),
     () => "web",
   );
-  // Only a served web server uses these. The desktop app inherits the user's shell, and
-  // commands that only open the home must not fail on a deploy's variables.
-  const pairingSettingsApply = mode === "web" && options?.readPairingSettings !== false;
-  const publicUrl = pairingSettingsApply
+  // The desktop app inherits the user's shell, where these may be set for another server.
+  const servesWebPairing = mode === "web" && options?.servesHome !== false;
+  const publicUrl = servesWebPairing
     ? Option.getOrUndefined(
         Option.isSome(normalizedFlags.publicUrl)
           ? normalizedFlags.publicUrl
           : yield* readPairingSetting(publicUrlConfig),
       )
     : undefined;
-  const startupPairing: ServerConfig.StartupPairing = pairingSettingsApply
+  const startupPairing: ServerConfig.StartupPairing = servesWebPairing
     ? Option.getOrElse(
         Option.isSome(normalizedFlags.startupPairing)
           ? normalizedFlags.startupPairing
@@ -652,7 +651,7 @@ export const resolveCliAuthConfig = (
       startupPairing: Option.none(),
     },
     cliLogLevel,
-    { readPairingSettings: false },
+    { servesHome: false },
   );
   // Logs go to stdout, where --json and --token-only print, and resolving can
   // log, for example when it sweeps abandoned attachment uploads.

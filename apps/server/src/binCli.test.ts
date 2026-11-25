@@ -298,6 +298,8 @@ it.live("pairing create --require-running has the running server mint the link",
   ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+const migrateDatabase = (home: string) => runCli(["auth", "pairing", "list", "--json"], { home });
+
 const expectNothingMinted = (home: string) =>
   Effect.gen(function* () {
     const refused = yield* runCli(["auth", "pairing", "create", "--json", "--require-running"], {
@@ -324,8 +326,7 @@ it.live(
   () =>
     Effect.gen(function* () {
       const home = yield* makeHome;
-      // A live server has already migrated its database.
-      yield* runCli(["auth", "pairing", "list", "--json"], { home });
+      yield* migrateDatabase(home);
       yield* holdServerOwnershipLock(`${home}/userdata/server-runtime.json`);
       yield* recordServer(home, { port: yield* closedPort, ownerId: "stopped-server" });
       const stderr = yield* expectNothingMinted(home);
@@ -342,6 +343,27 @@ it.live("pairing create --require-running sends no token to another environment 
       );
       const stderr = yield* expectNothingMinted(home);
       assert.match(stderr, /answered at http:\/\/127\.0\.0\.1:/);
+      assert.deepStrictEqual(mintRequests, []);
+    }),
+  ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live("pairing create --require-running follows no redirect to its environment", () =>
+  withRunningServerHome(new URL("https://demo.fly.dev"), (home, mintRequests) =>
+    Effect.gen(function* () {
+      const real = JSON.parse(
+        yield* (yield* FileSystem.FileSystem).readFileString(
+          `${home}/userdata/server-runtime.json`,
+        ),
+      ) as { readonly origin: string };
+      const port = yield* listen(
+        NodeHttp.createServer((request, response) => {
+          response.writeHead(307, { location: new URL(request.url ?? "/", real.origin).href });
+          response.end();
+        }),
+      );
+      yield* recordServer(home, { port });
+      yield* expectNothingMinted(home);
       assert.deepStrictEqual(mintRequests, []);
     }),
   ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
@@ -390,7 +412,8 @@ it.live("serve reports a mistyped SAIL_PUBLIC_URL on stderr", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const home = yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-home-" }));
-    const served = yield* runCli(["serve", "--host", "127.0.0.1", "--port", "9"], {
+    const port = String(yield* closedPort);
+    const served = yield* runCli(["serve", "--host", "127.0.0.1", "--port", port], {
       home,
       env: { SAIL_PUBLIC_URL: "https://demo.fly.dev/subpath" },
     });

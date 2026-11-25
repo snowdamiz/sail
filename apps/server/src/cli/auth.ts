@@ -131,12 +131,10 @@ const pairingCreateCommand = Command.make("create", {
       );
       const notMinted = (reason: string) =>
         new CliError.UserError({
-          cause: `${reason}, so no pairing token was minted. Start the server, then retry.`,
+          cause: `${reason}, so no pairing token was minted. Start the server, or wait until it is ready, then retry.`,
         });
-      const request = {
-        scopes: flags.scopes,
-        ...(Option.isSome(flags.label) ? { label: flags.label.value } : {}),
-      };
+      const label = Option.getOrElse(flags.label, () => "").trim();
+      const request = { scopes: flags.scopes, ...(label.length > 0 ? { label } : {}) };
       if (flags.requireRunning && Option.isNone(running)) {
         return yield* notMinted(`No running T3 Code server owns ${config.baseDir}`);
       }
@@ -152,7 +150,6 @@ const pairingCreateCommand = Command.make("create", {
               });
             }
             const { origin } = running.value;
-            // The server mints it, so a printed link means a server answered for this home.
             const credential = yield* RunningServer.requestServer({
               origin,
               scopes: [...new Set([AuthAccessWriteScope, ...flags.scopes])],
@@ -170,7 +167,9 @@ const pairingCreateCommand = Command.make("create", {
               Effect.catchTags({
                 RunningServerUnreachableError: () =>
                   Effect.fail(
-                    notMinted(`No T3 Code server for ${config.baseDir} answered at ${origin}`),
+                    notMinted(
+                      `No ready T3 Code server for ${config.baseDir} answered at ${origin}`,
+                    ),
                   ),
               }),
             );

@@ -54,7 +54,7 @@ export class UnknownBootstrapCredentialError extends Schema.TaggedError<UnknownB
 
 export class ExpiredBootstrapCredentialError extends Schema.TaggedError<ExpiredBootstrapCredentialError>()(
   "ExpiredBootstrapCredentialError",
-  {},
+  { subject: Schema.String },
 ) {
   override get message(): string {
     return "Bootstrap credential expired.";
@@ -63,7 +63,7 @@ export class ExpiredBootstrapCredentialError extends Schema.TaggedError<ExpiredB
 
 export class SpentBootstrapCredentialError extends Schema.TaggedError<SpentBootstrapCredentialError>()(
   "SpentBootstrapCredentialError",
-  {},
+  { subject: Schema.String },
 ) {
   override get message(): string {
     return "Bootstrap credential was already used.";
@@ -575,7 +575,7 @@ const make = Effect.gen(function* () {
               {
                 _tag: "error",
                 reason: "expired",
-                error: new ExpiredBootstrapCredentialError({}),
+                error: new ExpiredBootstrapCredentialError({ subject: grant.subject }),
               },
               next,
             ];
@@ -696,11 +696,11 @@ const make = Effect.gen(function* () {
       }
 
       if (matching.value.consumedAt !== null) {
-        return yield* new SpentBootstrapCredentialError({});
+        return yield* new SpentBootstrapCredentialError({ subject: matching.value.subject });
       }
 
       if (DateTime.isGreaterThanOrEqualTo(now, matching.value.expiresAt)) {
-        return yield* new ExpiredBootstrapCredentialError({});
+        return yield* new ExpiredBootstrapCredentialError({ subject: matching.value.subject });
       }
 
       if (
