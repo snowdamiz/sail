@@ -18,7 +18,6 @@ import {
   readTailscaleServeRootHolder,
   readTailscaleStatus,
 } from "@t3tools/tailscale";
-import * as Config from "effect/Config";
 import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -47,7 +46,7 @@ import {
   resolveHeadlessConnectionString,
 } from "../startupAccess.ts";
 import { authScopesFlag } from "./authScopes.ts";
-import { baseDirFlag, DurationFromString } from "./config.ts";
+import { baseDirFlag, DurationFromString, t3HomeConfig } from "./config.ts";
 import { hostShellWord, resolveHostCliCommand } from "./invocation.ts";
 
 const WELL_KNOWN_ENVIRONMENT_PATH = "/.well-known/t3/environment";
@@ -287,8 +286,7 @@ const discoverPairTarget = Effect.fn("pair.discoverPairTarget")(function* (
       bases.push(worktreeHome);
       inLinkedWorktree = true;
     } else {
-      const envHome = yield* Config.String("T3CODE_HOME").pipe(Config.option);
-      bases.push(yield* resolveBaseDir(Option.getOrUndefined(envHome)));
+      bases.push(yield* resolveBaseDir(yield* t3HomeConfig));
     }
   }
 
@@ -580,6 +578,8 @@ export const pairCommand = Command.make("pair", {
         });
         pairingBaseUrl = resolved.baseUrl;
         notes.push(...resolved.notes);
+      } else if (target.state.publicUrl !== undefined) {
+        pairingBaseUrl = target.state.publicUrl;
       } else {
         pairingBaseUrl = resolveDirectPairingBaseUrl(target.state, yield* HostProcess.Platform);
         if (isLoopbackHost(new URL(pairingBaseUrl).hostname)) {

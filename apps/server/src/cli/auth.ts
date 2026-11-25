@@ -11,6 +11,7 @@ import * as Option from "effect/Option";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
+import * as CliError from "effect/cli/CliError";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 
@@ -27,9 +28,32 @@ import {
   authLocationFlags,
   type CliAuthLocationFlags,
   DurationFromString,
+  readRunningServer,
   resolveCliAuthConfig,
 } from "./config.ts";
 import * as RunningServer from "./runningServer.ts";
+
+const withEnvironmentAuth = Effect.fn("auth.withEnvironmentAuth")(function* <A, E, R>(
+  config: ServerConfig.ServerConfig["Service"],
+  run: (environmentAuth: EnvironmentAuth.EnvironmentAuth["Service"]) => Effect.Effect<A, E, R>,
+  options?: {
+    readonly quietLogs?: boolean;
+  },
+) {
+  return yield* Effect.gen(function* () {
+    const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
+    return yield* run(environmentAuth);
+  }).pipe(
+    Effect.provide(
+      EnvironmentAuth.layerRuntime.pipe(
+        Layer.provideMerge(ServerConfig.layer(config)),
+        Layer.provide(
+          Layer.succeed(References.MinimumLogLevel, options?.quietLogs ? "Error" : config.logLevel),
+        ),
+      ),
+    ),
+  );
+});
 
 const runWithEnvironmentAuth = Effect.fn("auth.runWithEnvironmentAuth")(function* <A, E, R>(
   flags: CliAuthLocationFlags,
@@ -38,20 +62,8 @@ const runWithEnvironmentAuth = Effect.fn("auth.runWithEnvironmentAuth")(function
     readonly quietLogs?: boolean;
   },
 ) {
-  const logLevel = yield* GlobalFlag.LogLevel;
-  const config = yield* resolveCliAuthConfig(flags, logLevel, options);
-  const minimumLogLevel = options?.quietLogs ? "Error" : config.logLevel;
-  return yield* Effect.gen(function* () {
-    const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
-    return yield* run(environmentAuth);
-  }).pipe(
-    Effect.provide(
-      EnvironmentAuth.layerRuntime.pipe(
-        Layer.provideMerge(ServerConfig.layer(config)),
-        Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
-      ),
-    ),
-  );
+  const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel, options);
+  return yield* withEnvironmentAuth(config, run, options);
 });
 
 /** Access changes go through a running server, which applies them to its open connections. */
@@ -91,8 +103,15 @@ const baseUrlFlag = Flag.String("base-url").pipe(
       ),
     ),
   ),
-  Flag.withDescription("Optional public base URL used to print a ready `/pair#token=...` link."),
+  Flag.withDescription(
+    "Public base URL used to print a ready `/pair#token=...` link. Defaults to the running server's --public-url.",
+  ),
   Flag.optional,
+);
+
+const requireRunningFlag = Flag.Boolean("require-running").pipe(
+  Flag.withDescription("Mint nothing unless a running server owns this T3 Code home."),
+  Flag.withDefault(false),
 );
 
 const tokenOnlyFlag = Flag.Boolean("token-only").pipe(
@@ -106,30 +125,46 @@ const pairingCreateCommand = Command.make("create", {
   ttl: ttlFlag,
   label: labelFlag,
   baseUrl: baseUrlFlag,
+  requireRunning: requireRunningFlag,
   json: jsonFlag,
 }).pipe(
   Command.withDescription("Issue a new client pairing token."),
   Command.withHandler((flags) =>
-    runWithEnvironmentAuth(
-      flags,
-      (environmentAuth) =>
-        Effect.gen(function* () {
-          const issued = yield* environmentAuth.createPairingLink({
-            scopes: flags.scopes,
-            subject: "one-time-token",
-            ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
-            ...(Option.isSome(flags.label) ? { label: flags.label.value } : {}),
-          });
-          const output = formatIssuedPairingCredential(issued, {
-            json: flags.json,
-            ...(Option.isSome(flags.baseUrl) ? { baseUrl: flags.baseUrl.value.href } : {}),
-          });
-          yield* Console.log(output);
-        }),
-      {
-        quietLogs: flags.json,
-      },
-    ),
+    Effect.gen(function* () {
+      const options = { quietLogs: flags.json };
+      const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel, options);
+      const running = yield* readRunningServer(config.serverRuntimeStatePath).pipe(
+        Effect.provideService(References.MinimumLogLevel, flags.json ? "Error" : config.logLevel),
+      );
+      if (flags.requireRunning && Option.isNone(running)) {
+        return yield* new CliError.UserError({
+          cause: `No running T3 Code server owns ${config.baseDir}, so no pairing token was minted. Start the server, then retry.`,
+        });
+      }
+      const baseUrl = Option.match(flags.baseUrl, {
+        onSome: (url) => url.href,
+        onNone: () => Option.getOrUndefined(running)?.publicUrl,
+      });
+      return yield* withEnvironmentAuth(
+        config,
+        (environmentAuth) =>
+          Effect.gen(function* () {
+            const issued = yield* environmentAuth.createPairingLink({
+              scopes: flags.scopes,
+              subject: "one-time-token",
+              ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
+              ...(Option.isSome(flags.label) ? { label: flags.label.value } : {}),
+            });
+            yield* Console.log(
+              formatIssuedPairingCredential(issued, {
+                json: flags.json,
+                ...(baseUrl === undefined ? {} : { baseUrl }),
+              }),
+            );
+          }),
+        options,
+      );
+    }),
   ),
 );
 

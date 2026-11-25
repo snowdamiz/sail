@@ -35,6 +35,9 @@ export type RuntimeMode = typeof RuntimeMode.Type;
 export const StartupPresentation = Schema.Literals(["browser", "headless"]);
 export type StartupPresentation = typeof StartupPresentation.Type;
 
+export const StartupPairing = Schema.Literals(["on", "off"]);
+export type StartupPairing = typeof StartupPairing.Type;
+
 export interface ServerDerivedPaths {
   readonly stateDir: string;
   readonly dbPath: string;
@@ -96,8 +99,12 @@ export class ServerConfig extends Context.Service<
     readonly devUrl: URL | undefined;
     readonly devAuthToken?: Redacted.Redacted<string> | undefined;
     readonly devAllowedOrigins: ReadonlyArray<string>;
+    /** The origin clients reach when a proxy or platform fronts this server; pairing links use it. */
+    readonly publicUrl?: URL | undefined;
     readonly noBrowser: boolean;
     readonly startupPresentation: StartupPresentation;
+    /** Off for managed deploys, whose logs others can read: startup issues no pairing credential. */
+    readonly startupPairing?: StartupPairing | undefined;
     readonly desktopBootstrapToken: string | undefined;
     readonly desktopBootstrapSecret?: string | undefined;
     readonly desktopReadinessSecret?: string | undefined;

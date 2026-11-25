@@ -22,8 +22,8 @@ import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 
 export interface HeadlessServeAccessInfo {
   readonly connectionString: string;
-  readonly token: string;
-  readonly pairingUrl: string;
+  /** Absent when startup pairing is off. */
+  readonly pairing?: { readonly token: string; readonly pairingUrl: string } | undefined;
 }
 
 type NetworkInterfacesMap = ReturnType<typeof NodeOS.networkInterfaces>;
@@ -249,22 +249,33 @@ export const renderTerminalQrCode = (value: string, margin = 2): string => {
   return rows.join("\n");
 };
 
-export const formatHeadlessServeOutput = (accessInfo: HeadlessServeAccessInfo): string =>
+const isPlainHttpOffMachine = (connectionString: string): boolean => {
+  const url = new URL(connectionString);
+  return url.protocol === "http:" && !isLoopbackHost(url.hostname);
+};
+
+export const formatHeadlessServeOutput = ({
+  connectionString,
+  pairing,
+}: HeadlessServeAccessInfo): string =>
   [
     "T3 Code server is ready.",
-    `Connection string: ${accessInfo.connectionString}`,
-    `Token: ${accessInfo.token}`,
-    `Pairing URL: ${accessInfo.pairingUrl}`,
-    `App link: ${buildPairingAppLink(accessInfo.pairingUrl)}`,
-    ...(isLoopbackHost(new URL(accessInfo.connectionString).hostname)
-      ? []
+    `Connection string: ${connectionString}`,
+    ...(pairing === undefined
+      ? ["Startup pairing is off. To pair a device, run `t3 pair` on this machine."]
       : [
+          `Token: ${pairing.token}`,
+          `Pairing URL: ${pairing.pairingUrl}`,
+          `App link: ${buildPairingAppLink(pairing.pairingUrl)}`,
+        ]),
+    ...(isPlainHttpOffMachine(connectionString)
+      ? [
           "",
           "Warning: this address uses plain HTTP. Anyone on the same network can read the",
           "token and control this machine. Use it over a VPN or tailnet you trust.",
-        ]),
-    "",
-    renderTerminalQrCode(accessInfo.pairingUrl),
+        ]
+      : []),
+    ...(pairing === undefined ? [] : ["", renderTerminalQrCode(pairing.pairingUrl)]),
     "",
   ].join("\n");
 
@@ -273,16 +284,23 @@ export const issueHeadlessServeAccessInfo = Effect.fn("issueHeadlessServeAccessI
   const httpServer = yield* HttpServer.HttpServer;
   const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
   const platform = yield* HostProcess.Platform;
-  const connectionString = resolveHeadlessConnectionString(
-    serverConfig.host,
-    resolveListeningPort(httpServer.address, serverConfig.port),
-    { privateNetworkOnly: serverConfig.privateNetworkOnly, platform },
-  );
+  const connectionString =
+    serverConfig.publicUrl?.origin ??
+    resolveHeadlessConnectionString(
+      serverConfig.host,
+      resolveListeningPort(httpServer.address, serverConfig.port),
+      { privateNetworkOnly: serverConfig.privateNetworkOnly, platform },
+    );
+  if (serverConfig.startupPairing === "off") {
+    return { connectionString } satisfies HeadlessServeAccessInfo;
+  }
   const issued = yield* serverAuth.issueStartupPairingCredential();
 
   return {
     connectionString,
-    token: issued.credential,
-    pairingUrl: buildPairingUrl(connectionString, issued.credential),
+    pairing: {
+      token: issued.credential,
+      pairingUrl: buildPairingUrl(connectionString, issued.credential),
+    },
   } satisfies HeadlessServeAccessInfo;
 });

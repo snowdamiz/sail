@@ -54,6 +54,8 @@ const minimalDesktopFlags = (baseDir: string) => ({
   tailscaleServeEnabled: Option.none<boolean>(),
   tailscaleServePort: Option.none<number>(),
   lan: Option.none<boolean>(),
+  publicUrl: Option.none(),
+  startupPairing: Option.none(),
 });
 
 const encodeDesktopBootstrap = Schema.encodeEffect(Schema.fromJsonString(DesktopBackendBootstrap));
@@ -346,6 +348,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         tailscaleServeEnabled: Option.none<boolean>(),
         tailscaleServePort: Option.none<number>(),
         lan: Option.none<boolean>(),
+        publicUrl: Option.none(),
+        startupPairing: Option.none(),
       };
       const layerConfig = ConfigProvider.layer(
         ConfigProvider.fromEnv({
@@ -391,6 +395,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         tailscaleServeEnabled: Option.none<boolean>(),
         tailscaleServePort: Option.none<number>(),
         lan: Option.none<boolean>(),
+        publicUrl: Option.none(),
+        startupPairing: Option.none(),
       };
       const layerConfig = ConfigProvider.layer(
         ConfigProvider.fromEnv({ env: { T3CODE_DEV_AUTH_TOKEN: secret } }),
@@ -447,6 +453,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServeEnabled: Option.none(),
           tailscaleServePort: Option.none(),
           lan: Option.none(),
+          publicUrl: Option.none(),
+          startupPairing: Option.none(),
         },
         Option.none(),
       ).pipe(
@@ -480,6 +488,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         devUrl: new URL("http://127.0.0.1:4173"),
         noBrowser: false,
         startupPresentation: "browser",
+        startupPairing: "on",
         desktopBootstrapToken: "desktop-bootstrap-token",
         autoBootstrapProjectFromCwd: false,
         logWebSocketEvents: false,
@@ -524,6 +533,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServeEnabled: Option.none(),
           tailscaleServePort: Option.none(),
           lan: Option.none(),
+          publicUrl: Option.none(),
+          startupPairing: Option.none(),
         },
         Option.some("Debug"),
       ).pipe(
@@ -559,6 +570,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         devUrl: new URL("http://127.0.0.1:4173"),
         noBrowser: true,
         startupPresentation: "browser",
+        startupPairing: "on",
         desktopBootstrapToken: "desktop-token",
         autoBootstrapProjectFromCwd: true,
         logWebSocketEvents: true,
@@ -672,6 +684,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServeEnabled: Option.none(),
           tailscaleServePort: Option.none(),
           lan: Option.none(),
+          publicUrl: Option.none(),
+          startupPairing: Option.none(),
         },
         Option.none(),
       ).pipe(
@@ -721,6 +735,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServeEnabled: Option.none(),
           tailscaleServePort: Option.none(),
           lan: Option.none(),
+          publicUrl: Option.none(),
+          startupPairing: Option.none(),
         },
         Option.none(),
       ).pipe(
@@ -762,6 +778,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServeEnabled: Option.none(),
           tailscaleServePort: Option.none(),
           lan: Option.none(),
+          publicUrl: Option.none(),
+          startupPairing: Option.none(),
         },
         Option.none(),
         {
@@ -796,6 +814,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         devUrl: undefined,
         noBrowser: true,
         startupPresentation: "headless",
+        startupPairing: "on",
         desktopBootstrapToken: undefined,
         autoBootstrapProjectFromCwd: false,
         logWebSocketEvents: false,
@@ -825,6 +844,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServeEnabled: Option.none(),
           tailscaleServePort: Option.none(),
           lan: Option.none(),
+          publicUrl: Option.none(),
+          startupPairing: Option.none(),
         },
         Option.none(),
       ).pipe(
@@ -865,6 +886,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     tailscaleServeEnabled: Option.none<boolean>(),
     tailscaleServePort: Option.none<number>(),
     lan: Option.none<boolean>(),
+    publicUrl: Option.none(),
+    startupPairing: Option.none(),
   });
 
   it.effect("uses the automatic port selector only when no port is configured", () =>

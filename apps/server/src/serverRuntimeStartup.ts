@@ -348,10 +348,12 @@ const resolveStartupBrowserTarget = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig.ServerConfig;
   const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
   const baseTarget =
-    serverConfig.devUrl?.toString() ?? resolveLocalOrigin(serverConfig.host, serverConfig.port);
-  return serverConfig.mode === "desktop"
-    ? baseTarget
-    : yield* serverAuth.issueStartupPairingUrl(baseTarget);
+    serverConfig.publicUrl?.origin ??
+    serverConfig.devUrl?.toString() ??
+    resolveLocalOrigin(serverConfig.host, serverConfig.port);
+  return serverConfig.mode === "desktop" || serverConfig.startupPairing === "off"
+    ? { target: baseTarget, pairing: false }
+    : { target: yield* serverAuth.issueStartupPairingUrl(baseTarget), pairing: true };
 });
 
 /** Prints the one-time admin pairing URL to stdout only; logger records reach trace files and collectors. */
@@ -635,10 +637,10 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
         } else {
           yield* Effect.logDebug("startup phase: browser open check");
           const startupBrowserTarget = yield* resolveStartupBrowserTarget;
-          if (serverConfig.mode !== "desktop") {
-            yield* announceStartupPairingUrl(startupBrowserTarget);
+          if (startupBrowserTarget.pairing) {
+            yield* announceStartupPairingUrl(startupBrowserTarget.target);
           }
-          yield* runStartupPhase("browser.open", maybeOpenBrowser(startupBrowserTarget));
+          yield* runStartupPhase("browser.open", maybeOpenBrowser(startupBrowserTarget.target));
         }
       }),
     );
