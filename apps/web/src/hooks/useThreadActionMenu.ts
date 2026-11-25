@@ -316,9 +316,7 @@ export function useThreadActionMenu(input: {
           }
           return;
         case "copy-thread":
-          void copyThreadReference(
-            threadChipCopyTarget(threadRef, thread.title, linkOrigin(), m),
-          );
+          void copyThreadReference(threadChipCopyTarget(threadRef, thread.title, linkOrigin(), m));
           return;
         case "copy-thread-id":
           copyThreadIdToClipboard(thread.id, { threadId: thread.id });
