@@ -1,31 +1,20 @@
-// Sail Boat watchdog. Runs on the Boat sandbox next to the T3 server and stops the sandbox once no
-// agent works and nobody used it for `sleepAfterSecs`. It lives here, not on the laptop, so
-// machines finish their work and then sleep even when the laptop is closed.
-//
-// To sleep it "drains": it publishes a manifest of the final orchestration state so the laptop
-// proxy can keep answering Sail truthfully while the machine sleeps. The proxy captures it
-// and acks, and the watchdog stops on its next tick, after its usual checks.
-//
-// The disk is saved as a Boat snapshot at every sleep: Boat deletes a stopped sandbox's disk
-// after 14 days, the saved snapshot stays, and Sail restores the machine from it. An ack hands
-// the save to the laptop app, which makes it from the stopped sandbox and bills nothing. Without
-// one by the end of a grace period (laptop gone, its capture failed) the watchdog saves it
-// first, awake, then stops on a later tick. Only one save of its own runs at a time, and none
-// stops the machine while it runs: one called off by use runs on, and could finish after the app's.
+// Sail Boat watchdog. Runs on the Boat sandbox next to the server and sleeps it after `sleepAfterSecs` idle.
+// Drains by publishing a final orchestration manifest so the desktop proxy can answer while sleeping.
+// Saves a Boat snapshot on every sleep (after proxy ack or grace period) so stopped disks persist past 14 days.
 
-import { createServer } from "node:http";
-import { readFileSync, writeFileSync } from "node:fs";
-import { execFile } from "node:child_process";
-import { DatabaseSync } from "node:sqlite";
-import { availableParallelism, homedir } from "node:os";
-import { join } from "node:path";
+import * as NodeHttp from "node:http";
+import * as NodeFS from "node:fs";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeSqlite from "node:sqlite";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
-const HOME = homedir();
-const CONFIG_PATH = join(HOME, ".sail-boat", "config.json");
+const HOME = NodeOS.homedir();
+const CONFIG_PATH = NodePath.join(HOME, ".sail-boat", "config.json");
 // On disk, so it survives watchdog restarts (upgrades); a stop ends it (see BOOT_ID).
-const KEEP_AWAKE_PATH = join(HOME, ".sail-boat", "keep-awake-until");
+const KEEP_AWAKE_PATH = NodePath.join(HOME, ".sail-boat", "keep-awake-until");
 const MAX_KEEP_AWAKE_MINUTES = 24 * 60;
-const DB_PATH = join(HOME, ".t3", "userdata", "statev2.sqlite");
+const DB_PATH = NodePath.join(HOME, ".t3", "userdata", "statev2.sqlite");
 const T3_ORIGIN = "http://127.0.0.1:3773";
 const PORT = 3774;
 const TICK_MS = 5_000;
@@ -40,7 +29,7 @@ const STOP_SETTLE_MS = 90_000;
 // fuller disk. One that hangs must not keep the machine up.
 const SNAPSHOT_TIMEOUT_MS = 10 * 60_000;
 
-const config = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+const config = JSON.parse(NodeFS.readFileSync(CONFIG_PATH, "utf8"));
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 
 /**
@@ -82,25 +71,28 @@ async function refreshWorking() {
     log(e.message);
   }
 }
-// A build or job started outside an agent turn (in the background, in a terminal) shows as CPU
-// use; an idle dev server does not. Counted in cores, so a single-threaded build counts on any
-// size, and smoothed over ~30s so a short spike doesn't count. It holds the machine up for at most
-// CPU_HOLD_MS after the last use, so a busy dev server or a stray loop cannot keep it billing;
-// longer jobs take a keep-awake.
+// Background builds show as CPU use (>0.5 cores smoothed over ~30s) and hold the machine up to CPU_HOLD_MS.
+// Longer jobs require an explicit keep-awake.
 const CPU_BUSY_CORES = 0.5;
 const CPU_HOLD_MS = 30 * 60_000;
-const CPU_COUNT = availableParallelism();
+const CPU_COUNT = NodeOS.availableParallelism();
 /** Cores in use. */
 let cpuLoad = 0;
 /** "Sleep now" was asked for: CPU load no longer holds the machine up, agents still do. */
 let sleepRequested = false;
 let cpuPrev = readCpu();
-const cpuBusy = () => !sleepRequested && cpuLoad > CPU_BUSY_CORES && Date.now() - lastUsedAt < CPU_HOLD_MS;
+const cpuBusy = () =>
+  !sleepRequested && cpuLoad > CPU_BUSY_CORES && Date.now() - lastUsedAt < CPU_HOLD_MS;
 const isBusy = () => agentsBusy() || cpuBusy();
 
 /** Busy and total jiffies across all cores since boot, from /proc/stat. */
 function readCpu() {
-  const fields = readFileSync("/proc/stat", "utf8").split("\n")[0].trim().split(/\s+/).slice(1).map(Number);
+  const fields = NodeFS.readFileSync("/proc/stat", "utf8")
+    .split("\n")[0]
+    .trim()
+    .split(/\s+/)
+    .slice(1)
+    .map(Number);
   const idle = fields[3] + (fields[4] ?? 0);
   const total = fields.reduce((a, b) => a + b, 0);
   return { busy: total - idle, total };
@@ -141,7 +133,7 @@ const keptAwake = () => Date.now() < keepAwakeUntil;
 
 function readFileSafe(path) {
   try {
-    return readFileSync(path, "utf8");
+    return NodeFS.readFileSync(path, "utf8");
   } catch {
     return "";
   }
@@ -150,7 +142,7 @@ function readFileSafe(path) {
 /** null: until stopped; 0: off. */
 function setKeepAwake(minutes) {
   keepAwakeUntil = minutes === null ? Infinity : minutes > 0 ? Date.now() + minutes * 60_000 : 0;
-  writeFileSync(KEEP_AWAKE_PATH, `${keepAwakeUntil} ${BOOT_ID}`);
+  NodeFS.writeFileSync(KEEP_AWAKE_PATH, `${keepAwakeUntil} ${BOOT_ID}`);
 }
 
 // Work T3 starts on its own at a set time: an automation, a webhook run it held back, an agent
@@ -191,11 +183,14 @@ let eventCursor = null;
  * last tick. A table this T3 version lacks has nothing due.
  */
 function readT3State() {
-  const db = new DatabaseSync(DB_PATH, { readOnly: true });
+  const db = new NodeSqlite.DatabaseSync(DB_PATH, { readOnly: true });
   try {
     const times = (sql) => {
       try {
-        return db.prepare(sql).all().map((r) => (typeof r.t === "string" ? Date.parse(r.t) : r.t));
+        return db
+          .prepare(sql)
+          .all()
+          .map((r) => (typeof r.t === "string" ? Date.parse(r.t) : r.t));
       } catch {
         return [];
       }
@@ -206,7 +201,9 @@ function readT3State() {
       // Parsed here, not compared as text: T3 notes expanded years sort first.
       ...times(`SELECT next_run_at AS t FROM scheduled_tasks
         WHERE enabled = 1 AND next_run_at IS NOT NULL AND last_run_status <> 'running'`),
-      ...times(`SELECT MIN(due_at) AS t FROM scheduled_task_webhook_pending WHERE state = 'pending'`),
+      ...times(
+        `SELECT MIN(due_at) AS t FROM scheduled_task_webhook_pending WHERE state = 'pending'`,
+      ),
       ...times(`SELECT json_extract(payload_json, '$.limitRecovery.resetAt') AS t ${recovering}`),
       ...times(`SELECT json_extract(payload_json, '$.snoozedUntil') AS t ${recovering}`),
     ].filter((t) => Number.isFinite(t) && Date.now() - t < OVERDUE_MS);
@@ -218,7 +215,7 @@ function readT3State() {
     }
     const events = db
       .prepare(
-        `SELECT MAX(sequence) AS last, SUM(event_type IN (${PERSON_EVENTS.map(() => "?").join(",")})) AS person
+        `SELECT MAX(sequence) AS last, SUM(event_type IN (${PERSON_EVENTS.map(() => "?").NodePath.join(",")})) AS person
          FROM orchestration_events WHERE sequence > ?`,
       )
       .get(...PERSON_EVENTS, eventCursor);
@@ -233,13 +230,7 @@ const LIVE_STATUSES = new Set(["queued", "preparing", "starting", "running", "wa
 /** Request kinds T3 settles itself: nobody is waited on. */
 const SELF_SETTLED = ["auth_refresh", "dynamic_tool_call"];
 
-/**
- * The run stopped at a prompt only a person answers: an approval, or a question it can't go on
- * past. T3 marks the other questions `blocking: false`: the run works past them, or (left after a
- * restart) T3 takes the answer as a message. It does not hold the machine: nobody should pay while
- * it waits. A question survives the sleep; an approval survives a warm resume, after a cold one T3
- * expires it and the user sends a message to go on.
- */
+/** True when the run stopped at a blocking human prompt (approval or question), which does not hold the machine awake. */
 function waitsOnPerson(thread) {
   const request = thread.pendingRuntimeRequest;
   if (request == null || request.blocking === false) return false;
@@ -247,26 +238,16 @@ function waitsOnPerson(thread) {
   // A secret or a link card. The shell can't tell them apart, and a link card's agent works on.
   if (request.userOnly) return false;
   // A delegated child's question goes to the agent that delegated it, here or on another machine.
-  const delegated = thread.lineage?.relationshipToParent === "subagent" || thread.delegatedFrom != null;
+  const delegated =
+    thread.lineage?.relationshipToParent === "subagent" || thread.delegatedFrom != null;
   return !(delegated && request.kind === "user_input");
 }
 
-/**
- * The threads among `waiting` whose run works on beside the prompt: anything T3 counts as
- * background work, less the tools a pending prompt holds up. That is a command, a tool or a
- * subagent still running in any run but a rolled-back one, less a persistent tool (it never
- * ends), and the tasks in the provider thread's roster (Claude's background commands). T3 lists
- * none of it while a run is active, so this reads its database. A prompt holds up the tool its
- * approval hangs under (Claude, Codex) or, in ACP, the one in its provider turn it shares a
- * native id with. OpenCode and Pi tie theirs to no tool, so it works on. A subagent always
- * counts: the prompt may be its own, while its parent works on. T3 shows a thread's prompt from
- * any run, and Pi asks outside one: a prompt not in the active run stops nothing, so that run
- * works on. Unreadable: all of them work, so none is cut off.
- */
+/** Threads among `waiting` whose run still has active background work beside a pending prompt. Reads SQLite directly; treats unreadable DB as all working. */
 function workingBesidePrompt(waiting, ownWork) {
   if (waiting.size === 0) return new Set();
   try {
-    const db = new DatabaseSync(DB_PATH, { readOnly: true });
+    const db = new NodeSqlite.DatabaseSync(DB_PATH, { readOnly: true });
     try {
       const rows = db
         .prepare(
@@ -288,7 +269,7 @@ function workingBesidePrompt(waiting, ownWork) {
                SELECT 1 FROM orchestration_v2_projection_runtime_requests AS request
                JOIN orchestration_v2_projection_nodes AS gate ON gate.node_id = request.node_id
                WHERE request.thread_id = waiting.thread_id AND request.status = 'pending'
-                 AND request.kind NOT IN (${SELF_SETTLED.map((k) => `'${k}'`).join(", ")})
+                 AND request.kind NOT IN (${SELF_SETTLED.map((k) => `'${k}'`).NodePath.join(", ")})
                  AND (gate.parent_node_id = item.node_id
                    OR request.provider_turn_id = item.provider_turn_id
                      AND json_extract(request.payload_json, '$.nativeRequestRef.nativeId')
@@ -350,9 +331,11 @@ async function checkWorking() {
   // T3 lists a watched pull request as a task, awaited only while its checks run: after that a
   // person moves it next, so it holds nothing. T3 adds these to the shell's list alone, never to
   // the provider roster read beside a prompt.
-  const holds = (task) => ownWork(task) && !(task.taskId.startsWith("pull-request-watch:") && task.awaited !== true);
+  const holds = (task) =>
+    ownWork(task) && !(task.taskId.startsWith("pull-request-watch:") && task.awaited !== true);
   // A pending request alone is no run: one left after a restart has none.
-  const running = (t) => t.activeRunId != null || t.activityRunStatus != null || LIVE_STATUSES.has(t.status);
+  const running = (t) =>
+    t.activeRunId != null || t.activityRunStatus != null || LIVE_STATUSES.has(t.status);
   const waiting = new Set(threads.filter((t) => running(t) && waitsOnPerson(t)));
   const besidePrompt = workingBesidePrompt(waiting, ownWork);
   const live = threads.filter(
@@ -366,7 +349,7 @@ async function checkWorking() {
 
 /** The orchestration high-water marks T3 itself compares resume cursors against. */
 function readManifest() {
-  const db = new DatabaseSync(DB_PATH, { readOnly: true });
+  const db = new NodeSqlite.DatabaseSync(DB_PATH, { readOnly: true });
   try {
     const global = db
       .prepare(
@@ -399,7 +382,9 @@ async function save() {
   saveRunning = true;
   log("saving snapshot", config.snapshot);
   // A machine that cannot save still sleeps: it must not bill on, and Boat keeps its disk 14 days.
-  await boat(["snapshot", config.sandbox, config.snapshot], SNAPSHOT_TIMEOUT_MS).catch((e) => log("snapshot failed", e.message));
+  await boat(["snapshot", config.sandbox, config.snapshot], SNAPSHOT_TIMEOUT_MS).catch((e) =>
+    log("snapshot failed", e.message),
+  );
   saveRunning = false;
   // Called off: it covers nothing. Still saving, it is this sleep's own: none starts beside one.
   if (phase !== "saving") return;
@@ -441,8 +426,12 @@ function hold(reason) {
 /** Runs the Boat CLI, in a login shell for its PATH. */
 function boat(args, timeout) {
   return new Promise((resolve, reject) => {
-    execFile("bash", ["-lc", 'boat "$@" --json', "boat", ...args], { timeout }, (err, stdout, stderr) =>
-      err ? reject(new Error(stderr.trim() || stdout.trim() || err.message)) : resolve(stdout),
+    NodeChildProcess.execFile(
+      "bash",
+      ["-lc", 'boat "$@" --json', "boat", ...args],
+      { timeout },
+      (err, stdout, stderr) =>
+        err ? reject(new Error(stderr.trim() || stdout.trim() || err.message)) : resolve(stdout),
     );
   });
 }
@@ -552,7 +541,9 @@ function status() {
     // Not busy, but a T3 restart would expire what they wait on.
     waitingThreads: working.waiting,
     keepAwakeForever: keepAwakeUntil === Infinity,
-    keepAwakeSecs: Number.isFinite(keepAwakeUntil) ? Math.max(0, Math.ceil((keepAwakeUntil - Date.now()) / 1000)) : 0,
+    keepAwakeSecs: Number.isFinite(keepAwakeUntil)
+      ? Math.max(0, Math.ceil((keepAwakeUntil - Date.now()) / 1000))
+      : 0,
     idleSecs: Math.floor((Date.now() - lastActivityAt) / 1000),
     // Its own stop failed and it is still idle: the laptop app stops it.
     sleepBroken,
@@ -579,12 +570,13 @@ function readBody(req) {
   });
 }
 
-const server = createServer(async (req, res) => {
+const server = NodeHttp.createServer(async (req, res) => {
   const reply = (code, value) => {
     res.writeHead(code, { "content-type": "application/json" });
     res.end(value === undefined ? "" : JSON.stringify(value));
   };
-  if (req.headers.authorization !== `Bearer ${config.secret}`) return reply(401, { error: "unauthorized" });
+  if (req.headers.authorization !== `Bearer ${config.secret}`)
+    return reply(401, { error: "unauthorized" });
   try {
     if (req.method === "GET" && req.url === "/status") return reply(200, status());
     if (req.method === "GET" && req.url === "/status?fresh") {
@@ -626,8 +618,13 @@ const server = createServer(async (req, res) => {
       // Too late during a stop (checked after the body: a stop can begin meanwhile): the proxy
       // waits for it, resumes the machine and asks again.
       if (phase === "stopping") return reply(409, { error: "stopping", ...status() });
-      const valid = minutes === null || (Number.isInteger(minutes) && minutes >= 0 && minutes <= MAX_KEEP_AWAKE_MINUTES);
-      if (!valid) return reply(400, { error: "minutes must be null (until stopped) or 0 to " + MAX_KEEP_AWAKE_MINUTES });
+      const valid =
+        minutes === null ||
+        (Number.isInteger(minutes) && minutes >= 0 && minutes <= MAX_KEEP_AWAKE_MINUTES);
+      if (!valid)
+        return reply(400, {
+          error: "minutes must be null (until stopped) or 0 to " + MAX_KEEP_AWAKE_MINUTES,
+        });
       setKeepAwake(minutes);
       if (minutes !== 0) touch("keep awake");
       return reply(200, status());
@@ -636,7 +633,8 @@ const server = createServer(async (req, res) => {
       // The proxy captured this state and saves the snapshot once stopped: no need to wait out
       // the grace period. The next tick decides the stop, after its usual checks.
       const { sequence } = JSON.parse((await readBody(req)) || "{}");
-      if (phase === "draining" && manifest && sequence === manifest.sequence) snapshotCovered = true;
+      if (phase === "draining" && manifest && sequence === manifest.sequence)
+        snapshotCovered = true;
       return reply(200, status());
     }
     if (req.method === "POST" && req.url === "/overdue-stop") {
@@ -671,7 +669,9 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "127.0.0.1", () => log(`watchdog on ${PORT}, sleep after ${config.sleepAfterSecs}s`));
+server.listen(PORT, "127.0.0.1", () =>
+  log(`watchdog on ${PORT}, sleep after ${config.sleepAfterSecs}s`),
+);
 // One tick at a time: a slow T3 check must never finish after a newer tick started a stop.
 async function loop() {
   await tick().catch((e) => log("tick failed", e.message));

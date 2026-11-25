@@ -5,6 +5,7 @@ on:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -62,6 +63,7 @@ jobs:
         suite:
           - root
           - desktop
+          - server
           - shared
           - web
     steps:
@@ -80,13 +82,18 @@ jobs:
           sudo apt-get install -y libsecret-1-dev pkg-config
       - name: Run root script tests
         if: matrix.suite == 'root'
+        env:
+          TMPDIR: /tmp
         run: vp test run scripts/build-desktop-artifact.test.ts scripts/build-desktop-installers.test.ts scripts/merge-update-manifests.test.ts
       - name: Run desktop unit tests
         if: matrix.suite == 'desktop'
-        run: vp test run apps/desktop/src/updates/MacArchiveUpdater.test.ts apps/desktop/src/app/DesktopAppIdentity.test.ts apps/desktop/src/app/DesktopLinuxUrlHandler.test.ts apps/desktop/src/boat/
+        run: vp test run apps/desktop/src/updates/MacArchiveUpdater.test.ts apps/desktop/src/app/DesktopAppIdentity.test.ts apps/desktop/src/app/DesktopLinuxUrlHandler.test.ts apps/desktop/src/app/DesktopPreReadyPlatform.test.ts apps/desktop/src/boat/
+      - name: Run server telemetry & update unit tests
+        if: matrix.suite == 'server'
+        run: vp test run apps/server/src/telemetry/AnalyticsService.test.ts
       - name: Run shared package tests
         if: matrix.suite == 'shared'
         run: vp run --filter @t3tools/shared test
       - name: Run web unit tests
         if: matrix.suite == 'web'
-        run: vp test run --project unit apps/web/src/branding.test.ts apps/web/src/components/boats/
+        run: vp test run apps/web/src/components/desktopUpdate.logic.test.ts apps/web/src/components/boats/
