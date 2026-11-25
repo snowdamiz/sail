@@ -30,6 +30,8 @@ export class RunningServerUnreachableError extends Schema.TaggedError<RunningSer
   }
 }
 
+const isRunningServerUnreachable = Schema.is(RunningServerUnreachableError);
+
 export class RunningServerNoReplyError extends Schema.TaggedError<RunningServerNoReplyError>()(
   "RunningServerNoReplyError",
   { origin: Schema.String, cause: Schema.Defect() },
@@ -85,10 +87,26 @@ const isUnanswered = (cause: unknown) =>
   Cause.isTimeoutError(cause) ||
   (HttpClientError.isHttpClientError(cause) && cause.response === undefined);
 
-/**
- * Sends a request to the server at `origin` once it answers as this home's environment, and
- * tells a request that never reached it from one whose reply was lost.
- */
+/** Sends a request to `origin`, telling a request that never reached it from one whose reply was lost. */
+const sendToServer = <A, E, R>(
+  origin: string,
+  scopes: ReadonlyArray<AuthEnvironmentScope>,
+  request: (client: ServerClient) => Effect.Effect<A, E, R>,
+) =>
+  serverClient(origin, scopes).pipe(
+    Effect.flatMap(request),
+    Effect.timeout(REQUEST_TIMEOUT),
+    Effect.scoped,
+    Effect.catchIf(neverConnected, (cause) =>
+      Effect.fail(new RunningServerUnreachableError({ origin, cause })),
+    ),
+    // Once connected, the server may have made the change; writing it again could repeat it.
+    Effect.catchIf(isUnanswered, (cause) =>
+      Effect.fail(new RunningServerNoReplyError({ origin, cause })),
+    ),
+  );
+
+/** Sends a request to the server at `origin` only once it answers as this home's environment. */
 export const requestServer = Effect.fn("RunningServer.requestServer")(function* <A, E, R>({
   origin,
   scopes,
@@ -112,18 +130,7 @@ export const requestServer = Effect.fn("RunningServer.requestServer")(function* 
       cause: `answered as environment ${descriptor.environmentId}, not ${expected}`,
     });
   }
-  return yield* serverClient(origin, scopes).pipe(
-    Effect.flatMap(request),
-    Effect.timeout(REQUEST_TIMEOUT),
-    Effect.scoped,
-    Effect.catchIf(neverConnected, (cause) =>
-      Effect.fail(new RunningServerUnreachableError({ origin, cause })),
-    ),
-    // Once connected, the server may have made the change; writing it again could repeat it.
-    Effect.catchIf(isUnanswered, (cause) =>
-      Effect.fail(new RunningServerNoReplyError({ origin, cause })),
-    ),
-  );
+  return yield* sendToServer(origin, scopes, request);
 });
 
 /**
@@ -154,10 +161,10 @@ export const changeState = Effect.fn("RunningServer.changeState")(function* <A, 
 
   const running = yield* readLiveServerRuntimeState(serverRuntimeStatePath);
   if (Option.isNone(running)) return yield* changeLocally(Effect.fail);
-  return yield* requestServer({ origin: running.value.origin, scopes, request: viaServer }).pipe(
+  return yield* sendToServer(running.value.origin, scopes, viaServer).pipe(
     // A refused connection reached no server, so the lock decides whether one still runs.
-    Effect.catchTags({
-      RunningServerUnreachableError: (unreachable) => changeLocally(() => Effect.fail(unreachable)),
-    }),
+    Effect.catchIf(isRunningServerUnreachable, (unreachable) =>
+      changeLocally(() => Effect.fail(unreachable)),
+    ),
   );
 });

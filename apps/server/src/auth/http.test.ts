@@ -176,7 +176,16 @@ it.effect("sets the selected browser session cookies through the HTTP route", ()
 it.effect("tells a browser that a pairing link was already used", () =>
   Effect.gen(function* () {
     const random = yield* SecureRandom.SecureRandom;
-    const requestContext = Context.make(SecureRandom.SecureRandom, random);
+    const unusedSecretStore = ServerSecretStore.ServerSecretStore.of({
+      get: () => Effect.succeedNone,
+      set: () => Effect.void,
+      create: () => Effect.void,
+      getOrCreateRandom: () => Effect.die("Not used by these routes."),
+      remove: () => Effect.void,
+    });
+    const requestContext = Context.make(SecureRandom.SecureRandom, random).pipe(
+      Context.add(ServerSecretStore.ServerSecretStore, unusedSecretStore),
+    );
     return yield* Effect.acquireUseRelease(
       Effect.sync(() => HttpRouter.toWebHandler(layerRoutes, { disableLogger: true })),
       (environment) =>
