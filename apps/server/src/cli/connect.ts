@@ -110,7 +110,7 @@ const authorizeCli = Effect.fn("cloud.cli.authorize")(function* (options: {
     options.headless ||
     (yield* headlessSessionConfig) ||
     !(process.stdin.isTTY && process.stdout.isTTY) ||
-    Option.isNone(yield* optionalHostedAppUrlConfig.pipe(Effect.orElseSucceed(Option.none)));
+    Option.isNone(yield* optionalHostedAppUrlConfig);
   if (!useOutOfBandOAuth) {
     const authorization = yield* tokens.get;
     if (authorization._tag === "Authorized") {

@@ -83,6 +83,35 @@ describe("hostedPairing", () => {
     expect(getLocalEnvironmentBootstraps).toHaveBeenCalledTimes(1);
   });
 
+  it("follows a desktop server that moved", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    try {
+      let host = "172.20.0.2";
+      vi.stubGlobal("window", {
+        location: { origin: "sail://app", href: "sail://app/settings" },
+        desktopBridge: {
+          getLocalEnvironmentEnabled: () => true,
+          getLocalEnvironmentBootstraps: () => [
+            {
+              id: PRIMARY_LOCAL_ENVIRONMENT_ID,
+              httpBaseUrl: `http://${host}:3773/`,
+              wsBaseUrl: `ws://${host}:3773/`,
+            },
+          ],
+        },
+      });
+      const { linkOrigin: freshLinkOrigin } = await import("./hostedPairing");
+      expect(freshLinkOrigin()).toBe("http://172.20.0.2:3773");
+
+      host = "172.20.0.9";
+      vi.advanceTimersByTime(60_000);
+      expect(freshLinkOrigin()).toBe("http://172.20.0.9:3773");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("has no link origin on a desktop with no local server", async () => {
     vi.resetModules();
     vi.stubGlobal("window", {

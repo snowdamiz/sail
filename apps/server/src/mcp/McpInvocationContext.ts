@@ -175,7 +175,7 @@ export interface McpInvocationScope {
  * The web app an outside client's thread links open in: the configured hosted app, else the
  * server it reached. T3 Code itself and peer links read `t3-thread://` links, so they get none.
  */
-export const clientWebOrigin = (
+const clientWebOrigin = (
   scope: Pick<McpInvocationScope, "client" | "origin">,
 ): string | undefined =>
   scope.client === undefined || scope.client.linked === true

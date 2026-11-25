@@ -5359,6 +5359,7 @@ describe("OrchestratorMcpService thread lookup", () => {
       const delegated = liveThreadShell(ThreadId.make("thread:delegated-task:command%3Amcp%3Aabc"));
       const ref = { environmentId: client.environmentId, threadId: delegated.id };
       const reached = { ...client, origin: "https://sail.example.test" };
+      const inThread = { ...client, client: undefined, origin: "http://127.0.0.1:3773" };
       const sent = yield* Ref.make(0);
       yield* Effect.gen(function* () {
         const mcp = yield* OrchestratorMcpService.OrchestratorMcpService;
@@ -5367,6 +5368,8 @@ describe("OrchestratorMcpService thread lookup", () => {
           [client, formatThreadLink(ref, "Delegated task")],
           [client, hostedThreadLink(ref, "https://elsewhere.example.test")],
           [reached, `See ${hostedThreadLink(ref, "https://sail.example.test")}.`],
+          [reached, hostedThreadLink(ref, "https://elsewhere.example.test")],
+          [inThread, `[Task](${hostedThreadLink(ref, "http://127.0.0.1:3773")})`],
         ] as const) {
           const read = yield* mcp
             .readThread(caller, { threadId: ThreadId.make(link) })

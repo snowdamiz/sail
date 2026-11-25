@@ -16,16 +16,25 @@ function configuredHostedAppUrl(): string | undefined {
 }
 
 // The desktop window's own origin is an app scheme, so it links to its local server instead. That
-// read is synchronous IPC, made once: threads render only after the server is known.
-let desktopServer: { readonly origin: string | undefined } | undefined;
+// read is synchronous IPC, and a restarted backend can move, so one read serves a few seconds.
+const DESKTOP_SERVER_READ_MS = 2_000;
+let desktopServer: { readonly origin: string | undefined; readonly readAt: number } | undefined;
 
 /** Without one, as on a desktop with no local server, links stay `t3-thread://` links. */
 export function linkOrigin(): string | undefined {
   return (
     webOrigin(configuredHostedAppUrl()) ??
     webOrigin(typeof window === "undefined" ? undefined : window.location?.origin) ??
-    (desktopServer ??= { origin: readDesktopServerOrigin() }).origin
+    desktopServerOrigin()
   );
+}
+
+function desktopServerOrigin(): string | undefined {
+  const now = Date.now();
+  if (desktopServer === undefined || now - desktopServer.readAt > DESKTOP_SERVER_READ_MS) {
+    desktopServer = { origin: readDesktopServerOrigin(), readAt: now };
+  }
+  return desktopServer.origin;
 }
 
 function readDesktopServerOrigin(): string | undefined {
