@@ -5,8 +5,9 @@ import {
   encodeComposerContextFragment,
 } from "@t3tools/shared/composerContextClipboard";
 import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+import { linkOrigin } from "../hostedPairing";
 import { importPastedComposerText } from "./composerInlineTokenPaste";
 
 const thread = {
@@ -28,8 +29,16 @@ const importAll =
   };
 
 describe("importPastedComposerText", () => {
+  beforeEach(() => {
+    vi.stubGlobal("window", { location: new URL("http://localhost:5733/env-1/thread-1") });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("pastes a copied thread link back as the chip it was copied from", () => {
-    const target = threadChipCopyTarget(thread, "Fix the login flow");
+    const target = threadChipCopyTarget(thread, "Fix the login flow", linkOrigin());
+    expect(target.value).toBe("http://localhost:5733/threads/env-1/thread-1");
     const imported: Array<ComposerContextClipboardFragment> = [];
     const text = importPastedComposerText(
       clipboard({
@@ -50,9 +59,24 @@ describe("importPastedComposerText", () => {
     expect(text).toBe(chip("Login"));
   });
 
+  it("makes a chip of this server's thread link pasted without T3's clipboard format", () => {
+    const text = importPastedComposerText(
+      clipboard({ "text/plain": "http://localhost:5733/threads/env-1/thread-1" }),
+      importAll([]),
+    );
+    expect(text).toBe(chip("Thread"));
+  });
+
   it("keeps the link when the composer cannot take the thread", () => {
-    const pasted = "https://app.t3.codes/threads/env-1/thread-1";
+    const pasted = "http://localhost:5733/threads/env-1/thread-1";
     expect(importPastedComposerText(clipboard({ "text/plain": pasted }), () => new Map())).toBe(
+      pasted,
+    );
+  });
+
+  it("keeps an app.t3.codes link as written", () => {
+    const pasted = "https://app.t3.codes/threads/env-1/thread-1";
+    expect(importPastedComposerText(clipboard({ "text/plain": pasted }), importAll([]))).toBe(
       pasted,
     );
   });

@@ -21,15 +21,16 @@ export function unknownThreadLinkLabel(
 }
 
 /**
- * Writes each link with its thread's current title, a hosted link as a v2 link. A link `title`
- * cannot resolve becomes plain text, its written label or a neutral one, except a labeled v1
- * link, which may open elsewhere.
+ * Writes each link with its thread's current title, a link into the web app at `hostedOrigin` as
+ * a v2 link. A link `title` cannot resolve becomes plain text, its written label or a neutral one,
+ * except a labeled v1 link, which may open elsewhere.
  */
 export function relabelThreadLinks(
   markdown: string,
   messageEnvironmentId: EnvironmentId,
   title: (ref: ScopedThreadRef, label: string | undefined) => string | undefined,
   resolve: MFunctionType = mFallback,
+  hostedOrigin?: string,
 ): string {
   return replaceThreadLinks(markdown, (written, label) => {
     for (const ref of threadLinkCandidates(written, messageEnvironmentId)) {
@@ -42,5 +43,5 @@ export function relabelThreadLinks(
     }
     if (label !== undefined && written.environmentId === null) return undefined;
     return label?.trim() || unknownThreadLinkLabel(written, messageEnvironmentId, resolve);
-  });
+  }, hostedOrigin);
 }

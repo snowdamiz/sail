@@ -100,6 +100,7 @@ export function threadContextRecord(ref: ScopedThreadRef, title: string): Thread
  * Turns pasted thread links into thread chip references. A record the copy carried names its
  * chip, else the thread's title here, read by key, or the link's own label. `accept` gives the
  * chip's id, or none to keep the link as written. A v1 link names no machine, so it stays a link.
+ * Links into the web app at `hostedOrigin` count too.
  */
 export function threadLinkContextReferences(
   text: string,
@@ -107,6 +108,7 @@ export function threadLinkContextReferences(
   title: (ref: ScopedThreadRef) => string | undefined,
   accept: (record: ThreadContextRecord) => ComposerContextId | undefined = (record) =>
     record.contextId,
+  hostedOrigin?: string,
 ): { readonly text: string; readonly records: ReadonlyArray<ThreadContextRecord> } {
   const records = new Map<ComposerContextId, ThreadContextRecord>();
   const rewritten = replaceThreadLinks(text, (link, label) => {
@@ -131,7 +133,7 @@ export function threadLinkContextReferences(
     if (contextId === undefined) return undefined;
     records.set(record.contextId, record);
     return formatComposerContextReference({ ...record, contextId });
-  });
+  }, hostedOrigin);
   return { text: rewritten, records: [...records.values()] };
 }
 

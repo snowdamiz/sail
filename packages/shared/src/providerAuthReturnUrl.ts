@@ -1,6 +1,10 @@
 import { isLoopbackHost } from "./preview.ts";
 
-export function providerAuthReturnUrl(value: string | undefined): string | undefined {
+/** A sign-in returns to the desktop app, a loopback page, or a page at the caller's `trustedOrigin`. */
+export function providerAuthReturnUrl(
+  value: string | undefined,
+  trustedOrigin?: string,
+): string | undefined {
   if (!value) return undefined;
   try {
     const url = new URL(value);
@@ -8,7 +12,8 @@ export function providerAuthReturnUrl(value: string | undefined): string | undef
       ["sail:", "sail-dev:", "t3code:", "t3code-dev:"].includes(url.protocol) && url.host === "app";
     const web =
       ["http:", "https:"].includes(url.protocol) &&
-      (isLoopbackHost(url.hostname) || url.origin === "https://app.t3.codes");
+      (isLoopbackHost(url.hostname) ||
+        (!!trustedOrigin && url.origin === new URL(trustedOrigin).origin));
     if (
       url.username ||
       url.password ||

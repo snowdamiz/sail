@@ -24,19 +24,19 @@ export interface ThreadReferenceCopyTarget {
 }
 
 /**
- * A link that opens the thread from anywhere, through `hostedAppUrl`, this build's hosted app. It
+ * A link that opens the thread in the web app at `linkOrigin`, a hosted app or this server. It
  * pastes back as a chip into any composer whose agent reads that thread's machine.
  */
 export function threadChipCopyTarget(
   threadRef: ScopedThreadRef,
   title: string,
-  hostedAppUrl?: string,
+  linkOrigin: string,
   resolve: MFunctionType = mFallback,
 ): ThreadReferenceCopyTarget {
   const record = threadContextRecord(threadRef, title);
   return {
     kind: "thread",
-    value: hostedThreadLink(threadRef, hostedAppUrl),
+    value: hostedThreadLink(threadRef, linkOrigin),
     description: record.title,
     fragment: { version: 1, source: { environmentId: threadRef.environmentId }, records: [record] },
     clipboardTarget: "thread",
@@ -53,7 +53,7 @@ export function resolveThreadReferenceCopyTarget(
     readonly openPanelPullRequestUrl?: string | null | undefined;
     readonly pullRequests?: ReadonlyArray<ThreadPullRequestLink> | undefined;
     readonly linkedPullRequestUrl?: string | null;
-    readonly hostedAppUrl?: string;
+    readonly linkOrigin: string;
   },
   resolve: MFunctionType = mFallback,
 ): ThreadReferenceCopyTarget | null {
@@ -71,5 +71,5 @@ export function resolveThreadReferenceCopyTarget(
         successTitle: resolve(msg("PR link copied")),
         failureTitle: resolve(msg("Failed to copy PR link")),
       }
-    : threadChipCopyTarget(input.threadRef, input.title, input.hostedAppUrl, resolve);
+    : threadChipCopyTarget(input.threadRef, input.title, input.linkOrigin, resolve);
 }

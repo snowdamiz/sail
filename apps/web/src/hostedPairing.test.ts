@@ -3,12 +3,14 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   buildHostedPairingUrl,
   hasHostedPairingRequest,
+  linkOrigin,
   readHostedPairingRequest,
 } from "./hostedPairing";
 
 describe("hostedPairing", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
   it("reads hosted pairing host and query token parameters", () => {
@@ -30,7 +32,7 @@ describe("hostedPairing", () => {
         host: "https://backend.example.com:3773",
         token: "pairing-token",
         label: "Workstation",
-      }),
+      })!,
     );
 
     expect(url.origin).toBe("https://preview.t3.codes");
@@ -39,5 +41,23 @@ describe("hostedPairing", () => {
     expect(url.searchParams.get("label")).toBe("Workstation");
     expect(url.searchParams.has("token")).toBe(false);
     expect(url.hash).toBe("#token=pairing-token");
+  });
+
+  it.each([
+    ["absent", undefined],
+    ["empty", ""],
+  ])("builds no hosted pairing link and links to this server with an %s hosted app", (_, url) => {
+    if (url !== undefined) vi.stubEnv("VITE_HOSTED_APP_URL", url);
+    vi.stubGlobal("window", { location: new URL("https://sail.example.test/settings/access") });
+
+    expect(buildHostedPairingUrl({ host: "https://backend.example.com", token: "t" })).toBeNull();
+    expect(linkOrigin()).toBe("https://sail.example.test");
+  });
+
+  it("links to the hosted app the build names", () => {
+    vi.stubEnv("VITE_HOSTED_APP_URL", "https://hosted.example.test");
+    vi.stubGlobal("window", { location: new URL("https://sail.example.test/") });
+
+    expect(linkOrigin()).toBe("https://hosted.example.test");
   });
 });
