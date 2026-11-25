@@ -231,6 +231,24 @@ tailscale serve --https=443 --set-path=/ off
 If that port is already in use, choose another with
 `--tailscale-serve-port`. See `t3 pair --help` for other pairing options.
 
+### Behind a proxy or hosting platform
+
+When a reverse proxy or a platform such as Fly.io serves the server at its own
+address, give the server that address so pairing links use it:
+
+```bash
+t3 serve --host 0.0.0.0 --port 8080 --public-url https://demo.fly.dev --startup-pairing off
+```
+
+`--public-url` (or `SAIL_PUBLIC_URL`) sets the address in the startup output,
+`t3 pair`, and `t3 auth pairing create`. `--startup-pairing off` (or
+`SAIL_STARTUP_PAIRING=off`) keeps the server from printing a pairing token when
+it starts, so no token lands in logs that others can read. Run `t3 pair` in a
+shell on the server when you need a link.
+
+In a script, `t3 auth pairing create --json --require-running` prints a link only
+while a server runs for that data directory, and fails otherwise.
+
 ### Hosted web app
 
 T3 Code has no default hosted web app. When your build names one, Sharing &
