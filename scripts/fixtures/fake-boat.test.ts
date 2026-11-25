@@ -113,6 +113,187 @@ function refuses(port: number): Promise<boolean> {
   });
 }
 
+const SANDBOX = NodePath.join(FAKE_DIR, "sandbox");
+/** The argv `ClaudeProvider.ts`'s capabilities probe makes the Agent SDK pass. */
+const CLAUDE_PROBE_ARGV = [
+  "--output-format",
+  "stream-json",
+  "--verbose",
+  "--input-format",
+  "stream-json",
+  "--setting-sources=user,project,local",
+  "--strict-mcp-config",
+  "--no-session-persistence",
+  "--settings",
+  '{"disableAllHooks":true}',
+];
+
+/** Writes each frame as a line, closes stdin, and reads the reply lines until the fake exits. */
+function converse(
+  script: string,
+  args: ReadonlyArray<string>,
+  frames: ReadonlyArray<object>,
+  env: NodeJS.ProcessEnv,
+): Promise<{ readonly status: number | null; readonly replies: ReadonlyArray<unknown> }> {
+  const child = NodeChildProcess.spawn("node", [NodePath.join(SANDBOX, script), ...args], { env });
+  let stdout = "";
+  child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
+  child.stdin.end(frames.map((frame) => `${JSON.stringify(frame)}\n`).join(""));
+  return new Promise((resolve) =>
+    child.once("close", (status) => resolve({ status, replies: jsonLines(stdout) })),
+  );
+}
+
+describe("fake claude and codex answering T3's provider probes", () => {
+  let home: string;
+  let env: NodeJS.ProcessEnv;
+
+  beforeAll(async () => {
+    home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "fake-probe-test-"));
+    const inherited = Object.entries(process.env).filter(
+      ([key]) =>
+        !["CLAUDE_CONFIG_DIR", "CODEX_HOME", "BROWSER"].includes(key) &&
+        !key.startsWith("FAKE_AUTH_"),
+    );
+    env = { ...Object.fromEntries(inherited), HOME: home, FAKE_AUTH_APPROVE_SECS: "0" };
+  });
+
+  afterAll(async () => {
+    if (home) await NodeFSP.rm(home, { recursive: true, force: true });
+  });
+
+  it("reports the Claude account to the Agent SDK's initialize, signed out and after a pasted code", async () => {
+    const probe = () =>
+      converse(
+        "claude.ts",
+        CLAUDE_PROBE_ARGV,
+        [
+          {
+            request_id: "a",
+            type: "control_request",
+            request: { subtype: "initialize", systemPrompt: [""] },
+          },
+          {
+            request_id: "b",
+            type: "control_request",
+            request: { subtype: "get_usage", skip_behaviors: true },
+          },
+          { request_id: "c", type: "control_request", request: { subtype: "get_settings" } },
+          {
+            type: "user",
+            message: { role: "user", content: "hi" },
+            parent_tool_use_id: null,
+            session_id: "",
+          },
+        ],
+        env,
+      );
+    const signedOut = await probe();
+    expect(signedOut.status).toBe(0);
+    expect(signedOut.replies).toMatchObject([
+      {
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: "a",
+          response: { account: { tokenSource: "none" } },
+        },
+      },
+      { type: "control_response", response: { subtype: "error", request_id: "b" } },
+      { type: "control_response", response: { subtype: "error", request_id: "c" } },
+      { type: "result", subtype: "error_during_execution", is_error: true },
+    ]);
+    expect(signedOut.replies[0]).not.toHaveProperty("response.response.account.email");
+
+    const login = NodeChildProcess.spawn(
+      "node",
+      [NodePath.join(SANDBOX, "claude.ts"), "auth", "login"],
+      { env },
+    );
+    let printed = "";
+    login.stdout.on("data", (chunk: Buffer) => (printed += chunk.toString()));
+    await expect.poll(() => printed, POLL).toContain("Paste code here if prompted > ");
+    const state = /[?&]state=([^&\s]+)/.exec(printed)?.[1] ?? "";
+    login.stdin.write(`fake-code#${decodeURIComponent(state)}\n`);
+    expect(await new Promise((resolve) => login.once("close", resolve))).toBe(0);
+
+    const signedIn = await probe();
+    expect(signedIn.replies[0]).toMatchObject({
+      response: {
+        response: {
+          account: {
+            tokenSource: "claude.ai",
+            email: "fake-user@localtest.me",
+            subscriptionType: "max",
+            apiProvider: "firstParty",
+          },
+        },
+      },
+    });
+  });
+
+  it("reports the Codex account over app-server JSON-RPC, signed out and after a device code", async () => {
+    const appServer = () =>
+      converse(
+        "codex.ts",
+        ["app-server", "-c", "thread_unload_delay_secs=0"],
+        [
+          { id: 0, method: "account/read", params: {} },
+          {
+            id: 1,
+            method: "initialize",
+            params: {
+              clientInfo: { name: "T3 Code", title: "T3 Code", version: "0.0.0" },
+              capabilities: { experimentalApi: true },
+            },
+          },
+          { method: "initialized" },
+          { id: 2, method: "account/read", params: {} },
+          { id: 3, method: "skills/list", params: { cwds: [home] } },
+          { id: 4, method: "model/list", params: {} },
+          { id: 5, method: "config/read", params: { includeLayers: false } },
+        ],
+        env,
+      );
+    const signedOut = await appServer();
+    expect(signedOut.status).toBe(0);
+    expect(signedOut.replies).toMatchObject([
+      { id: 0, error: { message: "Not initialized" } },
+      {
+        id: 1,
+        result: {
+          codexHome: NodePath.join(home, ".codex"),
+          userAgent: expect.stringMatching(/\/0\.200\.0/),
+        },
+      },
+      { id: 2, result: { account: null, requiresOpenaiAuth: true } },
+      { id: 3, result: { data: [] } },
+      { id: 4, result: { data: [], nextCursor: null } },
+      { id: 5, error: { code: -32601 } },
+    ]);
+    const cachePath = NodePath.join(home, ".codex", "models_cache.json");
+    expect(NodeFS.existsSync(cachePath)).toBe(false);
+
+    const login = await run(
+      "node",
+      [NodePath.join(SANDBOX, "codex.ts"), "login", "--device-auth"],
+      env,
+    );
+    expect(login.status, login.stderr).toBe(0);
+    const signedIn = await appServer();
+    expect(signedIn.replies[2]).toEqual({
+      id: 2,
+      result: {
+        account: { type: "chatgpt", email: "fake-user@localtest.me", planType: "pro" },
+        requiresOpenaiAuth: true,
+      },
+    });
+    const cache = JSON.parse(await NodeFSP.readFile(cachePath, "utf8")) as { fetched_at: string };
+    const signedInAt = NodeFS.statSync(NodePath.join(home, ".codex", "auth.json")).mtimeMs;
+    expect(Date.parse(cache.fetched_at)).toBeGreaterThanOrEqual(Math.floor(signedInAt));
+  });
+});
+
 describe.skipIf(!hasDocker())("fake boat", () => {
   let home: string;
   let env: NodeJS.ProcessEnv;

@@ -7,11 +7,13 @@ import {
   AUTH_ORIGIN,
   callbackLogin,
   deviceCodeSchedule,
+  FAKE_IDENTITY,
   fakeToken,
   userCode,
   waitForApproval,
 } from "./auth.ts";
 import { type CommandSpec, parse, UsageError } from "./cli.ts";
+import { type JsonObject, serveJsonLines } from "./jsonl.ts";
 
 /** Matches `CodexInstallation.ts`'s `^codex-cli (\d+\.\d+\.\d+)$` and every manifest `minVersion`. */
 const VERSION = "0.200.0";
@@ -21,9 +23,12 @@ interface Command extends CommandSpec {
   readonly run: (flags: ReadonlyMap<string, string | true>) => Promise<number> | number;
 }
 
+function codexHome(): string {
+  return NodePath.resolve(process.env.CODEX_HOME ?? NodePath.join(NodeOS.homedir(), ".codex"));
+}
+
 function authPath(): string {
-  const home = process.env.CODEX_HOME ?? NodePath.join(NodeOS.homedir(), ".codex");
-  return NodePath.join(home, "auth.json");
+  return NodePath.join(codexHome(), "auth.json");
 }
 
 function signIn(): void {
@@ -84,6 +89,74 @@ async function browserLogin(): Promise<number> {
   return 0;
 }
 
+type RpcFrame =
+  | { readonly kind: "request"; readonly id: string | number; readonly method: string }
+  | { readonly kind: "notification"; readonly method: string }
+  | { readonly kind: "response" };
+
+function parseRpcFrame(message: JsonObject): RpcFrame {
+  const { id, method } = message;
+  if (typeof method !== "string") return { kind: "response" };
+  if (id === undefined) return { kind: "notification", method };
+  if (typeof id !== "string" && typeof id !== "number") {
+    throw new Error(`malformed JSON-RPC request: ${JSON.stringify(message)}`);
+  }
+  return { kind: "request", id, method };
+}
+
+/**
+ * What `probeCodexAppServerProvider` in `CodexProvider.ts` needs before it decides sign-in state;
+ * shapes from `packages/effect-codex-app-server/src/_generated/schema.gen.ts`. `skills/list` and
+ * `model/list` must succeed or the probe fails; every other method gets a JSON-RPC error.
+ */
+const RPC_RESULTS: ReadonlyMap<string, () => JsonObject> = new Map([
+  [
+    "initialize",
+    () => ({
+      codexHome: codexHome(),
+      platformFamily: "unix",
+      platformOs: "linux",
+      userAgent: `codex_cli_rs/${VERSION} (fake)`,
+    }),
+  ],
+  [
+    "account/read",
+    () =>
+      NodeFS.existsSync(authPath())
+        ? {
+            account: { type: "chatgpt", email: FAKE_IDENTITY, planType: "pro" },
+            requiresOpenaiAuth: true,
+          }
+        : { account: null, requiresOpenaiAuth: true },
+  ],
+  ["skills/list", () => ({ data: [] })],
+  ["model/list", () => ({ data: [], nextCursor: null })],
+]);
+
+const METHOD_NOT_FOUND = -32601;
+
+async function appServer(): Promise<number> {
+  // T3 waits for app-server to refresh this shared catalog after spawn before it trusts `model/list`.
+  if (NodeFS.existsSync(authPath())) {
+    const cache = { fetched_at: new Date().toISOString(), models: [] };
+    NodeFS.writeFileSync(NodePath.join(codexHome(), "models_cache.json"), JSON.stringify(cache));
+  }
+  let initialized = false;
+  await serveJsonLines((message) => {
+    const frame = parseRpcFrame(message);
+    if (frame.kind !== "request") return [];
+    const result = RPC_RESULTS.get(frame.method);
+    const allowed = initialized || frame.method === "initialize";
+    if (!result || !allowed) {
+      const reason = allowed ? `fake codex does not support ${frame.method}` : "Not initialized";
+      return [{ id: frame.id, error: { code: METHOD_NOT_FOUND, message: reason } }];
+    }
+    initialized = true;
+    return [{ id: frame.id, result: result() }];
+  });
+  return 0;
+}
+
 const TABLE: ReadonlyArray<Command> = [
   {
     path: ["--version"],
@@ -93,11 +166,11 @@ const TABLE: ReadonlyArray<Command> = [
     },
   },
   {
-    // T3's installation probe only checks that this exits 0; it never starts the app server.
+    // `codexAppServerArgs` in `codexLaunchArgs.ts` passes `-c thread_unload_delay_secs=0`.
     path: ["app-server"],
-    flags: { help: "boolean" },
+    flags: { help: "boolean", c: "string" },
     run: (flags) => {
-      if (!flags.has("help")) throw new Error("fake codex has no app server");
+      if (!flags.has("help")) return appServer();
       console.log("Usage: codex app-server [OPTIONS]");
       return 0;
     },
