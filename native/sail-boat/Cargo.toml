@@ -1,0 +1,45 @@
+[package]
+name = "sail-boat"
+version = "0.1.0"
+description = "Headless Boat sandbox sidecar daemon for Sail"
+license = "MIT"
+edition = "2024"
+publish = false
+default-run = "sail-boatd"
+
+[lib]
+name = "sail_boat"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sail-boatd"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+axum = { version = "0.8", features = ["ws"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "6"
+which = "7"
+rand = "0.8"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+url = "2"
+urlencoding = "2"
+bytes = "1"
+sha2 = "0.10"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = 3
+panic = "abort"
+strip = true
