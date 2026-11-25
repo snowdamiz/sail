@@ -23,6 +23,8 @@
         "fixtures/*/*.js",
         "fixtures/fake-fly/fly.ts",
         "fixtures/fake-boat/boat.ts",
+        "fixtures/fake-boat/relay.ts",
+        "fixtures/fake-boat/relay-client.ts",
         "fixtures/fake-boat/sandbox/*.ts",
         "fixtures/replay-provider.ts",
         "fixtures/release-mirror.ts",
