@@ -1109,6 +1109,36 @@ export const DesktopAppleSpeechTranscribeInputSchema = Schema.Struct({
 export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
+export type DesktopBoatDaemonPhase = "starting" | "ready" | "error" | "stopped";
+
+export const DesktopBoatDaemonPhaseSchema = Schema.Literals([
+  "starting",
+  "ready",
+  "error",
+  "stopped",
+]);
+
+export interface DesktopBoatStatus {
+  readonly phase: DesktopBoatDaemonPhase;
+  readonly baseUrl: string | null;
+  readonly mcpPort: number | null;
+  readonly error: string | null;
+}
+
+export const DesktopBoatStatusSchema: Schema.Codec<DesktopBoatStatus> = Schema.Struct({
+  phase: DesktopBoatDaemonPhaseSchema,
+  baseUrl: Schema.NullOr(Schema.String),
+  mcpPort: Schema.NullOr(Schema.Int),
+  error: Schema.NullOr(Schema.String),
+});
+
+export interface DesktopBoatBridge {
+  readonly getStatus: () => Promise<DesktopBoatStatus>;
+  readonly invoke: (command: string, args?: unknown) => Promise<unknown>;
+  readonly onState: (listener: (state: unknown) => void) => () => void;
+  readonly onStatus: (listener: (status: DesktopBoatStatus) => void) => () => void;
+}
+
 export interface DesktopBridge {
   getAppBranding: () => DesktopAppBranding | null;
   getDatabaseMigrationProgress?: () => Promise<DatabaseMigrationProgress | null>;
@@ -1247,6 +1277,8 @@ export interface DesktopBridge {
     onRequest: (listener: (request: DesktopAppActivationRequest) => void) => () => void;
   };
   preview: DesktopPreviewBridge;
+  /** Embedded Sail Boats sidecar daemon bridge. */
+  boat?: DesktopBoatBridge;
   /** On-device dictation through macOS 26 SpeechAnalyzer; absent in older desktop builds. */
   appleSpeech?: {
     supportedLocales: () => Promise<readonly string[]>;

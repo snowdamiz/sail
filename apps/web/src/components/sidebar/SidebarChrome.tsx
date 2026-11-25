@@ -1,4 +1,10 @@
-import { ArrowLeftIcon, ArrowRightIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  ChartNoAxesColumnIcon,
+  SailboatIcon,
+  SettingsIcon,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { T, useGT } from "gt-react";
 import { memo } from "react";
@@ -256,6 +262,11 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     void navigate({ to: "/settings" });
   };
 
+  const handleBoatsClick = () => {
+    closeMobileSidebar();
+    void navigate({ to: "/boats" });
+  };
+
   const handleUsageClick = () => {
     if (isMobile) {
       setOpenMobile(false);
@@ -285,6 +296,11 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             icon={<SettingsIcon />}
             label={gt("Settings")}
             onClick={handleSettingsClick}
+          />
+          <SidebarUtilityItem
+            icon={<SailboatIcon />}
+            label={gt("Boats")}
+            onClick={handleBoatsClick}
           />
           {pullRequestsSupported ? (
             <SidebarUtilityItem

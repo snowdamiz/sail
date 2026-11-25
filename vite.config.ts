@@ -15,12 +15,7 @@ const TEST_EXCLUDE = [
 
 // Directories whose tests belong to a package's own test config. desktop also
 // owns the kde-snap-shot tests through its `include`.
-const TEST_CONFIG_PACKAGES = [
-  "apps/desktop",
-  "apps/server",
-  "apps/web",
-  "packages/client-runtime",
-];
+const TEST_CONFIG_PACKAGES = ["apps/desktop", "apps/server", "apps/web", "packages/client-runtime"];
 
 // `vp test run <file>` from the repo root hands each file to its package's
 // config. Packages that borrow this config (`--config ../../vite.config.ts`) run
@@ -686,6 +681,26 @@ export default defineConfig({
         ],
         rules: {
           "t3code/no-mobile-uniwind-theme-escape-hatches": ["error", { allowUniwindTheme: true }],
+        },
+      },
+      {
+        // Ported Sail Boats UI uses its own scoped CSS (.sail-boats-scope) and pixel-art Ocean canvas.
+        files: ["apps/web/src/components/boats/**"],
+        rules: {
+          "shadcn/no-unknown-classes": "off",
+          "shadcn/no-raw-colors": "off",
+          "shadcn/require-static-classes": "off",
+          "shadcn/no-arbitrary-values": "off",
+          "t3code/no-untranslated-copy": "off",
+          "t3code/no-native-title-tooltip": "off",
+          "t3code/no-em-dash-copy": "off",
+          "t3code/no-manual-memo": "off",
+          "t3code/no-raw-resize-observer": "off",
+          "t3code/no-unreasoned-state-sync": "off",
+          "react/set-state-in-effect": "off",
+          "react/no-array-index-key": "off",
+          "react/purity": "off",
+          "react/exhaustive-effect-dependencies": "off",
         },
       },
     ],

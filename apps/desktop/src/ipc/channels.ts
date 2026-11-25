@@ -155,3 +155,8 @@ export const COMPLETE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:complete-legacy-lo
 export const RESTART_AUDIO_SERVICE_CHANNEL = "desktop:restart-audio-service";
 
 export const START_FILE_DRAG_CHANNEL = "desktop:start-file-drag";
+
+export const BOAT_GET_STATUS_CHANNEL = "desktop:boat-get-status";
+export const BOAT_INVOKE_CHANNEL = "desktop:boat-invoke";
+export const BOAT_STATE_CHANNEL = "desktop:boat-state";
+export const BOAT_STATUS_CHANNEL = "desktop:boat-status";

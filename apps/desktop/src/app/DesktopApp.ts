@@ -23,6 +23,7 @@ import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as PreviewPasskeys from "../preview/Passkeys.ts";
 import * as DesktopBackendManager from "../backend/DesktopBackendManager.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
+import * as DesktopBoatSupervisor from "../boat/DesktopBoatSupervisor.ts";
 import * as DesktopHomeOwner from "../backend/DesktopHomeOwner.ts";
 import * as DesktopLocalEnvironmentAuth from "../backend/DesktopLocalEnvironmentAuth.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
@@ -312,6 +313,7 @@ const bootstrap = Effect.fn("desktop.bootstrap")(function* (backendStarted: bool
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
   const snapShot = yield* DesktopSnapShot.DesktopSnapShot;
   const appActivation = yield* DesktopAppActivation.DesktopAppActivation;
+  const boatSupervisor = yield* DesktopBoatSupervisor.DesktopBoatSupervisor;
   const settings = yield* desktopSettings.get;
   const startAppActivation = appActivation.start.pipe(
     Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),
@@ -322,6 +324,8 @@ const bootstrap = Effect.fn("desktop.bootstrap")(function* (backendStarted: bool
   }
 
   yield* snapShot.initialize;
+  // Launch the embedded Sail Boat sidecar in the background so it never blocks main window startup.
+  yield* Effect.forkScoped(boatSupervisor.start);
   // Only the user's own login shell PATH shows every t3 a new terminal runs; a fresh install has
   // no cached one. Without it, the command is left to Settings.
   const installCli = (yield* DesktopCliCommand.DesktopCliCommand).installOnFirstLaunch;
@@ -453,10 +457,12 @@ const scopedProgram = Effect.scoped(
 
     const shutdown = yield* DesktopShutdown.DesktopShutdown;
     const rendererHistory = yield* DesktopRendererHistory.DesktopRendererHistory;
+    const boatSupervisor = yield* DesktopBoatSupervisor.DesktopBoatSupervisor;
 
     yield* Effect.addFinalizer(() =>
-      // Quit can outrun layer finalizers; stop pooled backends here so they receive SIGTERM before OS teardown.
+      // Quit can outrun layer finalizers; stop pooled backends and the boat daemon here so they receive SIGTERM before OS teardown.
       stopAllPoolInstances().pipe(
+        Effect.ensuring(boatSupervisor.stop),
         Effect.ensuring(rendererHistory.shutdown),
         Effect.ensuring(shutdown.markComplete),
         Effect.withSpan("desktop.app.shutdown"),

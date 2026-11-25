@@ -6,7 +6,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
 import * as Schema from "effect/Schema";
-import { isLoopbackHostname } from "@t3tools/shared/hostClassification";
+import { isLocalLoopbackHost } from "@t3tools/shared/hostClassification";
 import { fromYaml } from "@t3tools/shared/schemaYaml";
 import { compareSemverVersions } from "@t3tools/shared/semver";
 
@@ -62,7 +62,7 @@ interface Options {
 
 function secureUrl(raw: string): URL {
   const url = new URL(raw);
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopbackHostname(url.hostname)))
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLocalLoopbackHost(url.hostname)))
     throw new Error("The update feed must use HTTPS.");
   return url;
 }
@@ -158,7 +158,7 @@ export class MacArchiveUpdater extends NodeEvents.EventEmitter {
     const feed =
       this.feed ??
       decodeFeed(
-        Schema.decodeUnknownSync(fromYaml(Feed))(
+        Schema.decodeSync(fromYaml(Feed))(
           await NodeFSP.readFile(
             NodePath.join(this.options.resourcesDir(), "app-update.yml"),
             "utf8",
