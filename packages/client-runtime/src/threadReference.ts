@@ -23,10 +23,7 @@ export interface ThreadReferenceCopyTarget {
   readonly failureTitle: string;
 }
 
-/**
- * A link that opens the thread in the web app at `linkOrigin`, a hosted app or this server. It
- * pastes back as a chip into any composer whose agent reads that thread's machine.
- */
+/** Pastes back as a chip into any composer whose agent reads that thread's machine. */
 export function threadChipCopyTarget(
   threadRef: ScopedThreadRef,
   title: string,

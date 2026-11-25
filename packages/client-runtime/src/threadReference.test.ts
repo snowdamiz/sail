@@ -99,7 +99,6 @@ describe("resolveThreadReferenceCopyTarget", () => {
         }),
       ],
     });
-    // The plain text opens the thread in the web app and pastes back as the copied record's chip.
     expect(target!.value).toBe("https://sail.example.test/threads/env-1/thread-1");
     expect(
       threadLinkContextReferences(

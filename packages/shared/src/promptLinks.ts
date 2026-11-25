@@ -208,7 +208,6 @@ export function buildNewThreadLink(input: {
 const APP_SCHEME = /^(?:sail|t3code)(?:-[a-z]+)?:$/;
 const THREAD_PATH = /^\/([^/]+)\/([^/]+)\/?$/;
 
-/** `webAppUrl` is the web app whose own links count too; without one only app-scheme links do. */
 export function promptLinkAppPath(value: string, webAppUrl?: string): string | null {
   const url = parseUrl(value);
   if (!url) return null;

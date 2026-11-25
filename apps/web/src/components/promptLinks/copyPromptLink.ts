@@ -22,7 +22,6 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { msg } from "gt-react";
 import { m } from "~/i18n/messages";
 
-/** A shareable link to a prompt, or null when the prompt cannot fit in one. */
 export function promptLinkFor(
   prompt: string,
   context?: {

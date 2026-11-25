@@ -105,7 +105,6 @@ export function makeRelayUrlConfig(fallback = buildTimeRelayUrl) {
 
 export const relayUrlConfig = makeRelayUrlConfig();
 
-/** Fails when unset: a build trusts and links to a hosted app only when one is configured. */
 export const hostedAppUrlConfig = Config.NonEmptyString("T3CODE_HOSTED_APP_URL").pipe(
   Config.map((value) => value.trim()),
   Config.mapEffect(validateHostedAppUrl),

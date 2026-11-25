@@ -1,6 +1,5 @@
 import { isLoopbackHost } from "./preview.ts";
 
-/** A sign-in returns to the desktop app, a loopback page, or a page at the caller's `trustedOrigin`. */
 export function providerAuthReturnUrl(
   value: string | undefined,
   trustedOrigin?: string,

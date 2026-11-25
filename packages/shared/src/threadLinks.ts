@@ -9,21 +9,24 @@ const HOSTED_SEGMENT = "[A-Za-z0-9_%-]+";
 const THREAD_HREF = String.raw`t3-thread:\/\/v[12]\/`;
 // A label stops at any bracket, so a run of unclosed brackets is scanned once, not once per bracket.
 const LABEL = String.raw`[^[\]\n]*`;
+const NOT_INSIDE_A_LONGER_URL = {
+  before: String.raw`(?<![A-Za-z0-9%/?#=&@+-])`,
+  after: String.raw`(?![\w%/?#-])`,
+};
 
 interface ThreadLinkSyntax {
-  /** `<origin>/threads/`, absent without a web origin, so only `t3-thread://` links match. */
   readonly hostedPrefix: string | undefined;
   readonly pattern: RegExp;
 }
 
-// Earlier alternatives claim text so later ones cannot match inside it: an escaped character opens
-// nothing, code is literal, and a link to anywhere else keeps a thread URL in its label or href.
 function makeThreadLinkSyntax(hostedPrefix: string | undefined): ThreadLinkSyntax {
   const hostedLink =
     hostedPrefix === undefined
       ? undefined
       : `${hostedPrefix.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}${HOSTED_SEGMENT}/${HOSTED_SEGMENT}`;
   const orHosted = hostedLink === undefined ? "" : `|${hostedLink}`;
+  // Earlier alternatives claim text so later ones cannot match inside it: an escaped character opens
+  // nothing, code is literal, and a link to anywhere else keeps a thread URL in its label or href.
   const alternatives = [
     String.raw`\\[!-/:-@[-\`{-~]`,
     String.raw`(?<fence>(\`{3,}|~{3,})[\s\S]*?(?:\2|$))`,
@@ -33,16 +36,15 @@ function makeThreadLinkSyntax(hostedPrefix: string | undefined): ThreadLinkSynta
     String.raw`\[${LABEL}\]\((?:<[^<>\n]*>|[^\s()]*(?:\([^\s()]*\)[^\s()]*)*)(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'))?\)`,
     String.raw`<(?<autolink>${THREAD_HREF}[^\s<>]+${orHosted})>`,
   ];
-  // After a URL character the hosted link is part of a longer URL, such as a redirect target.
   if (hostedLink !== undefined) {
-    alternatives.push(String.raw`(?<![A-Za-z0-9%/?#=&@+-])(?<bare>${hostedLink})(?![\w%/?#-])`);
+    const { before, after } = NOT_INSIDE_A_LONGER_URL;
+    alternatives.push(String.raw`${before}(?<bare>${hostedLink})${after}`);
   }
   return { hostedPrefix, pattern: new RegExp(alternatives.join("|"), "g") };
 }
 
 const threadLinkSyntaxes = new Map<string, ThreadLinkSyntax>();
 
-/** `hostedOrigin` is the web app copied links open in; an absent or unreadable one adds no syntax. */
 function threadLinkSyntax(hostedOrigin: string | undefined): ThreadLinkSyntax {
   const key = webOrigin(hostedOrigin) ?? "";
   let syntax = threadLinkSyntaxes.get(key);
@@ -79,7 +81,6 @@ const hostedSegment = (id: string) =>
     (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
   );
 
-/** Opens the thread in the web app at `origin`: a hosted app, which offers the desktop app, or a server. */
 export function hostedThreadLink(ref: ScopedThreadRef, origin: string): string {
   const path = `/threads/${hostedSegment(ref.environmentId)}/${hostedSegment(ref.threadId)}`;
   return new URL(path, origin).toString();
@@ -180,7 +181,7 @@ export function formatThreadLink(ref: ThreadLink, label?: string): string {
   return cleaned ? `[${cleaned}](${destination})` : `<${href}>`;
 }
 
-/** What a person copies out of T3 Code: a Markdown link that opens the thread anywhere. */
+/** What a person copies out of T3 Code: a Markdown link to the thread in the web app at `origin`. */
 export function formatHostedThreadLink(
   ref: ScopedThreadRef,
   label: string,

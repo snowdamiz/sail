@@ -10,12 +10,10 @@ export interface HostedPairingRequest {
 
 export type HostedAppChannel = "latest" | "nightly";
 
-/** Unset unless this build names a hosted app with `VITE_HOSTED_APP_URL`. */
 function configuredHostedAppUrl(): string | undefined {
   return import.meta.env.VITE_HOSTED_APP_URL?.trim() || undefined;
 }
 
-/** Where copied links open: the hosted app this build names, else this app's own server. */
 export function linkOrigin(): string {
   const hostedAppUrl = configuredHostedAppUrl();
   if (hostedAppUrl) return hostedAppUrl;
@@ -78,7 +76,6 @@ export function hasHostedPairingRequest(url: URL = new URL(window.location.href)
   return readHostedPairingRequest(url) !== null;
 }
 
-/** Null without a hosted app, so callers share the server's own pairing link. */
 export function buildHostedPairingUrl(input: {
   readonly host: string;
   readonly token: string;
