@@ -187,25 +187,36 @@ export const make = Effect.gen(function* () {
       const context = yield* Effect.context<ElectronWindow.ElectronWindow>();
       const runPromise = Effect.runPromiseWith(context);
 
-      // Any page can open a handoff link, so the code goes back only to the hosted app or a
-      // server this desktop has saved, never to wherever the link says.
       const handoffReturnOrigins = connectionCatalog.get.pipe(
         Effect.flatMap(
           Option.match({
             onNone: () => Effect.succeed([]),
             onSome: (catalog) =>
               decodeConnectionCatalog(catalog).pipe(
-                Effect.map(({ profiles }) =>
+                Effect.map(({ profiles, disabledEnvironmentIds }) =>
                   profiles.flatMap((profile) =>
-                    profile._tag === "BearerConnectionProfile" ? [profile.httpBaseUrl] : [],
+                    // A learned route is an address its server reported, not one the user chose.
+                    profile._tag === "BearerConnectionProfile" &&
+                    profile.learned !== true &&
+                    !disabledEnvironmentIds.includes(profile.environmentId)
+                      ? [profile.httpBaseUrl]
+                      : [],
                   ),
                 ),
               ),
           }),
         ),
-        Effect.orElseSucceed(() => []),
+        Effect.catch((cause) =>
+          Effect.logWarning("Could not read saved servers for a ChatGPT desktop handoff.", {
+            cause,
+          }).pipe(Effect.as([])),
+        ),
         Effect.map((saved) => [desktopHostedAppUrl, ...saved]),
       );
+      const revealMainWindow = Effect.gen(function* () {
+        const mainWindow = yield* electronWindow.currentMainOrFirst;
+        if (Option.isSome(mainWindow)) yield* electronWindow.reveal(mainWindow.value);
+      });
 
       const startProviderAuthHandoff = (value: string | undefined) => {
         if (!value || !isCodexAuthHandoffLink(value, environment.isDevelopment)) return false;
@@ -215,9 +226,10 @@ export const make = Effect.gen(function* () {
             const trustedOrigins = yield* handoffReturnOrigins;
             const request = readCodexAuthHandoff(value, environment.isDevelopment, trustedOrigins);
             if (!request) {
-              return yield* Effect.logWarning(
-                "Ignored a ChatGPT desktop handoff to a page this desktop does not use.",
+              yield* Effect.logWarning(
+                "Ignored a ChatGPT desktop handoff that is malformed or returns to a page this desktop does not use.",
               );
+              return yield* revealMainWindow;
             }
             yield* Effect.tryPromise({
               try: (signal) =>
@@ -289,12 +301,7 @@ export const make = Effect.gen(function* () {
           )
         )
           return;
-        void runPromise(
-          Effect.gen(function* () {
-            const mainWindow = yield* electronWindow.currentMainOrFirst;
-            if (Option.isSome(mainWindow)) yield* electronWindow.reveal(mainWindow.value);
-          }),
-        );
+        void runPromise(revealMainWindow);
       };
       for (const argv of pendingSecondInstances.splice(0)) handleSecondInstance(argv);
     }).pipe(Effect.withSpan("desktop.clerk.configure")),

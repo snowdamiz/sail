@@ -11,7 +11,6 @@ import { makeCodexChatGptAuth } from "./CodexChatGptAuth.ts";
 export function subscribeChatGptHandoff(
   input: ChatGptHandoffInput,
   owner: string,
-  returnOrigins: ReadonlyArray<string | undefined>,
   endpoints: { discoveryUrl: string; resource: string } | undefined = undefined,
 ) {
   return Stream.unwrap(
@@ -55,14 +54,7 @@ export function subscribeChatGptHandoff(
         ),
         Effect.provide(FetchHttpClient.layer),
       );
-      yield* auth.controller.start(
-        owner,
-        Effect.void,
-        "chatgpt",
-        input.returnUrl,
-        "server",
-        returnOrigins,
-      );
+      yield* auth.controller.start(owner, Effect.void, "chatgpt", input.returnUrl, "server");
       return auth.controller.subscribe(owner).pipe(
         Stream.takeUntil((state) => ["succeeded", "failed", "cancelled"].includes(state.phase)),
         Stream.mapEffect((state): Effect.Effect<ChatGptHandoffState, ProviderSetupError> =>

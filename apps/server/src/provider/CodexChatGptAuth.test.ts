@@ -10,6 +10,7 @@ import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -94,7 +95,6 @@ const makeHarnessFor = Effect.fnUntraced(function* (
   const authorizationRequests: URL[] = [];
   const callbackResponses: { body: string; headers: Headers }[] = [];
   let returnUrl = "http://localhost:7001/welcome";
-  let returnOrigins: ReadonlyArray<string> = [];
   const server = yield* Effect.acquireRelease(
     Effect.promise(
       () =>
@@ -278,14 +278,7 @@ const makeHarnessFor = Effect.fnUntraced(function* (
     });
   const signInWithMethod = (methodId?: string) =>
     Effect.gen(function* () {
-      yield* auth.controller.start(
-        "owner",
-        Effect.void,
-        methodId,
-        returnUrl,
-        undefined,
-        returnOrigins,
-      );
+      yield* auth.controller.start("owner", Effect.void, methodId, returnUrl);
       const waiting = yield* phase("waiting");
       assert.strictEqual(waiting.interaction?.type, "browser");
       const callback = prepareCallback(waiting);
@@ -322,7 +315,6 @@ const makeHarnessFor = Effect.fnUntraced(function* (
           profile,
         },
         "owner",
-        [],
         { discoveryUrl: `${origin}/discovery`, resource: `${origin}/v1` },
       ).pipe(Stream.provideService(AnalyticsService.AnalyticsService, analytics)),
     finishCallback: (state: { authorizationUrl: string | null }) =>
@@ -379,9 +371,8 @@ const makeHarnessFor = Effect.fnUntraced(function* (
     exchanges,
     authorizationRequests,
     callbackResponses,
-    setReturnUrl: (value: string, origins: ReadonlyArray<string> = []) => {
+    setReturnUrl: (value: string) => {
       returnUrl = value;
-      returnOrigins = origins;
     },
     origin,
     storedRecords: () =>
@@ -721,40 +712,48 @@ it.effect(
 );
 it.effect.each([
   {
-    case: "an HTTPS page the client is on",
-    page: "https://sail.example.test/settings/providers?instanceId=codex_work",
-    origins: ["https://sail.example.test"],
+    case: "the hosted app the server names",
+    page: "https://hosted.example.test/settings/providers?instanceId=codex_work",
+    hosted: "https://hosted.example.test",
     returns: true,
   },
   {
-    case: "a look-alike of that page",
-    page: "https://sail.example.test.attacker.example/settings/providers",
-    origins: ["https://sail.example.test"],
+    case: "a look-alike of the hosted app",
+    page: "https://hosted.example.test.attacker.example/settings/providers",
+    hosted: "https://hosted.example.test",
     returns: false,
   },
   {
     case: "a plain HTTP page off this machine",
     page: "http://192.168.1.42:3773/settings/providers",
-    origins: ["http://192.168.1.42:3773"],
+    hosted: "https://hosted.example.test",
     returns: false,
   },
   {
-    case: "an HTTPS page with no trusted origin",
-    page: "https://sail.example.test/settings/providers",
-    origins: [],
+    case: "an HTTPS page with no hosted app",
+    page: "https://hosted.example.test/settings/providers",
+    hosted: undefined,
     returns: false,
   },
-])("returns from the callback page to $case: $returns", ({ page, origins, returns }) =>
+])("returns from the callback page to $case: $returns", ({ page, hosted, returns }) =>
   provision(
     Effect.gen(function* () {
       const h = yield* makeHarness;
-      h.setReturnUrl(page, origins);
+      h.setReturnUrl(page);
       yield* h.signIn;
       yield* h.phase("succeeded");
       const body = h.callbackResponses[0]!.body;
       assert.strictEqual(body.includes(`content="1;url=${page}"`), returns);
       assert.strictEqual(body.includes(new URL(page).host), returns);
     }),
+  ).pipe(
+    Effect.provide(
+      ConfigProvider.layer(
+        ConfigProvider.fromEnv({
+          env: hosted === undefined ? {} : { T3CODE_HOSTED_APP_URL: hosted },
+        }),
+      ),
+    ),
   ),
 );
 it.effect(

@@ -50,7 +50,11 @@ const pastedLinkOrigins = Effect.fn("OrchestratorMcpService.pastedLinkOrigins")(
   const hostedAppUrl = yield* optionalHostedAppUrlConfig.pipe(
     Effect.orElseSucceed(() => Option.none<string>()),
   );
-  const origins = [scope.origin, Option.getOrUndefined(hostedAppUrl)].map(webOrigin);
+  const origins = [
+    scope.origin,
+    scope.client?.hostedAppUrl,
+    Option.getOrUndefined(hostedAppUrl),
+  ].map(webOrigin);
   return [...new Set(origins)];
 });
 

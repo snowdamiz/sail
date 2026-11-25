@@ -100,10 +100,6 @@ function formatDeviceAuthorizationPrompt(
   ].join("\n");
 }
 
-/**
- * Without a terminal, no key press can open a browser, so sign in with a code. The browser
- * sign-in starts on a hosted app, so a build without one signs in with a code too.
- */
 export const signsInWithDeviceCode = Effect.fn("cloud.cli.signs_in_with_device_code")(
   function* (options: { readonly headless: boolean; readonly interactive: boolean }) {
     return (

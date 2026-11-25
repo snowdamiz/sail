@@ -25,8 +25,7 @@ const publicConfigDefine = {
   __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: JSON.stringify(
     repoEnv.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() ?? "",
   ),
-  // The same hosted app the bundled web build names.
-  __T3CODE_BUILD_HOSTED_APP_URL__: JSON.stringify(process.env.VITE_HOSTED_APP_URL?.trim() ?? ""),
+  __T3CODE_BUILD_HOSTED_APP_URL__: JSON.stringify(repoEnv.VITE_HOSTED_APP_URL?.trim() ?? ""),
 };
 
 const PAGE_WORLD_MODULE = /[\\/]src[\\/]preview[\\/]PageWorld\.ts$/;

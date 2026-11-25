@@ -3,7 +3,6 @@ import { readCodexAuthDelivery } from "@t3tools/shared/codexAuthHandoff";
 import { msg } from "gt-react";
 
 import { toastManager } from "./components/ui/toast";
-import { providerAuthReturnOrigins } from "./hostedPairing";
 import { m } from "./i18n/messages";
 import { appAtomRegistry } from "./rpc/atomRegistry";
 import { environmentPresentations } from "./state/presentation";
@@ -18,7 +17,7 @@ type ProviderAuthDelivery = NonNullable<ReturnType<typeof readCodexAuthDelivery>
  */
 export function startProviderAuthDelivery(): void {
   if (!window.location.hash.startsWith("#codex-auth=")) return;
-  const delivery = readCodexAuthDelivery(window.location.href, providerAuthReturnOrigins());
+  const delivery = readCodexAuthDelivery(window.location.href, [window.location.origin]);
   window.history.replaceState(
     window.history.state,
     "",

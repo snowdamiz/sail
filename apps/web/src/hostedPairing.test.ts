@@ -1,14 +1,11 @@
 import { PRIMARY_LOCAL_ENVIRONMENT_ID } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { providerAuthReturnUrl } from "@t3tools/shared/providerAuthReturnUrl";
-
 import {
   buildHostedChannelSelectionUrl,
   buildHostedPairingUrl,
   hasHostedPairingRequest,
   linkOrigin,
-  providerAuthReturnOrigins,
   readHostedPairingRequest,
 } from "./hostedPairing";
 
@@ -71,42 +68,6 @@ describe("hostedPairing", () => {
       );
     },
   );
-
-  it("returns provider sign-in to the hosted app the build names and to this page", () => {
-    vi.stubEnv("VITE_HOSTED_APP_URL", "https://hosted.example.test");
-    vi.stubGlobal("window", { location: new URL("https://sail.example.test/settings/providers") });
-
-    expect(
-      providerAuthReturnUrl("https://hosted.example.test/welcome", providerAuthReturnOrigins()),
-    ).toBe("https://hosted.example.test/welcome");
-    expect(
-      providerAuthReturnUrl(
-        "https://sail.example.test/settings/providers",
-        providerAuthReturnOrigins(),
-      ),
-    ).toBe("https://sail.example.test/settings/providers");
-    expect(
-      providerAuthReturnUrl("https://other.example.test/welcome", providerAuthReturnOrigins()),
-    ).toBeUndefined();
-  });
-
-  it.each([
-    ["absent", undefined],
-    ["empty", ""],
-  ])("returns provider sign-in to no hosted app with an %s hosted app", (_, hostedAppUrl) => {
-    if (hostedAppUrl !== undefined) vi.stubEnv("VITE_HOSTED_APP_URL", hostedAppUrl);
-    vi.stubGlobal("window", { location: new URL("http://192.168.1.42:3773/settings/providers") });
-
-    expect(
-      providerAuthReturnUrl("https://hosted.example.test/welcome", providerAuthReturnOrigins()),
-    ).toBeUndefined();
-    expect(
-      providerAuthReturnUrl(
-        "http://192.168.1.42:3773/settings/providers",
-        providerAuthReturnOrigins(),
-      ),
-    ).toBeUndefined();
-  });
 
   it("links to the hosted app the build names", () => {
     vi.stubEnv("VITE_HOSTED_APP_URL", "https://hosted.example.test");
@@ -177,6 +138,7 @@ describe("hostedPairing", () => {
     });
     const { linkOrigin: freshLinkOrigin } = await import("./hostedPairing");
     expect(freshLinkOrigin()).toBeUndefined();
+    await Promise.resolve();
 
     bootstraps = [
       {
@@ -186,6 +148,22 @@ describe("hostedPairing", () => {
       },
     ];
     expect(freshLinkOrigin()).toBe("http://127.0.0.1:3773");
+  });
+
+  it("asks the desktop for a missing server once per task, not once per link", async () => {
+    vi.resetModules();
+    const getLocalEnvironmentEnabled = vi.fn(() => false);
+    vi.stubGlobal("window", {
+      location: { origin: "sail://app", href: "sail://app/settings" },
+      desktopBridge: { getLocalEnvironmentEnabled, getLocalEnvironmentBootstraps: () => [] },
+    });
+    const { linkOrigin: freshLinkOrigin } = await import("./hostedPairing");
+
+    for (let link = 0; link < 20; link++) expect(freshLinkOrigin()).toBeUndefined();
+    expect(getLocalEnvironmentEnabled).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+    freshLinkOrigin();
+    expect(getLocalEnvironmentEnabled).toHaveBeenCalledTimes(2);
   });
 
   it("has no link origin on a desktop with no local server", async () => {

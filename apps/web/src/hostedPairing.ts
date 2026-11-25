@@ -16,10 +16,10 @@ function configuredHostedAppUrl(): string | undefined {
 }
 
 // The desktop window's own origin is an app scheme, so it links to its local server instead. That
-// read is synchronous IPC, and a restarted backend can move, so one read serves a few seconds.
-// A server that is not ready yet is read again on the next call.
+// read is synchronous IPC, and a restarted backend can move, so one read serves a few seconds. A
+// server that is not ready serves only the current task, so a later click on Copy reads it again.
 const DESKTOP_SERVER_READ_MS = 2_000;
-let desktopServer: { readonly origin: string; readonly readAt: number } | undefined;
+let desktopServer: { readonly origin: string | undefined; readonly readAt: number } | undefined;
 
 /** Without one, as on a desktop with no local server, links stay `t3-thread://` links. */
 export function linkOrigin(): string | undefined {
@@ -30,22 +30,19 @@ export function linkOrigin(): string | undefined {
   );
 }
 
-/** A provider sign-in returns only to a page the user is on: the hosted app or this page's server. */
-export function providerAuthReturnOrigins(): ReadonlyArray<string | undefined> {
-  return [
-    configuredHostedAppUrl(),
-    typeof window === "undefined" ? undefined : window.location?.origin,
-  ];
-}
-
 function desktopServerOrigin(): string | undefined {
   const now = performance.now();
   if (desktopServer !== undefined && now - desktopServer.readAt <= DESKTOP_SERVER_READ_MS) {
     return desktopServer.origin;
   }
-  const origin = readDesktopServerOrigin();
-  desktopServer = origin === undefined ? undefined : { origin, readAt: now };
-  return origin;
+  const read = { origin: readDesktopServerOrigin(), readAt: now };
+  desktopServer = read;
+  if (read.origin === undefined) {
+    queueMicrotask(() => {
+      if (desktopServer === read) desktopServer = undefined;
+    });
+  }
+  return read.origin;
 }
 
 function readDesktopServerOrigin(): string | undefined {

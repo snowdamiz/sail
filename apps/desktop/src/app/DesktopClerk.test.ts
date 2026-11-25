@@ -10,7 +10,6 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Logger from "effect/Logger";
 import { afterAll, beforeEach, vi } from "vite-plus/test";
 
 const clerkStateDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-desktop-clerk-"));
@@ -54,7 +53,11 @@ const ignoreWebLinks = DesktopWebLinks.DesktopWebLinks.of({
   setRendererReady: () => Effect.void,
 });
 
-const savedServers = (...httpBaseUrls: ReadonlyArray<string>) =>
+const savedServers = (
+  httpBaseUrls: ReadonlyArray<string> = [],
+  disabledEnvironmentIds: ReadonlyArray<string> = [],
+  learned = false,
+) =>
   DesktopConnectionCatalogStore.DesktopConnectionCatalogStore.of({
     get: Effect.sync(() =>
       Option.some(
@@ -68,9 +71,11 @@ const savedServers = (...httpBaseUrls: ReadonlyArray<string>) =>
             label: "Saved",
             httpBaseUrl,
             wsBaseUrl: httpBaseUrl.replace(/^http/u, "ws"),
+            ...(learned ? { learned: true } : {}),
           })),
           credentials: [],
           remoteDpopTokens: [],
+          disabledEnvironmentIds,
         }),
       ),
     ),
@@ -395,11 +400,31 @@ it.effect(
   },
 );
 
+const httpsPage = "https://sail.example.test/settings/providers?instanceId=work";
 it.effect.each([
-  { saved: ["https://sail.example.test/"], delivered: true },
-  { saved: ["http://sail.example.test/"], delivered: false },
-  { saved: [], delivered: false },
-])("returns web sign-in to an HTTPS server only when it is saved here: $saved", (input) =>
+  { case: "a saved HTTPS server", saved: ["https://sail.example.test/"], page: httpsPage },
+  {
+    case: "a saved plain HTTP server",
+    saved: ["http://sail.example.test/"],
+    page: "http://sail.example.test/settings/providers?instanceId=work",
+    refused: true,
+  },
+  {
+    case: "a disabled saved server",
+    saved: ["https://sail.example.test/"],
+    disabled: ["saved-0"],
+    page: httpsPage,
+    refused: true,
+  },
+  {
+    case: "an address a saved server reported",
+    saved: ["https://sail.example.test/"],
+    learned: true,
+    page: httpsPage,
+    refused: true,
+  },
+  { case: "a server not saved here", saved: [], page: httpsPage, refused: true },
+])("returns web sign-in to $case only when it is HTTPS and in use", (input) =>
   Effect.gen(function* () {
     storageMock.mockReturnValue(storageAdapter);
     createClerkBridgeMock.mockReturnValue({ cleanup: vi.fn(), isPrimaryInstance: true });
@@ -422,7 +447,7 @@ it.effect.each([
     }).toString();
     const request = {
       authorizationUrl: authorize.toString(),
-      returnUrl: "https://sail.example.test/settings/providers?instanceId=work",
+      returnUrl: input.page,
       environmentId: EnvironmentId.make("remote-one"),
       instanceId: ProviderInstanceId.make("work"),
       flowId: "flow-one",
@@ -445,9 +470,12 @@ it.effect.each([
       openSystemSettings: () => Effect.succeed(false),
       copyText: () => Effect.void,
     });
-    const logger = Logger.make(({ message }) => {
-      if (String(message).includes("Ignored a ChatGPT desktop handoff")) settled.resolve(null);
-    });
+    const mainWindow = {};
+    const electronWindow = {
+      currentMainOrFirst: Effect.succeedSome(mainWindow),
+      reveal: (revealed: unknown) =>
+        Effect.sync(() => settled.resolve(revealed === mainWindow ? null : "another window")),
+    } as unknown as ElectronWindow.ElectronWindow["Service"];
     const listeners = new Map<string, (...args: unknown[]) => void>();
     const electronApp = {
       whenReady: Effect.void,
@@ -460,7 +488,7 @@ it.effect.each([
       const clerk = yield* DesktopClerk.DesktopClerk;
       yield* clerk.configure;
       const delivered = yield* Effect.promise(() => settled.promise);
-      if (!input.delivered) {
+      if (input.refused) {
         assert.isNull(delivered);
         return;
       }
@@ -473,16 +501,12 @@ it.effect.each([
       Effect.provide(layerDesktopClerk(true, [], "darwin", undefined, shell, listeners)),
       Effect.provideService(HostProcess.Arguments, ["t3", codexAuthHandoffUrl(request, true)]),
       Effect.provideService(ElectronApp.ElectronApp, electronApp),
-      Effect.provideService(
-        ElectronWindow.ElectronWindow,
-        {} as ElectronWindow.ElectronWindow["Service"],
-      ),
+      Effect.provideService(ElectronWindow.ElectronWindow, electronWindow),
       Effect.provideService(
         DesktopConnectionCatalogStore.DesktopConnectionCatalogStore,
-        savedServers(...input.saved),
+        savedServers(input.saved, input.disabled, input.learned),
       ),
       Effect.provideService(DesktopWebLinks.DesktopWebLinks, ignoreWebLinks),
-      Effect.provide(Logger.layer([logger], { mergeWithExisting: true })),
     );
   }),
 );
