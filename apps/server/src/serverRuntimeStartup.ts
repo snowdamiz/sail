@@ -12,7 +12,6 @@ import {
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
-import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Console from "effect/Console";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -52,7 +51,7 @@ import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import {
   formatHeadlessServeOutput,
-  formatStartupPairingOff,
+  startupPairingOffNotice,
   issueHeadlessServeAccessInfo,
   resolveLocalOrigin,
 } from "./startupAccess.ts";
@@ -374,8 +373,7 @@ export const announceStartupPairingUrl = (pairingUrl: string) =>
 const announceStartupPairingOff = Effect.fn("serverRuntimeStartup.announceStartupPairingOff")(
   function* (url: string) {
     const { baseDir } = yield* ServerConfig.ServerConfig;
-    const platform = yield* HostProcess.Platform;
-    yield* Console.log(`  url: ${url}\n  ${formatStartupPairingOff(baseDir, platform)}`);
+    yield* Console.log(`  url: ${url}\n  ${yield* startupPairingOffNotice(baseDir)}`);
   },
 );
 

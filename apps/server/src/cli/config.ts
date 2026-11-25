@@ -137,6 +137,20 @@ export const t3HomeConfig = Config.all([
   Config.String("T3CODE_HOME").pipe(Config.option),
 ]).pipe(Config.map(([sail, t3]) => Option.getOrUndefined(Option.orElse(sail, () => t3))));
 
+// Read only when the flag is absent, so a stale variable cannot block an explicit flag.
+const publicUrlConfig = Config.schema(PublicUrl, "SAIL_PUBLIC_URL").pipe(
+  Config.option,
+  Config.flatMap((sail) =>
+    Option.isSome(sail)
+      ? Config.succeed(sail)
+      : Config.schema(PublicUrl, "T3CODE_PUBLIC_URL").pipe(Config.option),
+  ),
+);
+const startupPairingConfig = Config.schema(
+  ServerConfig.StartupPairing,
+  "SAIL_STARTUP_PAIRING",
+).pipe(Config.option);
+
 const EnvServerConfig = Config.all({
   logLevel: Config.LogLevel("T3CODE_LOG_LEVEL").pipe(Config.withDefault("Info")),
   traceMinLevel: Config.LogLevel("T3CODE_TRACE_MIN_LEVEL").pipe(Config.withDefault("Info")),
@@ -174,19 +188,6 @@ const EnvServerConfig = Config.all({
   port: Config.Port("T3CODE_PORT").pipe(Config.option, Config.map(Option.getOrUndefined)),
   host: Config.String("T3CODE_HOST").pipe(Config.option, Config.map(Option.getOrUndefined)),
   t3Home: t3HomeConfig,
-  publicUrl: Config.schema(PublicUrl, "SAIL_PUBLIC_URL").pipe(
-    Config.option,
-    Config.flatMap((sail) =>
-      Option.isSome(sail)
-        ? Config.succeed(sail)
-        : Config.schema(PublicUrl, "T3CODE_PUBLIC_URL").pipe(Config.option),
-    ),
-    Config.map(Option.getOrUndefined),
-  ),
-  startupPairing: Config.schema(ServerConfig.StartupPairing, "SAIL_STARTUP_PAIRING").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
-  ),
   devUrl: Config.URL("VITE_DEV_SERVER_URL").pipe(Config.option, Config.map(Option.getOrUndefined)),
   devAllowedOrigins: Config.String("T3CODE_DEV_ALLOWED_ORIGINS").pipe(
     Config.withDefault(""),
@@ -425,13 +426,12 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   yield* fs.makeDirectory(path.dirname(serverTracePath), { recursive: true });
   const startupPresentation = options?.startupPresentation ?? "browser";
   const publicUrl = Option.getOrUndefined(
-    resolveOptionPrecedence(normalizedFlags.publicUrl, Option.fromUndefinedOr(env.publicUrl)),
+    Option.isSome(normalizedFlags.publicUrl) ? normalizedFlags.publicUrl : yield* publicUrlConfig,
   );
   const startupPairing = Option.getOrElse(
-    resolveOptionPrecedence(
-      normalizedFlags.startupPairing,
-      Option.fromUndefinedOr(env.startupPairing),
-    ),
+    Option.isSome(normalizedFlags.startupPairing)
+      ? normalizedFlags.startupPairing
+      : yield* startupPairingConfig,
     (): ServerConfig.StartupPairing => "on",
   );
   const isHeadlessStartup = startupPresentation === "headless";

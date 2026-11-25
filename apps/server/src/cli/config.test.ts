@@ -599,6 +599,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         T3CODE_PUBLIC_URL: "not-a-url",
         SAIL_STARTUP_PAIRING: "off",
       };
+      const staleEnv = { SAIL_PUBLIC_URL: "https://old.example/app", SAIL_STARTUP_PAIRING: "x" };
 
       const fromEnv = yield* resolve(none, env);
       assert.equal(fromEnv.publicUrl?.origin, "https://sail.example");
@@ -612,6 +613,15 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       );
       assert.equal(fromFlags.publicUrl?.origin, "https://flag.example");
       assert.equal(fromFlags.startupPairing, "on");
+      const overStale = yield* resolve(
+        {
+          publicUrl: Option.some(new URL("https://flag.example")),
+          startupPairing: Option.some("on"),
+        },
+        staleEnv,
+      );
+      assert.equal(overStale.publicUrl?.origin, "https://flag.example");
+      assert.equal(overStale.startupPairing, "on");
       const fromLegacy = yield* resolve(none, { T3CODE_PUBLIC_URL: "https://t3.example" });
       assert.equal(fromLegacy.publicUrl?.origin, "https://t3.example");
       assert.equal(fromLegacy.startupPairing, "on");

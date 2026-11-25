@@ -19,7 +19,7 @@ import * as NetAddress from "effect/net/NetAddress";
 
 import * as ServerConfig from "./config.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
-import { hostShellWord } from "./cli/invocation.ts";
+import { resolveHostCliCommand } from "./cli/invocation.ts";
 
 export interface HeadlessServeAccessInfo {
   readonly connectionString: string;
@@ -28,8 +28,12 @@ export interface HeadlessServeAccessInfo {
     | { readonly offNotice: string };
 }
 
-export const formatStartupPairingOff = (baseDir: string, platform: NodeJS.Platform): string =>
-  `Startup pairing is off. To pair a device, run \`t3 pair --base-dir ${hostShellWord(platform, baseDir)}\` on this machine.`;
+export const startupPairingOffNotice = Effect.fn("startupAccess.startupPairingOffNotice")(
+  function* (baseDir: string) {
+    const { command } = yield* resolveHostCliCommand("pair", ["--base-dir", baseDir]);
+    return `Startup pairing is off. To pair a device, run \`${command}\` on this machine.`;
+  },
+);
 
 type NetworkInterfacesMap = ReturnType<typeof NodeOS.networkInterfaces>;
 
@@ -299,7 +303,7 @@ export const issueHeadlessServeAccessInfo = Effect.fn("issueHeadlessServeAccessI
   if (serverConfig.startupPairing === "off") {
     return {
       connectionString,
-      pairing: { offNotice: formatStartupPairingOff(serverConfig.baseDir, platform) },
+      pairing: { offNotice: yield* startupPairingOffNotice(serverConfig.baseDir) },
     } satisfies HeadlessServeAccessInfo;
   }
   const issued = yield* serverAuth.issueStartupPairingCredential();
