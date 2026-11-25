@@ -293,3 +293,21 @@ describe("issueHeadlessServeAccessInfo", () => {
     }),
   );
 });
+
+describe("formatHeadlessServeOutput", () => {
+  it("warns about the printed token on plain HTTP, and about later links when pairing is off", () => {
+    const connectionString = "http://192.168.1.20:8080";
+    const withToken = formatHeadlessServeOutput({
+      connectionString,
+      pairing: { token: "STARTUPTOKEN", pairingUrl: `${connectionString}/pair#token=STARTUPTOKEN` },
+    });
+    expect(withToken).toContain("can read the\ntoken and control this machine");
+    const off = formatHeadlessServeOutput({
+      connectionString,
+      pairing: { offNotice: "Startup pairing is off." },
+    });
+    expect(off).toContain("plain HTTP");
+    expect(off).toContain("pairing link you open over it");
+    expect(off).not.toMatch(/token/i);
+  });
+});

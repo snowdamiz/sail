@@ -258,6 +258,16 @@ export const renderTerminalQrCode = (value: string, margin = 2): string => {
   return rows.join("\n");
 };
 
+const PLAIN_HTTP_TOKEN_WARNING = [
+  "Warning: this address uses plain HTTP. Anyone on the same network can read the",
+  "token and control this machine. Use it over a VPN or tailnet you trust.",
+];
+const PLAIN_HTTP_LINK_WARNING = [
+  "Warning: this address uses plain HTTP. Anyone on the same network can read a",
+  "pairing link you open over it and control this machine. Use it over a VPN or",
+  "tailnet you trust.",
+];
+
 const isPlainHttpOffMachine = (connectionString: string): boolean => {
   const url = new URL(connectionString);
   return url.protocol === "http:" && !isLoopbackHost(url.hostname);
@@ -278,11 +288,7 @@ export const formatHeadlessServeOutput = ({
         ]
       : [pairing.offNotice]),
     ...(isPlainHttpOffMachine(connectionString)
-      ? [
-          "",
-          "Warning: this address uses plain HTTP. Anyone on the same network can read the",
-          "token and control this machine. Use it over a VPN or tailnet you trust.",
-        ]
+      ? ["", ...("token" in pairing ? PLAIN_HTTP_TOKEN_WARNING : PLAIN_HTTP_LINK_WARNING)]
       : []),
     ...("token" in pairing ? ["", renderTerminalQrCode(pairing.pairingUrl)] : []),
     "",
