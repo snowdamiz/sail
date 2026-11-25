@@ -85,7 +85,7 @@ it.live("a browser carrying other servers' cookies for this host still pairs", (
     yield* Effect.promise(() => page.goto(`${pairingUrl.origin}/.well-known/t3/environment`));
     yield* Effect.promise(() =>
       context.addCookies(
-        Array.from({ length: 150 }, (_, index) => ({
+        Array.from({ length: 179 }, (_, index) => ({
           name: `t3_session_${String(40_000 + index)}_0123456789ab`,
           value: "s".repeat(680),
           url: pairingUrl.origin,

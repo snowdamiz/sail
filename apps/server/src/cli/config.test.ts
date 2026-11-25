@@ -8,6 +8,7 @@ import * as NodePath from "node:path";
 import { assert, expect, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -625,6 +626,20 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       const fromLegacy = yield* resolve(none, { T3CODE_PUBLIC_URL: "https://t3.example" });
       assert.equal(fromLegacy.publicUrl?.origin, "https://t3.example");
       assert.equal(fromLegacy.startupPairing, "on");
+      const trailingSlash = yield* resolve(none, { SAIL_PUBLIC_URL: "https://demo.fly.dev/" });
+      assert.equal(trailingSlash.publicUrl?.origin, "https://demo.fly.dev");
+      for (const rejected of [
+        "https://demo.fly.dev/sub",
+        "https://demo.fly.dev/?a=1",
+        "https://demo.fly.dev/#x",
+        "https://user:pass@demo.fly.dev",
+        "ftp://demo.fly.dev",
+      ]) {
+        const exit = yield* Effect.exit(
+          resolve(none, { SAIL_PUBLIC_URL: rejected, T3CODE_PUBLIC_URL: "https://t3.example" }),
+        );
+        assert.isTrue(Exit.isFailure(exit), rejected);
+      }
     }),
   );
 

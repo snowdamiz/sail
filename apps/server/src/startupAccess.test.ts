@@ -15,6 +15,7 @@ import * as NetAddress from "effect/net/NetAddress";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
+import { hostShellWord } from "./cli/invocation.ts";
 import * as ServerConfig from "./config.ts";
 import {
   acceptsPrivateNetworkConnection,
@@ -200,13 +201,16 @@ describe("issueHeadlessServeAccessInfo", () => {
   ) =>
     Effect.gen(function* () {
       let issuedCredentials = 0;
+      let baseDir = "";
       const accessInfo = yield* issueHeadlessServeAccessInfo().pipe(
         Effect.provide(
           Layer.mergeAll(
             Layer.effect(
               ServerConfig.ServerConfig,
               Effect.gen(function* () {
-                return ServerConfig.make({ ...(yield* ServerConfig.ServerConfig), ...overrides });
+                const config = yield* ServerConfig.ServerConfig;
+                baseDir = config.baseDir;
+                return ServerConfig.make({ ...config, ...overrides });
               }),
             ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-serve-" }))),
             Layer.mock(EnvironmentAuth.EnvironmentAuth)({
@@ -228,7 +232,12 @@ describe("issueHeadlessServeAccessInfo", () => {
         Effect.provideService(HostProcess.Platform, "linux"),
         Effect.provide(NodeServices.layer),
       );
-      return { accessInfo, output: formatHeadlessServeOutput(accessInfo), issuedCredentials };
+      return {
+        accessInfo,
+        output: formatHeadlessServeOutput(accessInfo),
+        issuedCredentials,
+        baseDir,
+      };
     });
 
   it.effect("builds the startup pairing link from the public URL", () =>
@@ -263,14 +272,14 @@ describe("issueHeadlessServeAccessInfo", () => {
 
   it.effect("issues no credential and prints no token when startup pairing is off", () =>
     Effect.gen(function* () {
-      const { output, issuedCredentials } = yield* serve({
+      const { output, issuedCredentials, baseDir } = yield* serve({
         publicUrl: new URL("https://demo.fly.dev"),
         startupPairing: "off",
       });
       expect(issuedCredentials).toBe(0);
       expect(output).toContain("T3 Code server is ready.");
       expect(output).toContain("Connection string: https://demo.fly.dev");
-      expect(output).toMatch(/`t3 pair --base-dir \S+`/);
+      expect(output).toContain(` pair --base-dir ${hostShellWord("linux", baseDir)}\``);
       expect(output).not.toMatch(/#token=|Token:/);
     }),
   );

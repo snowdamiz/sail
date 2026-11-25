@@ -379,7 +379,8 @@ const layerSpawner = SpawnWorker.layerServer.pipe(Layer.provide(NodeServices.lay
 
 // Cookies ignore ports, so a browser sends this server every cookie its host's other servers
 // set, and Node's 16 KiB default answers pairing with 431. Chromium keeps up to 180 cookies
-// per host, and a T3 session cookie is about 700 bytes.
+// per host, and a T3 session cookie is about 700 bytes. The cost: until headersTimeout, a slow
+// client can hold this much per connection.
 const MAX_REQUEST_HEADER_BYTES = 256 * 1024;
 
 const layerHttpServer = Layer.unwrap(
