@@ -377,6 +377,10 @@ const layerRelayClient = Layer.unwrap(
 // NodeServices and NodeHttpServer each output Node's own spawner, so each is followed by this one.
 const layerSpawner = SpawnWorker.layerServer.pipe(Layer.provide(NodeServices.layer));
 
+// Cookies ignore ports, so a browser sends this server every cookie its host's other servers
+// set. Node's 16 KiB default then rejects pairing with 431; Chromium caps a host at 180 cookies.
+const MAX_REQUEST_HEADER_BYTES = 64 * 1024;
+
 const layerHttpServer = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
@@ -394,7 +398,11 @@ const layerHttpServer = Layer.unwrap(
     return NodeHttpServer.layer(
       () => {
         const server = rejectRequestsUntilServing(
-          keepIdleConnections(guardHttpResponseWriteErrors(NodeHttp.createServer())),
+          keepIdleConnections(
+            guardHttpResponseWriteErrors(
+              NodeHttp.createServer({ maxHeaderSize: MAX_REQUEST_HEADER_BYTES }),
+            ),
+          ),
           () => Ref.getUnsafe(migrationProgress.current),
         );
         if (config.privateNetworkOnly) {
