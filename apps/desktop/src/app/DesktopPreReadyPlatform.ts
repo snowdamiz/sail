@@ -61,6 +61,7 @@ const LinuxDesktopEntryConfig = Config.all({
   appImagePath: trimmedString("APPIMAGE"),
   // electron-updater sets this on the AppImage it relaunches after installing an update.
   relaunchedByUpdater: trimmedString("APPIMAGE_SILENT_INSTALL"),
+  useSystemKeychain: trimmedString("SAIL_USE_SYSTEM_KEYCHAIN"),
 });
 
 /** @public */
@@ -69,6 +70,17 @@ export const make = Effect.gen(function* () {
   const homeDirectory = yield* HostProcess.HomeDirectory;
   const linuxDesktopEntryConfig = yield* LinuxDesktopEntryConfig;
   return yield* Effect.sync((): DesktopPreReadyElectronOptions["Service"] => {
+    // Unsigned / ad-hoc macOS builds change CDHash on every build and update; using Chromium's
+    // mock keychain avoids macOS Keychain error dialogs and repeated ACL prompts unless the user
+    // explicitly opts into the system keychain via SAIL_USE_SYSTEM_KEYCHAIN=1.
+    if (
+      platform === "darwin" &&
+      !Option.contains(linuxDesktopEntryConfig.useSystemKeychain, "1") &&
+      !Electron.app.commandLine.hasSwitch("use-mock-keychain")
+    ) {
+      Electron.app.commandLine.appendSwitch("use-mock-keychain");
+    }
+
     const linuxPasswordStoreCommandLine =
       platform === "linux"
         ? readCommandLineSwitchValue(Electron.app.commandLine, "password-store")

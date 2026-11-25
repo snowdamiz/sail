@@ -142,7 +142,8 @@ function UpdateEverythingDialogContent({
         <AlertDialogDescription>
           {version !== null ? (
             <>
-              T3 Code <span className="font-mono text-xs">{version}</span>
+              {/* oxlint-disable-next-line t3code/no-untranslated-copy -- product wordmark */}
+              {"Sail"} <span className="font-mono text-xs">{version}</span>
             </>
           ) : null}
           {version !== null && providerCount > 0 ? " · " : null}
@@ -176,7 +177,8 @@ function UpdateEverythingDialogContent({
               <span role="columnheader">
                 <T>Machine</T>
               </span>
-              <span role="columnheader">T3 Code</span>
+              {/* oxlint-disable-next-line t3code/no-untranslated-copy -- product wordmark */}
+              <span role="columnheader">{"Sail"}</span>
               <span role="columnheader">
                 <T>Providers</T>
               </span>

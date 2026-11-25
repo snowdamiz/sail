@@ -171,10 +171,7 @@ describe("DesktopPreReadyPlatform", () => {
         assert.include(identity.desktopEntry ?? "", "Exec=/Applications/current.AppImage %U");
         assert.include(identity.desktopEntry ?? "", "Name=Sail (Beta)");
         assert.include(identity.desktopEntry ?? "", "MimeType=x-scheme-handler/sail;");
-        assert.include(
-          identity.desktopEntry ?? "",
-          "Icon=/xdg/icons/com.sail.Desktop.desktop.png",
-        );
+        assert.include(identity.desktopEntry ?? "", "Icon=/xdg/icons/com.sail.Desktop.desktop.png");
         assert.equal(
           copyFileSyncMock.mock.calls.length,
           0,
@@ -298,8 +295,22 @@ describe("DesktopPreReadyPlatform", () => {
         });
         assert.deepEqual(events, ["pre-ready", "clerk"]);
         assert.equal(registerSchemesMock.mock.calls.length, 1);
-        assert.equal(appendSwitchMock.mock.calls.length, 0);
+        assert.deepEqual(appendSwitchMock.mock.calls, [["use-mock-keychain"]]);
         assert.equal(setDesktopNameMock.mock.calls.length, 0);
       }),
+  );
+
+  it.effect("respects SAIL_USE_SYSTEM_KEYCHAIN=1 on macOS", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* Layer.build(
+          DesktopPreReadyPlatform.layer.pipe(
+            Layer.provide(Layer.succeed(HostProcess.Platform, "darwin")),
+            Layer.provide(DesktopConfig.layerTest({ SAIL_USE_SYSTEM_KEYCHAIN: "1" })),
+          ),
+        );
+        assert.equal(appendSwitchMock.mock.calls.length, 0);
+      }),
+    ),
   );
 });
