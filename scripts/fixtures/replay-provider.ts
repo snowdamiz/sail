@@ -33,7 +33,7 @@ interface ApplyInput {
   readonly commandPath: string;
 }
 
-const PLAIN_JS_APPLY_PROGRAM = String.raw`
+export const PLAIN_JS_APPLY_PROGRAM = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
 const input = JSON.parse(fs.readFileSync(0, "utf8"));

@@ -39,16 +39,13 @@ import {
   waitForApproval,
 } from "./sandbox/auth.ts";
 import { type CommandSpec, type Invocation, parse, UsageError } from "./sandbox/cli.ts";
+import { outbox, type SnapshotFailure, WORKER_ARG } from "./outbox-worker.ts";
 import {
   AUTH_LOG,
   DEADLINE_FILE,
   ID_FILE,
   LIFETIME_DIR,
   OUTBOX_DIR,
-  parseRequest,
-  parseRequestFile,
-  requestFile,
-  type RequestFile,
   SNAPSHOT_NAME,
 } from "./sandbox/outbox.ts";
 
@@ -56,7 +53,6 @@ const HERE = import.meta.dirname;
 const IMAGE_REPOSITORY = "sail-fake-boat-sandbox";
 const SNAPSHOT_REPO = "sail-fake-boat-snapshot";
 const HOME_LABEL = `${FIXTURE_LABEL}.home`;
-const WORKER_ARG = "--outbox-worker";
 /** Boat's longest lifetime on a free trial (`native/sail-boat/src/boat.rs`). */
 const TRIAL_TTL_SECS = 7200;
 const STARTS_PER_DAY = 100;
@@ -105,13 +101,6 @@ interface SnapshotRecord {
   readonly imageId: string;
 }
 
-interface SnapshotFailure {
-  readonly name: string;
-  readonly sandboxId: string;
-  readonly failedAt: string;
-  readonly error: string;
-}
-
 interface DockerState {
   readonly Status: string;
   readonly StartedAt: string;
@@ -140,7 +129,6 @@ const HOME_ID = homeId(HOME);
 const at = (...parts: ReadonlyArray<string>) => NodePath.join(HOME, ...parts);
 const ACCOUNT_FILE = at("account.json");
 const SIGN_INS = at("sign-ins");
-const WORKER_LOCK = at("worker.json");
 const now = () => new Date().toISOString();
 const container = (id: string) => `sail-boat-${id}`;
 const siteId = (id: string, port: number) => `boat-${id}-${port}`;
@@ -148,7 +136,6 @@ const snapshotTag = (name: string) => `${SNAPSHOT_REPO}:${HOME_ID}-${name}`;
 const sandboxFile = (id: string) => at("sandboxes", `${id}.json`);
 const snapshotFile = (name: string) => at("snapshots", `${name}.json`);
 const signInFile = (code: string) => NodePath.join(SIGN_INS, `${code}.json`);
-const outboxDir = (id: string) => at("outbox", id);
 const lifetimeDir = (id: string) => at("lifetime", id);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const print = (value: unknown) => console.log(JSON.stringify(value));
@@ -163,15 +150,6 @@ function isMissingFile(error: unknown): boolean {
 
 function isNoSuch(error: unknown): boolean {
   return error instanceof DockerError && /no such (object|container|image)/i.test(error.stderr);
-}
-
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error instanceof Error && "code" in error && error.code === "EPERM";
-  }
 }
 
 function listDir(dir: string): ReadonlyArray<string> {
@@ -392,11 +370,11 @@ function sandboxImage(): string {
 
 /** The directories a sandbox mounts: its outbox, which it writes, and its lifetime, which it reads. */
 function prepareMounts(id: string): void {
-  const outbox = outboxDir(id);
-  NodeFS.mkdirSync(outbox, { recursive: true });
+  const requests = OUTBOX.dir(id);
+  NodeFS.mkdirSync(requests, { recursive: true });
   // The sandbox writes as uid 1000, whatever uid owns this directory (CI runners use 1001).
-  NodeFS.chmodSync(outbox, 0o777);
-  NodeFS.writeFileSync(NodePath.join(outbox, ID_FILE), id);
+  NodeFS.chmodSync(requests, 0o777);
+  NodeFS.writeFileSync(NodePath.join(requests, ID_FILE), id);
   NodeFS.mkdirSync(lifetimeDir(id), { recursive: true });
 }
 
@@ -443,7 +421,7 @@ function runContainer(record: SandboxRecord, image: string): void {
     "--network",
     NETWORK,
     "--volume",
-    `${outboxDir(record.id)}:${OUTBOX_DIR}`,
+    `${OUTBOX.dir(record.id)}:${OUTBOX_DIR}`,
     "--volume",
     `${lifetimeDir(record.id)}:${LIFETIME_DIR}:ro`,
     "--volume",
@@ -489,7 +467,7 @@ function removeSandbox(id: string): void {
     if (!isNoSuch(error)) throw error;
   }
   for (const port of hostedPorts(id)) removeSite(siteId(id, port));
-  for (const path of [at("hosts", id), outboxDir(id), lifetimeDir(id), sandboxFile(id)]) {
+  for (const path of [at("hosts", id), OUTBOX.dir(id), lifetimeDir(id), sandboxFile(id)]) {
     NodeFS.rmSync(path, { recursive: true, force: true });
   }
 }
@@ -525,152 +503,21 @@ function snapshotRecords(): ReadonlyArray<SnapshotRecord> {
   );
 }
 
-interface QueuedRequest {
-  readonly sandboxId: string;
-  readonly file: RequestFile;
-}
-
-/** Snapshots asked for inside sandboxes that nobody is saving: new, or held by a worker that died. */
-function queuedRequests(only?: string): ReadonlyArray<QueuedRequest> {
-  return (only === undefined ? listDir(at("outbox")) : [only]).flatMap((sandboxId) =>
-    listDir(outboxDir(sandboxId)).flatMap((name) => {
-      const file = parseRequestFile(name);
-      const queued = file?.stage === "pending" || (file?.stage === "claimed" && !isAlive(file.pid));
-      return file && queued ? [{ sandboxId, file }] : [];
-    }),
-  );
-}
-
-function claimRequest(queued: QueuedRequest): string | undefined {
-  const dir = outboxDir(queued.sandboxId);
-  const claimed = NodePath.join(
-    dir,
-    requestFile({ stage: "claimed", base: queued.file.base, pid: process.pid }),
-  );
-  try {
-    NodeFS.renameSync(NodePath.join(dir, requestFile(queued.file)), claimed);
-  } catch (error) {
-    if (isMissingFile(error)) return undefined;
-    throw error;
-  }
-  return claimed;
-}
-
-/** Saves a claimed request, or sets it aside as failed with the reason, never silently. */
-function fulfilRequest(queued: QueuedRequest, claimed: string): void {
-  const { sandboxId } = queued;
-  const failed = NodePath.join(
-    outboxDir(sandboxId),
-    requestFile({ stage: "failed", base: queued.file.base }),
-  );
-  try {
-    const request = parseRequest(NodeFS.readFileSync(claimed, "utf8"));
-    if (request.sandboxId !== sandboxId) {
-      throw new Error(`sandbox ${sandboxId} asked to save sandbox ${request.sandboxId}`);
-    }
+const OUTBOX = outbox({
+  home: HOME,
+  entry: import.meta.filename,
+  save: (sandboxId, name) => {
     if (!exists("container", container(sandboxId))) {
       throw new Error(`sandbox ${sandboxId} no longer exists`);
     }
-    commitSnapshot(sandboxId, request.name);
-    NodeFS.rmSync(failed, { force: true });
-  } catch (error) {
-    const failure: SnapshotFailure = {
-      name: queued.file.base,
-      sandboxId,
-      failedAt: now(),
-      error: errorMessage(error),
-    };
-    writeJsonAtomic(failed, failure);
-  }
-  NodeFS.rmSync(claimed, { force: true });
-}
-
-function drainOutboxes(only?: string): void {
-  for (let queued = queuedRequests(only); queued.length > 0; queued = queuedRequests(only)) {
-    for (const request of queued) {
-      const claimed = claimRequest(request);
-      if (claimed) fulfilRequest(request, claimed);
-    }
-  }
-}
-
-function snapshotFailures(only?: string): ReadonlyArray<SnapshotFailure> {
-  return (only === undefined ? listDir(at("outbox")) : [only]).flatMap((sandboxId) =>
-    listDir(outboxDir(sandboxId)).flatMap((name) =>
-      parseRequestFile(name)?.stage === "failed"
-        ? (readJson<SnapshotFailure>(NodePath.join(outboxDir(sandboxId), name)) ?? [])
-        : [],
-    ),
-  );
-}
-
-function workerPid(): number | undefined {
-  return readJson<{ readonly pid: number }>(WORKER_LOCK)?.pid;
-}
-
-function takeWorkerLock(): boolean {
-  if (createJsonExclusive(WORKER_LOCK, { pid: process.pid })) return true;
-  const holder = workerPid();
-  if (holder !== undefined && isAlive(holder)) return false;
-  NodeFS.rmSync(WORKER_LOCK, { force: true });
-  return createJsonExclusive(WORKER_LOCK, { pid: process.pid });
-}
-
-/**
- * Hands queued snapshot requests to a detached worker, so no command waits on another sandbox's
- * `docker commit`. The worker exits once the queue is empty.
- */
-function startWorker(): void {
-  if (queuedRequests().length === 0) return;
-  const holder = workerPid();
-  if (holder !== undefined && isAlive(holder)) return;
-  const log = NodeFS.openSync(at("worker.log"), "a");
-  try {
-    const worker = NodeChildProcess.spawn(process.execPath, [import.meta.filename, WORKER_ARG], {
-      detached: true,
-      stdio: ["ignore", log, log],
-      env: { ...process.env, FAKE_BOAT_HOME: HOME },
-    });
-    // The queue stays put for the next command to try again.
-    worker.on("error", (error) =>
-      console.error(JSON.stringify({ code: "worker_not_started", error: error.message })),
-    );
-    worker.unref();
-  } finally {
-    NodeFS.closeSync(log);
-  }
-}
+    commitSnapshot(sandboxId, name);
+  },
+});
 
 function reportFailures(failures: ReadonlyArray<SnapshotFailure>): void {
   for (const failure of failures) {
     console.error(JSON.stringify({ code: "snapshot_failed", ...failure }));
   }
-}
-
-function runWorker(): void {
-  while (queuedRequests().length > 0 && takeWorkerLock()) {
-    try {
-      drainOutboxes();
-    } finally {
-      if (workerPid() === process.pid) NodeFS.rmSync(WORKER_LOCK, { force: true });
-    }
-  }
-}
-
-/**
- * Saves this sandbox's queued snapshots and waits out one a worker is saving, within `boat.rs`'s
- * two minutes for `delete`. Then reports its failures, which go with its outbox.
- */
-async function settleOutbox(id: string): Promise<void> {
-  drainOutboxes(id);
-  const saving = () =>
-    listDir(outboxDir(id)).some((name) => {
-      const file = parseRequestFile(name);
-      return file?.stage === "claimed" && isAlive(file.pid);
-    });
-  const give = Date.now() + 100_000;
-  while (saving() && Date.now() < give) await sleep(250);
-  reportFailures(snapshotFailures(id));
 }
 
 interface Ran {
@@ -1044,7 +891,8 @@ const TABLE: ReadonlyArray<Command> = [
         throw new BoatError("confirmation_required", "Pass --yes to delete without a prompt");
       }
       const { id } = sandboxRecord(invocation.args.sandbox);
-      await settleOutbox(id);
+      await OUTBOX.settle({ sandboxId: id }, 100_000);
+      reportFailures(OUTBOX.failures({ sandboxId: id }));
       removeSandbox(id);
       print({});
       return 0;
@@ -1095,7 +943,7 @@ const TABLE: ReadonlyArray<Command> = [
         createdAt,
       }));
       print({ named });
-      reportFailures(snapshotFailures());
+      reportFailures(OUTBOX.failures());
       return 0;
     },
   },
@@ -1285,7 +1133,7 @@ async function main(argv: ReadonlyArray<string>): Promise<{ code: number; mutati
         "The fake boat prints only JSON: pass --json before any --",
       );
     }
-    startWorker();
+    OUTBOX.start();
     if (!command.signedIn) return { code: await command.run(invocation), mutating };
     const signedIn = account();
     if (!signedIn) throw new BoatError("not_signed_in", "Not signed in. Run boat onboard.");
@@ -1299,14 +1147,14 @@ async function main(argv: ReadonlyArray<string>): Promise<{ code: number; mutati
 }
 
 if (process.argv[2] === WORKER_ARG) {
-  runWorker();
+  OUTBOX.work();
 } else {
   const argv = process.argv.slice(2);
   const result = await main(argv);
   logCall(HOME, { argv, mutating: result.mutating, exitCode: result.code });
   try {
     // Requests this command's own work queued, such as an in-sandbox `boat snapshot` it ran.
-    startWorker();
+    OUTBOX.start();
   } catch (error) {
     console.error(JSON.stringify({ code: "worker_not_started", error: errorMessage(error) }));
   }

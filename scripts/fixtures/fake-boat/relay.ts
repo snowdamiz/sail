@@ -93,8 +93,7 @@ function parseRequest(body: string): RelayRequest {
 const subcommand = (argv: ReadonlyArray<string>) => argv.find((arg) => !arg.startsWith("-"));
 
 /** Hosts from the fake `boat`'s Caddy site files, which the caller's own DNS sends to itself. */
-function publishedHosts(): ReadonlyArray<string> {
-  const sites = NodePath.join(caddyDir(), "sites");
+export function publishedHosts(sites: string): ReadonlyArray<string> {
   const files = NodeFS.existsSync(sites) ? NodeFS.readdirSync(sites) : [];
   const hosts = files
     .filter((file) => file.startsWith("boat-") && file.endsWith(".caddy"))
@@ -124,7 +123,9 @@ function syncHosts(container: string): void {
     ? inspect<string>(CADDY_CONTAINER, `(index .NetworkSettings.Networks "${NETWORK}").IPAddress`)
     : "";
   const lines = caddyIp
-    ? publishedHosts().map((host) => `${caddyIp}\t${host} ${HOSTS_MARKER}`)
+    ? publishedHosts(NodePath.join(caddyDir(), "sites")).map(
+        (host) => `${caddyIp}\t${host} ${HOSTS_MARKER}`,
+      )
     : [];
   docker(["exec", "-i", "-u", "0", container, "sh", "-c", SYNC_HOSTS], {
     input: lines.join("\n"),
@@ -295,13 +296,15 @@ function parseFlags(args: ReadonlyArray<string>, allowed: ReadonlyArray<string>)
   return flags;
 }
 
-const [name = "", ...rest] = process.argv.slice(2);
-const command = COMMANDS[name];
-try {
-  if (!command)
-    throw new UsageError(`usage: relay.ts <${Object.keys(COMMANDS).join("|")}> [flags]`);
-  await command.run(parseFlags(rest, command.flags));
-} catch (error) {
-  console.error(`boat-relay: ${error instanceof Error ? error.message : String(error)}`);
-  process.exitCode = error instanceof UsageError ? 2 : 1;
+if (import.meta.main) {
+  const [name = "", ...rest] = process.argv.slice(2);
+  const command = COMMANDS[name];
+  try {
+    if (!command)
+      throw new UsageError(`usage: relay.ts <${Object.keys(COMMANDS).join("|")}> [flags]`);
+    await command.run(parseFlags(rest, command.flags));
+  } catch (error) {
+    console.error(`boat-relay: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = error instanceof UsageError ? 2 : 1;
+  }
 }
