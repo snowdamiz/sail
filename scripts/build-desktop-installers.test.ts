@@ -10,7 +10,11 @@ import { buildDesktopInstallers } from "./build-desktop-installers.ts";
 
 const execute = NodeUtil.promisify(NodeChildProcess.execFile);
 
-async function fixture(platform: "Darwin" | "Linux", corrupt = false) {
+async function fixture(
+  platform: "Darwin" | "Linux",
+  corrupt = false,
+  arch: "arm64" | "x86_64" = "arm64",
+) {
   const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "sail-installer-"));
   const release = NodePath.join(root, "release");
   const bin = NodePath.join(root, "fixture-bin");
@@ -23,7 +27,10 @@ async function fixture(platform: "Darwin" | "Linux", corrupt = false) {
     repository: "snowdamiz/sail",
     outputDir: release,
   });
-  const name = platform === "Darwin" ? "Sail-0.1.3-arm64.zip" : "Sail-arm64.AppImage";
+  const name =
+    platform === "Darwin"
+      ? `Sail-0.1.3-${arch === "x86_64" ? "x64" : "arm64"}.zip`
+      : `Sail-${arch}.AppImage`;
   if (platform === "Darwin") {
     const bundle = NodePath.join(root, "Sail.app");
     await NodeFSP.mkdir(NodePath.join(bundle, "Contents", "MacOS"), { recursive: true });
@@ -51,7 +58,7 @@ async function fixture(platform: "Darwin" | "Linux", corrupt = false) {
   );
   await NodeFSP.writeFile(
     NodePath.join(bin, "uname"),
-    '#!/bin/sh\ncase "$1" in -s) echo "$FIXTURE_PLATFORM";; -m) echo arm64;; esac\n',
+    '#!/bin/sh\ncase "$1" in -s) echo "$FIXTURE_PLATFORM";; -m) echo "$FIXTURE_ARCH";; esac\n',
     { mode: 0o755 },
   );
   await NodeFSP.writeFile(NodePath.join(bin, "sysctl"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
@@ -64,6 +71,7 @@ async function fixture(platform: "Darwin" | "Linux", corrupt = false) {
     ...process.env,
     PATH: bin + NodePath.delimiter + process.env.PATH,
     FIXTURE_PLATFORM: platform,
+    FIXTURE_ARCH: arch,
     FIXTURE_RELEASE_DIR: release,
     SAIL_INSTALL_DIR: install,
     SAIL_INSTALL_BIN_DIR: command,
@@ -109,6 +117,12 @@ it("installs a Linux AppImage, launcher, and app menu entry without executing it
   expect(
     await NodeFSP.readFile(NodePath.join(f.root, "share", "applications", "sail.desktop"), "utf8"),
   ).toContain("Sail.AppImage");
+});
+
+it("resolves Sail-x86_64.AppImage on Linux x86_64", async () => {
+  await using f = await fixture("Linux", false, "x86_64");
+  await f.run();
+  expect(await NodeFSP.readFile(NodePath.join(f.command, "sail"), "utf8")).toBe("fixture appimage");
 });
 
 it("leaves an existing installation intact when the published checksum is wrong", async () => {

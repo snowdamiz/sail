@@ -17,7 +17,11 @@ case "$(uname -m)" in
 esac
 if [ "$platform" = mac ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ]; then arch=arm64; fi
 if [ "$platform" = linux ]; then
-  archive="Sail-$arch.$extension"
+  if [ "$arch" = x64 ]; then
+    archive="Sail-x86_64.$extension"
+  else
+    archive="Sail-$arch.$extension"
+  fi
 else
   archive="Sail-$version-$arch.$extension"
 fi

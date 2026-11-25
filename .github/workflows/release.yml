@@ -79,14 +79,14 @@ jobs:
       - name: Upload server dist bundle
         uses: actions/upload-artifact@v4
         with:
-          name: sail-server-dist
+          name: sail-bundle-server-dist
           path: apps/server/dist
           if-no-files-found: error
           retention-days: 1
       - name: Upload desktop dist bundle
         uses: actions/upload-artifact@v4
         with:
-          name: sail-desktop-dist
+          name: sail-bundle-desktop-dist
           path: apps/desktop/dist-electron
           if-no-files-found: error
           retention-days: 1
@@ -178,12 +178,12 @@ jobs:
       - name: Download server dist bundle
         uses: actions/download-artifact@v4
         with:
-          name: sail-server-dist
+          name: sail-bundle-server-dist
           path: apps/server/dist
       - name: Download desktop dist bundle
         uses: actions/download-artifact@v4
         with:
-          name: sail-desktop-dist
+          name: sail-bundle-desktop-dist
           path: apps/desktop/dist-electron
       - name: Verify downloaded JS bundles
         run: |
@@ -222,7 +222,7 @@ jobs:
           set -euo pipefail
           mkdir -p release-publish
           shopt -s nullglob
-          for pattern in "release/*.zip" "release/*.dmg" "release/*.AppImage" "release/*.blockmap" "release/latest*.yml" "release/nightly*.yml"; do
+          for pattern in "release/*.zip" "release/*.dmg" "release/*.AppImage" "release/*.deb" "release/*.blockmap" "release/latest*.yml" "release/nightly*.yml"; do
             for file in $pattern; do
               cp "$file" release-publish/
             done
@@ -288,6 +288,7 @@ jobs:
           test -f release-final/SHA256SUMS
           test -f release-final/install-desktop.sh
           test -f release-final/latest-mac.yml -o -f release-final/nightly-mac.yml
+          ! ls release-final/*.cjs release-final/*.map >/dev/null 2>&1
           ls -lh release-final
           cat release-final/SHA256SUMS
       - name: Create or update GitHub Release
