@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Runs the real CLI server and finds it a free port.
+// @effect-diagnostics globalFetch:off -- The requests run inside the browser page, with its cookie jar.
 import * as NodeNet from "node:net";
 import * as NodeURL from "node:url";
 
@@ -80,31 +81,33 @@ it.live("a browser carrying other servers' cookies for this host still pairs", (
       (browser) => Effect.promise(() => browser.close()),
     );
     const context = yield* Effect.promise(() => browser.newContext());
+    const page = yield* Effect.promise(() => context.newPage());
+    yield* Effect.promise(() => page.goto(`${pairingUrl.origin}/.well-known/t3/environment`));
     yield* Effect.promise(() =>
       context.addCookies(
-        Array.from({ length: 100 }, (_, index) => ({
+        Array.from({ length: 150 }, (_, index) => ({
           name: `t3_session_${String(40_000 + index)}_0123456789ab`,
-          value: "s".repeat(200),
+          value: "s".repeat(680),
           url: pairingUrl.origin,
           httpOnly: true,
           sameSite: "Lax" as const,
         })),
       ),
     );
-    const page = yield* Effect.promise(() => context.newPage());
-    yield* Effect.promise(() => page.goto(`${pairingUrl.origin}/.well-known/t3/environment`));
     const result = yield* Effect.promise(() =>
       page.evaluate(async (token) => {
         const exchange = await fetch("/api/auth/browser-session", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ credential: token }),
-        });
-        const session = await fetch("/api/auth/session");
+        }).catch(() => undefined);
+        const session = await fetch("/api/auth/session").catch(() => undefined);
         return {
-          exchangeStatus: exchange.status,
-          sessionStatus: session.status,
-          authenticated: session.ok && (await session.json()).authenticated === true,
+          exchangeStatus: exchange?.status,
+          sessionStatus: session?.status,
+          authenticated:
+            session?.ok === true &&
+            ((await session.json()) as { authenticated?: unknown }).authenticated === true,
         };
       }, credential),
     );

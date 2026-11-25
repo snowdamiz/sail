@@ -19,11 +19,17 @@ import * as NetAddress from "effect/net/NetAddress";
 
 import * as ServerConfig from "./config.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
+import { hostShellWord } from "./cli/invocation.ts";
 
 export interface HeadlessServeAccessInfo {
   readonly connectionString: string;
-  readonly pairing?: { readonly token: string; readonly pairingUrl: string } | undefined;
+  readonly pairing:
+    | { readonly token: string; readonly pairingUrl: string }
+    | { readonly offNotice: string };
 }
+
+export const formatStartupPairingOff = (baseDir: string, platform: NodeJS.Platform): string =>
+  `Startup pairing is off. To pair a device, run \`t3 pair --base-dir ${hostShellWord(platform, baseDir)}\` on this machine.`;
 
 type NetworkInterfacesMap = ReturnType<typeof NodeOS.networkInterfaces>;
 
@@ -260,13 +266,13 @@ export const formatHeadlessServeOutput = ({
   [
     "T3 Code server is ready.",
     `Connection string: ${connectionString}`,
-    ...(pairing === undefined
-      ? ["Startup pairing is off. To pair a device, run `t3 pair` on this machine."]
-      : [
+    ...("token" in pairing
+      ? [
           `Token: ${pairing.token}`,
           `Pairing URL: ${pairing.pairingUrl}`,
           `App link: ${buildPairingAppLink(pairing.pairingUrl)}`,
-        ]),
+        ]
+      : [pairing.offNotice]),
     ...(isPlainHttpOffMachine(connectionString)
       ? [
           "",
@@ -274,7 +280,7 @@ export const formatHeadlessServeOutput = ({
           "token and control this machine. Use it over a VPN or tailnet you trust.",
         ]
       : []),
-    ...(pairing === undefined ? [] : ["", renderTerminalQrCode(pairing.pairingUrl)]),
+    ...("token" in pairing ? ["", renderTerminalQrCode(pairing.pairingUrl)] : []),
     "",
   ].join("\n");
 
@@ -291,7 +297,10 @@ export const issueHeadlessServeAccessInfo = Effect.fn("issueHeadlessServeAccessI
       { privateNetworkOnly: serverConfig.privateNetworkOnly, platform },
     );
   if (serverConfig.startupPairing === "off") {
-    return { connectionString } satisfies HeadlessServeAccessInfo;
+    return {
+      connectionString,
+      pairing: { offNotice: formatStartupPairingOff(serverConfig.baseDir, platform) },
+    } satisfies HeadlessServeAccessInfo;
   }
   const issued = yield* serverAuth.issueStartupPairingCredential();
 

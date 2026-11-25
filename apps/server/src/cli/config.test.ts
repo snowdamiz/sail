@@ -35,7 +35,7 @@ import {
 import { deriveServerPaths } from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { acquireServerOwnership } from "../serverOwnership.ts";
-import { resolveServerConfig } from "./config.ts";
+import { type CliServerFlags, resolveServerConfig } from "./config.ts";
 
 const deriveExplicitServerPaths = (baseDir: string, devUrl: URL | undefined) =>
   deriveServerPaths(baseDir, devUrl, { baseDirIsExplicit: true });
@@ -577,6 +577,44 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         tailscaleServeEnabled: false,
         tailscaleServePort: 443,
       });
+    }),
+  );
+
+  it.effect("prefers --public-url and --startup-pairing over SAIL_ then T3CODE_ variables", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-public-url-" });
+      const resolve = (
+        flags: Pick<CliServerFlags, "publicUrl" | "startupPairing">,
+        env: Record<string, string>,
+      ) =>
+        resolveServerConfig({ ...minimalWebFlags(baseDir), ...flags }, Option.none()).pipe(
+          Effect.provide(
+            Layer.merge(NetService.layer, ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+          ),
+        );
+      const none = { publicUrl: Option.none(), startupPairing: Option.none() };
+      const env = {
+        SAIL_PUBLIC_URL: "https://sail.example",
+        T3CODE_PUBLIC_URL: "not-a-url",
+        SAIL_STARTUP_PAIRING: "off",
+      };
+
+      const fromEnv = yield* resolve(none, env);
+      assert.equal(fromEnv.publicUrl?.origin, "https://sail.example");
+      assert.equal(fromEnv.startupPairing, "off");
+      const fromFlags = yield* resolve(
+        {
+          publicUrl: Option.some(new URL("https://flag.example")),
+          startupPairing: Option.some("on"),
+        },
+        env,
+      );
+      assert.equal(fromFlags.publicUrl?.origin, "https://flag.example");
+      assert.equal(fromFlags.startupPairing, "on");
+      const fromLegacy = yield* resolve(none, { T3CODE_PUBLIC_URL: "https://t3.example" });
+      assert.equal(fromLegacy.publicUrl?.origin, "https://t3.example");
+      assert.equal(fromLegacy.startupPairing, "on");
     }),
   );
 

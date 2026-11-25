@@ -87,10 +87,17 @@ const tailscaleServePortFlag = Flag.Int("tailscale-serve-port").pipe(
   Flag.withDescription("HTTPS port for Tailscale Serve when --tailscale-serve is enabled."),
   Flag.optional,
 );
-const PublicUrl = Schema.URLFromString.pipe(
+export const HttpUrl = Schema.URLFromString.pipe(
   Schema.check(
     Schema.makeFilter((url) => url.protocol === "http:" || url.protocol === "https:", {
       expected: "an http:// or https:// URL",
+    }),
+  ),
+);
+const PublicUrl = HttpUrl.pipe(
+  Schema.check(
+    Schema.makeFilter((url) => url.href === `${url.origin}/`, {
+      expected: "an origin with no path, query, or credentials, such as https://demo.fly.dev",
     }),
   ),
 );
@@ -167,10 +174,15 @@ const EnvServerConfig = Config.all({
   port: Config.Port("T3CODE_PORT").pipe(Config.option, Config.map(Option.getOrUndefined)),
   host: Config.String("T3CODE_HOST").pipe(Config.option, Config.map(Option.getOrUndefined)),
   t3Home: t3HomeConfig,
-  publicUrl: Config.all([
-    Config.schema(PublicUrl, "SAIL_PUBLIC_URL").pipe(Config.option),
-    Config.schema(PublicUrl, "T3CODE_PUBLIC_URL").pipe(Config.option),
-  ]).pipe(Config.map(([sail, t3]) => Option.getOrUndefined(Option.orElse(sail, () => t3)))),
+  publicUrl: Config.schema(PublicUrl, "SAIL_PUBLIC_URL").pipe(
+    Config.option,
+    Config.flatMap((sail) =>
+      Option.isSome(sail)
+        ? Config.succeed(sail)
+        : Config.schema(PublicUrl, "T3CODE_PUBLIC_URL").pipe(Config.option),
+    ),
+    Config.map(Option.getOrUndefined),
+  ),
   startupPairing: Config.schema(ServerConfig.StartupPairing, "SAIL_STARTUP_PAIRING").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),

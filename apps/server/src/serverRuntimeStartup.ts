@@ -12,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Console from "effect/Console";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -51,6 +52,7 @@ import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import {
   formatHeadlessServeOutput,
+  formatStartupPairingOff,
   issueHeadlessServeAccessInfo,
   resolveLocalOrigin,
 } from "./startupAccess.ts";
@@ -344,16 +346,23 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
   } satisfies AutoBootstrapWelcomeTargets;
 });
 
-const resolveStartupBrowserTarget = Effect.gen(function* () {
+export const resolveStartupBrowserTarget = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig.ServerConfig;
   const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
   const baseTarget =
     serverConfig.publicUrl?.origin ??
     serverConfig.devUrl?.toString() ??
     resolveLocalOrigin(serverConfig.host, serverConfig.port);
-  return serverConfig.mode === "desktop" || serverConfig.startupPairing === "off"
-    ? { target: baseTarget, pairing: false }
-    : { target: yield* serverAuth.issueStartupPairingUrl(baseTarget), pairing: true };
+  if (serverConfig.mode === "desktop") {
+    return { target: baseTarget, announce: "none" } as const;
+  }
+  if (serverConfig.startupPairing === "off") {
+    return { target: baseTarget, announce: "pairing-off" } as const;
+  }
+  return {
+    target: yield* serverAuth.issueStartupPairingUrl(baseTarget),
+    announce: "pairing",
+  } as const;
 });
 
 /** Prints the one-time admin pairing URL to stdout only; logger records reach trace files and collectors. */
@@ -362,9 +371,17 @@ export const announceStartupPairingUrl = (pairingUrl: string) =>
     Effect.andThen(Console.log(`  pairingUrl: ${pairingUrl}`)),
   );
 
+const announceStartupPairingOff = Effect.fn("serverRuntimeStartup.announceStartupPairingOff")(
+  function* (url: string) {
+    const { baseDir } = yield* ServerConfig.ServerConfig;
+    const platform = yield* HostProcess.Platform;
+    yield* Console.log(`  url: ${url}\n  ${formatStartupPairingOff(baseDir, platform)}`);
+  },
+);
+
 // Pairing tokens belong only in announceStartupPairingUrl's stdout output.
 export const logBrowserAutoOpenUnavailable = Effect.logInfo("browser auto-open unavailable", {
-  hint: "Open the pairing URL above in your browser.",
+  hint: "Open the URL above in your browser.",
 });
 
 export const maybeOpenBrowser = Effect.fn("serverRuntimeStartup.maybeOpenBrowser")(function* (
@@ -637,8 +654,10 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
         } else {
           yield* Effect.logDebug("startup phase: browser open check");
           const startupBrowserTarget = yield* resolveStartupBrowserTarget;
-          if (startupBrowserTarget.pairing) {
+          if (startupBrowserTarget.announce === "pairing") {
             yield* announceStartupPairingUrl(startupBrowserTarget.target);
+          } else if (startupBrowserTarget.announce === "pairing-off") {
+            yield* announceStartupPairingOff(startupBrowserTarget.target);
           }
           yield* runStartupPhase("browser.open", maybeOpenBrowser(startupBrowserTarget.target));
         }

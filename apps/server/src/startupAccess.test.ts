@@ -237,8 +237,13 @@ describe("issueHeadlessServeAccessInfo", () => {
         publicUrl: new URL("https://demo.fly.dev/"),
         startupPairing: "on",
       });
-      expect(accessInfo.connectionString).toBe("https://demo.fly.dev");
-      expect(accessInfo.pairing?.pairingUrl).toBe("https://demo.fly.dev/pair#token=STARTUPTOKEN");
+      expect(accessInfo).toEqual({
+        connectionString: "https://demo.fly.dev",
+        pairing: {
+          token: "STARTUPTOKEN",
+          pairingUrl: "https://demo.fly.dev/pair#token=STARTUPTOKEN",
+        },
+      });
       expect(output).not.toContain("plain HTTP");
     }),
   );
@@ -246,22 +251,26 @@ describe("issueHeadlessServeAccessInfo", () => {
   it.effect("builds the startup pairing link from the listener without a public URL", () =>
     Effect.gen(function* () {
       const { accessInfo } = yield* serve({ publicUrl: undefined, startupPairing: "on" });
-      expect(accessInfo.connectionString).toBe("http://127.0.0.1:8080");
-      expect(accessInfo.pairing?.pairingUrl).toBe("http://127.0.0.1:8080/pair#token=STARTUPTOKEN");
+      expect(accessInfo).toEqual({
+        connectionString: "http://127.0.0.1:8080",
+        pairing: {
+          token: "STARTUPTOKEN",
+          pairingUrl: "http://127.0.0.1:8080/pair#token=STARTUPTOKEN",
+        },
+      });
     }),
   );
 
   it.effect("issues no credential and prints no token when startup pairing is off", () =>
     Effect.gen(function* () {
-      const { accessInfo, output, issuedCredentials } = yield* serve({
+      const { output, issuedCredentials } = yield* serve({
         publicUrl: new URL("https://demo.fly.dev"),
         startupPairing: "off",
       });
       expect(issuedCredentials).toBe(0);
-      expect(accessInfo.pairing).toBeUndefined();
       expect(output).toContain("T3 Code server is ready.");
       expect(output).toContain("Connection string: https://demo.fly.dev");
-      expect(output).toContain("`t3 pair`");
+      expect(output).toMatch(/`t3 pair --base-dir \S+`/);
       expect(output).not.toMatch(/#token=|Token:/);
     }),
   );

@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
@@ -363,5 +364,58 @@ it.effect("automatic pull only updates enabled, behind, clean default-branch che
       { ...overrides({ "/opted-out": false }), defaultAutoPull: true },
     ).pipe(Effect.provideService(GitVcsDriver.GitVcsDriver, git));
     assert.deepStrictEqual(pulled, ["/inherited"]);
+  }),
+);
+
+const browserTarget = (
+  overrides: Pick<ServerConfig.ServerConfig["Service"], "publicUrl" | "startupPairing">,
+) =>
+  Effect.gen(function* () {
+    const issuedFor: Array<string> = [];
+    const target = yield* ServerRuntimeStartup.resolveStartupBrowserTarget.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.effect(
+            ServerConfig.ServerConfig,
+            Effect.gen(function* () {
+              return ServerConfig.make({ ...(yield* ServerConfig.ServerConfig), ...overrides });
+            }),
+          ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-browser-" }))),
+          Layer.mock(EnvironmentAuth.EnvironmentAuth)({
+            issueStartupPairingUrl: (baseUrl) =>
+              Effect.sync(() => {
+                issuedFor.push(baseUrl);
+                return `${baseUrl}/pair#token=STARTUPTOKEN`;
+              }),
+          }),
+        ),
+      ),
+      Effect.provide(NodeServices.layer),
+    );
+    return { target, issuedFor };
+  });
+
+it.effect("browser startup pairs through the public URL", () =>
+  Effect.gen(function* () {
+    const { target, issuedFor } = yield* browserTarget({
+      publicUrl: new URL("https://demo.fly.dev"),
+      startupPairing: "on",
+    });
+    assert.deepStrictEqual(issuedFor, ["https://demo.fly.dev"]);
+    assert.deepStrictEqual(target, {
+      target: "https://demo.fly.dev/pair#token=STARTUPTOKEN",
+      announce: "pairing",
+    });
+  }),
+);
+
+it.effect("browser startup issues no credential when startup pairing is off", () =>
+  Effect.gen(function* () {
+    const { target, issuedFor } = yield* browserTarget({
+      publicUrl: new URL("https://demo.fly.dev"),
+      startupPairing: "off",
+    });
+    assert.deepStrictEqual(issuedFor, []);
+    assert.deepStrictEqual(target, { target: "https://demo.fly.dev", announce: "pairing-off" });
   }),
 );
