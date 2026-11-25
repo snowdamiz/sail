@@ -117,7 +117,7 @@ in the receiving app. Connection settings are under **Settings → Environments*
 on web and desktop and **Settings → Environments** on mobile. A loopback address
 such as `127.0.0.1` reaches only the device opening the link.
 
-On a computer with the desktop app, you can open the printed `t3code://pair`
+On a computer with the desktop app, you can open the printed `sail://pair`
 app link instead. The desktop app asks you to confirm the server address, then
 adds it.
 
@@ -246,8 +246,17 @@ t3 serve --host 0.0.0.0 --port 8080 --public-url https://demo.fly.dev --startup-
 it starts, so no token lands in logs that others can read. Run `t3 pair` in a
 shell on the server when you need a link.
 
-In a script, `t3 auth pairing create --json --require-running` prints a link only
-while a server runs for that data directory, and fails otherwise.
+In a script, run `t3 auth pairing create --json --require-running`. The running
+server issues the token, and the command fails without issuing one when no
+server answers for that data directory. The `pairUrl` it prints uses the
+server's `--public-url`. If the server has none, pass `--base-url`, or the
+output has only the token.
+
+A reverse proxy in front of the server can refuse large request headers before
+they reach it. Caddy's default answers 431 to headers larger than about 20 KB,
+which a browser holding many cookies for that address can send. If a browser
+gets a 431 error through the proxy, raise the proxy's header limit or clear that
+site's cookies in the browser.
 
 ### Hosted web app
 
