@@ -42,10 +42,11 @@ import { type CommandSpec, type Invocation, parse, UsageError } from "./sandbox/
 import { outbox, type SnapshotFailure, WORKER_ARG } from "./outbox-worker.ts";
 import {
   AUTH_LOG,
+  AUTH_ORIGIN_FILE,
   DEADLINE_FILE,
   ID_FILE,
-  LIFETIME_DIR,
   OUTBOX_DIR,
+  READONLY_DIR,
   SNAPSHOT_NAME,
 } from "./sandbox/outbox.ts";
 
@@ -136,7 +137,7 @@ const snapshotTag = (name: string) => `${SNAPSHOT_REPO}:${HOME_ID}-${name}`;
 const sandboxFile = (id: string) => at("sandboxes", `${id}.json`);
 const snapshotFile = (name: string) => at("snapshots", `${name}.json`);
 const signInFile = (code: string) => NodePath.join(SIGN_INS, `${code}.json`);
-const lifetimeDir = (id: string) => at("lifetime", id);
+const readonlyDir = (id: string) => at("readonly", id);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const print = (value: unknown) => console.log(JSON.stringify(value));
 
@@ -368,19 +369,24 @@ function sandboxImage(): string {
   return image;
 }
 
-/** The directories a sandbox mounts: its outbox, which it writes, and its lifetime, which it reads. */
+/** The directories a sandbox mounts: its outbox, which it writes, and one it only reads. */
 function prepareMounts(id: string): void {
   const requests = OUTBOX.dir(id);
   NodeFS.mkdirSync(requests, { recursive: true });
   // The sandbox writes as uid 1000, whatever uid owns this directory (CI runners use 1001).
   NodeFS.chmodSync(requests, 0o777);
   NodeFS.writeFileSync(NodePath.join(requests, ID_FILE), id);
-  NodeFS.mkdirSync(lifetimeDir(id), { recursive: true });
+  NodeFS.mkdirSync(readonlyDir(id), { recursive: true });
+  writeAuthOrigin(id);
+}
+
+function writeAuthOrigin(id: string): void {
+  writeJsonAtomic(NodePath.join(readonlyDir(id), AUTH_ORIGIN_FILE), authOrigin());
 }
 
 /** The sandbox powers itself off at this time (`sandbox/lifetime.sh`), as Boat stops it. */
 function setDeadline(id: string, archiveAfter: string | null): void {
-  const file = NodePath.join(lifetimeDir(id), DEADLINE_FILE);
+  const file = NodePath.join(readonlyDir(id), DEADLINE_FILE);
   if (archiveAfter === null) NodeFS.rmSync(file, { force: true });
   else writeJsonAtomic(file, Math.ceil(Date.parse(archiveAfter) / 1000));
 }
@@ -423,7 +429,7 @@ function runContainer(record: SandboxRecord, image: string): void {
     "--volume",
     `${OUTBOX.dir(record.id)}:${OUTBOX_DIR}`,
     "--volume",
-    `${lifetimeDir(record.id)}:${LIFETIME_DIR}:ro`,
+    `${readonlyDir(record.id)}:${READONLY_DIR}:ro`,
     "--volume",
     `${authLogPath()}:${AUTH_LOG}:ro`,
     image,
@@ -467,7 +473,7 @@ function removeSandbox(id: string): void {
     if (!isNoSuch(error)) throw error;
   }
   for (const port of hostedPorts(id)) removeSite(siteId(id, port));
-  for (const path of [at("hosts", id), OUTBOX.dir(id), lifetimeDir(id), sandboxFile(id)]) {
+  for (const path of [at("hosts", id), OUTBOX.dir(id), readonlyDir(id), sandboxFile(id)]) {
     NodeFS.rmSync(path, { recursive: true, force: true });
   }
 }
@@ -518,6 +524,17 @@ function reportFailures(failures: ReadonlyArray<SnapshotFailure>): void {
   for (const failure of failures) {
     console.error(JSON.stringify({ code: "snapshot_failed", ...failure }));
   }
+}
+
+/** After any save a sandbox asked for under `name`, which the real Boat finished before replying. */
+async function settledSnapshot(
+  name: string | undefined,
+  budgetMs = 100_000,
+): Promise<SnapshotRecord> {
+  const valid = snapshotName(name);
+  await OUTBOX.settle({ name: valid }, budgetMs);
+  reportFailures(OUTBOX.failures({ name: valid }));
+  return snapshotRecord(valid);
 }
 
 interface Ran {
@@ -739,9 +756,7 @@ const TABLE: ReadonlyArray<Command> = [
       if (!life) throw new BoatError("lifetime_required", "Pass --ttl <seconds> or --no-auto-stop");
       const from = invocation.flags.get("from");
       const image =
-        from === undefined
-          ? sandboxImage()
-          : snapshotRecord(snapshotName(text(from, "--from"))).imageId;
+        from === undefined ? sandboxImage() : (await settledSnapshot(text(from, "--from"))).imageId;
       ensureCaddy();
       const id = `bx-${NodeCrypto.randomBytes(6).toString("hex")}`;
       const record: SandboxRecord = {
@@ -840,6 +855,7 @@ const TABLE: ReadonlyArray<Command> = [
       };
       resize(record.id, type);
       setDeadline(record.id, next.archiveAfter);
+      writeAuthOrigin(record.id);
       if (state.state !== "running") {
         print({ progress: "resuming", id: record.id });
         try {
@@ -920,7 +936,7 @@ const TABLE: ReadonlyArray<Command> = [
     prints: "json",
     signedIn: true,
     run: async (invocation) => {
-      const name = snapshotRecord(snapshotName(invocation.args.name)).name;
+      const { name } = await settledSnapshot(invocation.args.name, 45_000);
       try {
         docker(["image", "rm", "--force", snapshotTag(name)]);
       } catch (error) {
@@ -937,6 +953,7 @@ const TABLE: ReadonlyArray<Command> = [
     prints: "json",
     signedIn: true,
     run: async () => {
+      await OUTBOX.settle({}, 15_000);
       const named = snapshotRecords().map(({ name, sandboxId, createdAt }) => ({
         name,
         sandboxId,
@@ -979,8 +996,6 @@ const TABLE: ReadonlyArray<Command> = [
           "/home/user",
           "-e",
           "HOME=/home/user",
-          "-e",
-          `FAKE_AUTH_ORIGIN=${authOrigin()}`,
           ...env,
           container(record.id),
           "timeout",

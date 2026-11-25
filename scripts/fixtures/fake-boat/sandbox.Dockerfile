@@ -24,7 +24,7 @@ RUN systemctl mask \
 RUN useradd --create-home --uid 1000 --shell /bin/bash user \
   && echo 'user ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/user \
   && chmod 440 /etc/sudoers.d/user \
-  && mkdir -p /var/lib/systemd/linger /var/lib/fake-boat/outbox /var/lib/fake-boat/lifetime \
+  && mkdir -p /var/lib/systemd/linger /var/lib/fake-boat/outbox /var/lib/fake-boat/readonly \
   && touch /var/lib/systemd/linger/user \
   && : > /etc/machine-id
 

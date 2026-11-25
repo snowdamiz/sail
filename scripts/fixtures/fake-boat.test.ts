@@ -11,6 +11,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { AUTH_HOST, caddyDir, publicUrl, removeSite, rootCertPath } from "./lib/caddy.ts";
 import { docker, dockerSucceeds, hasDocker } from "./lib/docker.ts";
 import { homeId } from "./lib/state.ts";
+import { breakStaleLock, takeLock } from "./fake-boat/outbox-worker.ts";
+import { waitForApproval } from "./fake-boat/sandbox/auth.ts";
 
 const FAKE_DIR = NodePath.join(import.meta.dirname, "fake-boat");
 const RECORDED = NodePath.join(FAKE_DIR, "recorded");
@@ -348,6 +350,63 @@ describe("fake claude and codex answering T3's provider probes", () => {
   });
 });
 
+describe("fake sign-in codes", () => {
+  it("never approves a code once it has expired, even one set to approve itself", async () => {
+    const device = {
+      kind: "boat" as const,
+      code: "ABCD-EFGH",
+      issuedAtMs: 0,
+      approveAtMs: 0,
+      expiresAtMs: 1_000,
+    };
+    const noLog = NodePath.join(NodeOS.tmpdir(), `no-auth-log-${process.pid}`);
+    expect(await waitForApproval(device, noLog)).toBe("expired");
+    const current = { ...device, expiresAtMs: Number.MAX_SAFE_INTEGER };
+    expect(await waitForApproval(current, noLog)).toBe("approved");
+  });
+});
+
+describe("fake boat worker lock", () => {
+  let dir: string;
+  const deadPid = () => {
+    const ran = NodeChildProcess.spawnSync("true");
+    if (ran.pid === undefined) throw new Error("no pid");
+    return ran.pid;
+  };
+  const holder = (lock: string) =>
+    (JSON.parse(NodeFS.readFileSync(lock, "utf8")) as { pid: number }).pid;
+
+  beforeAll(async () => {
+    dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "fake-boat-lock-test-"));
+  });
+
+  afterAll(async () => {
+    if (dir) await NodeFSP.rm(dir, { recursive: true, force: true });
+  });
+
+  it("takes over a lock whose holder died, and leaves a live holder's alone", async () => {
+    const lock = NodePath.join(dir, "taken.json");
+    await NodeFSP.writeFile(lock, JSON.stringify({ pid: deadPid() }));
+    expect(takeLock(lock)).toBe(true);
+    expect(holder(lock)).toBe(process.pid);
+
+    const live = NodePath.join(dir, "live.json");
+    await NodeFSP.writeFile(live, JSON.stringify({ pid: process.ppid }));
+    expect(takeLock(live)).toBe(false);
+    expect(holder(live)).toBe(process.ppid);
+  });
+
+  it("never removes a lock that a live worker took after the dead holder was seen", async () => {
+    const lock = NodePath.join(dir, "raced.json");
+    const seen = deadPid();
+    await NodeFSP.writeFile(lock, JSON.stringify({ pid: process.ppid }));
+    expect(breakStaleLock(lock, seen)).toBe(false);
+    expect(holder(lock)).toBe(process.ppid);
+    const leftovers = (await NodeFSP.readdir(dir)).filter((name) => name.startsWith("raced.json."));
+    expect(leftovers).toEqual([]);
+  });
+});
+
 describe("fake boat records and output", () => {
   let state: string;
 
@@ -490,6 +549,16 @@ describe.skipIf(!hasDocker())("fake boat", () => {
       return true;
     }
   };
+  const names = async () =>
+    lastJson<{ named: Array<{ name: string }> }>((await json(["snapshots"])).stdout).named.map(
+      (row) => row.name,
+    );
+  const saveInside = async () =>
+    expect(await exec(`boat snapshot ${sandbox} ${insideSnapshot} --json`)).toEqual({
+      exitCode: 0,
+      stdout: "{}\n",
+      stderr: "",
+    });
   const startWeb = () =>
     exec(
       `systemd-run --user --unit fake-boat-test-web node -e 'require("http").createServer((q, s) => s.end(${JSON.stringify(WEB_BODY)})).listen(${WEB_PORT}, "127.0.0.1")'`,
@@ -682,7 +751,20 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     expect((await exec("printenv FAKE_AUTH_PROBE", { FAKE_AUTH_PROBE: "through" })).stdout).toBe(
       "through\n",
     );
-    expect((await exec("printenv FAKE_AUTH_ORIGIN")).stdout).toBe(`${publicUrl(AUTH_HOST)}\n`);
+    const expireAtOnce = { FAKE_AUTH_CODE_TTL_SECS: "0" };
+    const deviceLink = async () =>
+      (await exec("env -u FAKE_AUTH_ORIGIN codex login --device-auth", expireAtOnce)).stdout;
+    expect(await deviceLink()).toContain(`\n   ${publicUrl(AUTH_HOST)}/codex/device\n`);
+    const originFile = NodePath.join(home, "readonly", sandbox, "auth-origin");
+    const origin = await NodeFSP.readFile(originFile, "utf8");
+    await NodeFSP.writeFile(originFile, JSON.stringify(OTHER_ORIGIN));
+    try {
+      expect(await deviceLink(), "a CLI started without boat exec's env").toContain(
+        `\n   ${OTHER_ORIGIN}/codex/device\n`,
+      );
+    } finally {
+      await NodeFSP.writeFile(originFile, origin);
+    }
     const slow = await json(["exec", sandbox, "--timeout", "1", "--", "sleep", "30"]);
     expect(lastJson<ExecJson>(slow.stdout).exitCode).toBeNull();
   });
@@ -745,7 +827,7 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     }
   });
 
-  it("saves, lists, and removes named snapshots, from here and from inside", async () => {
+  it("saves and lists named snapshots, from here and from inside", async () => {
     expect((await json(["snapshot", sandbox, snapshot])).status).toBe(0);
     const listed = await json(["snapshots"]);
     expect(lastJson(listed.stdout)).toEqual({
@@ -754,32 +836,32 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     await matchesRecordedResult("snapshots.jsonl", listed.stdout);
 
     expect((await exec("head -c 150M /dev/urandom > big")).exitCode).toBe(0);
-    expect(await exec(`boat snapshot ${sandbox} ${insideSnapshot} --json`)).toEqual({
-      exitCode: 0,
-      stdout: "{}\n",
-      stderr: "",
-    });
+    await saveInside();
     expect((await json(["status"])).status).toBe(0);
-    const before = lastJson<{ named: Array<{ name: string }> }>((await json(["snapshots"])).stdout);
-    expect(before.named.map((row) => row.name)).toEqual([snapshot]);
-    await expect
-      .poll(async () => {
-        const named = lastJson<{ named: Array<{ name: string }> }>(
-          (await json(["snapshots"])).stdout,
-        );
-        return named.named.map((row) => row.name);
-      }, POLL)
-      .toEqual([snapshot, insideSnapshot]);
-    await expect.poll(() => workerIdle(home), POLL).toBe(true);
-    expect((await exec("rm big")).exitCode).toBe(0);
+    expect(
+      dockerSucceeds(["image", "inspect", snapshotImage(home, insideSnapshot)]),
+      "status returns without waiting for the save",
+    ).toBe(false);
+    expect(await names(), "snapshots waits for a save the sandbox asked for").toEqual([
+      snapshot,
+      insideSnapshot,
+    ]);
     for (const name of [snapshot, insideSnapshot]) {
       expect(dockerSucceeds(["image", "inspect", snapshotImage(home, name)]), name).toBe(true);
     }
+  });
+
+  it("never brings back a removed snapshot from a save still in flight", async () => {
+    await saveInside();
+    expect((await json(["snapshot", "rm", insideSnapshot])).status).toBe(0);
+    await expect.poll(() => workerIdle(home), POLL).toBe(true);
+    expect(await names(), "a save still in flight never brings a removed snapshot back").toEqual([
+      snapshot,
+    ]);
+    expect(dockerSucceeds(["image", "inspect", snapshotImage(home, insideSnapshot)])).toBe(false);
+    expect((await exec("rm big")).exitCode).toBe(0);
     const plain = await exec(`boat snapshot ${sandbox} ${insideSnapshot}`);
     expect(lastJson<Failure>(plain.stderr).code).toBe("json_required");
-
-    expect((await json(["snapshot", "rm", insideSnapshot])).status).toBe(0);
-    expect(dockerSucceeds(["image", "inspect", snapshotImage(home, insideSnapshot)])).toBe(false);
     expect((await failure(["snapshot", "rm", insideSnapshot])).code).toBe("not_found");
     expect((await failure(["snapshot", sandbox, "Not_Valid"])).code).toBe("invalid_name");
   });
@@ -1015,6 +1097,8 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     expect((await json(["logout"])).status).toBe(0);
     expect((await failure(["list", "--all"])).code).toBe("not_signed_in");
     await signIn("paid");
+    const resave = `echo resaved > resaved && head -c 150M /dev/urandom > big && boat snapshot ${sandbox} ${snapshot} --json && rm big`;
+    expect((await exec(resave)).exitCode).toBe(0);
     const created = await json([
       "new",
       "--name",
@@ -1031,6 +1115,9 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     sandboxes.push(fromSnapshot);
     expect(result).toMatchObject({ state: "running", archiveAfter: null, ttlSeconds: null });
     expect((await exec("cat notes.txt", {}, fromSnapshot)).stdout).toBe("kept across stops\n");
+    expect((await exec("cat resaved", {}, fromSnapshot)).stdout, "the save just asked for").toBe(
+      "resaved\n",
+    );
     expect((await exec("test -e marker", {}, fromSnapshot)).exitCode).toBe(1);
     expect((await json(["extend", fromSnapshot, "--ttl", "9000"])).status).toBe(0);
     expect((await info(fromSnapshot)).ttlSeconds).toBe(9000);

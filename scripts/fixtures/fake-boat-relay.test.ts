@@ -1,12 +1,14 @@
-// @effect-diagnostics nodeBuiltinImport:off - Drives the fake boat relay from a real container on the fixtures network.
+// @effect-diagnostics nodeBuiltinImport:off globalFetch:off - Drives the fake boat relay from a real container on the fixtures network.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeReadline from "node:readline";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
+import { publishedHosts } from "./fake-boat/relay.ts";
 import { removeSite } from "./lib/caddy.ts";
 import {
   docker,
@@ -65,10 +67,38 @@ function relayAddress(): { readonly bind: string; readonly seen: string } {
   return { bind: gateway, seen: gateway };
 }
 
+interface RelayResponse {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+describe("fake boat relay hosts", () => {
+  it("lists the fake boat's published hosts, skipping a site file removed while it reads", async () => {
+    const sites = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "fake-boat-relay-sites-"));
+    try {
+      await NodeFSP.writeFile(
+        NodePath.join(sites, "boat-bx-000000000001-80.caddy"),
+        "http://bx-000000000001-80.localtest.me, https://bx-000000000001-80.localtest.me {\n}\n",
+      );
+      await NodeFSP.writeFile(NodePath.join(sites, "fly-demo.caddy"), "demo.localtest.me {\n}\n");
+      await NodeFSP.symlink(
+        NodePath.join(sites, "removed"),
+        NodePath.join(sites, "boat-bx-000000000002-80.caddy"),
+      );
+      expect(publishedHosts(sites)).toEqual(["bx-000000000001-80.localtest.me"]);
+    } finally {
+      await NodeFSP.rm(sites, { recursive: true, force: true });
+    }
+  });
+});
+
 describe.skipIf(!hasDocker())("fake boat relay", () => {
   const container = `sail-relay-test-${NodeCrypto.randomBytes(3).toString("hex")}`;
   let home: string;
   let relayUrl: string;
+  let hostRelayUrl: string;
+  let token: string;
   let relay: NodeChildProcess.ChildProcess | undefined;
   let sandbox = "";
   let hostname = "";
@@ -95,6 +125,24 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
     lastJson<{ exitCode: number; stdout: string }>(
       (await ok(["exec", sandbox, "--timeout", "60", "--", "bash", "-lc", script])).stdout,
     );
+  const post = async (body: object, bearer?: string) => {
+    const response = await fetch(`${hostRelayUrl}/run`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(bearer === undefined ? {} : { authorization: `Bearer ${bearer}` }),
+      },
+      body: JSON.stringify(body),
+    });
+    return { status: response.status, result: (await response.json()) as RelayResponse };
+  };
+  const calls = async () => {
+    try {
+      return await NodeFSP.readFile(NodePath.join(home, "calls.jsonl"), "utf8");
+    } catch {
+      return "";
+    }
+  };
   const relayedHosts = async () =>
     (await inside(["cat", "/etc/hosts"])).stdout
       .split("\n")
@@ -130,9 +178,12 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
       NodeReadline.createInterface({ input: started.stdout }).once("line", resolve);
       started.once("exit", (code) => reject(new Error(`relay exited (${code})`)));
     });
-    const port = /^boat-relay: http:\/\/[^ ]+:(\d+)$/.exec(line)?.[1];
-    if (!port) throw new Error(`unexpected relay banner: ${line}`);
+    const banner = /^boat-relay: http:\/\/[^ ]+:(\d+) token=([0-9a-f]{64})$/.exec(line);
+    const [, port, made] = banner ?? [];
+    if (!port || !made) throw new Error(`unexpected relay banner: ${line}`);
+    token = made;
     relayUrl = `http://${address.seen}:${port}`;
+    hostRelayUrl = `http://${address.bind}:${port}`;
     docker([
       "run",
       "--detach",
@@ -168,6 +219,8 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
       container,
       "--relay",
       relayUrl,
+      "--token",
+      token,
       "--user",
       "node",
     ]);
@@ -185,12 +238,41 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
     expect(modes.stdout.trim().split("\n")).toEqual([
       `${BOAT} node 755`,
       `${dir}/relay-client.ts node 644`,
-      `${dir}/relay.json node 644`,
+      `${dir}/relay.json node 600`,
     ]);
     expect(JSON.parse((await inside(["cat", `${dir}/relay.json`])).stdout)).toEqual({
       relay: relayUrl,
       container,
+      token,
     });
+  });
+
+  it("runs nothing for a caller without the token serve printed", async () => {
+    const before = await calls();
+    const request = { container, argv: ["--json", "status"], env: {} };
+    expect((await post(request)).status).toBe(401);
+    expect((await post(request, "0".repeat(64))).status).toBe(401);
+    expect(await calls()).toBe(before);
+  });
+
+  it("runs the relay's own home and image, whatever FAKE_ variables a caller sends", async () => {
+    const decoy = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "fake-boat-relay-decoy-"));
+    try {
+      const before = await calls();
+      const ran = await post(
+        {
+          container,
+          argv: ["--json", "status"],
+          env: { FAKE_BOAT_HOME: decoy, FAKE_BOAT_IMAGE: "sail-relay-test-not-an-image" },
+        },
+        token,
+      );
+      expect(ran.result.exitCode, ran.result.stderr).toBe(0);
+      expect(await NodeFSP.readdir(decoy)).toEqual([]);
+      expect((await calls()).slice(before.length)).toContain('"argv":["--json","status"]');
+    } finally {
+      await NodeFSP.rm(decoy, { recursive: true, force: true });
+    }
   });
 
   it("signs in with onboard and onboard --wait", async () => {
@@ -221,6 +303,37 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
     const missing = await boat(["scp", "/tmp/nope.txt", `${sandbox}:/home/user/`]);
     expect(missing.status).toBe(1);
     expect(lastJson<{ code: string }>(missing.stderr).code).toBe("invalid_arguments");
+
+    const late = await inside([
+      BOAT,
+      "scp",
+      "/tmp/up.txt",
+      "--json",
+      `${sandbox}:/home/user/late.txt`,
+    ]);
+    expect(late.status, `--json between scp's paths: ${late.stderr}`).toBe(0);
+    expect((await exec("cat /home/user/late.txt")).stdout).toBe(body);
+  });
+
+  it("never lets a caller name a path on this computer for scp", async () => {
+    const secret = NodePath.join(home, "secret.txt");
+    await NodeFSP.writeFile(secret, "on the computer only\n");
+    const up = await post(
+      { container, argv: ["--json", "scp", secret, `${sandbox}:/tmp/leak.txt`], env: {} },
+      token,
+    );
+    expect(up.result.exitCode).toBe(1);
+    expect(lastJson<{ code: string }>(up.result.stderr).code).toBe("invalid_arguments");
+    expect((await exec("test -e /tmp/leak.txt; echo $?")).stdout).toBe("1\n");
+
+    const target = NodePath.join(home, "written.txt");
+    const down = await post(
+      { container, argv: ["--json", "scp", `${sandbox}:/home/user/up.txt`, target], env: {} },
+      token,
+    );
+    expect(down.result.exitCode).toBe(1);
+    expect(lastJson<{ code: string }>(down.result.stderr).code).toBe("invalid_arguments");
+    expect(NodeFS.existsSync(target)).toBe(false);
   });
 
   it("hosts a sandbox port that the caller reaches by name over plain http", async () => {

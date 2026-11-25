@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off extendsNativeError:off - A plain Node CLI that lets a fixture container drive the computer-side fake `boat`.
 import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeHttp from "node:http";
 import * as NodeOS from "node:os";
@@ -12,17 +13,22 @@ const BOAT = NodePath.join(import.meta.dirname, "boat");
 const CLIENT = NodePath.join(import.meta.dirname, "relay-client.ts");
 const HOSTS_MARKER = "# fake-boat-relay";
 
-/** What `relay-client.ts` sends. `file` names the argv slot that holds a local path. */
+/** The FAKE_ variables a caller may set; the relay's own home and image always win. */
+const CALLER_ENV = /^(FAKE_AUTH_[A-Z_]+|FAKE_BOAT_PLAN|FAKE_BOAT_HOST_SCHEME)$/;
+const GLOBAL_FLAG = "--json";
+const REMOTE_PATH = /^bx-[0-9a-f]{12}:./;
+
+/** What `relay-client.ts` sends. `file` carries the local side of an `scp`. */
 interface RelayRequest {
   readonly container: string;
   readonly argv: ReadonlyArray<string>;
   readonly env: Readonly<Record<string, string>>;
-  readonly file?: Upload | Download;
+  /** The `scp` argument the relay replaces with a path of its own. */
+  readonly local?: { readonly index: number; readonly file: Upload | Download };
 }
 
 interface Upload {
   readonly kind: "upload";
-  readonly argIndex: number;
   readonly name: string;
   readonly mode: number;
   readonly base64: string;
@@ -30,7 +36,6 @@ interface Upload {
 
 interface Download {
   readonly kind: "download";
-  readonly argIndex: number;
 }
 
 interface RelayResponse {
@@ -40,7 +45,13 @@ interface RelayResponse {
   readonly file?: string;
 }
 
-class RequestError extends Error {}
+class RequestError extends Error {
+  readonly code: string;
+  constructor(message: string, code = "bad_request") {
+    super(message);
+    this.code = code;
+  }
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -48,19 +59,17 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isStrings = (value: unknown): value is ReadonlyArray<string> =>
   Array.isArray(value) && value.every((item) => typeof item === "string");
 
-function parseFile(value: unknown, argc: number): Upload | Download | undefined {
+/** Where the host `boat` reads its command words: every argument but `--json`. */
+const words = (argv: ReadonlyArray<string>) =>
+  argv.flatMap((arg, index) => (arg === GLOBAL_FLAG ? [] : [index]));
+
+const subcommand = (argv: ReadonlyArray<string>) => argv[words(argv)[0] ?? -1];
+
+function parseFile(value: unknown): Upload | Download | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value)) throw new RequestError("file must be an object");
-  const { kind, argIndex } = value;
-  if (
-    typeof argIndex !== "number" ||
-    !Number.isInteger(argIndex) ||
-    argIndex < 0 ||
-    argIndex >= argc
-  )
-    throw new RequestError("file.argIndex must name an argv slot");
-  if (kind === "download") return { kind, argIndex };
-  const { name, mode, base64 } = value;
+  const { kind, name, mode, base64 } = value;
+  if (kind === "download") return { kind };
   if (
     kind !== "upload" ||
     typeof name !== "string" ||
@@ -71,7 +80,32 @@ function parseFile(value: unknown, argc: number): Upload | Download | undefined 
     typeof base64 !== "string"
   )
     throw new RequestError("file must be an upload with name, mode, and base64, or a download");
-  return { kind, argIndex, name, mode: mode & 0o777, base64 };
+  return { kind, name, mode: mode & 0o777, base64 };
+}
+
+/**
+ * Finds the local side of `scp <local> <id>:<path>` or `scp <id>:<path> <local>`, which the relay
+ * fills with a path of its own, so a caller never names a path on this computer.
+ */
+function localSlot(
+  argv: ReadonlyArray<string>,
+  file: Upload | Download | undefined,
+): RelayRequest["local"] {
+  if (subcommand(argv) !== "scp") {
+    if (file) throw new RequestError("only scp carries a file");
+    return undefined;
+  }
+  const refuse = () =>
+    new RequestError(
+      "the relay copies only scp <local> <id>:<path> or scp <id>:<path> <local>, sent by its client",
+      "invalid_arguments",
+    );
+  const [, from, to, ...extra] = words(argv);
+  if (from === undefined || to === undefined || extra.length > 0) throw refuse();
+  const remote = (index: number) => REMOTE_PATH.test(argv[index] ?? "");
+  if (file?.kind === "upload" && remote(to) && !remote(from)) return { index: from, file };
+  if (file?.kind === "download" && remote(from) && !remote(to)) return { index: to, file };
+  throw refuse();
 }
 
 function parseRequest(body: string): RelayRequest {
@@ -82,15 +116,22 @@ function parseRequest(body: string): RelayRequest {
     throw new RequestError("container is required");
   if (!isStrings(argv)) throw new RequestError("argv must be strings");
   if (!isRecord(env)) throw new RequestError("env must be an object");
-  const fakeEnv = Object.entries(env).filter(
-    (entry): entry is [string, string] =>
-      entry[0].startsWith("FAKE_") && typeof entry[1] === "string",
+  const callerEnv = Object.entries(env).filter(
+    (entry): entry is [string, string] => CALLER_ENV.test(entry[0]) && typeof entry[1] === "string",
   );
-  const file = parseFile(value.file, argv.length);
-  return { container, argv, env: Object.fromEntries(fakeEnv), ...(file ? { file } : {}) };
+  const local = localSlot(argv, parseFile(value.file));
+  return { container, argv, env: Object.fromEntries(callerEnv), ...(local ? { local } : {}) };
 }
 
-const subcommand = (argv: ReadonlyArray<string>) => argv.find((arg) => !arg.startsWith("-"));
+/** Another lane may remove its site between the listing and the read. */
+function readIfPresent(file: string): string {
+  try {
+    return NodeFS.readFileSync(file, "utf8");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return "";
+    throw error;
+  }
+}
 
 /** Hosts from the fake `boat`'s Caddy site files, which the caller's own DNS sends to itself. */
 export function publishedHosts(sites: string): ReadonlyArray<string> {
@@ -98,7 +139,7 @@ export function publishedHosts(sites: string): ReadonlyArray<string> {
   const hosts = files
     .filter((file) => file.startsWith("boat-") && file.endsWith(".caddy"))
     .flatMap((file) => {
-      const address = NodeFS.readFileSync(NodePath.join(sites, file), "utf8").split("{")[0] ?? "";
+      const address = readIfPresent(NodePath.join(sites, file)).split("{")[0] ?? "";
       return address.split(",").map((part) => part.trim().replace(/^[a-z]+:\/\//, ""));
     })
     .filter((host) => host !== "");
@@ -178,22 +219,32 @@ async function relay(request: RelayRequest, abort: AbortSignal): Promise<RelayRe
   const work = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "boat-relay-"));
   try {
     const argv = [...request.argv];
-    const file = request.file;
-    if (file?.kind === "upload") {
-      const local = NodePath.join(work, file.name);
-      NodeFS.writeFileSync(local, Buffer.from(file.base64, "base64"), { mode: file.mode });
-      NodeFS.chmodSync(local, file.mode);
-      argv[file.argIndex] = local;
-    }
+    const { local } = request;
     const downloaded = NodePath.join(work, "download");
-    if (file?.kind === "download") argv[file.argIndex] = downloaded;
+    if (local?.file.kind === "upload") {
+      const { name, mode, base64 } = local.file;
+      const path = NodePath.join(work, name);
+      NodeFS.writeFileSync(path, Buffer.from(base64, "base64"), { mode });
+      NodeFS.chmodSync(path, mode);
+      argv[local.index] = path;
+    } else if (local) {
+      argv[local.index] = downloaded;
+    }
     const result = await runBoat(argv, request.env, work, abort);
     if (sub === "host") syncHosts(request.container);
-    if (file?.kind !== "download" || result.exitCode !== 0) return result;
+    if (local?.file.kind !== "download" || result.exitCode !== 0) return result;
     return { ...result, file: NodeFS.readFileSync(downloaded).toString("base64") };
   } finally {
     NodeFS.rmSync(work, { recursive: true, force: true });
   }
+}
+
+const bearer = (token: string) => Buffer.from(`Bearer ${token}`);
+
+function authorized(incoming: NodeHttp.IncomingMessage, token: string): boolean {
+  const sent = Buffer.from(incoming.headers.authorization ?? "");
+  const expected = bearer(token);
+  return sent.length === expected.length && NodeCrypto.timingSafeEqual(sent, expected);
 }
 
 function serve(flags: Flags): Promise<never> {
@@ -201,6 +252,7 @@ function serve(flags: Flags): Promise<never> {
   const port = Number(flags.get("port") ?? "0");
   if (!Number.isInteger(port) || port < 0 || port > 65535)
     throw new UsageError("--port needs a port number");
+  const token = NodeCrypto.randomBytes(32).toString("hex");
   const server = NodeHttp.createServer((incoming, outgoing) => {
     const chunks: Array<Buffer> = [];
     incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -213,6 +265,10 @@ function serve(flags: Flags): Promise<never> {
         outgoing
           .writeHead(status, { "content-type": "application/json" })
           .end(JSON.stringify(body));
+      if (!authorized(incoming, token)) {
+        answer(401, failure("unauthorized", "send the token relay.ts serve printed"));
+        return;
+      }
       if (incoming.method !== "POST" || incoming.url !== "/run") {
         answer(404, failure("not_found", "POST /run"));
         return;
@@ -221,7 +277,8 @@ function serve(flags: Flags): Promise<never> {
       try {
         request = parseRequest(Buffer.concat(chunks).toString());
       } catch (error) {
-        answer(400, failure("bad_request", error instanceof Error ? error.message : String(error)));
+        const code = error instanceof RequestError ? error.code : "bad_request";
+        answer(400, failure(code, error instanceof Error ? error.message : String(error)));
         return;
       }
       relay(request, abort.signal).then(
@@ -240,7 +297,7 @@ function serve(flags: Flags): Promise<never> {
       const address = server.address();
       if (typeof address !== "object" || address === null) return;
       const shown = address.address.includes(":") ? `[${address.address}]` : address.address;
-      console.log(`boat-relay: http://${shown}:${address.port}`);
+      console.log(`boat-relay: http://${shown}:${address.port} token=${token}`);
     });
   });
 }
@@ -248,7 +305,9 @@ function serve(flags: Flags): Promise<never> {
 function install(flags: Flags): void {
   const container = flags.get("container");
   const relayUrl = flags.get("relay");
-  if (!container || !relayUrl) throw new UsageError("install needs --container and --relay");
+  const token = flags.get("token");
+  if (!container || !relayUrl || !token)
+    throw new UsageError("install needs --container, --relay, and the --token serve printed");
   const parsed = new URL(relayUrl);
   if (parsed.protocol !== "http:") throw new UsageError("--relay must be an http:// URL");
   const user = flags.get("user");
@@ -264,7 +323,7 @@ function install(flags: Flags): void {
       body,
     );
   const origin = parsed.href.replace(/\/$/, "");
-  write("relay.json", "644", `${JSON.stringify({ relay: origin, container }, null, 2)}\n`);
+  write("relay.json", "600", `${JSON.stringify({ relay: origin, container, token }, null, 2)}\n`);
   write("relay-client.ts", "644", NodeFS.readFileSync(CLIENT, "utf8"));
   write("boat", "755", `#!/bin/sh\nexec ${node} "$(dirname "$0")/relay-client.ts" "$@"\n`);
   console.log(`boat-relay: installed ${shell('printf %s "$HOME"')}/.ascii/bin/boat`);
@@ -278,7 +337,7 @@ const COMMANDS: Readonly<
   Record<string, { readonly flags: ReadonlyArray<string>; readonly run: (flags: Flags) => unknown }>
 > = {
   serve: { flags: ["port", "host"], run: serve },
-  install: { flags: ["container", "relay", "user"], run: install },
+  install: { flags: ["container", "relay", "token", "user"], run: install },
 };
 
 function parseFlags(args: ReadonlyArray<string>, allowed: ReadonlyArray<string>): Flags {

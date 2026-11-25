@@ -3,18 +3,30 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeHttp from "node:http";
+import * as NodePath from "node:path";
 import * as NodeReadline from "node:readline";
 
 import { isObject } from "./jsonl.ts";
+import { AUTH_ORIGIN_FILE, READONLY_DIR } from "./outbox.ts";
 
 const DEFAULT_AUTH_ORIGIN = "https://auth.localtest.me";
 export const FAKE_IDENTITY = "fake-user@localtest.me";
 const LOGIN_TIMEOUT_MS = 10 * 60_000;
 const APPROVAL_POLL_MS = 250;
 
-/** The sign-in pages' origin. The host `boat` passes Caddy's into every `boat exec`. */
+/**
+ * The sign-in pages' origin, which the host `boat` writes into the sandbox's read-only mount, so a
+ * CLI any process starts sees it. FAKE_AUTH_ORIGIN stands in for it on this computer.
+ */
 export function authOrigin(): string {
-  return process.env.FAKE_AUTH_ORIGIN || DEFAULT_AUTH_ORIGIN;
+  return process.env.FAKE_AUTH_ORIGIN || hostOrigin() || DEFAULT_AUTH_ORIGIN;
+}
+
+function hostOrigin(): string | undefined {
+  const text = readFrom(NodePath.join(READONLY_DIR, AUTH_ORIGIN_FILE), 0);
+  if (text === undefined) return undefined;
+  const origin: unknown = JSON.parse(text.toString("utf8"));
+  return typeof origin === "string" ? origin : undefined;
 }
 
 type DeviceKind = "boat" | "codex";
@@ -111,11 +123,10 @@ export async function waitForApproval(
   const approvedOnPage = approvalWatcher(authLog, device);
   for (;;) {
     if (!stillCurrent()) return "cancelled";
+    if (approvedOnPage()) return "approved";
     const now = Date.now();
-    if (approvedOnPage() || (device.approveAtMs !== null && now >= device.approveAtMs)) {
-      return "approved";
-    }
     if (now >= device.expiresAtMs) return "expired";
+    if (device.approveAtMs !== null && now >= device.approveAtMs) return "approved";
     await new Promise((resolve) => setTimeout(resolve, APPROVAL_POLL_MS));
   }
 }

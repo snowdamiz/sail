@@ -1,9 +1,11 @@
 export const OUTBOX_DIR = "/var/lib/fake-boat/outbox";
-export const LIFETIME_DIR = "/var/lib/fake-boat/lifetime";
+/** What the host writes and the sandbox only reads: its deadline and the sign-in origin. */
+export const READONLY_DIR = "/var/lib/fake-boat/readonly";
 export const AUTH_LOG = "/var/lib/fake-boat/auth-access.log";
 export const ID_FILE = "id";
 export const CALL_LOG = "calls.jsonl";
 export const DEADLINE_FILE = "deadline";
+export const AUTH_ORIGIN_FILE = "auth-origin";
 
 const PENDING = ".snapshot.json";
 const CLAIMED = ".snapshot.claimed-";

@@ -79,19 +79,40 @@ function lockHolder(lock: string): number | undefined {
   return readJson<{ readonly pid: number }>(lock)?.pid;
 }
 
-/** Removes `lock` if `stalePid` still holds it; never removes another holder's lock. */
-export function breakStaleLock(lock: string, _stalePid: number): boolean {
-  NodeFS.rmSync(lock, { force: true });
-  return true;
+/**
+ * Removes `lock` only while `stalePid` still holds it. The rename lets one caller take it, and a
+ * lock a live worker took in the meantime goes back in place.
+ */
+export function breakStaleLock(lock: string, stalePid: number): boolean {
+  const moved = `${lock}.breaking-${process.pid}`;
+  try {
+    NodeFS.renameSync(lock, moved);
+  } catch (error) {
+    if (hasCode(error, "ENOENT")) return false;
+    throw error;
+  }
+  const holder = lockHolder(moved);
+  if (holder === stalePid) {
+    NodeFS.rmSync(moved);
+    return true;
+  }
+  try {
+    NodeFS.linkSync(moved, lock);
+  } catch (error) {
+    if (!hasCode(error, "EEXIST")) throw error;
+  }
+  NodeFS.rmSync(moved);
+  return false;
 }
 
 /** True when this process now holds `lock`, taking it over from a holder that died. */
 export function takeLock(lock: string): boolean {
-  if (createJsonExclusive(lock, { pid: process.pid })) return true;
-  const holder = lockHolder(lock);
-  if (holder !== undefined && isAlive(holder)) return false;
-  breakStaleLock(lock, holder ?? 0);
-  return createJsonExclusive(lock, { pid: process.pid });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (createJsonExclusive(lock, { pid: process.pid })) return true;
+    const holder = lockHolder(lock);
+    if (holder !== undefined && (isAlive(holder) || !breakStaleLock(lock, holder))) return false;
+  }
+  return false;
 }
 
 export function outbox({ home, entry, save }: OutboxOptions): Outbox {
@@ -101,16 +122,24 @@ export function outbox({ home, entry, save }: OutboxOptions): Outbox {
   const sandboxes = (match: Match) =>
     match.sandboxId === undefined ? entries(root) : [match.sandboxId];
 
-  /** Requests nobody is saving: new, or held by a worker that died. */
-  const queued = (match: Match = {}): ReadonlyArray<QueuedRequest> =>
+  const requests = (match: Match): ReadonlyArray<QueuedRequest> =>
     sandboxes(match).flatMap((sandboxId) =>
       entries(dir(sandboxId)).flatMap((name) => {
         const file = parseRequestFile(name);
-        const waiting =
-          file?.stage === "pending" || (file?.stage === "claimed" && !isAlive(file.pid));
-        return file && waiting ? [{ sandboxId, file }] : [];
+        return file && (match.name === undefined || file.base === match.name)
+          ? [{ sandboxId, file }]
+          : [];
       }),
     );
+
+  /** Requests nobody is saving: new, or held by a worker that died. */
+  const queued = (match: Match = {}): ReadonlyArray<QueuedRequest> =>
+    requests(match).filter(
+      ({ file }) => file.stage === "pending" || (file.stage === "claimed" && !isAlive(file.pid)),
+    );
+
+  const saving = (match: Match) =>
+    requests(match).some(({ file }) => file.stage === "claimed" && isAlive(file.pid));
 
   const claim = (request: QueuedRequest): string | undefined => {
     const claimed = NodePath.join(
@@ -135,8 +164,8 @@ export function outbox({ home, entry, save }: OutboxOptions): Outbox {
     );
     try {
       const body = parseRequest(NodeFS.readFileSync(claimed, "utf8"));
-      if (body.sandboxId !== sandboxId) {
-        throw new Error(`sandbox ${sandboxId} asked to save sandbox ${body.sandboxId}`);
+      if (body.sandboxId !== sandboxId || body.name !== request.file.base) {
+        throw new Error(`sandbox ${sandboxId} sent ${request.file.base} to save ${body.name}`);
       }
       save(sandboxId, body.name);
       NodeFS.rmSync(failed, { force: true });
@@ -182,36 +211,39 @@ export function outbox({ home, entry, save }: OutboxOptions): Outbox {
     }
   };
 
-  const work = (): void => {
-    while (queued().length > 0 && takeLock(lock)) {
-      try {
-        drain();
-      } finally {
-        if (lockHolder(lock) === process.pid) NodeFS.rmSync(lock, { force: true });
-      }
+  const release = () => {
+    if (lockHolder(lock) === process.pid) NodeFS.rmSync(lock, { force: true });
+  };
+
+  /** Only the lock's holder saves queued requests, so two of one name never land out of order. */
+  const drainHolding = (match: Match = {}): boolean => {
+    if (!takeLock(lock)) return false;
+    try {
+      drain(match);
+    } finally {
+      release();
     }
+    return true;
+  };
+
+  const work = (): void => {
+    while (queued().length > 0) if (!drainHolding()) return;
   };
 
   const settle = async (match: Match, budgetMs: number): Promise<void> => {
-    drain(match);
-    const saving = () =>
-      sandboxes(match).some((sandboxId) =>
-        entries(dir(sandboxId)).some((name) => {
-          const file = parseRequestFile(name);
-          return file?.stage === "claimed" && isAlive(file.pid);
-        }),
-      );
     const give = Date.now() + budgetMs;
-    while (saving() && Date.now() < give) await sleep(250);
+    for (;;) {
+      if (queued(match).length > 0) drainHolding(match);
+      if ((queued(match).length === 0 && !saving(match)) || Date.now() >= give) return;
+      await sleep(250);
+    }
   };
 
   const failures = (match: Match = {}): ReadonlyArray<SnapshotFailure> =>
-    sandboxes(match).flatMap((sandboxId) =>
-      entries(dir(sandboxId)).flatMap((name) =>
-        parseRequestFile(name)?.stage === "failed"
-          ? (readJson<SnapshotFailure>(NodePath.join(dir(sandboxId), name)) ?? [])
-          : [],
-      ),
+    requests(match).flatMap(({ sandboxId, file }) =>
+      file.stage === "failed"
+        ? (readJson<SnapshotFailure>(NodePath.join(dir(sandboxId), requestFile(file))) ?? [])
+        : [],
     );
 
   return { dir, start, work, settle, failures };

@@ -14,8 +14,9 @@ Installs the free Replay ACP agent (model "showcase") into <home>/replay-fixture
 the "replayFixture" provider instance in <home>/userdata/settings.json. A running server picks
 the change up from its settings watcher, so no restart is needed.
 
-In a container, --home defaults to its SAIL_HOME, else T3CODE_HOME, else $HOME/.sail (the
-order the server reads), and --user to its configured user. Fake Fly machines are named
+In a container, --home defaults to the home its server reads: SAIL_HOME, else T3CODE_HOME (an
+empty one counts as unset), with a blank value or neither meaning $HOME/.sail and a leading ~
+meaning $HOME. --user defaults to its configured user. Fake Fly machines are named
 sail-fly-<app>; fake Boat sandboxes are sail-boat-<id> with --user user --home ~/.t3.`;
 
 const SERVER_ROOT = NodePath.resolve(import.meta.dirname, "../../apps/server");
@@ -28,7 +29,8 @@ interface FixtureFile {
 }
 
 interface ApplyInput {
-  readonly home: string;
+  /** Unset: resolved in the target from its own environment, as the server resolves it. */
+  readonly home?: string;
   readonly files: ReadonlyArray<FixtureFile>;
   readonly commandPath: string;
 }
@@ -37,7 +39,18 @@ export const PLAIN_JS_APPLY_PROGRAM = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
 const input = JSON.parse(fs.readFileSync(0, "utf8"));
-const home = input.home.replace(/^~(?=\/|$)/, process.env.HOME ?? require("node:os").homedir());
+const set = (value) => (value === undefined || value === "" ? undefined : value);
+const requested = (input.home ?? set(process.env.SAIL_HOME) ?? set(process.env.T3CODE_HOME) ?? "").trim();
+const userHome = () => {
+  const found = require("node:os").homedir();
+  if (found === "") throw new Error("HOME is empty, so " + (requested || "~/.sail") + " has no home to expand; pass --home");
+  return found;
+};
+const home =
+  requested === "" ? path.join(userHome(), ".sail")
+  : requested === "~" ? path.resolve(userHome())
+  : requested.startsWith("~/") || requested.startsWith("~\\") ? path.resolve(path.join(userHome(), requested.slice(2)))
+  : path.resolve(requested);
 const root = path.join(home, ${JSON.stringify(FIXTURE_DIR)});
 const changed = [];
 const writeAtomically = (file, content) => {
@@ -146,24 +159,12 @@ async function applyLocally(home: string): Promise<ApplyResult> {
   return parseResult(result.stdout);
 }
 
-function containerEnv(container: string): ReadonlyMap<string, string> {
-  const entries = inspect<ReadonlyArray<string> | null>(container, ".Config.Env") ?? [];
-  return new Map(
-    entries.map((entry) => {
-      const separator = entry.indexOf("=");
-      return [entry.slice(0, separator), entry.slice(separator + 1)] as const;
-    }),
-  );
-}
-
 async function applyInContainer(
   container: string,
   home: string | undefined,
   user: string | undefined,
 ): Promise<ApplyResult> {
   const execUser = user ?? (inspect<string>(container, ".Config.User") || "root");
-  const env = containerEnv(container);
-  const targetHome = home ?? env.get("SAIL_HOME") ?? env.get("T3CODE_HOME") ?? "~/.sail";
   const commandPath = docker([
     "exec",
     "-u",
@@ -174,7 +175,11 @@ async function applyInContainer(
     "command -v node",
   ]).trim();
   if (commandPath === "") throw new Error(`No node on ${container}'s login PATH`);
-  const input: ApplyInput = { home: targetHome, files: await fixtureFiles(), commandPath };
+  const input: ApplyInput = {
+    ...(home === undefined ? {} : { home }),
+    files: await fixtureFiles(),
+    commandPath,
+  };
   const stdout = docker(
     ["exec", "-i", "-u", execUser, container, commandPath, "-e", PLAIN_JS_APPLY_PROGRAM],
     { input: JSON.stringify(input) },
@@ -193,14 +198,16 @@ async function main(): Promise<void> {
     strict: true,
   });
   if (values.help) return console.log(USAGE);
-  if (values.container === undefined && (values.home === undefined || values.user !== undefined)) {
+  const { container, home, user } = values;
+  const blankHome = home !== undefined && home.trim() === "";
+  if (blankHome || (container === undefined && (home === undefined || user !== undefined))) {
     console.error(USAGE);
     process.exit(2);
   }
   const result =
-    values.container === undefined
-      ? await applyLocally(values.home ?? "")
-      : await applyInContainer(values.container, values.home, values.user);
+    container === undefined
+      ? await applyLocally(home ?? "")
+      : await applyInContainer(container, home, user);
   if (result.changed.length === 0) {
     console.log(`replay-provider: unchanged (${result.settingsPath})`);
   } else {
