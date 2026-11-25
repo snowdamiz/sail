@@ -37,7 +37,7 @@ const PLAIN_JS_APPLY_PROGRAM = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
 const input = JSON.parse(fs.readFileSync(0, "utf8"));
-const home = input.home.replace(/^~(?=\/|$)/, process.env.HOME);
+const home = input.home.replace(/^~(?=\/|$)/, process.env.HOME ?? require("node:os").homedir());
 const root = path.join(home, ${JSON.stringify(FIXTURE_DIR)});
 const changed = [];
 const writeAtomically = (file, content) => {

@@ -116,7 +116,9 @@ export async function startMirror(options: MirrorOptions): Promise<Mirror> {
           "content-length": NodeFS.statSync(archive.path).size,
         });
         if (request.method === "HEAD") return response.end();
-        NodeFS.createReadStream(archive.path).pipe(response);
+        NodeFS.createReadStream(archive.path)
+          .on("error", () => response.destroy())
+          .pipe(response);
       }
     }
   });
