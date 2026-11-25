@@ -114,7 +114,7 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "GET" && req.url === "/api/state") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ setup: { ready: true }, machines: [], costs: { today: 0 } }));
+    res.end(JSON.stringify({ setup: { ready: true }, machines: [], costs: { today: 0 }, sailHome: process.env.SAIL_HOME }));
     return;
   }
   if (req.method === "GET" && req.url === "/api/events") {
@@ -173,8 +173,10 @@ server.listen(0, "127.0.0.1", () => {
           const state = (yield* supervisor.invoke("get_state")) as {
             setup: { ready: boolean };
             machines: unknown[];
+            sailHome: string;
           };
           assert.equal(state.setup.ready, true);
+          assert.equal(state.sailHome, tmpDir);
 
           const ping = (yield* supervisor.invoke("ping", { hello: "sail" })) as {
             echo: { hello: string };
@@ -200,7 +202,7 @@ server.listen(0, "127.0.0.1", () => {
             isDevelopment: true,
             resourcesPath: tmpDir,
             dirname: tmpDir,
-            stateDir: tmpDir,
+            stateDir: NodePath.join(tmpDir, "userdata"),
             baseDir: tmpDir,
             path: NodePath,
           } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]),

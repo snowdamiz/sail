@@ -23,7 +23,7 @@ async function fixture(platform: "Darwin" | "Linux", corrupt = false) {
     repository: "snowdamiz/sail",
     outputDir: release,
   });
-  const name = "Sail-0.1.3-arm64." + (platform === "Darwin" ? "zip" : "AppImage");
+  const name = platform === "Darwin" ? "Sail-0.1.3-arm64.zip" : "Sail-arm64.AppImage";
   if (platform === "Darwin") {
     const bundle = NodePath.join(root, "Sail.app");
     await NodeFSP.mkdir(NodePath.join(bundle, "Contents", "MacOS"), { recursive: true });

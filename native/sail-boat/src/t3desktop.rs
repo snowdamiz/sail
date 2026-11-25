@@ -105,17 +105,13 @@ impl T3Desktop {
             let path = PathBuf::from(explicit);
             return path.is_file().then(|| Self::from_cli(path));
         }
-        let candidates: &[&str] = if cfg!(windows) { &["t3.cmd", "t3.exe"] } else { &["t3"] };
-        let mut bins = Vec::new();
+        let candidates: &[&str] = if cfg!(windows) {
+            &["sail.cmd", "t3.cmd", "sail.exe", "t3.exe"]
+        } else {
+            &["sail", "t3"]
+        };
         if let Ok(home) = sail_home() {
-            bins.push(home.join("bin"));
-        }
-        if let Some(legacy) = dirs::home_dir().map(|h| h.join(".t3").join("bin")) {
-            if !bins.contains(&legacy) {
-                bins.push(legacy);
-            }
-        }
-        for bin in bins {
+            let bin = home.join("bin");
             if let Some(found) = candidates.iter().map(|name| bin.join(name)).find(|p| p.is_file()) {
                 return Some(Self::from_cli(found));
             }

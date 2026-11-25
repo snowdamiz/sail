@@ -318,7 +318,7 @@ const make = Effect.gen(function* () {
       stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...process.env,
-        SAIL_HOME: environment.stateDir,
+        SAIL_HOME: environment.baseDir,
         SAIL_DEEP_LINK_SCHEME: scheme,
         SAIL_APP_BUNDLE_ID: environment.isDevelopment ? "com.sail.desktop.dev" : "com.sail.desktop",
         SAIL_BOAT_CONTROL_PORT: "0",

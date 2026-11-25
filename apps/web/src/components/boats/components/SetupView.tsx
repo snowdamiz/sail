@@ -96,6 +96,12 @@ export function SetupView({
             );
           })}
         </ol>
+        {setup === "installT3" ? (
+          <p className="lede" style={{ marginTop: 12 }}>
+            Sail's bundled CLI launcher was not found (for example in unpackaged dev mode). Launch
+            the packaged Sail desktop app or set <code>SAIL_DESKTOP_CLI</code>, then click Recheck.
+          </p>
+        ) : null}
       </div>
       <div className="view-foot">
         <button

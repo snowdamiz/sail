@@ -16,7 +16,11 @@ case "$(uname -m)" in
   *) fail "This CPU architecture is not supported." ;;
 esac
 if [ "$platform" = mac ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ]; then arch=arm64; fi
-archive="Sail-$version-$arch.$extension"
+if [ "$platform" = linux ]; then
+  archive="Sail-$arch.$extension"
+else
+  archive="Sail-$version-$arch.$extension"
+fi
 staging="$(mktemp -d)"
 replacement=
 backup=

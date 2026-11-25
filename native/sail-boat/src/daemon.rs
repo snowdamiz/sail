@@ -575,9 +575,7 @@ impl Daemon {
                 set_busy(false);
                 result.map_err(err)?;
             }
-            "installT3" => {
-                self.open_url("https://t3.codes").map_err(err)?;
-            }
+            "installT3" => {}
             "recheck" => {}
             other => return Err(CmdErr::BadRequest(format!("unknown setup action {other}"))),
         }

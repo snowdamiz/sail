@@ -88,7 +88,7 @@ export function MachineDetails({
         <p className="details-meta">
           {d ? (
             <>
-              <span>T3 {d.t3Version}</span>
+              <span>Sail {d.t3Version}</span>
               <span className="sep">·</span>
               <span>created {shortDate(d.createdAt)}</span>
               <span className="sep">·</span>

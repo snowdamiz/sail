@@ -324,6 +324,10 @@ const bootstrap = Effect.fn("desktop.bootstrap")(function* (backendStarted: bool
   }
 
   yield* snapShot.initialize;
+  if (!settings.localEnvironmentEnabled) {
+    // The backend config refreshes the launcher when the local environment runs; an update may move the app.
+    yield* DesktopCliShim.install;
+  }
   // Launch the embedded Sail Boat sidecar in the background so it never blocks main window startup.
   yield* Effect.forkScoped(boatSupervisor.start);
   // Only the user's own login shell PATH shows every t3 a new terminal runs; a fresh install has
@@ -340,8 +344,6 @@ const bootstrap = Effect.fn("desktop.bootstrap")(function* (backendStarted: bool
   );
 
   if (!settings.localEnvironmentEnabled) {
-    // The backend config refreshes the launcher when the local environment runs; an update may move the app.
-    yield* DesktopCliShim.install;
     if (!(yield* Ref.get(state.quitting))) {
       yield* desktopWindow.createMainIfBackendReady;
     }

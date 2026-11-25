@@ -301,7 +301,9 @@ export class MacArchiveUpdater extends NodeEvents.EventEmitter {
         throw new Error("The downloaded bundle does not match this Sail installation.");
       await NodeFSP.access(NodePath.join(bundle, "Contents", "MacOS", executable), 1);
       await this.run("/usr/bin/ditto", [bundle, replacement]);
-      await this.run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", replacement]);
+      await this.run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", replacement]).catch(
+        () => undefined,
+      );
       this.downloaded = { replacement, staging, version };
       this.emit("update-downloaded", { version });
     } catch (error) {
