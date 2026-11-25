@@ -5,6 +5,7 @@ import {
   AuthStandardClientScopes,
 } from "@t3tools/contracts";
 import * as Console from "effect/Console";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -128,33 +129,64 @@ const pairingCreateCommand = Command.make("create", {
       const running = yield* readRunningServer(config.serverRuntimeStatePath).pipe(
         Effect.provideService(References.MinimumLogLevel, flags.json ? "Error" : config.logLevel),
       );
-      if (flags.requireRunning && Option.isNone(running)) {
-        return yield* new CliError.UserError({
-          cause: `No running T3 Code server owns ${config.baseDir}, so no pairing token was minted. Start the server, then retry.`,
+      const notMinted = (reason: string) =>
+        new CliError.UserError({
+          cause: `${reason}, so no pairing token was minted. Start the server, then retry.`,
         });
+      const request = {
+        scopes: flags.scopes,
+        ...(Option.isSome(flags.label) ? { label: flags.label.value } : {}),
+      };
+      if (flags.requireRunning && Option.isNone(running)) {
+        return yield* notMinted(`No running T3 Code server owns ${config.baseDir}`);
       }
+      const issued = yield* withEnvironmentAuth(
+        config,
+        (environmentAuth) =>
+          Effect.gen(function* () {
+            if (!flags.requireRunning || Option.isNone(running)) {
+              return yield* environmentAuth.createPairingLink({
+                ...request,
+                subject: "one-time-token",
+                ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
+              });
+            }
+            const { origin } = running.value;
+            // The server mints it, so a printed link means a server answered for this home.
+            const credential = yield* RunningServer.requestServer({
+              origin,
+              scopes: [...new Set([AuthAccessWriteScope, ...flags.scopes])],
+              request: (client) =>
+                client.auth.pairingCredential({
+                  headers: {},
+                  payload: {
+                    ...request,
+                    ...(Option.isSome(flags.ttl)
+                      ? { ttlMs: Math.ceil(Duration.toMillis(flags.ttl.value)) }
+                      : {}),
+                  },
+                }),
+            }).pipe(
+              Effect.catchTags({
+                RunningServerUnreachableError: () =>
+                  Effect.fail(
+                    notMinted(`No T3 Code server for ${config.baseDir} answered at ${origin}`),
+                  ),
+              }),
+            );
+            return { ...credential, scopes: flags.scopes };
+          }),
+        options,
+      );
       const baseUrl = Option.match(flags.baseUrl, {
         onSome: (url) => url.href,
         onNone: () => Option.getOrUndefined(running)?.publicUrl,
       });
-      return yield* withEnvironmentAuth(
-        config,
-        (environmentAuth) =>
-          Effect.gen(function* () {
-            const issued = yield* environmentAuth.createPairingLink({
-              scopes: flags.scopes,
-              subject: "one-time-token",
-              ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
-              ...(Option.isSome(flags.label) ? { label: flags.label.value } : {}),
-            });
-            yield* Console.log(
-              formatIssuedPairingCredential(issued, {
-                json: flags.json,
-                ...(baseUrl === undefined ? {} : { baseUrl }),
-              }),
-            );
-          }),
-        options,
+      yield* Console.log(
+        formatIssuedPairingCredential(issued, {
+          json: flags.json,
+          ...(baseUrl === undefined ? {} : { baseUrl }),
+        }),
       );
     }),
   ),

@@ -6,6 +6,7 @@ import {
   ForwardCompatibleArray,
   ClientSurface,
   ClientWebDeployment,
+  PositiveInt,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
@@ -514,6 +515,7 @@ export type AuthRevokeConnectDeviceResult = typeof AuthRevokeConnectDeviceResult
 const pairingCredentialFields = {
   label: Schema.optionalKey(TrimmedNonEmptyString),
   scopes: Schema.optionalKey(AuthGrantScopes),
+  ttlMs: Schema.optionalKey(PositiveInt),
 };
 
 export const AuthCreatePairingCredentialInput = Schema.Union([

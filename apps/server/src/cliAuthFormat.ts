@@ -30,8 +30,13 @@ function toIsoString(value: DateTime.DateTime | DateTime.Utc): string {
   return DateTime.formatIso(DateTime.toUtc(value));
 }
 
+export type IssuedPairingCredential = Pick<
+  IssuedPairingLink,
+  "id" | "credential" | "label" | "scopes" | "expiresAt"
+>;
+
 export function formatIssuedPairingCredential(
-  credential: IssuedPairingLink,
+  credential: IssuedPairingCredential,
   options?: {
     readonly json?: boolean;
     readonly baseUrl?: string;
