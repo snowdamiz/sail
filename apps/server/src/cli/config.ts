@@ -287,7 +287,6 @@ export const sharedServerCommandFlags = {
   startupPairing: startupPairingFlag,
 } as const;
 
-/** The runtime record of a live server that owns this home. */
 export const readRunningServer = Effect.fn("config.readRunningServer")(function* (
   serverRuntimeStatePath: string,
 ) {

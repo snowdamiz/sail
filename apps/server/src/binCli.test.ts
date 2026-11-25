@@ -26,7 +26,6 @@ const runCli = (args: ReadonlyArray<string>, options: { readonly home: string })
       ChildProcess.make(
         process.execPath,
         [NodeURL.fileURLToPath(new URL("./bin.ts", import.meta.url)), ...args],
-        // Outside any worktree, with HOME moved, so only SAIL_HOME can name the server's home.
         {
           cwd: options.home,
           env: { HOME: options.home, SAIL_HOME: options.home, T3CODE_HOME: undefined },
@@ -43,7 +42,6 @@ const runCli = (args: ReadonlyArray<string>, options: { readonly home: string })
     );
   });
 
-/** A home whose runtime record names a live server, with this process standing in for it. */
 const withRunningServerHome = <A, E, R>(
   publicUrl: URL | undefined,
   run: (home: string) => Effect.Effect<A, E, R>,

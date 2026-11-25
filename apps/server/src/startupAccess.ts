@@ -22,7 +22,6 @@ import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 
 export interface HeadlessServeAccessInfo {
   readonly connectionString: string;
-  /** Absent when startup pairing is off. */
   readonly pairing?: { readonly token: string; readonly pairingUrl: string } | undefined;
 }
 

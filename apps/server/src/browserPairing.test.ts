@@ -80,7 +80,6 @@ it.live("a browser carrying other servers' cookies for this host still pairs", (
       (browser) => Effect.promise(() => browser.close()),
     );
     const context = yield* Effect.promise(() => browser.newContext());
-    // Cookies ignore ports, so every server this browser paired with on the host sends its own.
     yield* Effect.promise(() =>
       context.addCookies(
         Array.from({ length: 100 }, (_, index) => ({

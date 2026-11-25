@@ -19,7 +19,6 @@ export const PersistedServerRuntimeState = Schema.Struct({
   origin: Schema.String,
   // Dev is single-origin: browsers must pair through this URL, not `origin`.
   devUrl: Schema.optional(Schema.String),
-  // A proxy or platform fronts the server here; pairing links use it over `devUrl` and `origin`.
   publicUrl: Schema.optional(Schema.String),
   startedAt: Schema.String,
   serviceManaged: Schema.optional(Schema.Boolean),
