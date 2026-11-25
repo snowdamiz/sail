@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - Local stand-ins drive the Docker CLI directly.
+// @effect-diagnostics nodeBuiltinImport:off extendsNativeError:off - Local stand-ins are plain Node CLIs that drive the Docker CLI directly.
 import * as NodeChildProcess from "node:child_process";
 
 /** Every stand-in container joins this network, so Caddy reaches each by name. */
