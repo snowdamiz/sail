@@ -724,9 +724,9 @@ it.effect.each([
     returns: false,
   },
   {
-    case: "a plain HTTP page off this machine",
+    case: "a plain HTTP page off this machine, even when named as the hosted app",
     page: "http://192.168.1.42:3773/settings/providers",
-    hosted: "https://hosted.example.test",
+    hosted: "http://192.168.1.42:3773",
     returns: false,
   },
   {

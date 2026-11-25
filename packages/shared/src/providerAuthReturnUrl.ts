@@ -1,6 +1,7 @@
 import { isLoopbackHost } from "./preview.ts";
 import { parseUrl } from "./url.ts";
 
+// A delivery carries the one-time OAuth code in the URL fragment, so plain HTTP never qualifies.
 const isTrustedHttpsOrigin = (origin: string, trustedOrigins: ReadonlyArray<string | undefined>) =>
   trustedOrigins.some((trusted) => {
     const url = trusted ? parseUrl(trusted) : null;

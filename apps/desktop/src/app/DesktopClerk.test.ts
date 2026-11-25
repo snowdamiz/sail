@@ -452,7 +452,10 @@ it.effect.each([
       instanceId: ProviderInstanceId.make("work"),
       flowId: "flow-one",
     };
-    const settled = Promise.withResolvers<string | null>();
+    const settled = Promise.withResolvers<
+      | { readonly kind: "delivered"; readonly location: string | null }
+      | { readonly kind: "revealed" }
+    >();
     const shell = ElectronShell.ElectronShell.of({
       openExternal: (value) =>
         Effect.promise(async () => {
@@ -464,7 +467,7 @@ it.effect.each([
             client_id: "oaiapp_test",
           }).toString();
           const response = await fetch(callback, { redirect: "manual" });
-          settled.resolve(response.headers.get("location"));
+          settled.resolve({ kind: "delivered", location: response.headers.get("location") });
           return true;
         }),
       openSystemSettings: () => Effect.succeed(false),
@@ -474,7 +477,10 @@ it.effect.each([
     const electronWindow = {
       currentMainOrFirst: Effect.succeedSome(mainWindow),
       reveal: (revealed: unknown) =>
-        Effect.sync(() => settled.resolve(revealed === mainWindow ? null : "another window")),
+        Effect.sync(() => {
+          assert.strictEqual(revealed, mainWindow);
+          settled.resolve({ kind: "revealed" });
+        }),
     } as unknown as ElectronWindow.ElectronWindow["Service"];
     const listeners = new Map<string, (...args: unknown[]) => void>();
     const electronApp = {
@@ -487,14 +493,16 @@ it.effect.each([
     yield* Effect.gen(function* () {
       const clerk = yield* DesktopClerk.DesktopClerk;
       yield* clerk.configure;
-      const delivered = yield* Effect.promise(() => settled.promise);
+      const outcome = yield* Effect.promise(() => settled.promise);
       if (input.refused) {
-        assert.isNull(delivered);
+        assert.deepStrictEqual(outcome, { kind: "revealed" });
         return;
       }
-      assert.strictEqual(new URL(delivered!).origin, "https://sail.example.test");
+      assert.strictEqual(outcome.kind, "delivered");
+      const location = outcome.kind === "delivered" ? outcome.location : null;
+      assert.strictEqual(new URL(location!).origin, "https://sail.example.test");
       assert.strictEqual(
-        readCodexAuthDelivery(delivered!, ["https://sail.example.test"])?.returnUrl,
+        readCodexAuthDelivery(location!, ["https://sail.example.test"])?.returnUrl,
         request.returnUrl,
       );
     }).pipe(

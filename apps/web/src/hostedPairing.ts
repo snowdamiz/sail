@@ -17,7 +17,7 @@ function configuredHostedAppUrl(): string | undefined {
 
 // The desktop window's own origin is an app scheme, so it links to its local server instead. That
 // read is synchronous IPC, and a restarted backend can move, so one read serves a few seconds. A
-// server that is not ready serves only the current task, so a later click on Copy reads it again.
+// server that is not ready yet is read again by the next task, not by every link in this one.
 const DESKTOP_SERVER_READ_MS = 2_000;
 let desktopServer: { readonly origin: string | undefined; readonly readAt: number } | undefined;
 

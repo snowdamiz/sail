@@ -126,7 +126,13 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
   // Only a client on a loopback server takes the callback here, so its page is loopback or the hosted app.
   const returnOrigins = [
     Option.getOrUndefined(
-      yield* optionalHostedAppUrlConfig.pipe(Effect.orElseSucceed(() => Option.none<string>())),
+      yield* optionalHostedAppUrlConfig.pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Ignoring an invalid T3CODE_HOSTED_APP_URL", { cause }).pipe(
+            Effect.as(Option.none<string>()),
+          ),
+        ),
+      ),
     ),
   ];
   const settings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);

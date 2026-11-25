@@ -187,6 +187,7 @@ export const make = Effect.gen(function* () {
       const context = yield* Effect.context<ElectronWindow.ElectronWindow>();
       const runPromise = Effect.runPromiseWith(context);
 
+      // Any page can open a handoff link, so trust comes only from what this desktop already knows.
       const handoffReturnOrigins = connectionCatalog.get.pipe(
         Effect.flatMap(
           Option.match({

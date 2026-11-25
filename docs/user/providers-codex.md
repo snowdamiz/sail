@@ -24,9 +24,9 @@ localhost page into the sign-in panel, even if that page could not load.
 
 In a browser on a computer with the desktop app, **Other ways to connect → Use T3
 desktop for automatic return** lets the desktop app catch the sign-in. It returns
-only to an HTTPS address you added as an environment in the desktop app, or to
-your build's hosted web app. Elsewhere it brings the desktop app forward and does
-nothing else, so paste the URL instead.
+only to a page on this computer, an HTTPS address of an environment you added and
+kept enabled in the desktop app, or your build's hosted web app. Elsewhere it
+brings the desktop app forward and does nothing else, so paste the URL instead.
 
 ## Use an existing Codex login
 

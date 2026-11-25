@@ -527,7 +527,8 @@ function OpenCommandPaletteDialog(props: {
   const canShareActiveThreadWithGuest = useAtomValue(
     canShareWithGuestAtom(activeThread?.environmentId ?? ("" as EnvironmentId)),
   );
-  const activeThreadReferenceCopyTarget =
+  // The link origin is read when copying: the desktop's local server can come up after render.
+  const resolveActiveThreadReferenceCopyTarget = () =>
     referenceThreadRef === null || (pathname === "/pull-requests" && !openPanelPullRequestUrl)
       ? null
       : resolveThreadReferenceCopyTarget(
@@ -542,9 +543,11 @@ function OpenCommandPaletteDialog(props: {
           },
           messages,
         );
+  const activeThreadReferenceCopyTarget = resolveActiveThreadReferenceCopyTarget();
   const copyActiveThreadReference = async () => {
-    if (activeThreadReferenceCopyTarget === null) return;
-    await copyThreadReference(activeThreadReferenceCopyTarget);
+    const target = resolveActiveThreadReferenceCopyTarget();
+    if (target === null) return;
+    await copyThreadReference(target);
   };
   // Threads the sidebar shows under their parent open there, so opening a project never lands on one.
   const delegatedUnderParent = useDelegatedUnderParent();
