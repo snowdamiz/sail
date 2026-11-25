@@ -173,6 +173,7 @@ const MUTATING: Readonly<Record<string, boolean>> = {
   status: false,
   "machine start": false,
   "apps restart": false,
+  "volumes snapshots": false,
   apps: false,
   bogus: false,
 };
@@ -405,6 +406,14 @@ primary_region = "iad" # comment
     expect(help).toMatchObject({ status: 0, stdout: expect.stringContaining("  create\n") });
     expect(help.stdout).toContain("does not implement");
     expect(fly(["apps"]).status).toBe(0);
+    expect(fly(["ssh", "console", "--help"])).toMatchObject({
+      status: 0,
+      stdout: expect.stringContaining("--command"),
+    });
+    expect(fly(["volumes", "snapshots", "--help"])).toMatchObject({
+      status: 0,
+      stdout: expect.stringContaining("  list\n"),
+    });
   });
 
   it("keeps one default state home per checkout", () => {
@@ -426,6 +435,12 @@ primary_region = "iad" # comment
       stderr: "Error: Validation failed: Name has already been taken\n",
     });
     expect(flyElsewhere(["apps", "create", app])).toMatchObject({
+      status: 1,
+      stderr: "Error: Validation failed: Name has already been taken\n",
+    });
+    const reserved = fly(["apps", "create", "auth"]);
+    if (reserved.status === 0) fly(["apps", "destroy", "auth", "--yes"]);
+    expect(reserved).toMatchObject({
       status: 1,
       stderr: "Error: Validation failed: Name has already been taken\n",
     });
@@ -490,6 +505,14 @@ primary_region = "iad" # comment
         '[[mounts]]\n  source = "data"\n  destination = "/data"\n  initial_size = "500mb"\n',
       ],
       ["memory", '[[vm]]\n  memory = "256xb"\n'],
+      ["memory", '[[vm]]\n  memory = "1.2.3gb"\n'],
+      ["memory", '[[vm]]\n  memory = "256gi"\n'],
+      ["memory", '[[vm]]\n  memory = "-256"\n'],
+      [
+        "initial_size",
+        '[[mounts]]\n  source = "data"\n  destination = "/data"\n  initial_size = "10gi"\n',
+      ],
+      ["internal_port", "[http_service]\n  internal_port = 8080.5\n"],
       ["kill_timeout", 'kill_timeout = "5 parsecs"\n'],
     ];
     for (const [field, body] of configs) {
@@ -497,7 +520,9 @@ primary_region = "iad" # comment
       NodeFS.writeFileSync(file, `app = "${app}"\n${body}`);
       const result = fly(["deploy", "-c", file, "--image", image]);
       expect(result.status, body).toBe(1);
-      expect(result.stderr, body).toMatch(/^Error: /);
+      expect(result.stderr, body).toMatch(
+        /^Error: (failed loading app config|App configuration is not valid)/,
+      );
       if (field !== "duplicate" && field !== "bare") expect(result.stderr, body).toContain(field);
     }
     const timeout = fly(["deploy", "--image", image, "--wait-timeout", "5sgarbage"]);
@@ -597,31 +622,45 @@ primary_region = "iad" # comment
     const [volume] = volumes() as Array<{ id: string }>;
     const original = volume?.id ?? "";
     expect(ssh("sh -c 'echo one > /data/before'").status).toBe(0);
-    expect(ok(["volumes", "snapshots", "create", original])).toBe(
-      `Scheduled to snapshot volume ${original}\n`,
+    const slow = fly(["volumes", "snapshots", "create", original], {
+      FAKE_FLY_SNAPSHOT_SECS: "3600",
+    });
+    expect(slow).toMatchObject({ status: 0, stdout: `Scheduled to snapshot volume ${original}\n` });
+    const pendingId = NodeFS.readdirSync(NodePath.join(home, "snapshots"))[0]?.replace(
+      /\.json$/,
+      "",
     );
-    const pending = { FAKE_FLY_SNAPSHOT_SECS: "3600" };
-    const listing = fly(["volumes", "snapshots", "list", original, "-j"], pending);
+    const listing = fly(["volumes", "snapshots", "list", original, "-j"]);
     expect(JSON.parse(listing.stdout)).toMatchObject([
       { id: "", status: "pending", size: 0, digest: "" },
     ]);
-    expect(fly(["volumes", "snapshots", "list", original], pending).stdout).toContain("(pending)");
+    expect(fly(["volumes", "snapshots", "list", original]).stdout).toContain("(pending)");
+    expect(
+      fly(["volumes", "create", "data", "--snapshot-id", pendingId ?? "", "-r", "iad", "-y"]),
+    ).toMatchObject({
+      status: 1,
+      stderr: expect.stringContaining("pending"),
+    });
     expect(fly(["volumes", "snapshots", "list", original, "-a", `${app}-nope`])).toMatchObject({
       status: 1,
       stderr: expect.stringContaining("not found"),
     });
+    expect(
+      fly(["volumes", "snapshots", "list", "vol_0000000000000000", "-j"], {}, root),
+    ).toMatchObject({
+      status: 1,
+      stderr: expect.stringContaining("not found"),
+    });
+    ok(["volumes", "snapshots", "create", original]);
     const snapshots = json(["volumes", "snapshots", "list", original, "-j"]) as Array<{
       id: string;
+      status: string;
     }>;
-    expect(snapshots).toHaveLength(1);
-    expect(label("volume", `sail-fly-snap-${snapshots[0]?.id}`)).toBe(homeId(home));
-    const restore = ["volumes", "create", "data", "--snapshot-id", snapshots[0]?.id ?? ""];
-    expect(fly([...restore, "-r", "iad", "-y"], pending)).toMatchObject({
-      status: 1,
-      stderr: expect.stringContaining("pending"),
-    });
-    expect(keys(snapshots[0])).toEqual(sorted(SNAPSHOT_KEYS));
-    expect(snapshots[0]).toMatchObject({
+    expect(snapshots.map((snapshot) => snapshot.status)).toEqual(["pending", "created"]);
+    const created = snapshots[1];
+    expect(label("volume", `sail-fly-snap-${created?.id}`)).toBe(homeId(home));
+    expect(keys(created)).toEqual(sorted(SNAPSHOT_KEYS));
+    expect(created).toMatchObject({
       id: expect.stringMatching(/^vs_[A-Za-z0-9]+$/),
       status: "created",
       retention_days: 5,
@@ -633,7 +672,7 @@ primary_region = "iad" # comment
       "create",
       "data",
       "--snapshot-id",
-      snapshots[0]?.id ?? "",
+      created?.id ?? "",
       "-r",
       "iad",
       "-y",
@@ -731,7 +770,7 @@ primary_region = "iad" # comment
         (file) => `sail-fly-snap-${file.replace(/\.json$/, "")}`,
       ),
     ];
-    expect(owned).toHaveLength(2);
+    expect(owned).toHaveLength(3);
     expect(fly(["apps", "destroy", app])).toMatchObject({
       status: 1,
       stderr: expect.stringContaining("yes flag must be specified when not running interactively"),
@@ -764,6 +803,9 @@ primary_region = "iad" # comment
   it("logs one call per invocation with the command's mutating flag", () => {
     fly(["--access-token=secret-one", "apps", "list", "-q"]);
     fly(["apps", "list", "-t", "secret-two", "-q"]);
+    fly(["apps", "list", "-tsecret-three", "-q"]);
+    fly(["-qtsecret-four", "apps", "list"]);
+    fly(["apps", "list", "-jt", "secret-five"]);
     const text = NodeFS.readFileSync(NodePath.join(home, "calls.jsonl"), "utf8");
     expect(text).not.toContain("secret-");
     const logged = text

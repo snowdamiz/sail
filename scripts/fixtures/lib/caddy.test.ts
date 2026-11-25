@@ -6,7 +6,14 @@ import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
-import { caddyDir, publishSite, removeSite, rootCertPath } from "./caddy.ts";
+import {
+  CADDY_CONTAINER,
+  caddyDir,
+  ensureCaddy,
+  publishSite,
+  removeSite,
+  rootCertPath,
+} from "./caddy.ts";
 import { docker, FIXTURE_LABEL, hasDocker, NETWORK } from "./docker.ts";
 
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
@@ -14,13 +21,24 @@ const run = NodeCrypto.randomBytes(3).toString("hex");
 const upstream = `sail-caddy-test-${run}`;
 const ids = Array.from({ length: 6 }, (_, index) => `caddy-test-${run}-${index}`);
 
-const publishInChild = (id: string) =>
+const publishInChild = (id: string, to = `${upstream}:8080`) =>
   execFile(process.execPath, [
     "--input-type=module",
     "-e",
     `import { publishSite } from ${JSON.stringify(NodePath.join(import.meta.dirname, "caddy.ts"))};
-     publishSite({ id: ${JSON.stringify(id)}, host: ${JSON.stringify(`${id}.localtest.me`)}, upstream: ${JSON.stringify(`${upstream}:8080`)} });`,
+     publishSite({ id: ${JSON.stringify(id)}, host: ${JSON.stringify(`${id}.localtest.me`)}, upstream: ${JSON.stringify(to)} });`,
   ]);
+
+/**
+ * Holds the reload lock until a second process waits on it, then lists `sites/` as any other
+ * reload would see it. Bounded, so a publisher that never arrives cannot hold the lock for long.
+ */
+const LIST_SITES_WHEN_SOMEONE_WAITS = `echo held
+i=0
+until [ "$(ps -o args | grep -c '^flock /data/reload.lock')" -ge 2 ] || [ "$i" -ge 600 ]; do
+  i=$((i + 1)); sleep 0.05
+done
+ls /etc/caddy/sites`;
 
 const status = async (url: string) =>
   (
@@ -38,6 +56,7 @@ const status = async (url: string) =>
 
 describe.skipIf(!hasDocker())("fixture Caddy", () => {
   beforeAll(() => {
+    ensureCaddy();
     docker([
       "run",
       "--detach",
@@ -57,24 +76,71 @@ describe.skipIf(!hasDocker())("fixture Caddy", () => {
       "--body",
       "ok",
     ]);
+    docker([
+      "exec",
+      upstream,
+      "sh",
+      "-c",
+      "i=0; until wget -q -O /dev/null http://127.0.0.1:8080/; do [ $((i += 1)) -lt 100 ] || exit 1; sleep 0.1; done",
+    ]);
   });
 
   afterAll(() => {
-    for (const id of [...ids, `caddy-test-${run}-bad`]) removeSite(id);
+    for (const id of ids) removeSite(id);
     docker(["rm", "--force", upstream]);
   });
 
   it("serves every site that processes publish at the same time", async () => {
-    await Promise.all(ids.map(publishInChild));
+    await Promise.all(ids.map((id) => publishInChild(id)));
     const answers = await Promise.all(ids.map((id) => status(`https://${id}.localtest.me/`)));
     expect(answers).toEqual(ids.map(() => "200"));
   });
 
-  it("drops a site Caddy refuses, so later reloads keep working", async () => {
+  it("never lets another reload see a site Caddy refuses", async () => {
     const bad = `caddy-test-${run}-bad`;
-    expect(() => publishSite({ id: bad, host: `${bad}.localtest.me`, upstream: "x {" })).toThrow();
+    const holder = NodeChildProcess.spawn("docker", [
+      "exec",
+      CADDY_CONTAINER,
+      "flock",
+      "/data/reload.lock",
+      "sh",
+      "-c",
+      LIST_SITES_WHEN_SOMEONE_WAITS,
+    ]);
+    let listing = "";
+    holder.stdout.setEncoding("utf8");
+    const held = new Promise<void>((resolve) =>
+      holder.stdout.on("data", (chunk: string) => {
+        listing += chunk;
+        if (listing.startsWith("held\n")) resolve();
+      }),
+    );
+    const released = new Promise((resolve) => holder.once("exit", resolve));
+    await held;
+    const publishing = publishInChild(bad, "x {");
+    await expect(released).resolves.toBe(0);
+    await expect(publishing).rejects.toThrow();
+    expect(listing.split("\n")).toContain(`${ids[0]}.caddy`);
+    expect(listing.split("\n")).not.toContain(`${bad}.caddy`);
     expect(NodeFS.existsSync(NodePath.join(caddyDir(), "sites", `${bad}.caddy`))).toBe(false);
     expect(await status(`https://${ids[0]}.localtest.me/`)).toBe("200");
+  });
+
+  it("never replaces a Caddyfile a newer checkout wrote", () => {
+    const file = NodePath.join(caddyDir(), "Caddyfile");
+    const current = NodeFS.readFileSync(file, "utf8");
+    const newer = `# sail-fixtures Caddyfile v999999\n${current.replace(/^# sail-fixtures Caddyfile v\d+\n/, "")}`;
+    const swap = (body: string) => {
+      NodeFS.writeFileSync(`${file}.${run}.tmp`, body);
+      NodeFS.renameSync(`${file}.${run}.tmp`, file);
+    };
+    swap(newer);
+    try {
+      ensureCaddy();
+      expect(NodeFS.readFileSync(file, "utf8")).toBe(newer);
+    } finally {
+      swap(current);
+    }
   });
 
   it("refuses the hosts the fixtures reserve", () => {

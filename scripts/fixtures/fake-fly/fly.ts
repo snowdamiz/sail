@@ -3,11 +3,11 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import { parse as parseTomlText, TomlError } from "smol-toml";
 import {
   CADDY_CONTAINER,
   DOMAIN,
   ensureCaddy,
+  isReservedHost,
   publicUrl,
   publishSite,
   removeSite,
@@ -24,6 +24,15 @@ import {
   standInHome,
   writeJsonAtomic,
 } from "../lib/state.ts";
+import {
+  type DeployConfig,
+  durationMs,
+  EMPTY_CONFIG,
+  type HttpService,
+  type Mount,
+  parseConfigFile,
+  type StopConfig,
+} from "./config.ts";
 
 class FlyError extends Error {}
 
@@ -155,6 +164,8 @@ interface SnapshotRecord {
   readonly volumeSizeBytes: number;
   readonly digest: string;
   readonly createdAt: string;
+  /** Fixed when the copy finishes, so neither a slow copy nor a reader's env can shorten it. */
+  readonly readyAt: string;
 }
 
 function recordPath(kind: Kind, id: string): string {
@@ -248,298 +259,10 @@ function refuseForeign(kind: "container" | "volume", name: string): void {
 
 const ownsSite = (app: string) => (nameOwner(APP_NAMES, app) ?? HOME) === HOME;
 
-type Raw = ReturnType<typeof parseTomlText>;
-type RawValue = Raw[string];
-
-interface Mount {
-  readonly source: string;
-  readonly destination: string;
-  readonly initialSizeGb: number | undefined;
-}
-
-interface HttpService {
-  readonly internalPort: number;
-  readonly forceHttps: boolean;
-  readonly autostop: boolean | "suspend" | undefined;
-  readonly autostart: boolean | undefined;
-  readonly minMachinesRunning: number | undefined;
-  readonly checkPath: string | undefined;
-}
-
-interface StopConfig {
-  readonly signal?: string;
-  readonly timeout?: string;
-}
-
-interface DeployConfig {
-  readonly app: string | undefined;
-  readonly primaryRegion: string | undefined;
-  readonly stop: StopConfig | undefined;
-  readonly env: Readonly<Record<string, string>>;
-  readonly mounts: ReadonlyArray<Mount>;
-  readonly http: HttpService | undefined;
-  readonly memoryMb: number | undefined;
-  readonly cpus: number | undefined;
-  readonly cpuKind: string | undefined;
-  readonly buildImage: string | undefined;
-  readonly dockerfile: string | undefined;
-}
-
 interface LoadedConfig {
   readonly file: string | undefined;
   readonly dir: string;
   readonly config: DeployConfig;
-}
-
-const EMPTY_CONFIG: DeployConfig = {
-  app: undefined,
-  primaryRegion: undefined,
-  stop: undefined,
-  env: {},
-  mounts: [],
-  http: undefined,
-  memoryMb: undefined,
-  cpus: undefined,
-  cpuKind: undefined,
-  buildImage: undefined,
-  dockerfile: undefined,
-};
-
-const GO_DURATION = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
-const DURATION_UNIT_MS: Readonly<Record<string, number>> = {
-  ns: 1e-6,
-  us: 1e-3,
-  µs: 1e-3,
-  ms: 1,
-  s: 1000,
-  m: 60_000,
-  h: 3_600_000,
-};
-
-/** Go's `time.ParseDuration`, minus signs and the bare `0`, which nothing here passes. */
-function durationMs(text: string): number | undefined {
-  if (!GO_DURATION.test(text)) return undefined;
-  let total = 0;
-  for (const [, amount, , unit] of text.matchAll(/(\d+(\.\d+)?)(ns|us|µs|ms|s|m|h)/g))
-    total += Number(amount) * (DURATION_UNIT_MS[unit ?? ""] ?? 0);
-  return total;
-}
-
-/** Go's `Duration.String` for whole seconds, as flyctl writes an integer `kill_timeout`. */
-function secondsAsGoDuration(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  return `${h ? `${h}h` : ""}${h || m ? `${m}m` : ""}${s}s`;
-}
-
-/** docker/go-units `FromHumanSize` (decimal) and `RAMInBytes` (binary), which flyctl sizes use. */
-function humanBytes(text: string, base: 1000 | 1024): number | undefined {
-  const match = /^(\d+(?:\.\d+)*) ?([kKmMgGtTpP])?[iI]?[bB]?$/.exec(text);
-  if (!match) return undefined;
-  const power = " kmgtp".indexOf((match[2] ?? " ").toLowerCase());
-  return Number(match[1]) * base ** power;
-}
-
-/** flyctl's `helpers.ParseSize`: a bare integer is already in `unit`, else a human size. */
-function parseSize(text: string, base: 1000 | 1024, unit: number): number | undefined {
-  if (/^[+-]?\d+$/.test(text)) return Number(text);
-  const bytes = humanBytes(text, base);
-  return bytes === undefined ? undefined : Math.floor(bytes / unit);
-}
-
-const STOP_SIGNALS = new Set([
-  "SIGHUP",
-  "SIGINT",
-  "SIGQUIT",
-  "SIGKILL",
-  "SIGUSR1",
-  "SIGUSR2",
-  "SIGTERM",
-]);
-
-/** smol-toml gives tables a null prototype and dates as `Date`s (the legacy default). */
-const isRawTable = (value: RawValue): value is Raw =>
-  typeof value === "object" && !Array.isArray(value) && !(value instanceof Date);
-
-/** Reads `fly.toml` the way flyctl's patches and JSON decode do, failing on what they reject. */
-function configReader(file: string) {
-  const fail = (message: string) =>
-    new FlyError(`failed loading app config from ${file}: ${message}`);
-  const invalid = (message: string) => new FlyError(`App configuration is not valid: ${message}`);
-  const typeName = (value: RawValue) =>
-    Array.isArray(value) ? "array" : typeof value === "object" ? "object" : typeof value;
-  const mismatch = (path: string, goType: string, value: RawValue) =>
-    fail(
-      `json: cannot unmarshal ${typeName(value)} into Go struct field ${path} of type ${goType}`,
-    );
-  const table = (value: RawValue | undefined, path: string): Raw => {
-    if (value === undefined) return {};
-    if (!isRawTable(value)) throw mismatch(path, "struct", value);
-    return value;
-  };
-  return {
-    fail,
-    invalid,
-    table,
-    /** flyctl's `ensureArrayOfMap`: one table or an array of them. */
-    tables: (value: RawValue | undefined, path: string): ReadonlyArray<Raw> =>
-      value === undefined
-        ? []
-        : (Array.isArray(value) ? value : [value]).map((item) => table(item, path)),
-    string: (value: RawValue | undefined, path: string): string | undefined => {
-      if (value === undefined || typeof value === "string") return value;
-      throw mismatch(path, "string", value);
-    },
-    bool: (value: RawValue | undefined, path: string): boolean | undefined => {
-      if (value === undefined || typeof value === "boolean") return value;
-      throw mismatch(path, "bool", value);
-    },
-    int: (value: RawValue | undefined, path: string): number | undefined => {
-      if (value === undefined) return undefined;
-      if (typeof value === "number" && Number.isInteger(value)) return value;
-      throw mismatch(path, "int", value);
-    },
-    /** flyctl's `castToInt`: an integer or a string of one. */
-    castInt: (value: RawValue | undefined, path: string): number | undefined => {
-      if (value === undefined) return undefined;
-      if (typeof value === "number") return Math.trunc(value);
-      if (typeof value === "string" && /^[+-]?\d+$/.test(value)) return Number(value);
-      throw fail(`${path}: Can not convert '${String(value)}' to integer`);
-    },
-    /** flyctl's `castToString`, for fields it takes as either a number or a string. */
-    castString: (value: RawValue | undefined, path: string): string | undefined => {
-      if (value === undefined || typeof value === "string") return value;
-      if (typeof value === "number" || typeof value === "boolean") return String(value);
-      throw mismatch(path, "string", value);
-    },
-  };
-}
-
-function toDeployConfig(toml: Raw, file: string): DeployConfig {
-  const field = configReader(file);
-  const env = Object.fromEntries(
-    Object.entries(field.table(toml.env, "env")).map(([key, value]) => [
-      key,
-      field.castString(value, `env.${key}`) ?? "",
-    ]),
-  );
-
-  const mounts = field.tables(toml.mounts, "mounts").map((mount) => {
-    const source = field.string(mount.source, "Mount.mounts.source") ?? "";
-    const raw = field.castString(mount.initial_size, "Mount.mounts.initial_size");
-    const initialSizeGb = raw === undefined ? undefined : parseSize(raw, 1000, 1000 ** 3);
-    if (raw !== undefined && initialSizeGb === undefined)
-      throw field.invalid(
-        `mount '${source}' with initial_size '${raw}' will fail because of: invalid size: invalid size: '${raw}'`,
-      );
-    if (initialSizeGb !== undefined && initialSizeGb < 1)
-      throw field.invalid(
-        `mount '${source}' has an initial_size '${raw}' value which is smaller than 1GB`,
-      );
-    return {
-      source,
-      destination: field.string(mount.destination, "Mount.mounts.destination") ?? "",
-      initialSizeGb,
-    };
-  });
-
-  const httpTable =
-    toml.http_service === undefined ? undefined : field.table(toml.http_service, "http_service");
-  const http = httpTable && {
-    internalPort: field.castInt(httpTable.internal_port, "http_service.internal_port") ?? 8080,
-    forceHttps: field.bool(httpTable.force_https, "HTTPService.http_service.force_https") ?? false,
-    autostop: autostop(httpTable.auto_stop_machines, field.fail),
-    autostart: field.bool(
-      httpTable.auto_start_machines,
-      "HTTPService.http_service.auto_start_machines",
-    ),
-    minMachinesRunning: field.int(
-      httpTable.min_machines_running,
-      "HTTPService.http_service.min_machines_running",
-    ),
-    checkPath: field
-      .tables(httpTable.checks, "http_service.checks")
-      .map(
-        (check) => field.string(check.path, "ServiceHTTPCheck.http_service.checks.path") ?? "/",
-      )[0],
-  };
-
-  const vm = field.tables(toml.vm, "vm")[0] ?? {};
-  const sizeName = field.string(vm.size, "Compute.vm.size");
-  const size =
-    sizeName === undefined ? undefined : /^(shared|performance)-cpu-(\d+)x$/.exec(sizeName);
-  if (size === null) throw field.invalid(`invalid size "${sizeName}"`);
-  const memoryText = field.castString(vm.memory, "Compute.vm.memory");
-  const memoryMb = memoryText === undefined ? undefined : parseSize(memoryText, 1024, 1024 ** 2);
-  if (memoryText !== undefined && memoryMb === undefined)
-    throw field.invalid(`vm.memory: invalid size: invalid size: '${memoryText}'`);
-  if (memoryMb === 0) throw field.invalid("memory cannot be zero");
-
-  const killSignal = field.string(toml.kill_signal, "Config.kill_signal");
-  if (killSignal !== undefined && !STOP_SIGNALS.has(killSignal))
-    throw field.invalid(
-      `kill_signal '${killSignal}' is not one of ${[...STOP_SIGNALS].join(", ")}`,
-    );
-  const killTimeout = killTimeoutText(toml.kill_timeout, field.fail);
-
-  const build = field.table(toml.build, "build");
-  return {
-    app: field.string(toml.app, "Config.app"),
-    primaryRegion: field.string(toml.primary_region, "Config.primary_region"),
-    stop:
-      killSignal === undefined && killTimeout === undefined
-        ? undefined
-        : {
-            ...(killTimeout === undefined ? {} : { timeout: killTimeout }),
-            ...(killSignal === undefined ? {} : { signal: killSignal }),
-          },
-    env,
-    mounts,
-    http,
-    memoryMb: memoryMb ?? field.int(vm.memory_mb, "Compute.vm.memory_mb"),
-    cpus: field.int(vm.cpus, "Compute.vm.cpus") ?? (size ? Number(size[2]) : undefined),
-    cpuKind: field.string(vm.cpu_kind, "Compute.vm.cpu_kind") ?? size?.[1],
-    buildImage: field.string(build.image, "Build.build.image"),
-    dockerfile: field.string(build.dockerfile, "Build.build.dockerfile"),
-  };
-}
-
-/** fly-go's `MachineAutostop`: a bool, or `off`, `stop`, or `suspend`. */
-function autostop(
-  value: RawValue | undefined,
-  fail: (message: string) => FlyError,
-): boolean | "suspend" | undefined {
-  if (value === undefined || typeof value === "boolean") return value;
-  if (value === "off") return false;
-  if (value === "stop") return true;
-  if (value === "suspend") return "suspend";
-  throw fail(`http_service.auto_stop_machines: invalid autostop value ${JSON.stringify(value)}`);
-}
-
-/** flyctl's `_castDuration`: an integer counts seconds, a string is a Go duration. */
-function killTimeoutText(
-  value: RawValue | undefined,
-  fail: (message: string) => FlyError,
-): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value === "number" && Number.isInteger(value) && value >= 0)
-    return secondsAsGoDuration(value);
-  if (typeof value === "string" && durationMs(value) !== undefined) return value;
-  throw fail(`kill_timeout: time: invalid duration ${JSON.stringify(String(value))}`);
-}
-
-function parseConfigFile(file: string): DeployConfig {
-  let toml: Raw;
-  try {
-    toml = parseTomlText(NodeFS.readFileSync(file, "utf8"), { integersAsBigInt: false });
-  } catch (error) {
-    if (!(error instanceof TomlError)) throw error;
-    throw new FlyError(
-      `failed loading app config from ${file}: row ${error.line} column ${error.column}\n${error.message}`,
-    );
-  }
-  return toDeployConfig(toml, file);
 }
 
 /** `workingDirectory` is `fly deploy`'s argument: where it looks for `fly.toml` and builds. */
@@ -752,9 +475,8 @@ function snapshotSeconds(): number {
   return Number(text);
 }
 
-/** Real Fly only schedules a snapshot; this one reads as pending until the delay has passed. */
-const isPending = (snapshot: SnapshotRecord) =>
-  Date.now() < Date.parse(snapshot.createdAt) + snapshotSeconds() * 1000;
+/** Real Fly only schedules a snapshot; this one reads as pending until `readyAt`. */
+const isPending = (snapshot: SnapshotRecord) => Date.now() < Date.parse(snapshot.readyAt);
 
 /** A pending snapshot has no id, size, or digest yet; flyctl prints its id as `(pending)`. */
 function snapshotJson(snapshot: SnapshotRecord) {
@@ -1029,6 +751,9 @@ function appsCreate(ctx: Ctx): number {
     throw new FlyError(
       "Validation failed: Name can only contain lowercase letters, numbers, and dashes",
     );
+  // The fixtures' own pages hold these hosts, so a deploy could never publish the app.
+  if (isReservedHost(appHost(name)))
+    throw new FlyError("Validation failed: Name has already been taken");
   const app: AppRecord = { name, createdAt: now(), releaseVersion: 0 };
   if (!reserveName(APP_NAMES, name, HOME) || !createJsonExclusive(recordPath("apps", name), app))
     throw new FlyError("Validation failed: Name has already been taken");
@@ -1202,6 +927,7 @@ function volumesDestroy(ctx: Ctx): number {
 
 function snapshotsCreate(ctx: Ctx): number {
   const volume = findVolume(ctx, ctx.args[0] ?? "");
+  const delayMs = snapshotSeconds() * 1000;
   const machine = attachedMachine(volume.id);
   const id = `vs_${randomFrom(ALNUM, 20)}`;
   const createdAt = now();
@@ -1229,6 +955,7 @@ function snapshotsCreate(ctx: Ctx): number {
     volumeSizeBytes: volume.sizeGb * 1024 ** 3,
     digest: hex(32),
     createdAt,
+    readyAt: new Date(Date.now() + delayMs).toISOString(),
   } satisfies SnapshotRecord);
   out(`Scheduled to snapshot volume ${volume.id}\n`);
   return 0;
@@ -1241,7 +968,7 @@ function snapshotsList(ctx: Ctx): number {
   const snapshots = all<SnapshotRecord>("snapshots").filter(
     (s) => s.volumeId === volumeId && s.app === appName,
   );
-  if (snapshots.length === 0 && volume?.app !== appName)
+  if (snapshots.length === 0 && (volume === undefined || volume.app !== appName))
     throw new FlyError(`failed retrieving snapshots: volume ${volumeId} not found`);
   if (bool(ctx, "json")) {
     printJson(snapshots.map(snapshotJson));
@@ -2399,10 +2126,55 @@ const signedIn = (flags: ReadonlyMap<string, FlagValue>) =>
 let mutating = false;
 let logged = false;
 
+/**
+ * Masks the access token wherever cobra would read it, bundled shorthands such as `-jtTOKEN`
+ * included, using the flags of the command the words name. Unknown letters count as booleans,
+ * so a token after one is still masked.
+ */
+function redactedArgv(argv: ReadonlyArray<string>): Array<string> {
+  const resolved = resolve(argv);
+  const specs =
+    resolved.kind === "command" ? [...resolved.command.flags, ...GLOBAL_FLAGS] : GLOBAL_FLAGS;
+  const redacted = [...argv];
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i] ?? "";
+    if (token === "--") break;
+    if (token.startsWith("--")) {
+      const [name = "", ...inline] = token.slice(2).split("=");
+      const spec = specs.find((s) => s.name === name);
+      const secret = spec?.name === "access-token";
+      if (inline.length > 0) {
+        if (secret) redacted[i] = `--${name}=<redacted>`;
+      } else if (spec !== undefined && spec.kind !== "bool") {
+        if (secret && i + 1 < argv.length) redacted[i + 1] = "<redacted>";
+        i++;
+      }
+      continue;
+    }
+    if (!token.startsWith("-") || token.length < 2) continue;
+    for (let j = 1; j < token.length; j++) {
+      const spec = specs.find((s) => s.short === token[j]);
+      if (spec === undefined || spec.kind === "bool") {
+        if (token[j + 1] === "=") break;
+        continue;
+      }
+      const glued = j + 1 < token.length;
+      if (spec.name === "access-token") {
+        if (glued)
+          redacted[i] = `${token.slice(0, token[j + 1] === "=" ? j + 2 : j + 1)}<redacted>`;
+        else if (i + 1 < argv.length) redacted[i + 1] = "<redacted>";
+      }
+      if (!glued) i++;
+      break;
+    }
+  }
+  return redacted;
+}
+
 function recordCall(exitCode: number): void {
   if (logged) return;
   logged = true;
-  logCall(HOME, { argv: process.argv.slice(2), mutating, exitCode }, ["-t", "--access-token"]);
+  logCall(HOME, { argv: redactedArgv(process.argv.slice(2)), mutating, exitCode });
 }
 
 async function main(argv: ReadonlyArray<string>): Promise<number> {

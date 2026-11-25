@@ -4,9 +4,17 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-/** Shared by every checkout on this computer: the Caddy front door and global name reservations. */
+/**
+ * Shared by every checkout on this computer: the Caddy front door and global name reservations.
+ * Read from the account database, so a process with another `HOME` or `XDG_STATE_HOME` still
+ * finds the one Caddy every lane uses instead of making a second CA and replacing it.
+ */
 export function fixturesRoot(): string {
-  const state = process.env.XDG_STATE_HOME ?? NodePath.join(NodeOS.homedir(), ".local", "state");
+  return NodePath.join(NodeOS.userInfo().homedir, ".local", "state", "sail-fixtures");
+}
+
+function stateRoot(): string {
+  const state = process.env.XDG_STATE_HOME || NodePath.join(NodeOS.homedir(), ".local", "state");
   return NodePath.join(state, "sail-fixtures");
 }
 
@@ -20,7 +28,7 @@ const CHECKOUT = NodePath.resolve(import.meta.dirname, "../../..");
  * separate worktrees never share an account, a sandbox list, or a call log.
  */
 export function standInHome(kind: "fly" | "boat", envName: string): string {
-  return process.env[envName] ?? NodePath.join(fixturesRoot(), kind, shortHash(CHECKOUT));
+  return process.env[envName] ?? NodePath.join(stateRoot(), kind, shortHash(CHECKOUT));
 }
 
 /** Labels and names every Docker resource a home creates, so cleanup can find only its own. */
@@ -37,22 +45,31 @@ export function readJson<T>(path: string): T | undefined {
   }
 }
 
-export function writeJsonAtomic(path: string, value: unknown): void {
+function writeTemporary(path: string, value: unknown): string {
   NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.${NodeCrypto.randomBytes(4).toString("hex")}.tmp`;
   NodeFS.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`);
-  NodeFS.renameSync(temporary, path);
+  return temporary;
 }
 
-/** Writes only when nothing is there yet; false when another caller got there first. */
+export function writeJsonAtomic(path: string, value: unknown): void {
+  NodeFS.renameSync(writeTemporary(path, value), path);
+}
+
+/**
+ * Writes only when nothing is there yet; false when another caller got there first. The file
+ * appears whole, by hard link, so a racing reader never parses a half-written one.
+ */
 export function createJsonExclusive(path: string, value: unknown): boolean {
-  NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
+  const temporary = writeTemporary(path, value);
   try {
-    NodeFS.writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx" });
+    NodeFS.linkSync(temporary, path);
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
     throw error;
+  } finally {
+    NodeFS.rmSync(temporary, { force: true });
   }
 }
 
@@ -83,17 +100,23 @@ export interface CallRecord {
   readonly exitCode: number;
 }
 
-/** One JSON line per invocation in `<home>/calls.jsonl`, with `secretFlags` values masked. */
+/**
+ * One JSON line per invocation in `<home>/calls.jsonl`, with `secretFlags` values masked: after
+ * the flag, after `=`, or glued to a one-letter flag (`-tVALUE`). A caller that knows its other
+ * flags masks bundles such as `-jtVALUE` before it calls this.
+ */
 export function logCall(
   home: string,
   record: CallRecord,
   secretFlags: ReadonlyArray<string> = [],
 ): void {
   const argv = record.argv.map((arg, index) => {
-    const flag = secretFlags.find((name) => arg === name || arg.startsWith(`${name}=`));
-    if (flag !== undefined && arg.startsWith(`${flag}=`)) return `${flag}=<redacted>`;
     const previous = record.argv[index - 1];
-    return previous !== undefined && secretFlags.includes(previous) ? "<redacted>" : arg;
+    if (previous !== undefined && secretFlags.includes(previous)) return "<redacted>";
+    const flag = secretFlags.find((name) => arg.startsWith(name) && arg !== name);
+    if (flag === undefined) return arg;
+    if (arg.startsWith(`${flag}=`)) return `${flag}=<redacted>`;
+    return /^-[^-]$/.test(flag) ? `${flag}<redacted>` : arg;
   });
   NodeFS.mkdirSync(home, { recursive: true });
   NodeFS.appendFileSync(

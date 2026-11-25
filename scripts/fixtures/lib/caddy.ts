@@ -12,6 +12,7 @@ export const DOMAIN = "localtest.me";
 export const AUTH_HOST = `auth.${DOMAIN}`;
 const AUTH_LOG = "auth-access.log";
 const RESERVED_HOSTS: ReadonlySet<string> = new Set([DOMAIN, AUTH_HOST]);
+export const isReservedHost = (host: string) => RESERVED_HOSTS.has(host);
 
 /**
  * Sign-in pages for the fake `boat`, `claude`, and `codex`. A device code counts as approved once
@@ -42,7 +43,15 @@ const AUTH_SITE = `${AUTH_HOST} {
 }
 `;
 
-const CADDYFILE = `{
+/**
+ * Lanes at different revisions share this file, so it carries a version: bump it with every
+ * change, and keep each version a superset of the last. A lane never replaces a newer one.
+ */
+const CADDYFILE_VERSION = 1;
+const VERSION_LINE = /^# sail-fixtures Caddyfile v(\d+)\n/;
+
+const CADDYFILE = `# sail-fixtures Caddyfile v${CADDYFILE_VERSION}
+{
 	admin localhost:2019
 	local_certs
 	skip_install_trust
@@ -116,10 +125,35 @@ function ensureRootCa(dir: string): boolean {
   }
 }
 
+/** Another revision may have started Caddy from another directory; that one is left alone. */
+function refuseAnotherDirectory(dir: string): void {
+  const mounts = inspect<ReadonlyArray<{ readonly Source: string; readonly Destination: string }>>(
+    CADDY_CONTAINER,
+    ".Mounts",
+  );
+  const served = mounts.find((mount) => mount.Destination === CONFIG_DIR)?.Source;
+  if (served !== undefined && samePath(served, dir)) return;
+  throw new Error(
+    `${CADDY_CONTAINER} serves ${served ?? "no config directory"}, not ${dir}. Every lane shares it, so it is left running; remove it by hand (docker rm --force ${CADDY_CONTAINER}) once no lane uses it.`,
+  );
+}
+
+function samePath(a: string, b: string): boolean {
+  if (a === b) return true;
+  try {
+    return NodeFS.realpathSync(a) === NodeFS.realpathSync(b);
+  } catch {
+    return false;
+  }
+}
+
+const caddyfileVersion = (text: string) => Number(VERSION_LINE.exec(text)?.[1] ?? 0);
+
 export function ensureCaddy(): void {
   ensureNetwork();
   const dir = caddyDir();
   NodeFS.mkdirSync(NodePath.join(dir, "sites"), { recursive: true });
+  if (exists("container", CADDY_CONTAINER)) refuseAnotherDirectory(dir);
   // A bind mount of a missing file would become a directory.
   NodeFS.appendFileSync(authLogPath(), "");
   // Certificates the old root issued sit in Caddy's data volume, so a new root starts it fresh.
@@ -128,9 +162,7 @@ export function ensureCaddy(): void {
     docker(["volume", "rm", "--force", `${CADDY_CONTAINER}-data`]);
   }
   const caddyfile = NodePath.join(dir, "Caddyfile");
-  const configChanged =
-    !NodeFS.existsSync(caddyfile) || NodeFS.readFileSync(caddyfile, "utf8") !== CADDYFILE;
-  if (configChanged) writeAtomically(caddyfile, CADDYFILE);
+  createWhole(caddyfile, CADDYFILE);
   if (!exists("container", CADDY_CONTAINER)) {
     try {
       docker([
@@ -167,10 +199,14 @@ export function ensureCaddy(): void {
     }
   } else if (!inspect<boolean>(CADDY_CONTAINER, ".State.Running")) {
     docker(["start", CADDY_CONTAINER]);
-  } else if (configChanged) {
-    reload();
   }
   waitForAdmin();
+  if (caddyfileVersion(NodeFS.readFileSync(caddyfile, "utf8")) < CADDYFILE_VERSION)
+    changeAndReload("Caddyfile", {
+      kind: "upgrade",
+      body: CADDYFILE,
+      version: CADDYFILE_VERSION,
+    });
 }
 
 function waitForAdmin(): void {
@@ -193,10 +229,17 @@ function waitForAdmin(): void {
   }
 }
 
-function writeAtomically(file: string, body: string): void {
+/** Caddy reads the file the moment its container starts, so it appears whole or not at all. */
+function createWhole(file: string, body: string): void {
   const temporary = `${file}.${process.pid}.tmp`;
   NodeFS.writeFileSync(temporary, body);
-  NodeFS.renameSync(temporary, file);
+  try {
+    NodeFS.linkSync(temporary, file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  } finally {
+    NodeFS.rmSync(temporary, { force: true });
+  }
 }
 
 export function publicUrl(host: string, scheme: "https" | "http" = "https"): string {
@@ -217,55 +260,84 @@ export interface Site {
   readonly headers?: Readonly<Record<string, string>>;
 }
 
+/** Relative to the config directory, which the host and the container see at different paths. */
 function siteFile(id: string): string {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) throw new Error(`bad site id: ${id}`);
-  return NodePath.join(caddyDir(), "sites", `${id}.caddy`);
+  return `sites/${id}.caddy`;
 }
 
 export function publishSite(site: Site): string {
-  if (RESERVED_HOSTS.has(site.host)) throw new Error(`${site.host} is reserved for the fixtures`);
+  if (isReservedHost(site.host)) throw new Error(`${site.host} is reserved for the fixtures`);
   ensureCaddy();
   const address = site.plainHttp ? `http://${site.host}, https://${site.host}` : site.host;
   const headers = Object.entries(site.headers ?? {})
     .map(([name, value]) => `\t\theader_up ${name} "${value}"\n`)
     .join("");
   const body = `${address} {\n\ttls internal\n\treverse_proxy ${site.upstream} {\n${headers}\t}\n}\n`;
-  const file = siteFile(site.id);
-  const previous = NodeFS.existsSync(file) ? NodeFS.readFileSync(file, "utf8") : undefined;
-  writeAtomically(file, body);
-  try {
-    reload();
-  } catch (error) {
-    // A file Caddy refuses would break every later reload, for every lane.
-    if (previous === undefined) NodeFS.rmSync(file);
-    else writeAtomically(file, previous);
-    throw error;
-  }
+  changeAndReload(siteFile(site.id), { kind: "put", body });
   return publicUrl(site.host);
 }
 
 export function removeSite(id: string): void {
   if (!exists("container", CADDY_CONTAINER)) return;
   const file = siteFile(id);
-  if (!NodeFS.existsSync(file)) return;
-  NodeFS.rmSync(file);
-  reload();
+  if (!NodeFS.existsSync(NodePath.join(caddyDir(), file))) return;
+  refuseAnotherDirectory(caddyDir());
+  changeAndReload(file, { kind: "delete" });
 }
 
-/** Serialized inside the container, so a reload that read older site files never lands last. */
-function reload(): void {
-  docker([
-    "exec",
-    CADDY_CONTAINER,
-    "flock",
-    "/data/reload.lock",
-    "caddy",
-    "reload",
-    "--config",
-    `${CONFIG_DIR}/Caddyfile`,
-    "--adapter",
-    "caddyfile",
-  ]);
+type Change =
+  | { readonly kind: "put"; readonly body: string }
+  | { readonly kind: "delete" }
+  | { readonly kind: "upgrade"; readonly body: string; readonly version: number };
+
+/**
+ * `$1` is a path under the config directory, `$2` the change, `$3` the version an upgrade brings.
+ * The old file is kept until Caddy accepts the new config, and put back if it refuses.
+ */
+const CHANGE_AND_RELOAD = `cd ${CONFIG_DIR} || exit 1
+key=$(printf %s "$1" | tr / _)
+next=".next-$key"
+saved=".saved-$key"
+case "$2" in
+  delete) [ -e "$1" ] || exit 0 ;;
+  upgrade)
+    stamp=$(head -n 1 "$1")
+    case "$stamp" in "# sail-fixtures Caddyfile v"*) have=$(printf %s "$stamp" | tr -cd 0-9) ;; *) have=0 ;; esac
+    [ "$have" -lt "$3" ] || exit 0
+    cat > "$next" || exit 1 ;;
+  put) cat > "$next" || exit 1 ;;
+  *) exit 2 ;;
+esac
+rm -f "$saved"
+if [ -e "$1" ]; then cp -p "$1" "$saved" || exit 1; fi
+if [ "$2" = delete ]; then rm "$1"; else mv "$next" "$1"; fi || exit 1
+if caddy reload --config Caddyfile --adapter caddyfile; then rm -f "$saved"; exit 0; fi
+if [ -e "$saved" ]; then mv "$saved" "$1"; else rm -f "$1"; fi
+exit 1`;
+
+/**
+ * Every config change runs whole under one lock inside the container, so no reload ever reads
+ * a file Caddy refused or lands an older set of sites after a newer one.
+ */
+function changeAndReload(file: string, change: Change): void {
+  docker(
+    [
+      "exec",
+      "--interactive",
+      CADDY_CONTAINER,
+      "flock",
+      "/data/reload.lock",
+      "sh",
+      "-c",
+      CHANGE_AND_RELOAD,
+      "sh",
+      file,
+      change.kind,
+      change.kind === "upgrade" ? String(change.version) : "",
+    ],
+    { input: change.kind === "delete" ? "" : change.body },
+  );
 }
 
 export function rootCertPath(): string {
