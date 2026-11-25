@@ -33,6 +33,8 @@ import {
   resolveCliAuthConfig,
 } from "./config.ts";
 import * as RunningServer from "./runningServer.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import { legacyOwnerIsLive } from "../serverOwnership.ts";
 
 const withEnvironmentAuth = Effect.fn("auth.withEnvironmentAuth")(function* <A, E, R>(
   config: ServerConfig.ServerConfig["Service"],
@@ -135,7 +137,12 @@ const pairingCreateCommand = Command.make("create", {
         });
       const label = Option.getOrElse(flags.label, () => "").trim();
       const request = { scopes: flags.scopes, ...(label.length > 0 ? { label } : {}) };
-      if (flags.requireRunning && Option.isNone(running)) {
+      if (
+        flags.requireRunning &&
+        (Option.isNone(running) ||
+          (running.value.ownerId === undefined &&
+            !(yield* legacyOwnerIsLive(running.value).pipe(Effect.provide(ProcessRunner.layer)))))
+      ) {
         return yield* notMinted(`No running T3 Code server owns ${config.baseDir}`);
       }
       const issued = yield* withEnvironmentAuth(
@@ -170,6 +177,12 @@ const pairingCreateCommand = Command.make("create", {
                     notMinted(
                       `No ready T3 Code server for ${config.baseDir} answered at ${origin}`,
                     ),
+                  ),
+                RunningServerNoReplyError: () =>
+                  Effect.fail(
+                    new CliError.UserError({
+                      cause: `The T3 Code server at ${origin} did not reply, so it may have minted a pairing token that was never printed. It expires on its own; to remove it now, find it with \`t3 auth pairing list\` and run \`t3 auth pairing revoke <id>\`.`,
+                    }),
                   ),
               }),
             );

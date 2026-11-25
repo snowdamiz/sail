@@ -80,7 +80,12 @@ const makeHome = Effect.gen(function* () {
 
 const recordServer = (
   home: string,
-  input: { readonly port: number; readonly publicUrl?: URL; readonly ownerId?: string },
+  input: {
+    readonly port: number;
+    readonly publicUrl?: URL;
+    readonly ownerId?: string;
+    readonly startedAt?: string;
+  },
 ) =>
   Effect.gen(function* () {
     const state = yield* makePersistedServerRuntimeState({
@@ -89,13 +94,22 @@ const recordServer = (
     });
     yield* persistServerRuntimeState({
       path: `${home}/userdata/server-runtime.json`,
-      state: input.ownerId === undefined ? state : { ...state, ownerId: input.ownerId },
+      state: {
+        ...state,
+        ...(input.ownerId === undefined ? {} : { ownerId: input.ownerId }),
+        ...(input.startedAt === undefined ? {} : { startedAt: input.startedAt }),
+      },
     });
   });
 
 const withRunningServerHome = <A, E, R>(
   publicUrl: URL | undefined,
-  run: (home: string, mintRequests: ReadonlyArray<MintRequest>) => Effect.Effect<A, E, R>,
+  run: (
+    home: string,
+    mintRequests: ReadonlyArray<MintRequest>,
+    port: number,
+  ) => Effect.Effect<A, E, R>,
+  options?: { readonly dropMintReply?: boolean },
 ) =>
   Effect.gen(function* () {
     const home = yield* makeHome;
@@ -110,6 +124,10 @@ const withRunningServerHome = <A, E, R>(
             authorization: request.headers.authorization,
             payload: JSON.parse(body),
           });
+          if (options?.dropMintReply) {
+            request.socket.destroy();
+            return;
+          }
           response.end(
             JSON.stringify({
               id: "server-minted-link",
@@ -136,7 +154,7 @@ const withRunningServerHome = <A, E, R>(
       `${TEST_ENVIRONMENT_ID}\n`,
     );
     yield* recordServer(home, { port, ...(publicUrl === undefined ? {} : { publicUrl }) });
-    return yield* run(home, mintRequests);
+    return yield* run(home, mintRequests, port);
   });
 
 it.live("keeps migration warnings out of JSON thread output", () =>
@@ -345,6 +363,36 @@ it.live("pairing create --require-running sends no token to another environment 
       assert.match(stderr, /answered at http:\/\/127\.0\.0\.1:/);
       assert.deepStrictEqual(mintRequests, []);
     }),
+  ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "pairing create --require-running sends nothing for a pre-lock record older than its PID",
+  () =>
+    withRunningServerHome(new URL("https://demo.fly.dev"), (home, mintRequests, port) =>
+      Effect.gen(function* () {
+        yield* recordServer(home, { port, startedAt: "2020-01-01T00:00:00.000Z" });
+        const stderr = yield* expectNothingMinted(home);
+        assert.match(stderr, /No running T3 Code server owns/);
+        assert.deepStrictEqual(mintRequests, []);
+      }),
+    ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live("pairing create --require-running says a lost reply may have minted a token", () =>
+  withRunningServerHome(
+    new URL("https://demo.fly.dev"),
+    (home, mintRequests) =>
+      Effect.gen(function* () {
+        const lost = yield* runCli(["auth", "pairing", "create", "--json", "--require-running"], {
+          home,
+        });
+        assert.notStrictEqual(lost.exitCode, 0);
+        assert.strictEqual(lost.stdout, "");
+        assert.match(lost.stderr, /may have minted a pairing token that was never printed/);
+        assert.strictEqual(mintRequests.length, 1);
+      }),
+    { dropMintReply: true },
   ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
