@@ -45,7 +45,7 @@ const hostFlag = Flag.String("host").pipe(
 );
 export const baseDirFlag = Flag.String("base-dir").pipe(
   Flag.withDescription(
-    "Explicit T3 Code data directory; runtime state is stored under userdata (equivalent to T3CODE_HOME).",
+    "Explicit T3 Code data directory; runtime state is stored under userdata (equivalent to SAIL_HOME, then T3CODE_HOME).",
   ),
   Flag.optional,
 );
@@ -150,6 +150,8 @@ const startupPairingConfig = Config.schema(
   ServerConfig.StartupPairing,
   "SAIL_STARTUP_PAIRING",
 ).pipe(Config.option);
+const readPairingSetting = <A>(config: Config.Config<A>) =>
+  config.pipe(Effect.mapError((error) => new CliError.UserError({ cause: error.cause.message })));
 
 const EnvServerConfig = Config.all({
   logLevel: Config.LogLevel("T3CODE_LOG_LEVEL").pipe(Config.withDefault("Info")),
@@ -338,6 +340,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     readonly startupPresentation?: ServerConfig.StartupPresentation;
     readonly forceAutoBootstrapProjectFromCwd?: boolean;
     readonly rejectRunningServer?: boolean;
+    readonly readPairingSettings?: boolean;
     readonly selectAutomaticPort?: (
       preferred: number,
       host: string | undefined,
@@ -366,15 +369,6 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     publicUrl: flags.publicUrl ?? Option.none(),
     startupPairing: flags.startupPairing ?? Option.none(),
   } satisfies CliServerFlags;
-  const publicUrl = Option.getOrUndefined(
-    Option.isSome(normalizedFlags.publicUrl) ? normalizedFlags.publicUrl : yield* publicUrlConfig,
-  );
-  const startupPairing = Option.getOrElse(
-    Option.isSome(normalizedFlags.startupPairing)
-      ? normalizedFlags.startupPairing
-      : yield* startupPairingConfig,
-    (): ServerConfig.StartupPairing => "on",
-  );
   const bootstrapFd = Option.getOrUndefined(normalizedFlags.bootstrapFd) ?? env.bootstrapFd;
   const bootstrapEnvelope =
     bootstrapFd !== undefined
@@ -390,6 +384,24 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     ),
     () => "web",
   );
+  // Only a served web server uses these. The desktop app inherits the user's shell, and
+  // commands that only open the home must not fail on a deploy's variables.
+  const pairingSettingsApply = mode === "web" && options?.readPairingSettings !== false;
+  const publicUrl = pairingSettingsApply
+    ? Option.getOrUndefined(
+        Option.isSome(normalizedFlags.publicUrl)
+          ? normalizedFlags.publicUrl
+          : yield* readPairingSetting(publicUrlConfig),
+      )
+    : undefined;
+  const startupPairing: ServerConfig.StartupPairing = pairingSettingsApply
+    ? Option.getOrElse(
+        Option.isSome(normalizedFlags.startupPairing)
+          ? normalizedFlags.startupPairing
+          : yield* readPairingSetting(startupPairingConfig),
+        () => "on",
+      )
+    : "on";
 
   const devUrl = Option.getOrElse(
     resolveOptionPrecedence(normalizedFlags.devUrl, Option.fromUndefinedOr(env.devUrl)),
@@ -640,6 +652,7 @@ export const resolveCliAuthConfig = (
       startupPairing: Option.none(),
     },
     cliLogLevel,
+    { readPairingSettings: false },
   );
   // Logs go to stdout, where --json and --token-only print, and resolving can
   // log, for example when it sweeps abandoned attachment uploads.

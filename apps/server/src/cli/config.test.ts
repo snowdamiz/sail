@@ -36,7 +36,7 @@ import {
 import { deriveServerPaths } from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { acquireServerOwnership } from "../serverOwnership.ts";
-import { type CliServerFlags, resolveServerConfig } from "./config.ts";
+import { type CliServerFlags, resolveCliAuthConfig, resolveServerConfig } from "./config.ts";
 
 const deriveExplicitServerPaths = (baseDir: string, devUrl: URL | undefined) =>
   deriveServerPaths(baseDir, devUrl, { baseDirIsExplicit: true });
@@ -641,6 +641,47 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         assert.isTrue(Exit.isFailure(exit), rejected);
       }
     }),
+  );
+
+  it.effect(
+    "ignores the pairing variables in desktop mode and in commands that only open the home",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-pairing-env-" });
+        const withEnv = (env: Record<string, string>) =>
+          Effect.provide(
+            Layer.merge(NetService.layer, ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+          );
+        const fromDesktopBootstrap = Effect.gen(function* () {
+          const fd = yield* openBootstrapFd(makeDesktopBootstrap());
+          return yield* resolveServerConfig(
+            { ...minimalDesktopFlags(baseDir), mode: Option.none(), bootstrapFd: Option.some(fd) },
+            Option.none(),
+          );
+        });
+
+        const remote = yield* fromDesktopBootstrap.pipe(
+          withEnv({ SAIL_PUBLIC_URL: "https://remote.fly.dev", SAIL_STARTUP_PAIRING: "off" }),
+        );
+        assert.equal(remote.mode, "desktop");
+        assert.equal(remote.publicUrl, undefined);
+        assert.equal(remote.startupPairing, "on");
+        for (const env of [
+          { SAIL_PUBLIC_URL: "not-a-url" },
+          { SAIL_PUBLIC_URL: "   " },
+          { T3CODE_PUBLIC_URL: "https://demo.fly.dev/subpath" },
+          { SAIL_STARTUP_PAIRING: "bogus" },
+        ]) {
+          const desktop = yield* fromDesktopBootstrap.pipe(withEnv(env));
+          assert.equal(desktop.publicUrl, undefined, JSON.stringify(env));
+          const inspecting = yield* resolveCliAuthConfig(
+            { baseDir: Option.some(baseDir) },
+            Option.none(),
+          ).pipe(withEnv(env));
+          assert.equal(inspecting.publicUrl, undefined, JSON.stringify(env));
+        }
+      }),
   );
 
   it.effect("reports the desktop bootstrap as the source of endpoints it supplied", () =>
