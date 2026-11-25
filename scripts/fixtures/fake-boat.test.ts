@@ -8,7 +8,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
-import { caddyDir, removeSite, rootCertPath } from "./lib/caddy.ts";
+import { caddyDirInUse, removeSite, rootCertPath } from "./lib/caddy.ts";
 import { dockerSucceeds, hasDocker } from "./lib/docker.ts";
 
 const FAKE_DIR = NodePath.join(import.meta.dirname, "fake-boat");
@@ -26,7 +26,6 @@ interface Ran {
   readonly stderr: string;
 }
 
-/** What `boat.rs` deserializes from `info`, `list`, and the last line of `new`. */
 interface SandboxJson {
   readonly id: string;
   readonly state: string;
@@ -68,7 +67,6 @@ function lastJson<T>(text: string): T {
   return line as T;
 }
 
-/** Field names and JSON types, recursively: what a deserializer depends on. */
 function shapeOf(value: unknown): unknown {
   if (value === null) return "null";
   if (Array.isArray(value)) return value.length === 0 ? [] : [shapeOf(value[0])];
@@ -82,8 +80,7 @@ function shapeOf(value: unknown): unknown {
   return typeof value;
 }
 
-/** `boat.rs` reads only the last JSON line; progress lines before it vary (an image build adds one). */
-async function matchesRecording(file: string, output: string): Promise<void> {
+async function matchesRecordedResult(file: string, output: string): Promise<void> {
   const path = NodePath.join(RECORDED, file);
   if (RECORD) {
     await NodeFSP.writeFile(path, output);
@@ -114,7 +111,6 @@ function refuses(port: number): Promise<boolean> {
 }
 
 const SANDBOX = NodePath.join(FAKE_DIR, "sandbox");
-/** The argv `ClaudeProvider.ts`'s capabilities probe makes the Agent SDK pass. */
 const CLAUDE_PROBE_ARGV = [
   "--output-format",
   "stream-json",
@@ -128,7 +124,6 @@ const CLAUDE_PROBE_ARGV = [
   '{"disableAllHooks":true}',
 ];
 
-/** Writes each frame as a line, closes stdin, and reads the reply lines until the fake exits. */
 function converse(
   script: string,
   args: ReadonlyArray<string>,
@@ -338,7 +333,6 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     await expect.poll(() => refuses(local), POLL).toBe(false);
     return { local, child };
   };
-  /** Follows the fake sign-in page's Authorize link, as a person in the browser would. */
   const authorizeLink = async (url: string) => {
     const page = await curl(["--cacert", rootCertPath(), url]);
     const href = /id="authorize" href="([^"]+)"/.exec(page.stdout)?.[1];
@@ -406,14 +400,14 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     expect(signIn.userCode).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
     expect(signIn.url).toBe(`https://auth.localtest.me/boat/device?code=${signIn.userCode}`);
     expect(lastJson((await json(["onboard"])).stdout)).toEqual(signIn);
-    await matchesRecording("onboard.jsonl", started.stdout);
+    await matchesRecordedResult("onboard.jsonl", started.stdout);
 
     expect((await json(["onboard", "--wait"], { FAKE_BOAT_PLAN: "trial" })).status).toBe(0);
     const status = await json(["status"]);
     expect(lastJson(status.stdout)).toEqual({
       account: { identifier: "fake-user@localtest.me", signedIn: true, plan: "trial" },
     });
-    await matchesRecording("status.jsonl", status.stdout);
+    await matchesRecordedResult("status.jsonl", status.stdout);
     expect((await failure(["onboard"])).code).toBe("already_signed_in");
   });
 
@@ -424,7 +418,7 @@ describe.skipIf(!hasDocker())("fake boat", () => {
       code: "trial_auto_stop_required",
       error: "Set a TTL of 2 hours or less",
     });
-    await matchesRecording("new-trial-refused.stderr", refused.stderr);
+    await matchesRecordedResult("new-trial-refused.stderr", refused.stderr);
     expect((await failure([...create, "--ttl", "7201"])).code).toBe("trial_auto_stop_required");
     expect((await failure(["new", "--name", "x", "--type", "huge", "--ttl", "60"])).code).toBe(
       "invalid_type",
@@ -444,7 +438,7 @@ describe.skipIf(!hasDocker())("fake boat", () => {
       archiveAfter: expect.stringMatching(ISO),
       ttlSeconds: 7200,
     });
-    await matchesRecording("new.jsonl", created.stdout);
+    await matchesRecordedResult("new.jsonl", created.stdout);
   });
 
   it("reports the sandbox through info and list --all", async () => {
@@ -455,11 +449,11 @@ describe.skipIf(!hasDocker())("fake boat", () => {
       stoppedAt: null,
       ttlSeconds: 7200,
     });
-    await matchesRecording("info.jsonl", shown.stdout);
+    await matchesRecordedResult("info.jsonl", shown.stdout);
     const listed = await json(["list", "--all"]);
     const rows = lastJson<{ sandboxes: Array<SandboxJson> }>(listed.stdout).sandboxes;
     expect(rows.map((row) => row.id)).toEqual([sandbox]);
-    await matchesRecording("list.jsonl", listed.stdout);
+    await matchesRecordedResult("list.jsonl", listed.stdout);
     expect((await failure(["info", "bx-000000000000"])).code).toBe("not_found");
   });
 
@@ -472,7 +466,7 @@ describe.skipIf(!hasDocker())("fake boat", () => {
       stdout: "user\n/home/user\nanswered\nyes\n",
       stderr: "",
     });
-    await matchesRecording("exec.jsonl", ran.stdout);
+    await matchesRecordedResult("exec.jsonl", ran.stdout);
     const failed = await json([
       "exec",
       sandbox,
@@ -513,7 +507,7 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     expect(hostedUrl).toMatch(
       new RegExp(`^https://${sandbox}-${WEB_PORT}\\.localtest\\.me(:\\d+)?$`),
     );
-    await matchesRecording("host.jsonl", hosted.stdout);
+    await matchesRecordedResult("host.jsonl", hosted.stdout);
     await expect
       .poll(async () => (await curl(["--cacert", rootCertPath(), hostedUrl])).stdout, POLL)
       .toBe(WEB_BODY);
@@ -539,7 +533,7 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     expect(lastJson(listed.stdout)).toEqual({
       named: [{ name: snapshot, sandboxId: sandbox, createdAt: expect.stringMatching(ISO) }],
     });
-    await matchesRecording("snapshots.jsonl", listed.stdout);
+    await matchesRecordedResult("snapshots.jsonl", listed.stdout);
 
     expect(await exec(`boat snapshot ${sandbox} ${insideSnapshot} --json`)).toEqual({
       exitCode: 0,
@@ -568,7 +562,7 @@ describe.skipIf(!hasDocker())("fake boat", () => {
       stoppedAt: expect.stringMatching(ISO),
       archiveAfter: null,
     });
-    await matchesRecording("info-stopped.jsonl", stopped.stdout);
+    await matchesRecordedResult("info-stopped.jsonl", stopped.stdout);
     expect((await failure(["exec", sandbox, "--", "true"])).code).toBe("sandbox_not_running");
 
     const resumed = await json(["resume", sandbox, "--type", "default", "--ttl", "7200"]);
@@ -614,14 +608,14 @@ describe.skipIf(!hasDocker())("fake boat", () => {
   it("reports usage since a time, and today's starts", async () => {
     const usage = await json(["usage", sandbox, "--since", "0"]);
     expect(lastJson(usage.stdout)).toEqual({ dollars: 0, seconds: expect.any(Number) });
-    await matchesRecording("usage.jsonl", usage.stdout);
+    await matchesRecordedResult("usage.jsonl", usage.stdout);
     expect(lastJson((await json(["usage", sandbox, "--since", "4102444800"])).stdout)).toEqual({
       dollars: 0,
       seconds: 0,
     });
     const limits = await json(["limits", "--all"]);
     expect(lastJson(limits.stdout)).toEqual({ starts: { day: { used: 4, limit: 100 } } });
-    await matchesRecording("limits.jsonl", limits.stdout);
+    await matchesRecordedResult("limits.jsonl", limits.stdout);
   });
 
   it("signs Claude in through its localhost callback, the way Sail Boat runs it", async () => {
@@ -737,7 +731,7 @@ describe.skipIf(!hasDocker())("fake boat", () => {
       expect((await json(["delete", id, "--yes"])).status).toBe(0);
       expect(dockerSucceeds(["container", "inspect", `sail-boat-${id}`])).toBe(false);
       expect(
-        NodeFS.existsSync(NodePath.join(caddyDir(), "sites", `boat-${id}-${WEB_PORT}.caddy`)),
+        NodeFS.existsSync(NodePath.join(caddyDirInUse(), "sites", `boat-${id}-${WEB_PORT}.caddy`)),
       ).toBe(false);
     }
     expect(lastJson((await json(["list", "--all"])).stdout)).toEqual({ sandboxes: [] });

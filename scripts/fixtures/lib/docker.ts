@@ -1,9 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off extendsNativeError:off - Local stand-ins are plain Node CLIs that drive the Docker CLI directly.
 import * as NodeChildProcess from "node:child_process";
 
-/** Every stand-in container joins this network, so Caddy reaches each by name. */
 export const NETWORK = "sail-fixtures";
-/** Marks a container or volume a stand-in created; its value names the kind. */
 export const FIXTURE_LABEL = "sail-fixture";
 
 export class DockerError extends Error {
@@ -21,7 +19,6 @@ export interface DockerOptions {
   readonly timeoutMs?: number;
 }
 
-/** Runs docker and returns its stdout, or throws with its stderr. */
 export function docker(args: ReadonlyArray<string>, options: DockerOptions = {}): string {
   const result = NodeChildProcess.spawnSync("docker", args, {
     encoding: "utf8",
@@ -46,7 +43,6 @@ export function exists(kind: "container" | "network" | "volume" | "image", name:
   return dockerSucceeds([kind, "inspect", name]);
 }
 
-/** Creates the shared network unless another process already did. */
 export function ensureNetwork(): void {
   if (exists("network", NETWORK)) return;
   try {

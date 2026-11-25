@@ -4,15 +4,13 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeHttp from "node:http";
 import * as NodeReadline from "node:readline";
 
-/** Served by the shared Caddy container (`scripts/fixtures/lib/caddy.ts`). */
 export const AUTH_ORIGIN = "https://auth.localtest.me";
 export const FAKE_IDENTITY = "fake-user@localtest.me";
 const LOGIN_TIMEOUT_MS = 10 * 60_000;
 
-/** When a device code is approved on its own (null: never) and when it expires, in epoch ms. */
 export interface DeviceCodeSchedule {
-  readonly approveAt: number | null;
-  readonly expiresAt: number;
+  readonly approveAtMs: number | null;
+  readonly expiresAtMs: number;
 }
 
 function seconds(name: string, fallback: number): number {
@@ -26,26 +24,25 @@ function seconds(name: string, fallback: number): number {
 export function deviceCodeSchedule(issuedAt: number): DeviceCodeSchedule {
   const approve = process.env.FAKE_AUTH_APPROVE_SECS;
   return {
-    approveAt: approve === "never" ? null : issuedAt + seconds("FAKE_AUTH_APPROVE_SECS", 3) * 1000,
-    expiresAt: issuedAt + seconds("FAKE_AUTH_CODE_TTL_SECS", 900) * 1000,
+    approveAtMs:
+      approve === "never" ? null : issuedAt + seconds("FAKE_AUTH_APPROVE_SECS", 3) * 1000,
+    expiresAtMs: issuedAt + seconds("FAKE_AUTH_CODE_TTL_SECS", 900) * 1000,
   };
 }
 
-/** A code past its expiry is expired even if it was approved: the CLI never collected it. */
 export async function waitForApproval(
   schedule: DeviceCodeSchedule,
 ): Promise<"approved" | "expired"> {
-  const { approveAt, expiresAt } = schedule;
-  if (Date.now() >= expiresAt) return "expired";
-  const approves = approveAt !== null && approveAt < expiresAt;
-  const until = approves ? approveAt : expiresAt;
+  const { approveAtMs, expiresAtMs } = schedule;
+  if (Date.now() >= expiresAtMs) return "expired";
+  const approves = approveAtMs !== null && approveAtMs < expiresAtMs;
+  const until = approves ? approveAtMs : expiresAtMs;
   await new Promise((resolve) => setTimeout(resolve, Math.max(0, until - Date.now())));
   return approves ? "approved" : "expired";
 }
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-/** `XXXX-XXXX`, the shape device-code pages ask for. */
 export function userCode(): string {
   const chars = [...NodeCrypto.randomBytes(8)].map((byte) => CODE_ALPHABET[byte % 32]);
   return `${chars.slice(0, 4).join("")}-${chars.slice(4).join("")}`;
@@ -59,19 +56,12 @@ export interface CallbackLogin {
   /** 0 picks a free port. */
   readonly port: number;
   readonly path: string;
-  /** The page `$BROWSER` opens, given the localhost redirect and the state. */
   readonly browserUrl: (redirectUri: string, state: string) => string;
-  /** Prints the instructions; called once the callback server listens. */
   readonly announce: (state: string, port: number) => void;
   /** Accept `<code>#<state>` on stdin, as the Claude CLI does. */
   readonly acceptPaste: boolean;
 }
 
-/**
- * Resolves with the code once the browser redirects to `http://localhost:<port><path>` with the
- * right state, or a matching `<code>#<state>` is pasted. Stdin at EOF does not end the wait: the
- * CLI may run under `nohup script -qfec` with no input at all.
- */
 export async function callbackLogin(login: CallbackLogin): Promise<string> {
   const state = NodeCrypto.randomBytes(32).toString("base64url");
   let finish: (code: string) => void = () => {};

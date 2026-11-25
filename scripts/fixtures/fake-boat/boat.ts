@@ -149,8 +149,7 @@ function readJson<T>(file: string): T | undefined {
   }
 }
 
-/** Temp file plus rename, so concurrent invocations never see a half-written record. */
-function writeJson(file: string, value: unknown): void {
+function writeJsonAtomic(file: string, value: unknown): void {
   NodeFS.mkdirSync(NodePath.dirname(file), { recursive: true });
   const temp = `${file}.${process.pid}.${NodeCrypto.randomBytes(4).toString("hex")}.tmp`;
   NodeFS.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`);
@@ -198,7 +197,6 @@ function trialRefusal(): BoatError {
   return new BoatError("trial_auto_stop_required", "Set a TTL of 2 hours or less");
 }
 
-/** `--no-auto-stop` or `--ttl <secs>`; undefined when neither was passed. */
 function lifetime(invocation: Inv, plan: Plan): { ttlSeconds: number | null } | undefined {
   const noAutoStop = invocation.flags.has("no-auto-stop");
   const ttl = invocation.flags.get("ttl");
@@ -248,7 +246,6 @@ function sandboxRecords(): ReadonlyArray<SandboxRecord> {
     .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
-/** Null once the container is gone: the sandbox no longer exists. */
 function live(id: string): Live | null {
   try {
     const state = inspect<DockerState>(container(id), ".State");
@@ -277,7 +274,6 @@ function requireRunning(record: SandboxRecord): Live {
   return state;
 }
 
-/** The fields `boat.rs` reads, plus the ones a person listing sandboxes wants. */
 function view(record: SandboxRecord, state: Live) {
   return {
     id: record.id,
@@ -300,7 +296,6 @@ function contextHash(): string {
   return hash.digest("hex").slice(0, 16);
 }
 
-/** Tagged by the sandbox files' hash, so lanes at different heads never rebuild each other's image. */
 function sandboxImage(): string {
   const named = process.env.FAKE_BOAT_IMAGE;
   if (named) {
@@ -414,7 +409,6 @@ function imageId(tag: string): string | null {
   }
 }
 
-/** Replaces a snapshot of that name. Running or stopped: `docker commit` takes either. */
 function commitSnapshot(sandboxId: string, name: string): void {
   const tag = snapshotImage(name);
   const previous = imageId(tag);
@@ -422,7 +416,7 @@ function commitSnapshot(sandboxId: string, name: string): void {
     ["commit", "--change", `LABEL ${FIXTURE_LABEL}=boat-snapshot`, container(sandboxId), tag],
     { timeoutMs: 10 * 60_000 },
   );
-  writeJson(at("snapshots", `${name}.json`), { name, sandboxId, createdAt: now() });
+  writeJsonAtomic(at("snapshots", `${name}.json`), { name, sandboxId, createdAt: now() });
   if (!previous || previous === imageId(tag)) return;
   try {
     docker(["image", "rm", previous]);
@@ -439,8 +433,7 @@ function snapshotRecords(): ReadonlyArray<SnapshotRecord> {
     .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
-/** Undefined when another invocation already took it. A bad request fails once, loudly. */
-function readRequest(path: string): SnapshotRequest | undefined {
+function claimRequest(path: string): SnapshotRequest | undefined {
   try {
     return parseRequest(NodeFS.readFileSync(path, "utf8"));
   } catch (error) {
@@ -450,20 +443,18 @@ function readRequest(path: string): SnapshotRequest | undefined {
   }
 }
 
-/** The in-sandbox `boat snapshot` cannot reach Docker; it leaves a request for this side. */
 function processOutboxes(): void {
   for (const id of listDir(at("outbox"))) {
     for (const file of listDir(at("outbox", id)).filter(isRequestFile)) {
       const path = at("outbox", id, file);
-      const request = readRequest(path);
+      const request = claimRequest(path);
       if (request?.sandboxId === id && live(id) !== null) commitSnapshot(id, request.name);
       NodeFS.rmSync(path, { force: true });
     }
   }
 }
 
-/** Boat stops a sandbox when its lifetime ends; the fake does it at the next invocation. */
-function enforceLifetimes(): void {
+function stopSandboxesPastLifetime(): void {
   for (const record of sandboxRecords()) {
     if (record.archiveAfter === null || Date.parse(record.archiveAfter) > Date.now()) continue;
     if (live(record.id)?.state === "running") {
@@ -603,7 +594,11 @@ const TABLE: ReadonlyArray<Command> = [
         if (outcome === "expired") {
           throw new BoatError("sign_in_expired", "The sign-in code expired. Run boat onboard.");
         }
-        writeJson(ACCOUNT_FILE, { identifier: FAKE_IDENTITY, plan: plan(), signedInAt: now() });
+        writeJsonAtomic(ACCOUNT_FILE, {
+          identifier: FAKE_IDENTITY,
+          plan: plan(),
+          signedInAt: now(),
+        });
         print({});
         return 0;
       }
@@ -611,18 +606,17 @@ const TABLE: ReadonlyArray<Command> = [
       if (signedIn) {
         throw new BoatError("already_signed_in", `Already signed in as ${signedIn.identifier}`);
       }
-      let signIn = pending && pending.expiresAt > Date.now() ? pending : undefined;
+      let signIn = pending && pending.expiresAtMs > Date.now() ? pending : undefined;
       if (!signIn) {
         const issuedAt = Date.now();
         signIn = { code: userCode(), issuedAt, ...deviceCodeSchedule(issuedAt) };
-        writeJson(SIGN_IN_FILE, signIn);
+        writeJsonAtomic(SIGN_IN_FILE, signIn);
       }
       print({ url: `${AUTH_ORIGIN}/boat/device?code=${signIn.code}`, userCode: signIn.code });
       return 0;
     },
   },
   {
-    // The real CLI's sign-out command name is unverified.
     path: ["logout"],
     mutating: true,
     signedIn: false,
@@ -667,7 +661,7 @@ const TABLE: ReadonlyArray<Command> = [
       print({ progress: "creating", id });
       NodeFS.mkdirSync(at("outbox", id), { recursive: true });
       NodeFS.writeFileSync(at("outbox", id, ID_FILE), id);
-      writeJson(sandboxFile(id), record);
+      writeJsonAtomic(sandboxFile(id), record);
       try {
         runContainer(record, image);
         print({ progress: "booting", id });
@@ -748,7 +742,7 @@ const TABLE: ReadonlyArray<Command> = [
         ttlSeconds: life.ttlSeconds,
         archiveAfter: deadline(life.ttlSeconds),
       };
-      writeJson(sandboxFile(record.id), next);
+      writeJsonAtomic(sandboxFile(record.id), next);
       if (state.state !== "running") {
         print({ progress: "resuming", id: record.id });
         docker(["start", container(record.id)]);
@@ -770,7 +764,7 @@ const TABLE: ReadonlyArray<Command> = [
       requireLive(record);
       const ttl = integer(invocation.flags.get("ttl"), "--ttl", 1);
       if (signedIn.plan === "trial" && ttl > TRIAL_TTL_SECS) throw trialRefusal();
-      writeJson(sandboxFile(record.id), {
+      writeJsonAtomic(sandboxFile(record.id), {
         ...record,
         ttlSeconds: ttl,
         archiveAfter: deadline(ttl),
@@ -841,7 +835,7 @@ const TABLE: ReadonlyArray<Command> = [
     path: ["exec"],
     args: ["sandbox"],
     flags: { timeout: "string" },
-    rest: true,
+    afterDoubleDash: true,
     mutating: true,
     signedIn: true,
     run: async (invocation) => {
@@ -850,7 +844,7 @@ const TABLE: ReadonlyArray<Command> = [
       const timeout = invocation.flags.has("timeout")
         ? integer(invocation.flags.get("timeout"), "--timeout", 1)
         : DEFAULT_EXEC_TIMEOUT_SECS;
-      if (invocation.rest.length === 0) {
+      if (invocation.afterDoubleDash.length === 0) {
         throw new BoatError("invalid_arguments", "exec needs a command after --");
       }
       const env = Object.entries(process.env).flatMap(([key, value]) =>
@@ -870,7 +864,7 @@ const TABLE: ReadonlyArray<Command> = [
           container(record.id),
           "timeout",
           String(timeout),
-          ...invocation.rest,
+          ...invocation.afterDoubleDash,
         ],
         { killAfterMs: (timeout + 10) * 1000 },
       );
@@ -955,7 +949,6 @@ const TABLE: ReadonlyArray<Command> = [
         pipe.on("close", () => socket.end());
       });
       await listen(server, local);
-      // It runs until killed, so it is logged once it listens instead of when it exits.
       logCall(process.argv.slice(2), false, null);
       return new Promise<number>(() => {});
     },
@@ -1002,7 +995,7 @@ async function main(argv: ReadonlyArray<string>): Promise<{ code: number; mutati
     const invocation = parse(TABLE, argv, ["--json"]);
     mutating = invocation.command.mutating;
     processOutboxes();
-    enforceLifetimes();
+    stopSandboxesPastLifetime();
     const command = invocation.command;
     if (!command.signedIn) return { code: await command.run(invocation), mutating };
     const signedIn = account();

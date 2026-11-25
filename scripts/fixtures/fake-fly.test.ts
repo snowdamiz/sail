@@ -7,7 +7,7 @@ import * as NodeHttps from "node:https";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
-import { caddyDir, publicUrl, removeSite, rootCertPath } from "./lib/caddy.ts";
+import { caddyDirInUse, publicUrl, removeSite, rootCertPath } from "./lib/caddy.ts";
 import { docker, exists, hasDocker } from "./lib/docker.ts";
 
 // Key lists copied from flyctl v0.4.123 and fly-go v0.11.6 (`fly.App` has no JSON tags).
@@ -534,7 +534,9 @@ primary_region = "iad" # comment
     expect(ok(["apps", "destroy", app, "--yes"])).toBe(`Destroyed app ${app}\n`);
     expect(exists("container", `sail-fly-${app}`)).toBe(false);
     for (const name of owned) expect(exists("volume", name), name).toBe(false);
-    expect(NodeFS.existsSync(NodePath.join(caddyDir(), "sites", `fly-${app}.caddy`))).toBe(false);
+    expect(NodeFS.existsSync(NodePath.join(caddyDirInUse(), "sites", `fly-${app}.caddy`))).toBe(
+      false,
+    );
     await expect(exited).resolves.toBe(0);
     follower = undefined;
   });

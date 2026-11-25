@@ -1,9 +1,4 @@
 // @effect-diagnostics nodeBuiltinImport:off extendsNativeError:off globalDate:off globalTimers:off - A stand-in `fly` CLI that drives the Docker CLI directly.
-/**
- * Stand-in for flyctl v0.4.123: one Docker container per app behind the shared Caddy. Unlike Fly,
- * `deploy` sets SAIL_PUBLIC_URL=https://<app>.localtest.me unless config or --env sets it, since
- * the image would otherwise derive https://<app>.fly.dev, which does not resolve here.
- */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
@@ -193,7 +188,6 @@ function write(kind: Kind, id: string, value: unknown): void {
   NodeFS.renameSync(tempFile(kind, value), recordPath(kind, id));
 }
 
-/** Writes the record only when none exists yet; `link` fails atomically on a taken name. */
 function createOnly(kind: Kind, id: string, value: unknown): boolean {
   const temp = tempFile(kind, value);
   try {
@@ -846,7 +840,6 @@ function createDockerVolume(name: string, kind: string, app: string): void {
   ]);
 }
 
-/** Copies one Docker volume into another and returns the copied size in bytes. */
 function copyVolume(from: string, to: string): number {
   const kib = docker([
     "run",
@@ -1375,6 +1368,15 @@ function waitForHttp(
   }
 }
 
+/** Real Fly leaves this unset and the image derives `<app>.fly.dev`, which does not exist here. */
+function localPublicUrl(
+  configEnv: Readonly<Record<string, string>>,
+  extraEnv: Readonly<Record<string, string>>,
+  url: string,
+): Readonly<Record<string, string>> {
+  return configEnv.SAIL_PUBLIC_URL || extraEnv.SAIL_PUBLIC_URL ? {} : { SAIL_PUBLIC_URL: url };
+}
+
 function deploy(ctx: Ctx): number {
   const appName = requireAppName(ctx);
   const app = requireApp(appName);
@@ -1414,7 +1416,7 @@ function deploy(ctx: Ctx): number {
     ...extraEnv,
     FLY_PROCESS_GROUP: "app",
     PRIMARY_REGION: region,
-    ...(config.env.SAIL_PUBLIC_URL || extraEnv.SAIL_PUBLIC_URL ? {} : { SAIL_PUBLIC_URL: url }),
+    ...localPublicUrl(config.env, extraEnv, url),
   };
   const http = config.http;
   const machineConfig: MachineConfigJson = {

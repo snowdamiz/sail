@@ -8,7 +8,6 @@ import { AUTH_ORIGIN, callbackLogin, FAKE_IDENTITY, fakeToken } from "./auth.ts"
 import { type CommandSpec, parse, UsageError } from "./cli.ts";
 import { isObject, type JsonObject, serveJsonLines } from "./jsonl.ts";
 
-/** Newer than every `minVersion` in `apps/server/src/provider/model-manifest.json`. */
 const VERSION = "2.1.400";
 const MANUAL_REDIRECT = `${AUTH_ORIGIN}/claude/code/callback`;
 
@@ -25,7 +24,6 @@ function signedIn(): boolean {
   return NodeFS.existsSync(credentialsPath());
 }
 
-/** Signed out is null. */
 function subscriptionType(): string | null {
   if (!signedIn()) return null;
   const file: unknown = JSON.parse(NodeFS.readFileSync(credentialsPath(), "utf8"));
@@ -35,11 +33,12 @@ function subscriptionType(): string | null {
   return type;
 }
 
-/** `claudeAuthStatus` in `ClaudeProvider.ts` reads only `tokenSource: "none"` as signed out. */
+const SIGNED_OUT_ACCOUNT: JsonObject = { tokenSource: "none", apiProvider: "firstParty" };
+
 function account(): JsonObject {
   const subscription = subscriptionType();
   return subscription === null
-    ? { tokenSource: "none", apiProvider: "firstParty" }
+    ? SIGNED_OUT_ACCOUNT
     : {
         email: FAKE_IDENTITY,
         subscriptionType: subscription,
@@ -63,7 +62,6 @@ function parseSdkFrame(message: JsonObject): SdkFrame {
   return { kind: "control", requestId, subtype: request.subtype };
 }
 
-/** Control requests answered with success. Every other one gets an error, which the probe tolerates. */
 const CONTROL_RESPONSES: ReadonlyMap<string, () => JsonObject> = new Map([
   [
     "initialize",

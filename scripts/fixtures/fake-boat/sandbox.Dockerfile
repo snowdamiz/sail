@@ -1,5 +1,3 @@
-# A fake Boat sandbox: systemd as PID 1, a lingering `user`, and fake `boat`, `claude`, and `codex`.
-# Build context is this directory. `BASE` picks the distribution (debian:bullseye, ubuntu:22.04).
 ARG BASE=debian:bookworm
 FROM node:26.13.1-bookworm-slim AS node
 

@@ -2,20 +2,18 @@
 
 export type FlagKind = "boolean" | "string";
 
-/** One row of a fake CLI's command table. Path words match literally, so `--version` can be one. */
 export interface CommandSpec {
   readonly path: ReadonlyArray<string>;
   readonly args?: ReadonlyArray<string>;
   readonly flags?: Readonly<Record<string, FlagKind>>;
-  /** Takes the argv after `--`. */
-  readonly rest?: boolean;
+  readonly afterDoubleDash?: boolean;
 }
 
 export interface Invocation<C extends CommandSpec> {
   readonly command: C;
   readonly args: Readonly<Record<string, string>>;
   readonly flags: ReadonlyMap<string, string | true>;
-  readonly rest: ReadonlyArray<string>;
+  readonly afterDoubleDash: ReadonlyArray<string>;
   readonly global: ReadonlySet<string>;
 }
 
@@ -29,11 +27,6 @@ export class UsageError extends Error {
   }
 }
 
-/**
- * Flags are `--name`, `--name=value`, or `-x`, keyed without dashes. Global flags may sit anywhere
- * before `--`; everything after `--` belongs to the command. The longest matching path wins, so
- * `snapshot rm <name>` is not read as `snapshot <id> <name>`.
- */
 export function parse<C extends CommandSpec>(
   table: ReadonlyArray<C>,
   argv: ReadonlyArray<string>,
@@ -41,7 +34,7 @@ export function parse<C extends CommandSpec>(
 ): Invocation<C> {
   const dash = argv.indexOf("--");
   const head = dash === -1 ? argv : argv.slice(0, dash);
-  const rest = dash === -1 ? [] : argv.slice(dash + 1);
+  const afterDoubleDash = dash === -1 ? [] : argv.slice(dash + 1);
   const global = new Set(head.filter((token) => globalFlags.includes(token)));
   const tokens = head.filter((token) => !globalFlags.includes(token));
   const command = table
@@ -79,9 +72,9 @@ export function parse<C extends CommandSpec>(
     const usage = [name, ...names.map((arg) => `<${arg}>`)].join(" ");
     throw new UsageError("invalid_arguments", `usage: ${usage}`);
   }
-  if (dash !== -1 && !command.rest) {
+  if (dash !== -1 && !command.afterDoubleDash) {
     throw new UsageError("invalid_arguments", `${name} takes no arguments after --`);
   }
   const args = Object.fromEntries(names.map((arg, index) => [arg, positionals[index] ?? ""]));
-  return { command, args, flags, rest, global };
+  return { command, args, flags, afterDoubleDash, global };
 }

@@ -15,7 +15,6 @@ import {
 import { type CommandSpec, parse, UsageError } from "./cli.ts";
 import { type JsonObject, serveJsonLines } from "./jsonl.ts";
 
-/** Matches `CodexInstallation.ts`'s `^codex-cli (\d+\.\d+\.\d+)$` and every manifest `minVersion`. */
 const VERSION = "0.200.0";
 const CALLBACK_PORT = 1455;
 
@@ -56,7 +55,7 @@ function authorizeUrl(redirectUri: string, state: string): string {
 async function deviceLogin(): Promise<number> {
   const code = userCode();
   const schedule = deviceCodeSchedule(Date.now());
-  const minutes = Math.round((schedule.expiresAt - Date.now()) / 60_000);
+  const minutes = Math.round((schedule.expiresAtMs - Date.now()) / 60_000);
   console.log(`Welcome to Codex [v${VERSION}]\nOpenAI's command-line coding agent\n`);
   console.log("Follow these steps to sign in with ChatGPT using device code authorization:\n");
   console.log("1. Open this link in your browser and sign in to your account");
@@ -104,12 +103,7 @@ function parseRpcFrame(message: JsonObject): RpcFrame {
   return { kind: "request", id, method };
 }
 
-/**
- * What `probeCodexAppServerProvider` in `CodexProvider.ts` needs before it decides sign-in state;
- * shapes from `packages/effect-codex-app-server/src/_generated/schema.gen.ts`. `skills/list` and
- * `model/list` must succeed or the probe fails; every other method gets a JSON-RPC error.
- */
-const RPC_RESULTS: ReadonlyMap<string, () => JsonObject> = new Map([
+const RPC_RESULTS: ReadonlyMap<string, () => JsonObject> = new Map<string, () => JsonObject>([
   [
     "initialize",
     () => ({
@@ -135,12 +129,14 @@ const RPC_RESULTS: ReadonlyMap<string, () => JsonObject> = new Map([
 
 const METHOD_NOT_FOUND = -32601;
 
+function primeModelsCache(): void {
+  if (!NodeFS.existsSync(authPath())) return;
+  const cache = { fetched_at: new Date().toISOString(), models: [] };
+  NodeFS.writeFileSync(NodePath.join(codexHome(), "models_cache.json"), JSON.stringify(cache));
+}
+
 async function appServer(): Promise<number> {
-  // T3 waits for app-server to refresh this shared catalog after spawn before it trusts `model/list`.
-  if (NodeFS.existsSync(authPath())) {
-    const cache = { fetched_at: new Date().toISOString(), models: [] };
-    NodeFS.writeFileSync(NodePath.join(codexHome(), "models_cache.json"), JSON.stringify(cache));
-  }
+  primeModelsCache();
   let initialized = false;
   await serveJsonLines((message) => {
     const frame = parseRpcFrame(message);
@@ -166,7 +162,6 @@ const TABLE: ReadonlyArray<Command> = [
     },
   },
   {
-    // `codexAppServerArgs` in `codexLaunchArgs.ts` passes `-c thread_unload_delay_secs=0`.
     path: ["app-server"],
     flags: { help: "boolean", c: "string" },
     run: (flags) => {

@@ -7,7 +7,6 @@ export function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Answers each JSON object line on stdin with zero or more lines on stdout, until stdin closes. */
 export async function serveJsonLines(
   answer: (message: JsonObject) => ReadonlyArray<JsonObject>,
 ): Promise<void> {

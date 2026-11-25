@@ -1,6 +1,4 @@
-/** `<FAKE_BOAT_HOME>/outbox/<sandbox-id>/` is mounted here in each sandbox. */
 export const OUTBOX_DIR = "/var/lib/fake-boat/outbox";
-/** Holds the sandbox's own id, written by the computer before the sandbox first boots. */
 export const ID_FILE = "id";
 export const CALL_LOG = "calls.jsonl";
 const REQUEST_SUFFIX = ".snapshot.json";

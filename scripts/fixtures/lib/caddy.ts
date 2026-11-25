@@ -5,16 +5,11 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { docker, ensureNetwork, exists, FIXTURE_LABEL, inspect, NETWORK } from "./docker.ts";
 
-/**
- * One Caddy container fronts every stand-in on this computer, so parallel lanes share ports
- * 443 and 80. Each published host is one file in `sites/`: writers never edit a shared file.
- */
 export const CADDY_CONTAINER = "sail-fixtures-caddy";
 const CADDY_IMAGE = "caddy:2";
 const CONFIG_DIR = "/etc/caddy";
 export const DOMAIN = "localtest.me";
 
-/** Sign-in pages for the fake `boat`, `claude`, and `codex`. Query values are echoed as-is. */
 const AUTH_SITE = `auth.${DOMAIN} {
 	tls internal
 	header Content-Type "text/html; charset=utf-8"
@@ -59,8 +54,7 @@ function defaultDir(): string {
   );
 }
 
-/** The running container's config mount wins, so every caller edits the files it serves. */
-export function caddyDir(): string {
+export function caddyDirInUse(): string {
   if (!exists("container", CADDY_CONTAINER)) return defaultDir();
   const mounts = inspect<ReadonlyArray<{ Source: string; Destination: string }>>(
     CADDY_CONTAINER,
@@ -73,10 +67,6 @@ function port(name: string, fallback: number): string {
   return process.env[name] ?? String(fallback);
 }
 
-/**
- * A root that can sign only `localtest.me` names, so trusting it once (for a browser lane) cannot
- * vouch for any other site. Built in a temp dir and renamed into place, so racing callers agree.
- */
 function ensureRootCa(dir: string): boolean {
   const ca = NodePath.join(dir, "ca");
   if (NodeFS.existsSync(NodePath.join(ca, "root.crt"))) return false;
@@ -121,7 +111,7 @@ function ensureRootCa(dir: string): boolean {
 
 export function ensureCaddy(): void {
   ensureNetwork();
-  const dir = caddyDir();
+  const dir = caddyDirInUse();
   NodeFS.mkdirSync(NodePath.join(dir, "sites"), { recursive: true });
   // Certificates the old root issued sit in Caddy's data volume, so a new root starts it fresh.
   if (ensureRootCa(dir) && exists("container", CADDY_CONTAINER)) {
@@ -173,7 +163,6 @@ export function ensureCaddy(): void {
   }
 }
 
-/** `https://<host>`, with the published port when it is not 443. */
 export function publicUrl(host: string, scheme: "https" | "http" = "https"): string {
   const published = docker(["port", CADDY_CONTAINER, scheme === "https" ? "443/tcp" : "80/tcp"])
     .trim()
@@ -185,19 +174,16 @@ export function publicUrl(host: string, scheme: "https" | "http" = "https"): str
 }
 
 export interface Site {
-  /** Stable file name, so republishing replaces the route. */
   readonly id: string;
   readonly host: string;
-  /** `<container>:<port>` on the shared network. */
   readonly upstream: string;
-  /** Also serve plain HTTP instead of redirecting it to HTTPS. */
   readonly plainHttp?: boolean;
   readonly headers?: Readonly<Record<string, string>>;
 }
 
 function siteFile(id: string): string {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) throw new Error(`bad site id: ${id}`);
-  return NodePath.join(caddyDir(), "sites", `${id}.caddy`);
+  return NodePath.join(caddyDirInUse(), "sites", `${id}.caddy`);
 }
 
 export function publishSite(site: Site): string {
@@ -235,7 +221,6 @@ function reload(): void {
   ]);
 }
 
-/** The fixture CA's root, for `curl --cacert`, `NODE_EXTRA_CA_CERTS`, and a one-time trust. */
 export function rootCertPath(): string {
-  return NodePath.join(caddyDir(), "ca", "root.crt");
+  return NodePath.join(caddyDirInUse(), "ca", "root.crt");
 }

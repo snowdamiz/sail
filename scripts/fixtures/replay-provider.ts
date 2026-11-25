@@ -27,15 +27,13 @@ interface FixtureFile {
   readonly content: string;
 }
 
-/** What the apply program receives on stdin; it runs with the target's own node. */
 interface ApplyInput {
   readonly home: string;
   readonly files: ReadonlyArray<FixtureFile>;
   readonly commandPath: string;
 }
 
-// Plain JS so the same program runs here and inside a container, as the user that owns the home.
-const APPLY_PROGRAM = String.raw`
+const PLAIN_JS_APPLY_PROGRAM = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
 const input = JSON.parse(fs.readFileSync(0, "utf8"));
@@ -82,8 +80,7 @@ interface ApplyResult {
   readonly changed: ReadonlyArray<string>;
 }
 
-// The agent lives in the server package, outside this tsconfig, so load its list at runtime.
-async function scenarioFiles(agentPath: string): Promise<ReadonlyArray<string>> {
+async function importScenarioFiles(agentPath: string): Promise<ReadonlyArray<string>> {
   const agent: unknown = await import(agentPath);
   const scenarios =
     typeof agent === "object" && agent !== null && "SCENARIOS" in agent
@@ -107,7 +104,7 @@ async function fixtureFiles(): Promise<ReadonlyArray<FixtureFile>> {
   const agentPath = NodePath.join(SERVER_ROOT, AGENT);
   const paths = [
     AGENT,
-    ...(await scenarioFiles(agentPath)).map((file) =>
+    ...(await importScenarioFiles(agentPath)).map((file) =>
       NodePath.relative(SERVER_ROOT, NodePath.resolve(NodePath.dirname(agentPath), file)),
     ),
   ];
@@ -141,7 +138,7 @@ async function applyLocally(home: string): Promise<ApplyResult> {
     files: await fixtureFiles(),
     commandPath: process.execPath,
   };
-  const result = NodeChildProcess.spawnSync(process.execPath, ["-e", APPLY_PROGRAM], {
+  const result = NodeChildProcess.spawnSync(process.execPath, ["-e", PLAIN_JS_APPLY_PROGRAM], {
     input: JSON.stringify(input),
     encoding: "utf8",
   });
@@ -179,7 +176,7 @@ async function applyInContainer(
   if (commandPath === "") throw new Error(`No node on ${container}'s login PATH`);
   const input: ApplyInput = { home: targetHome, files: await fixtureFiles(), commandPath };
   const stdout = docker(
-    ["exec", "-i", "-u", execUser, container, commandPath, "-e", APPLY_PROGRAM],
+    ["exec", "-i", "-u", execUser, container, commandPath, "-e", PLAIN_JS_APPLY_PROGRAM],
     { input: JSON.stringify(input) },
   );
   return parseResult(stdout);

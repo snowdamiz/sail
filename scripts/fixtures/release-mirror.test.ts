@@ -17,7 +17,6 @@ const VERSION = "1.2.3";
 const dockerArch = () =>
   docker(["info", "--format", "{{.Architecture}}"]).trim() === "aarch64" ? "arm64" : "x64";
 
-/** A release archive shaped like build-cli-archive's: one top folder holding `t3`. */
 async function writeArchive(dir: string, platform: string, arch: string): Promise<string> {
   const stem = `t3-${VERSION}-${platform}-${arch}`;
   const staging = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-mirror-stage-"));
@@ -133,7 +132,6 @@ describe.skipIf(!hasDocker())("release mirror from a container", () => {
       "-c",
       `wget -qO- http://host.docker.internal:${port}/install.sh | T3CODE_VERSION=${VERSION} sh && "$HOME/.local/bin/t3" --version`,
     ]).trim();
-    // Async, so this process keeps serving the mirror while the container installs.
     const { stdout: exitCode } = await execFile("docker", ["wait", containerId], {
       timeout: 60_000,
     });

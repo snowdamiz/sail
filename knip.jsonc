@@ -21,7 +21,6 @@
       "entry": [
         // These fixture scripts are injected into a browser page by path.
         "fixtures/*/*.js",
-        // Local stand-ins run by path: PATH shims, the sandbox image, and lane commands.
         "fixtures/fake-fly/fly.ts",
         "fixtures/fake-boat/boat.ts",
         "fixtures/fake-boat/sandbox/*.ts",

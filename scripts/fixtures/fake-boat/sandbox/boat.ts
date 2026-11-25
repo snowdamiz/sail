@@ -31,32 +31,34 @@ function ownSandbox(id: string): void {
   if (id !== own) throw new BoatError("not_found", `sandbox ${id} not found`);
 }
 
+function scheduleShutdown(): void {
+  const scheduled = NodeChildProcess.spawnSync(
+    "sudo",
+    [
+      "-n",
+      "systemd-run",
+      "--on-active=1",
+      "--timer-property=AccuracySec=100ms",
+      "/bin/systemctl",
+      "poweroff",
+    ],
+    { encoding: "utf8" },
+  );
+  if (scheduled.status !== 0) throw new BoatError("stop_failed", scheduled.stderr.trim());
+}
+
 const TABLE: ReadonlyArray<Command> = [
   {
     path: ["stop"],
     args: ["sandbox"],
-    // A second later, so this call returns before the machine goes down.
     run: ({ sandbox = "" }) => {
       ownSandbox(sandbox);
-      const scheduled = NodeChildProcess.spawnSync(
-        "sudo",
-        [
-          "-n",
-          "systemd-run",
-          "--on-active=1",
-          "--timer-property=AccuracySec=100ms",
-          "/bin/systemctl",
-          "poweroff",
-        ],
-        { encoding: "utf8" },
-      );
-      if (scheduled.status !== 0) throw new BoatError("stop_failed", scheduled.stderr.trim());
+      scheduleShutdown();
     },
   },
   {
     path: ["snapshot"],
     args: ["sandbox", "name"],
-    // The computer commits the container when it next runs `boat`, so this returns at once.
     run: ({ sandbox = "", name = "" }) => {
       ownSandbox(sandbox);
       if (!SNAPSHOT_NAME.test(name)) {

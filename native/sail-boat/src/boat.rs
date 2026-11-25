@@ -409,8 +409,6 @@ esac
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// What the fake `boat` printed when `scripts/fixtures/fake-boat.test.ts` last ran with
-    /// `FAKE_BOAT_RECORD=1`. Later PRs verify on that fake, so these parsers must read it.
     const RECORDED: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/fixtures/fake-boat/recorded/");
 
     fn recorded_boat() -> (Boat, std::path::PathBuf) {

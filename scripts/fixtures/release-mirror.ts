@@ -21,8 +21,7 @@ mirror with --host 0.0.0.0 (or the docker bridge address), since the gateway is 
 const INSTALLER_PATH = NodePath.resolve(import.meta.dirname, "../install.sh");
 const BASE_URL_LINE = /^base_url="\$\{T3CODE_RELEASE_BASE_URL:-.*\}"$/m;
 const ARCHIVE_NAME = /^t3-(?<version>.+)-(?:darwin|linux)-(?:arm64|x64)\.tar\.gz$/;
-// Lands inside a double-quoted shell string, so allow only host[:port] characters.
-const SAFE_HOST = /^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
+const SHELL_SAFE_HOST = /^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
 
 interface Archive {
   readonly name: string;
@@ -101,7 +100,7 @@ export async function startMirror(options: MirrorOptions): Promise<Mirror> {
     switch (route.kind) {
       case "installer": {
         const host = request.headers.host ?? "";
-        if (!SAFE_HOST.test(host)) return send(400, "bad Host header\n");
+        if (!SHELL_SAFE_HOST.test(host)) return send(400, "bad Host header\n");
         return send(200, rewriteInstaller(installer, `http://${host}`), "text/x-shellscript");
       }
       case "checksums":
