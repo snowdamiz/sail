@@ -230,6 +230,7 @@ describe("issueHeadlessServeAccessInfo", () => {
           ),
         ),
         Effect.provideService(HostProcess.Platform, "linux"),
+        Effect.provideService(HostProcess.Environment, {}),
         Effect.provideService(HostProcess.Arguments, [
           process.execPath,
           "/home/dev/.npm/_npx/0123abcd/node_modules/t3/dist/bin.mjs",
