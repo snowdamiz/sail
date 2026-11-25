@@ -9,6 +9,7 @@ import * as NodePath from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { caddyDir, publicUrl, removeSite, rootCertPath } from "./lib/caddy.ts";
 import { docker, exists, hasDocker } from "./lib/docker.ts";
+import { homeId } from "./lib/state.ts";
 
 // Key lists copied from flyctl v0.4.123 and fly-go v0.11.6 (`fly.App` has no JSON tags).
 const APP_KEYS = [
@@ -133,6 +134,20 @@ const MACHINE_CONFIG_KEYS = [
   "image",
   "restart",
 ];
+// `renderMachineJSONStatus` in flyctl's internal/command/status/machines.go; `Network` only when set.
+const STATUS_KEYS = [
+  "ID",
+  "Name",
+  "Deployed",
+  "Status",
+  "Hostname",
+  "Version",
+  "AppURL",
+  "Organization",
+  "PlatformVersion",
+  "Machines",
+];
+const ORGANIZATION_BASIC_KEYS = ["ID", "InternalNumericID", "Name", "Slug", "RawSlug", "PaidPlan"];
 const IMAGE_KEYS = ["MachineID", "Registry", "Repository", "Tag", "Version", "Digest", "Labels"];
 const LOG_KEYS = ["timestamp", "message", "level", "instance", "region"];
 
@@ -155,8 +170,13 @@ const MUTATING: Readonly<Record<string, boolean>> = {
   "machine status": false,
   "machine list": false,
   "machine destroy": true,
+  status: false,
+  "machine start": false,
+  "apps restart": false,
+  apps: false,
   bogus: false,
 };
+const VALUE_FLAGS = new Set(["-t", "--access-token", "-a", "--app"]);
 
 const keys = (value: unknown) => Object.keys(value as object).toSorted();
 const sorted = (list: ReadonlyArray<string>) => list.toSorted();
@@ -204,6 +224,7 @@ describe.skipIf(!hasDocker())("fake fly", () => {
     FLY_API_TOKEN: "",
     FLY_ACCESS_TOKEN: "",
     FLY_APP: "",
+    FAKE_FLY_SNAPSHOT_SECS: "0",
     PATH: `${NodePath.join(import.meta.dirname, "fake-fly")}${NodePath.delimiter}${process.env.PATH ?? ""}`,
   };
   let calls = 0;
@@ -213,16 +234,38 @@ describe.skipIf(!hasDocker())("fake fly", () => {
   let followerOutput = "";
   let followerWaits: Array<() => boolean> = [];
 
-  const fly = (args: ReadonlyArray<string>, extraEnv: Record<string, string> = {}): Run => {
-    calls++;
+  const run = (
+    args: ReadonlyArray<string>,
+    extraEnv: Readonly<Record<string, string | undefined>>,
+    cwd: string,
+  ): Run => {
     const result = NodeChildProcess.spawnSync("fly", args, {
-      cwd: appDir,
+      cwd,
       encoding: "utf8",
       input: "",
       env: { ...env, ...extraEnv },
     });
     return { status: result.status, stdout: result.stdout, stderr: result.stderr };
   };
+  const fly = (
+    args: ReadonlyArray<string>,
+    extraEnv: Readonly<Record<string, string>> = {},
+    cwd = appDir,
+  ): Run => {
+    calls++;
+    return run(args, extraEnv, cwd);
+  };
+  const otherHome = NodePath.join(root, "other-home");
+  const flyElsewhere = (args: ReadonlyArray<string>) =>
+    run(args, { FAKE_FLY_HOME: otherHome }, root);
+  const label = (kind: "container" | "volume", name: string) =>
+    docker([
+      kind,
+      "inspect",
+      "--format",
+      `{{index ${kind === "container" ? ".Config.Labels" : ".Labels"} "sail-fixture.home"}}`,
+      name,
+    ]).trim();
   const ok = (args: ReadonlyArray<string>): string => {
     const result = fly(args);
     expect(result, `fly ${args.join(" ")}`).toMatchObject({ status: 0 });
@@ -249,11 +292,15 @@ describe.skipIf(!hasDocker())("fake fly", () => {
     NodeFS.mkdirSync(appDir, { recursive: true });
     NodeFS.writeFileSync(
       NodePath.join(build, "Caddyfile"),
-      `:8080 {\n\trespond /unhealthy 503\n\trespond "proto={header.X-Forwarded-Proto} fly={header.Fly-Forwarded-Proto}"\n}\n`,
+      `:8080 {\n\trespond /unhealthy 503\n\trespond "proto={header.X-Forwarded-Proto} fly={header.Fly-Forwarded-Proto} port={header.X-Forwarded-Port} ssl={header.X-Forwarded-Ssl}"\n}\n`,
+    );
+    NodeFS.writeFileSync(
+      NodePath.join(build, "start.sh"),
+      `caddy run --config /etc/caddy/Caddyfile & pid=$!\nfor signal in INT TERM; do trap "echo $signal >> /data/signals; kill $pid; exit 0" $signal; done\nwait $pid\n`,
     );
     NodeFS.writeFileSync(
       NodePath.join(build, "Dockerfile"),
-      "FROM caddy:2\nRUN adduser -D sail\nCOPY Caddyfile /etc/caddy/Caddyfile\n",
+      'FROM caddy:2\nRUN adduser -D sail\nCOPY Caddyfile /etc/caddy/Caddyfile\nCOPY start.sh /start.sh\nCMD ["sh", "/start.sh"]\n',
     );
     docker(["build", "--quiet", "--tag", image, build]);
     NodeFS.writeFileSync(
@@ -288,8 +335,9 @@ primary_region = "iad" # comment
 
   afterAll(() => {
     follower?.kill("SIGTERM");
-    for (const name of [app, `${app}-c`]) {
+    for (const name of [app, `${app}-c`, `${app}-d`, `${app}-f`]) {
       fly(["apps", "destroy", name, "--yes"]);
+      flyElsewhere(["apps", "destroy", name, "--yes"]);
       if (exists("container", `sail-fly-${name}`)) docker(["rm", "--force", `sail-fly-${name}`]);
       removeSite(`fly-${name}`);
     }
@@ -304,7 +352,7 @@ primary_region = "iad" # comment
         if (exists("volume", name)) docker(["volume", "rm", "--force", name]);
       }
     }
-    if (exists("image", image)) docker(["image", "rm", image]);
+    if (exists("image", image)) docker(["image", "rm", "--force", image]);
     NodeFS.rmSync(root, { recursive: true, force: true });
   });
 
@@ -343,9 +391,41 @@ primary_region = "iad" # comment
     });
   });
 
+  it("fails real flyctl subcommands it does not implement instead of printing help", () => {
+    for (const words of [
+      ["machine", "start"],
+      ["apps", "restart"],
+    ]) {
+      expect(fly([...words, "-a", app, "x"])).toMatchObject({
+        status: 1,
+        stderr: `Error: fake fly does not implement "fly ${words.join(" ")}"\n`,
+      });
+    }
+    const help = fly(["apps", "--help"]);
+    expect(help).toMatchObject({ status: 0, stdout: expect.stringContaining("  create\n") });
+    expect(help.stdout).toContain("does not implement");
+    expect(fly(["apps"]).status).toBe(0);
+  });
+
+  it("keeps one default state home per checkout", () => {
+    const state = NodePath.join(root, "xdg");
+    const defaults = { FAKE_FLY_HOME: undefined, XDG_STATE_HOME: state };
+    expect(run(["auth", "logout"], defaults, root).status).toBe(0);
+    const homes = NodeFS.readdirSync(NodePath.join(state, "sail-fixtures", "fly"), {
+      withFileTypes: true,
+    });
+    expect(homes.map((entry) => entry.isDirectory())).toEqual([true]);
+    expect(run(["apps", "list", "-q"], defaults, root).status).toBe(1);
+    expect(fly(["apps", "list", "-q"]).status).toBe(0);
+  });
+
   it("creates and lists apps in fly.App's shape", () => {
     expect(ok(["apps", "create", app])).toBe(`New app created: ${app}\n`);
     expect(fly(["apps", "create", app])).toMatchObject({
+      status: 1,
+      stderr: "Error: Validation failed: Name has already been taken\n",
+    });
+    expect(flyElsewhere(["apps", "create", app])).toMatchObject({
       status: 1,
       stderr: "Error: Validation failed: Name has already been taken\n",
     });
@@ -378,7 +458,54 @@ primary_region = "iad" # comment
       attached_machine_id: null,
     });
     expect(fly(["volumes", "create", "Bad-Name", "-r", "iad", "-y"]).status).toBe(1);
+    expect(fly(["volumes", "create", "data", "-r", "iad", "-s", "0", "-y"]).status).toBe(1);
     expect(volumes().map((entry) => entry.id)).toEqual([(volume as { id: string }).id]);
+    expect(label("volume", `sail-fly-vol-${(volume as { id: string }).id}`)).toBe(homeId(home));
+  });
+
+  it("reads flags before and between subcommand words", () => {
+    for (const args of [
+      ["-a", app, "volumes", "list", "-j"],
+      ["volumes", "-a", app, "list", "-j"],
+      ["volumes", "list", "--app", app, "-j"],
+    ]) {
+      const listed = fly(args, {}, root);
+      expect(listed, args.join(" ")).toMatchObject({ status: 0 });
+      expect(JSON.parse(listed.stdout)).toHaveLength(1);
+    }
+  });
+
+  it("refuses fly.toml files flyctl refuses, before touching Docker", () => {
+    const configs: ReadonlyArray<readonly [string, string]> = [
+      ["internal_port", '[http_service]\n  internal_port = "8080oops"\n'],
+      ["duplicate", 'primary_region = "iad"\nprimary_region = "ord"\n'],
+      ["bare", "primary_region = iad\n"],
+      ["force_https", '[http_service]\n  internal_port = 8080\n  force_https = "yes"\n'],
+      [
+        "initial_size",
+        '[[mounts]]\n  source = "data"\n  destination = "/data"\n  initial_size = "10oops"\n',
+      ],
+      [
+        "initial_size",
+        '[[mounts]]\n  source = "data"\n  destination = "/data"\n  initial_size = "500mb"\n',
+      ],
+      ["memory", '[[vm]]\n  memory = "256xb"\n'],
+      ["kill_timeout", 'kill_timeout = "5 parsecs"\n'],
+    ];
+    for (const [field, body] of configs) {
+      const file = NodePath.join(root, `bad-${NodeCrypto.randomBytes(3).toString("hex")}.toml`);
+      NodeFS.writeFileSync(file, `app = "${app}"\n${body}`);
+      const result = fly(["deploy", "-c", file, "--image", image]);
+      expect(result.status, body).toBe(1);
+      expect(result.stderr, body).toMatch(/^Error: /);
+      if (field !== "duplicate" && field !== "bare") expect(result.stderr, body).toContain(field);
+    }
+    const timeout = fly(["deploy", "--image", image, "--wait-timeout", "5sgarbage"]);
+    expect(timeout).toMatchObject({
+      status: 1,
+      stderr: expect.stringContaining("invalid duration"),
+    });
+    expect(exists("container", `sail-fly-${app}`)).toBe(false);
   });
 
   it("deploys behind Caddy with Fly Proxy's headers", async () => {
@@ -402,8 +529,20 @@ primary_region = "iad" # comment
 
     await expect(get(`${url}/`)).resolves.toMatchObject({
       status: 200,
-      body: "proto=https fly=https",
+      body: "proto=https fly=https port=443 ssl=",
     });
+    expect(label("container", `sail-fly-${app}`)).toBe(homeId(home));
+
+    const status = json(["status", "-j"]) as Record<string, unknown>;
+    expect(keys(status)).toEqual(sorted(STATUS_KEYS));
+    expect(keys(status.Organization)).toEqual(sorted(ORGANIZATION_BASIC_KEYS));
+    expect(status).toMatchObject({
+      Name: app,
+      Hostname: `${app}.localtest.me`,
+      Deployed: true,
+      Version: 1,
+    });
+    expect((status.Machines as Array<unknown>).map(keys)).toEqual([sorted(MACHINE_KEYS)]);
     await expect(get(`${publicUrl(`${app}.localtest.me`, "http")}/`)).resolves.toMatchObject({
       status: 308,
       location: `https://${app}.localtest.me/`,
@@ -444,6 +583,7 @@ primary_region = "iad" # comment
     expect(after?.config.metadata.fly_release_version).toBe("2");
     expect(after?.config.mounts[0]?.volume).toBe(volume);
     expect(ssh("printenv EXTRA").stdout).toBe("1\n");
+    expect(ssh("cat /data/signals").stdout).toBe("INT\n");
     await followerSees(2);
 
     const lines = ok(["logs", "--no-tail"]).trimEnd().split("\n");
@@ -460,10 +600,26 @@ primary_region = "iad" # comment
     expect(ok(["volumes", "snapshots", "create", original])).toBe(
       `Scheduled to snapshot volume ${original}\n`,
     );
+    const pending = { FAKE_FLY_SNAPSHOT_SECS: "3600" };
+    const listing = fly(["volumes", "snapshots", "list", original, "-j"], pending);
+    expect(JSON.parse(listing.stdout)).toMatchObject([
+      { id: "", status: "pending", size: 0, digest: "" },
+    ]);
+    expect(fly(["volumes", "snapshots", "list", original], pending).stdout).toContain("(pending)");
+    expect(fly(["volumes", "snapshots", "list", original, "-a", `${app}-nope`])).toMatchObject({
+      status: 1,
+      stderr: expect.stringContaining("not found"),
+    });
     const snapshots = json(["volumes", "snapshots", "list", original, "-j"]) as Array<{
       id: string;
     }>;
     expect(snapshots).toHaveLength(1);
+    expect(label("volume", `sail-fly-snap-${snapshots[0]?.id}`)).toBe(homeId(home));
+    const restore = ["volumes", "create", "data", "--snapshot-id", snapshots[0]?.id ?? ""];
+    expect(fly([...restore, "-r", "iad", "-y"], pending)).toMatchObject({
+      status: 1,
+      stderr: expect.stringContaining("pending"),
+    });
     expect(keys(snapshots[0])).toEqual(sorted(SNAPSHOT_KEYS));
     expect(snapshots[0]).toMatchObject({
       id: expect.stringMatching(/^vs_[A-Za-z0-9]+$/),
@@ -508,13 +664,64 @@ primary_region = "iad" # comment
     expect(status).toMatch(
       new RegExp(`^Machine ID: ${id}\nVersion: \\w+\nState: started\nHostStatus: ok\n\nVM\n`),
     );
-    const config = json(["machine", "status", "-d"]);
+    const config = json(["machine", "status", "-d"]) as { env: Record<string, string> };
     expect(keys(config)).toEqual(sorted(MACHINE_CONFIG_KEYS));
+    expect(config.env).not.toHaveProperty("SAIL_PUBLIC_URL");
     expect(config).toMatchObject({
       env: { GREETING: "hello world", FLY_PROCESS_GROUP: "app", PRIMARY_REGION: "iad" },
       guest: { memory_mb: 256, cpus: 1 },
       restart: { policy: "on-failure" },
     });
+  });
+
+  it("never replaces or removes another home's container", () => {
+    const taken = `${app}-f`;
+    const foreign = docker([
+      "create",
+      "--name",
+      `sail-fly-${taken}`,
+      "--label",
+      "sail-fixture.home=someone-else",
+      "--memory",
+      "64m",
+      image,
+    ]).trim();
+    ok(["apps", "create", taken]);
+    const deployed = fly(["deploy", "-a", taken, "--image", image]);
+    expect(deployed.status).toBe(1);
+    expect(deployed.stderr).toContain("another fake fly home");
+    ok(["apps", "destroy", taken, "--yes"]);
+    expect(docker(["inspect", "--format", "{{.Id}}", `sail-fly-${taken}`]).trim()).toBe(foreign);
+    docker(["rm", "--force", foreign]);
+  });
+
+  it("deploys a working directory with its own fly.toml on plain HTTP", async () => {
+    const dirApp = `${app}-d`;
+    const dir = NodePath.join(root, "dir-app");
+    NodeFS.mkdirSync(dir, { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(dir, "Dockerfile"), `FROM ${image}\n`);
+    NodeFS.writeFileSync(
+      NodePath.join(dir, "fly.toml"),
+      `app = "${dirApp}"\nprimary_region = "iad"\nkill_signal = "SIGTERM"\nkill_timeout = 3\n\n[http_service]\n  internal_port = 8080\n\n[[mounts]]\n  source = "data"\n  destination = "/data"\n  initial_size = "10"\n`,
+    );
+    ok(["apps", "create", dirApp]);
+    const first = fly(["deploy", dir], {}, root);
+    expect(first.status, first.stderr).toBe(0);
+    expect(first.stderr).toContain("one machine");
+    expect(fly(["deploy", dir, "--ha=false"], {}, root).stderr).not.toContain("one machine");
+    const host = `${dirApp}.localtest.me`;
+    await expect(get(`${publicUrl(host, "http")}/`)).resolves.toMatchObject({
+      status: 200,
+      body: "proto=http fly=http port=80 ssl=",
+    });
+    await expect(get(`${publicUrl(host)}/`)).resolves.toMatchObject({
+      body: "proto=https fly=https port=443 ssl=",
+    });
+    expect(json(["volumes", "list", "-a", dirApp, "-j"])).toMatchObject([{ size_gb: 10 }]);
+    expect(fly(["ssh", "console", "-a", dirApp, "-q", "-C", "cat /data/signals"]).stdout).toBe(
+      "TERM\n",
+    );
+    ok(["apps", "destroy", dirApp, "--yes"]);
   });
 
   it("destroys the app with its container, volumes, snapshots, and site", async () => {
@@ -537,6 +744,8 @@ primary_region = "iad" # comment
     expect(NodeFS.existsSync(NodePath.join(caddyDir(), "sites", `fly-${app}.caddy`))).toBe(false);
     await expect(exited).resolves.toBe(0);
     follower = undefined;
+    expect(flyElsewhere(["apps", "create", app]).status).toBe(0);
+    expect(flyElsewhere(["apps", "destroy", app, "--yes"]).status).toBe(0);
   });
 
   it("waits for http_service checks to pass before deploy returns", () => {
@@ -553,17 +762,23 @@ primary_region = "iad" # comment
   });
 
   it("logs one call per invocation with the command's mutating flag", () => {
-    const logged = NodeFS.readFileSync(NodePath.join(home, "calls.jsonl"), "utf8")
+    fly(["--access-token=secret-one", "apps", "list", "-q"]);
+    fly(["apps", "list", "-t", "secret-two", "-q"]);
+    const text = NodeFS.readFileSync(NodePath.join(home, "calls.jsonl"), "utf8");
+    expect(text).not.toContain("secret-");
+    const logged = text
       .trimEnd()
       .split("\n")
       .map((line) => JSON.parse(line) as { argv: Array<string>; mutating: boolean; cwd: string });
     expect(logged).toHaveLength(calls);
     for (const call of logged) {
-      const words = call.argv.filter((arg, i) => !arg.startsWith("-") && call.argv[i - 1] !== "-t");
+      const words = call.argv.filter(
+        (arg, i) => !arg.startsWith("-") && !VALUE_FLAGS.has(call.argv[i - 1] ?? ""),
+      );
       const command = Object.keys(MUTATING).find((key) => words.join(" ").startsWith(key));
       expect(command, call.argv.join(" ")).toBeDefined();
       expect(call.mutating, call.argv.join(" ")).toBe(MUTATING[command ?? ""]);
-      expect(call.cwd).toBe(NodeFS.realpathSync(appDir));
+      expect([NodeFS.realpathSync(appDir), NodeFS.realpathSync(root)]).toContain(call.cwd);
     }
   });
 });

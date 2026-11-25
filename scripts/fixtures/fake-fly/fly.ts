@@ -2,8 +2,8 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
-import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import { parse as parseTomlText, TomlError } from "smol-toml";
 import {
   CADDY_CONTAINER,
   DOMAIN,
@@ -13,6 +13,17 @@ import {
   removeSite,
 } from "../lib/caddy.ts";
 import { docker, DockerError, exists, FIXTURE_LABEL, NETWORK } from "../lib/docker.ts";
+import {
+  createJsonExclusive,
+  homeId,
+  logCall,
+  nameOwner,
+  readJson,
+  releaseName,
+  reserveName,
+  standInHome,
+  writeJsonAtomic,
+} from "../lib/state.ts";
 
 class FlyError extends Error {}
 
@@ -89,16 +100,10 @@ function printJson(value: unknown): void {
   out(`${JSON.stringify(value, null, 2)}\n`);
 }
 
-const HOME =
-  process.env.FAKE_FLY_HOME ??
-  NodePath.join(
-    process.env.SAIL_FIXTURES_HOME ??
-      NodePath.join(
-        process.env.XDG_STATE_HOME ?? NodePath.join(NodeOS.homedir(), ".local", "state"),
-        "sail-fixtures",
-      ),
-    "fly",
-  );
+const HOME = standInHome("fly", "FAKE_FLY_HOME");
+const HOME_ID = homeId(HOME);
+const HOME_LABEL = `${FIXTURE_LABEL}.home`;
+const APP_NAMES = "fly-app";
 
 type Kind = "apps" | "machines" | "volumes" | "snapshots";
 
@@ -158,11 +163,7 @@ function recordPath(kind: Kind, id: string): string {
 }
 
 function read<T>(kind: Kind, id: string): T | undefined {
-  try {
-    return JSON.parse(NodeFS.readFileSync(recordPath(kind, id), "utf8")) as T;
-  } catch {
-    return undefined;
-  }
+  return readJson<T>(recordPath(kind, id));
 }
 
 function all<T extends { readonly createdAt: string }>(kind: Kind): Array<T> {
@@ -177,27 +178,8 @@ function all<T extends { readonly createdAt: string }>(kind: Kind): Array<T> {
     .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
-function tempFile(kind: Kind, value: unknown): string {
-  NodeFS.mkdirSync(NodePath.join(HOME, kind), { recursive: true });
-  const temp = NodePath.join(HOME, kind, `.${process.pid}-${NodeCrypto.randomUUID()}.tmp`);
-  NodeFS.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`);
-  return temp;
-}
-
 function write(kind: Kind, id: string, value: unknown): void {
-  NodeFS.renameSync(tempFile(kind, value), recordPath(kind, id));
-}
-
-function createOnly(kind: Kind, id: string, value: unknown): boolean {
-  const temp = tempFile(kind, value);
-  try {
-    NodeFS.linkSync(temp, recordPath(kind, id));
-    return true;
-  } catch {
-    return false;
-  } finally {
-    NodeFS.rmSync(temp, { force: true });
-  }
+  writeJsonAtomic(recordPath(kind, id), value);
 }
 
 function remove(kind: Kind, id: string): void {
@@ -239,160 +221,35 @@ const snapshotName = (id: string) => `sail-fly-snap-${id}`;
 const siteId = (app: string) => `fly-${app}`;
 const appHost = (app: string) => `${app}.${DOMAIN}`;
 
-type TomlValue = string | number | boolean | Array<TomlValue> | TomlTable;
-interface TomlTable {
-  [key: string]: TomlValue;
+type Ownership = "absent" | "mine" | "foreign";
+
+/** Docker names are global, so a home touches only what carries its own label. */
+function ownership(kind: "container" | "volume", name: string): Ownership {
+  const labels = kind === "container" ? ".Config.Labels" : ".Labels";
+  try {
+    const owner = docker([
+      kind,
+      "inspect",
+      "--format",
+      `{{index ${labels} "${HOME_LABEL}"}}`,
+      name,
+    ]);
+    return owner.trim() === HOME_ID ? "mine" : "foreign";
+  } catch (error) {
+    if (error instanceof DockerError && /no such/i.test(error.stderr)) return "absent";
+    throw error;
+  }
 }
 
-const isTable = (value: TomlValue | undefined): value is TomlTable =>
-  typeof value === "object" && !Array.isArray(value);
-
-function parseToml(text: string): TomlTable {
-  const root: TomlTable = {};
-  let current = root;
-  const lines = text.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    const line = stripComment(lines[i] ?? "").trim();
-    if (!line) continue;
-    const arrayHeader = /^\[\[\s*(.+?)\s*\]\]$/.exec(line);
-    const tableHeader = /^\[\s*(.+?)\s*\]$/.exec(line);
-    if (arrayHeader?.[1]) {
-      current = tableAt(root, splitKey(arrayHeader[1]), true);
-      continue;
-    }
-    if (tableHeader?.[1]) {
-      current = tableAt(root, splitKey(tableHeader[1]), false);
-      continue;
-    }
-    const eq = line.indexOf("=");
-    if (eq < 0) throw new FlyError(`failed to parse fly.toml: expected key = value: ${line}`);
-    let rest = line.slice(eq + 1).trim();
-    while (!balanced(rest) && i + 1 < lines.length) rest += `\n${stripComment(lines[++i] ?? "")}`;
-    const keys = splitKey(line.slice(0, eq).trim());
-    const last = keys.pop();
-    if (last === undefined) throw new FlyError(`failed to parse fly.toml: ${line}`);
-    tableAt(current, keys, false)[last] = parseValue(rest.trim(), 0)[0];
-  }
-  return root;
+function refuseForeign(kind: "container" | "volume", name: string): void {
+  if (ownership(kind, name) === "foreign")
+    throw new FlyError(`${kind} ${name} belongs to another fake fly home; refusing to touch it`);
 }
 
-function stripComment(line: string): string {
-  let quote = "";
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (quote) {
-      if (c === "\\" && quote === '"') i++;
-      else if (c === quote) quote = "";
-    } else if (c === '"' || c === "'") quote = c;
-    else if (c === "#") return line.slice(0, i);
-  }
-  return line;
-}
+const ownsSite = (app: string) => (nameOwner(APP_NAMES, app) ?? HOME) === HOME;
 
-function balanced(text: string): boolean {
-  let depth = 0;
-  let quote = "";
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (quote) {
-      if (c === "\\" && quote === '"') i++;
-      else if (c === quote) quote = "";
-    } else if (c === '"' || c === "'") quote = c;
-    else if (c === "[" || c === "{") depth++;
-    else if (c === "]" || c === "}") depth--;
-  }
-  return depth <= 0;
-}
-
-function splitKey(key: string): Array<string> {
-  return key.split(".").map((part) => part.trim().replace(/^(["'])(.*)\1$/, "$2"));
-}
-
-function tableAt(root: TomlTable, keys: ReadonlyArray<string>, append: boolean): TomlTable {
-  let table = root;
-  keys.forEach((key, index) => {
-    const isLast = index === keys.length - 1;
-    const existing = table[key];
-    if (isLast && append) {
-      const next: TomlTable = {};
-      if (Array.isArray(existing)) existing.push(next);
-      else table[key] = [next];
-      table = next;
-      return;
-    }
-    if (Array.isArray(existing)) {
-      const tail = existing.at(-1);
-      if (!isTable(tail)) throw new FlyError(`failed to parse fly.toml: ${key} is not a table`);
-      table = tail;
-    } else if (isTable(existing)) table = existing;
-    else {
-      const next: TomlTable = {};
-      table[key] = next;
-      table = next;
-    }
-  });
-  return table;
-}
-
-function parseValue(text: string, start: number): [TomlValue, number] {
-  let i = start;
-  const skip = () => {
-    while (i < text.length && /[\s,]/.test(text[i] ?? "")) i++;
-  };
-  const c = text[i];
-  if (c === '"') {
-    let value = "";
-    for (i++; i < text.length && text[i] !== '"'; i++) {
-      if (text[i] !== "\\") {
-        value += text[i];
-        continue;
-      }
-      const escape = text[++i];
-      if (escape === "u") {
-        value += String.fromCharCode(Number.parseInt(text.slice(i + 1, i + 5), 16));
-        i += 4;
-      } else value += { n: "\n", t: "\t", r: "\r" }[escape ?? ""] ?? escape;
-    }
-    return [value, i + 1];
-  }
-  if (c === "'") {
-    const end = text.indexOf("'", i + 1);
-    return [text.slice(i + 1, end), end + 1];
-  }
-  if (c === "[") {
-    const items: Array<TomlValue> = [];
-    i++;
-    for (skip(); text[i] !== "]" && i < text.length; skip()) {
-      const [item, next] = parseValue(text, i);
-      items.push(item);
-      i = next;
-    }
-    return [items, i + 1];
-  }
-  if (c === "{") {
-    const table: TomlTable = {};
-    i++;
-    for (skip(); text[i] !== "}" && i < text.length; skip()) {
-      const eq = text.indexOf("=", i);
-      const key = text
-        .slice(i, eq)
-        .trim()
-        .replace(/^(["'])(.*)\1$/, "$2");
-      i = eq + 1;
-      while (text[i] === " ") i++;
-      const [item, next] = parseValue(text, i);
-      table[key] = item;
-      i = next;
-    }
-    return [table, i + 1];
-  }
-  const token = /^[^\s,\]}]+/.exec(text.slice(i))?.[0] ?? "";
-  const end = i + token.length;
-  if (token === "true" || token === "false") return [token === "true", end];
-  if (/^[+-]?\d[\d_]*(\.\d+)?([eE][+-]?\d+)?$/.test(token))
-    return [Number(token.replaceAll("_", "")), end];
-  return [token, end];
-}
+type Raw = ReturnType<typeof parseTomlText>;
+type RawValue = Raw[string];
 
 interface Mount {
   readonly source: string;
@@ -409,9 +266,15 @@ interface HttpService {
   readonly checkPath: string | undefined;
 }
 
+interface StopConfig {
+  readonly signal?: string;
+  readonly timeout?: string;
+}
+
 interface DeployConfig {
   readonly app: string | undefined;
   readonly primaryRegion: string | undefined;
+  readonly stop: StopConfig | undefined;
   readonly env: Readonly<Record<string, string>>;
   readonly mounts: ReadonlyArray<Mount>;
   readonly http: HttpService | undefined;
@@ -431,6 +294,7 @@ interface LoadedConfig {
 const EMPTY_CONFIG: DeployConfig = {
   app: undefined,
   primaryRegion: undefined,
+  stop: undefined,
   env: {},
   mounts: [],
   http: undefined,
@@ -441,80 +305,249 @@ const EMPTY_CONFIG: DeployConfig = {
   dockerfile: undefined,
 };
 
-const tomlString = (value: TomlValue | undefined) =>
-  typeof value === "string" ? value : typeof value === "number" ? String(value) : undefined;
-const tomlNumber = (value: TomlValue | undefined) =>
-  typeof value === "number" ? value : undefined;
-const tomlBool = (value: TomlValue | undefined) => (typeof value === "boolean" ? value : undefined);
-const tables = (value: TomlValue | undefined): ReadonlyArray<TomlTable> =>
-  Array.isArray(value) ? value.filter(isTable) : isTable(value) ? [value] : [];
+const GO_DURATION = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
+const DURATION_UNIT_MS: Readonly<Record<string, number>> = {
+  ns: 1e-6,
+  us: 1e-3,
+  µs: 1e-3,
+  ms: 1,
+  s: 1000,
+  m: 60_000,
+  h: 3_600_000,
+};
 
-/** Fly reads a bare number as megabytes and accepts `mb` and `gb` suffixes. */
-function memoryMb(value: TomlValue | undefined): number | undefined {
-  if (typeof value === "number") return value;
-  const match = typeof value === "string" ? /^(\d+)\s*(gb|g|mb|m)?$/i.exec(value.trim()) : null;
+/** Go's `time.ParseDuration`, minus signs and the bare `0`, which nothing here passes. */
+function durationMs(text: string): number | undefined {
+  if (!GO_DURATION.test(text)) return undefined;
+  let total = 0;
+  for (const [, amount, , unit] of text.matchAll(/(\d+(\.\d+)?)(ns|us|µs|ms|s|m|h)/g))
+    total += Number(amount) * (DURATION_UNIT_MS[unit ?? ""] ?? 0);
+  return total;
+}
+
+/** Go's `Duration.String` for whole seconds, as flyctl writes an integer `kill_timeout`. */
+function secondsAsGoDuration(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  return `${h ? `${h}h` : ""}${h || m ? `${m}m` : ""}${s}s`;
+}
+
+/** docker/go-units `FromHumanSize` (decimal) and `RAMInBytes` (binary), which flyctl sizes use. */
+function humanBytes(text: string, base: 1000 | 1024): number | undefined {
+  const match = /^(\d+(?:\.\d+)*) ?([kKmMgGtTpP])?[iI]?[bB]?$/.exec(text);
   if (!match) return undefined;
-  const amount = Number(match[1]);
-  return match[2]?.toLowerCase().startsWith("g") ? amount * 1024 : amount;
+  const power = " kmgtp".indexOf((match[2] ?? " ").toLowerCase());
+  return Number(match[1]) * base ** power;
 }
 
-function sizeGb(value: TomlValue | undefined): number | undefined {
-  if (typeof value === "number") return value;
-  const mb = memoryMb(value);
-  return mb === undefined ? undefined : Math.max(1, Math.ceil(mb / 1024));
+/** flyctl's `helpers.ParseSize`: a bare integer is already in `unit`, else a human size. */
+function parseSize(text: string, base: 1000 | 1024, unit: number): number | undefined {
+  if (/^[+-]?\d+$/.test(text)) return Number(text);
+  const bytes = humanBytes(text, base);
+  return bytes === undefined ? undefined : Math.floor(bytes / unit);
 }
 
-function toDeployConfig(toml: TomlTable): DeployConfig {
-  const envTable = isTable(toml.env) ? toml.env : {};
-  const env = Object.fromEntries(
-    Object.entries(envTable).flatMap(([key, value]) => {
-      const text = tomlString(value) ?? tomlBool(value)?.toString();
-      return text === undefined ? [] : [[key, text]];
-    }),
-  );
-  const mounts = tables(toml.mounts).map((mount) => ({
-    source: tomlString(mount.source) ?? "",
-    destination: tomlString(mount.destination) ?? "",
-    initialSizeGb: sizeGb(mount.initial_size),
-  }));
-  const http = isTable(toml.http_service) ? toml.http_service : undefined;
-  const autostop = http?.auto_stop_machines;
-  const vm = tables(toml.vm)[0] ?? {};
-  const size = /^(shared|performance)-cpu-(\d+)x$/.exec(tomlString(vm.size) ?? "");
-  const build = isTable(toml.build) ? toml.build : {};
+const STOP_SIGNALS = new Set([
+  "SIGHUP",
+  "SIGINT",
+  "SIGQUIT",
+  "SIGKILL",
+  "SIGUSR1",
+  "SIGUSR2",
+  "SIGTERM",
+]);
+
+/** smol-toml gives tables a null prototype and dates as `Date`s (the legacy default). */
+const isRawTable = (value: RawValue): value is Raw =>
+  typeof value === "object" && !Array.isArray(value) && !(value instanceof Date);
+
+/** Reads `fly.toml` the way flyctl's patches and JSON decode do, failing on what they reject. */
+function configReader(file: string) {
+  const fail = (message: string) =>
+    new FlyError(`failed loading app config from ${file}: ${message}`);
+  const invalid = (message: string) => new FlyError(`App configuration is not valid: ${message}`);
+  const typeName = (value: RawValue) =>
+    Array.isArray(value) ? "array" : typeof value === "object" ? "object" : typeof value;
+  const mismatch = (path: string, goType: string, value: RawValue) =>
+    fail(
+      `json: cannot unmarshal ${typeName(value)} into Go struct field ${path} of type ${goType}`,
+    );
+  const table = (value: RawValue | undefined, path: string): Raw => {
+    if (value === undefined) return {};
+    if (!isRawTable(value)) throw mismatch(path, "struct", value);
+    return value;
+  };
   return {
-    app: tomlString(toml.app),
-    primaryRegion: tomlString(toml.primary_region),
-    env,
-    mounts,
-    http: http && {
-      internalPort: tomlNumber(http.internal_port) ?? 8080,
-      forceHttps: tomlBool(http.force_https) ?? false,
-      autostop:
-        autostop === "suspend"
-          ? "suspend"
-          : autostop === "off"
-            ? false
-            : autostop === "stop"
-              ? true
-              : tomlBool(autostop),
-      autostart: tomlBool(http.auto_start_machines),
-      minMachinesRunning: tomlNumber(http.min_machines_running),
-      checkPath: tables(http.checks).map((check) => tomlString(check.path) ?? "/")[0],
+    fail,
+    invalid,
+    table,
+    /** flyctl's `ensureArrayOfMap`: one table or an array of them. */
+    tables: (value: RawValue | undefined, path: string): ReadonlyArray<Raw> =>
+      value === undefined
+        ? []
+        : (Array.isArray(value) ? value : [value]).map((item) => table(item, path)),
+    string: (value: RawValue | undefined, path: string): string | undefined => {
+      if (value === undefined || typeof value === "string") return value;
+      throw mismatch(path, "string", value);
     },
-    memoryMb: memoryMb(vm.memory) ?? tomlNumber(vm.memory_mb),
-    cpus: tomlNumber(vm.cpus) ?? (size ? Number(size[2]) : undefined),
-    cpuKind: tomlString(vm.cpu_kind) ?? size?.[1],
-    buildImage: tomlString(build.image),
-    dockerfile: tomlString(build.dockerfile),
+    bool: (value: RawValue | undefined, path: string): boolean | undefined => {
+      if (value === undefined || typeof value === "boolean") return value;
+      throw mismatch(path, "bool", value);
+    },
+    int: (value: RawValue | undefined, path: string): number | undefined => {
+      if (value === undefined) return undefined;
+      if (typeof value === "number" && Number.isInteger(value)) return value;
+      throw mismatch(path, "int", value);
+    },
+    /** flyctl's `castToInt`: an integer or a string of one. */
+    castInt: (value: RawValue | undefined, path: string): number | undefined => {
+      if (value === undefined) return undefined;
+      if (typeof value === "number") return Math.trunc(value);
+      if (typeof value === "string" && /^[+-]?\d+$/.test(value)) return Number(value);
+      throw fail(`${path}: Can not convert '${String(value)}' to integer`);
+    },
+    /** flyctl's `castToString`, for fields it takes as either a number or a string. */
+    castString: (value: RawValue | undefined, path: string): string | undefined => {
+      if (value === undefined || typeof value === "string") return value;
+      if (typeof value === "number" || typeof value === "boolean") return String(value);
+      throw mismatch(path, "string", value);
+    },
   };
 }
 
-function loadConfig(ctx: Ctx): LoadedConfig {
+function toDeployConfig(toml: Raw, file: string): DeployConfig {
+  const field = configReader(file);
+  const env = Object.fromEntries(
+    Object.entries(field.table(toml.env, "env")).map(([key, value]) => [
+      key,
+      field.castString(value, `env.${key}`) ?? "",
+    ]),
+  );
+
+  const mounts = field.tables(toml.mounts, "mounts").map((mount) => {
+    const source = field.string(mount.source, "Mount.mounts.source") ?? "";
+    const raw = field.castString(mount.initial_size, "Mount.mounts.initial_size");
+    const initialSizeGb = raw === undefined ? undefined : parseSize(raw, 1000, 1000 ** 3);
+    if (raw !== undefined && initialSizeGb === undefined)
+      throw field.invalid(
+        `mount '${source}' with initial_size '${raw}' will fail because of: invalid size: invalid size: '${raw}'`,
+      );
+    if (initialSizeGb !== undefined && initialSizeGb < 1)
+      throw field.invalid(
+        `mount '${source}' has an initial_size '${raw}' value which is smaller than 1GB`,
+      );
+    return {
+      source,
+      destination: field.string(mount.destination, "Mount.mounts.destination") ?? "",
+      initialSizeGb,
+    };
+  });
+
+  const httpTable =
+    toml.http_service === undefined ? undefined : field.table(toml.http_service, "http_service");
+  const http = httpTable && {
+    internalPort: field.castInt(httpTable.internal_port, "http_service.internal_port") ?? 8080,
+    forceHttps: field.bool(httpTable.force_https, "HTTPService.http_service.force_https") ?? false,
+    autostop: autostop(httpTable.auto_stop_machines, field.fail),
+    autostart: field.bool(
+      httpTable.auto_start_machines,
+      "HTTPService.http_service.auto_start_machines",
+    ),
+    minMachinesRunning: field.int(
+      httpTable.min_machines_running,
+      "HTTPService.http_service.min_machines_running",
+    ),
+    checkPath: field
+      .tables(httpTable.checks, "http_service.checks")
+      .map(
+        (check) => field.string(check.path, "ServiceHTTPCheck.http_service.checks.path") ?? "/",
+      )[0],
+  };
+
+  const vm = field.tables(toml.vm, "vm")[0] ?? {};
+  const sizeName = field.string(vm.size, "Compute.vm.size");
+  const size =
+    sizeName === undefined ? undefined : /^(shared|performance)-cpu-(\d+)x$/.exec(sizeName);
+  if (size === null) throw field.invalid(`invalid size "${sizeName}"`);
+  const memoryText = field.castString(vm.memory, "Compute.vm.memory");
+  const memoryMb = memoryText === undefined ? undefined : parseSize(memoryText, 1024, 1024 ** 2);
+  if (memoryText !== undefined && memoryMb === undefined)
+    throw field.invalid(`vm.memory: invalid size: invalid size: '${memoryText}'`);
+  if (memoryMb === 0) throw field.invalid("memory cannot be zero");
+
+  const killSignal = field.string(toml.kill_signal, "Config.kill_signal");
+  if (killSignal !== undefined && !STOP_SIGNALS.has(killSignal))
+    throw field.invalid(
+      `kill_signal '${killSignal}' is not one of ${[...STOP_SIGNALS].join(", ")}`,
+    );
+  const killTimeout = killTimeoutText(toml.kill_timeout, field.fail);
+
+  const build = field.table(toml.build, "build");
+  return {
+    app: field.string(toml.app, "Config.app"),
+    primaryRegion: field.string(toml.primary_region, "Config.primary_region"),
+    stop:
+      killSignal === undefined && killTimeout === undefined
+        ? undefined
+        : {
+            ...(killTimeout === undefined ? {} : { timeout: killTimeout }),
+            ...(killSignal === undefined ? {} : { signal: killSignal }),
+          },
+    env,
+    mounts,
+    http,
+    memoryMb: memoryMb ?? field.int(vm.memory_mb, "Compute.vm.memory_mb"),
+    cpus: field.int(vm.cpus, "Compute.vm.cpus") ?? (size ? Number(size[2]) : undefined),
+    cpuKind: field.string(vm.cpu_kind, "Compute.vm.cpu_kind") ?? size?.[1],
+    buildImage: field.string(build.image, "Build.build.image"),
+    dockerfile: field.string(build.dockerfile, "Build.build.dockerfile"),
+  };
+}
+
+/** fly-go's `MachineAutostop`: a bool, or `off`, `stop`, or `suspend`. */
+function autostop(
+  value: RawValue | undefined,
+  fail: (message: string) => FlyError,
+): boolean | "suspend" | undefined {
+  if (value === undefined || typeof value === "boolean") return value;
+  if (value === "off") return false;
+  if (value === "stop") return true;
+  if (value === "suspend") return "suspend";
+  throw fail(`http_service.auto_stop_machines: invalid autostop value ${JSON.stringify(value)}`);
+}
+
+/** flyctl's `_castDuration`: an integer counts seconds, a string is a Go duration. */
+function killTimeoutText(
+  value: RawValue | undefined,
+  fail: (message: string) => FlyError,
+): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0)
+    return secondsAsGoDuration(value);
+  if (typeof value === "string" && durationMs(value) !== undefined) return value;
+  throw fail(`kill_timeout: time: invalid duration ${JSON.stringify(String(value))}`);
+}
+
+function parseConfigFile(file: string): DeployConfig {
+  let toml: Raw;
+  try {
+    toml = parseTomlText(NodeFS.readFileSync(file, "utf8"), { integersAsBigInt: false });
+  } catch (error) {
+    if (!(error instanceof TomlError)) throw error;
+    throw new FlyError(
+      `failed loading app config from ${file}: row ${error.line} column ${error.column}\n${error.message}`,
+    );
+  }
+  return toDeployConfig(toml, file);
+}
+
+/** `workingDirectory` is `fly deploy`'s argument: where it looks for `fly.toml` and builds. */
+function loadConfig(ctx: Ctx, workingDirectory?: string): LoadedConfig {
   const explicit = str(ctx, "config");
   const candidate = explicit
     ? NodePath.resolve(explicit)
-    : NodePath.join(process.cwd(), "fly.toml");
+    : NodePath.join(workingDirectory ?? process.cwd(), "fly.toml");
   const file = NodeFS.existsSync(candidate)
     ? NodeFS.statSync(candidate).isDirectory()
       ? NodePath.join(candidate, "fly.toml")
@@ -522,11 +555,12 @@ function loadConfig(ctx: Ctx): LoadedConfig {
     : undefined;
   if (explicit && (!file || !NodeFS.existsSync(file)))
     throw new FlyError(`failed loading app config from ${candidate}: no such file or directory`);
-  if (!file) return { file: undefined, dir: process.cwd(), config: EMPTY_CONFIG };
+  if (!file)
+    return { file: undefined, dir: workingDirectory ?? process.cwd(), config: EMPTY_CONFIG };
   return {
     file,
-    dir: NodePath.dirname(file),
-    config: toDeployConfig(parseToml(NodeFS.readFileSync(file, "utf8"))),
+    dir: workingDirectory ?? NodePath.dirname(file),
+    config: parseConfigFile(file),
   };
 }
 
@@ -711,14 +745,27 @@ function volumeJson(volume: VolumeRecord) {
   };
 }
 
+function snapshotSeconds(): number {
+  const text = process.env.FAKE_FLY_SNAPSHOT_SECS ?? "3";
+  if (!/^\d+(\.\d+)?$/.test(text))
+    throw new FlyError(`FAKE_FLY_SNAPSHOT_SECS must be a number of seconds, got "${text}"`);
+  return Number(text);
+}
+
+/** Real Fly only schedules a snapshot; this one reads as pending until the delay has passed. */
+const isPending = (snapshot: SnapshotRecord) =>
+  Date.now() < Date.parse(snapshot.createdAt) + snapshotSeconds() * 1000;
+
+/** A pending snapshot has no id, size, or digest yet; flyctl prints its id as `(pending)`. */
 function snapshotJson(snapshot: SnapshotRecord) {
+  const pending = isPending(snapshot);
   return {
-    id: snapshot.id,
-    size: snapshot.sizeBytes,
+    id: pending ? "" : snapshot.id,
+    size: pending ? 0 : snapshot.sizeBytes,
     volume_size: snapshot.volumeSizeBytes,
-    digest: snapshot.digest,
+    digest: pending ? "" : snapshot.digest,
     created_at: snapshot.createdAt,
-    status: "created",
+    status: pending ? "pending" : "created",
     retention_days: 5,
   };
 }
@@ -738,6 +785,7 @@ interface MachineConfigJson {
   readonly metadata: Readonly<Record<string, string>>;
   readonly mounts?: ReadonlyArray<MachineMountJson>;
   readonly services?: ReadonlyArray<unknown>;
+  readonly stop_config?: StopConfig;
   readonly image: string;
   readonly restart: { readonly policy: string; readonly max_retries: number };
 }
@@ -829,6 +877,7 @@ function sleepSync(ms: number): void {
 }
 
 function createDockerVolume(name: string, kind: string, app: string): void {
+  refuseForeign("volume", name);
   docker([
     "volume",
     "create",
@@ -836,8 +885,21 @@ function createDockerVolume(name: string, kind: string, app: string): void {
     `${FIXTURE_LABEL}=${kind}`,
     "--label",
     `${FIXTURE_LABEL}.fly-app=${app}`,
+    "--label",
+    `${HOME_LABEL}=${HOME_ID}`,
     name,
   ]);
+}
+
+/** Copies into a fresh Docker volume, which a failed copy removes again. */
+function copyIntoNewVolume(from: string, to: string, kind: string, app: string): number {
+  createDockerVolume(to, kind, app);
+  try {
+    return copyVolume(from, to);
+  } catch (error) {
+    removeDockerVolume(to);
+    throw error;
+  }
 }
 
 function copyVolume(from: string, to: string): number {
@@ -850,6 +912,8 @@ function copyVolume(from: string, to: string): number {
     "128m",
     "--label",
     `${FIXTURE_LABEL}=fly-volume-copy`,
+    "--label",
+    `${HOME_LABEL}=${HOME_ID}`,
     "--volume",
     `${from}:/from:ro`,
     "--volume",
@@ -863,12 +927,7 @@ function copyVolume(from: string, to: string): number {
 }
 
 function removeDockerVolume(name: string): void {
-  try {
-    docker(["volume", "rm", "--force", name]);
-  } catch (error) {
-    if (error instanceof DockerError && /no such volume/i.test(error.stderr)) return;
-    throw error;
-  }
+  if (ownership("volume", name) === "mine") docker(["volume", "rm", "--force", name]);
 }
 
 const VOLUME_NAME = /^[a-z0-9_]{1,30}$/;
@@ -884,6 +943,7 @@ function newVolume(
     throw new FlyError(
       `failed creating volume: Name can only contain lowercase letters, numbers, and underscores, and be at most 30 characters`,
     );
+  if (size < 1) throw new FlyError("failed creating volume: size_gb must be at least 1");
   const volume: VolumeRecord = {
     id: `vol_${randomFrom(LOWER_ALNUM, 16)}`,
     app,
@@ -893,14 +953,35 @@ function newVolume(
     zone: hex(2),
     createdAt: now(),
   };
+  if (snapshot)
+    copyIntoNewVolume(snapshotName(snapshot.id), volumeName(volume.id), "fly-volume", app);
+  else createDockerVolume(volumeName(volume.id), "fly-volume", app);
   write("volumes", volume.id, volume);
-  createDockerVolume(volumeName(volume.id), "fly-volume", app);
-  if (snapshot) copyVolume(snapshotName(snapshot.id), volumeName(volume.id));
   return volume;
 }
 
 function destroyMachineContainer(app: string): void {
-  docker(["rm", "--force", "--volumes", containerName(app)]);
+  if (ownership("container", containerName(app)) === "mine")
+    docker(["rm", "--force", "--volumes", containerName(app)]);
+}
+
+const DEFAULT_STOP = { signal: "SIGINT", timeout: "5s" } as const;
+
+/** How Fly stops a machine before it replaces it: `kill_signal`, then `kill_timeout` to exit. */
+function stopMachineContainer(app: string, stop: StopConfig | undefined): void {
+  if (ownership("container", containerName(app)) !== "mine") return;
+  const seconds = Math.ceil((durationMs(stop?.timeout ?? DEFAULT_STOP.timeout) ?? 5000) / 1000);
+  docker(
+    [
+      "stop",
+      "--signal",
+      stop?.signal ?? DEFAULT_STOP.signal,
+      "--timeout",
+      String(seconds),
+      containerName(app),
+    ],
+    { timeoutMs: (seconds + 30) * 1000 },
+  );
 }
 
 function removeBuiltTag(tag: string | undefined): void {
@@ -949,7 +1030,7 @@ function appsCreate(ctx: Ctx): number {
       "Validation failed: Name can only contain lowercase letters, numbers, and dashes",
     );
   const app: AppRecord = { name, createdAt: now(), releaseVersion: 0 };
-  if (!createOnly("apps", name, app))
+  if (!reserveName(APP_NAMES, name, HOME) || !createJsonExclusive(recordPath("apps", name), app))
     throw new FlyError("Validation failed: Name has already been taken");
   if (bool(ctx, "json")) printJson(appJson(app));
   else out(`New app created: ${name}\n`);
@@ -993,8 +1074,9 @@ function destroyApp(name: string): void {
     removeDockerVolume(snapshotName(snapshot.id));
     remove("snapshots", snapshot.id);
   }
-  removeSite(siteId(name));
+  if (ownsSite(name)) removeSite(siteId(name));
   remove("apps", name);
+  releaseName(APP_NAMES, name, HOME);
 }
 
 function appsDestroy(ctx: Ctx): number {
@@ -1037,6 +1119,8 @@ function volumesCreate(ctx: Ctx): number {
   requireApp(appName);
   const name = ctx.args[0] ?? "";
   const count = int(ctx, "count", 1);
+  if (int(ctx, "size", 1) < 1)
+    throw new FlyError("failed creating volume: size_gb must be at least 1");
   if (
     !bool(ctx, "yes") &&
     count <= 1 &&
@@ -1052,6 +1136,8 @@ function volumesCreate(ctx: Ctx): number {
   const snapshot = snapshotId ? read<SnapshotRecord>("snapshots", snapshotId) : undefined;
   if (snapshotId && (!snapshot || snapshot.app !== appName))
     throw new FlyError(`failed creating volume: snapshot ${snapshotId} not found`);
+  if (snapshot && isPending(snapshot))
+    throw new FlyError(`failed creating volume: snapshot ${snapshot.id} is still pending`);
   for (let i = 0; i < count; i++) {
     const volume = newVolume(appName, name, region, int(ctx, "size", 1), snapshot);
     if (bool(ctx, "json")) printJson(volumeJson(volume));
@@ -1117,36 +1203,45 @@ function volumesDestroy(ctx: Ctx): number {
 function snapshotsCreate(ctx: Ctx): number {
   const volume = findVolume(ctx, ctx.args[0] ?? "");
   const machine = attachedMachine(volume.id);
-  const pause = machine !== undefined && containerState(machine.app)?.Running === true;
-  const snapshot: SnapshotRecord = {
-    id: `vs_${randomFrom(ALNUM, 20)}`,
-    app: volume.app,
-    volumeId: volume.id,
-    sizeBytes: 0,
-    volumeSizeBytes: volume.sizeGb * 1024 ** 3,
-    digest: hex(32),
-    createdAt: now(),
-  };
-  createDockerVolume(snapshotName(snapshot.id), "fly-snapshot", volume.app);
-  if (pause && machine) docker(["pause", containerName(machine.app)]);
+  const id = `vs_${randomFrom(ALNUM, 20)}`;
+  const createdAt = now();
+  let paused = false;
   let sizeBytes: number;
   try {
-    sizeBytes = copyVolume(volumeName(volume.id), snapshotName(snapshot.id));
+    if (machine && containerState(machine.app)?.Running === true) {
+      docker(["pause", containerName(machine.app)]);
+      paused = true;
+    }
+    sizeBytes = copyIntoNewVolume(
+      volumeName(volume.id),
+      snapshotName(id),
+      "fly-snapshot",
+      volume.app,
+    );
   } finally {
-    if (pause && machine) docker(["unpause", containerName(machine.app)]);
+    if (paused && machine) docker(["unpause", containerName(machine.app)]);
   }
-  write("snapshots", snapshot.id, { ...snapshot, sizeBytes });
+  write("snapshots", id, {
+    id,
+    app: volume.app,
+    volumeId: volume.id,
+    sizeBytes,
+    volumeSizeBytes: volume.sizeGb * 1024 ** 3,
+    digest: hex(32),
+    createdAt,
+  } satisfies SnapshotRecord);
   out(`Scheduled to snapshot volume ${volume.id}\n`);
   return 0;
 }
 
 function snapshotsList(ctx: Ctx): number {
   const volumeId = ctx.args[0] ?? "";
-  const appName = appNameOf(ctx);
+  const volume = read<VolumeRecord>("volumes", volumeId);
+  const appName = appNameOf(ctx) ?? volume?.app;
   const snapshots = all<SnapshotRecord>("snapshots").filter(
-    (s) => s.volumeId === volumeId && (!appName || s.app === appName),
+    (s) => s.volumeId === volumeId && s.app === appName,
   );
-  if (snapshots.length === 0 && !read<VolumeRecord>("volumes", volumeId))
+  if (snapshots.length === 0 && volume?.app !== appName)
     throw new FlyError(`failed retrieving snapshots: volume ${volumeId} not found`);
   if (bool(ctx, "json")) {
     printJson(snapshots.map(snapshotJson));
@@ -1159,14 +1254,16 @@ function snapshotsList(ctx: Ctx): number {
   out("Snapshots\n");
   table(
     ["ID", "Status", "Stored Size", "Vol Size", "Created At", "Retention Days"],
-    snapshots.map((s) => [
-      s.id,
-      "created",
-      `${s.sizeBytes} B`,
-      `${s.volumeSizeBytes / 1024 ** 3} GiB`,
-      relativeTime(s.createdAt),
-      "5",
-    ]),
+    snapshots
+      .map(snapshotJson)
+      .map((s) => [
+        s.id || "(pending)",
+        s.status,
+        `${s.size} B`,
+        `${s.volume_size / 1024 ** 3} GiB`,
+        relativeTime(s.created_at),
+        "5",
+      ]),
   );
   return 0;
 }
@@ -1322,17 +1419,6 @@ function chooseVolume(
   return newVolume(appName, mount.source, region, size);
 }
 
-/** Go's `time.ParseDuration` units, plus a bare number of seconds as flyctl also accepts. */
-function durationMs(text: string): number {
-  if (/^\d+$/.test(text)) return Number(text) * 1000;
-  const units: Readonly<Record<string, number>> = { h: 3_600_000, m: 60_000, s: 1000, ms: 1 };
-  let total = 0;
-  for (const [, amount, unit] of text.matchAll(/(\d+(?:\.\d+)?)(ms|h|m|s)/g))
-    total += Number(amount) * (units[unit ?? "s"] ?? 0);
-  if (total === 0 && text !== "0s") throw new FlyError(`invalid duration "${text}"`);
-  return total;
-}
-
 /** With an `[[http_service.checks]]` entry, wait for it to pass as flyctl does; else any answer. */
 function waitForHttp(
   appName: string,
@@ -1368,22 +1454,37 @@ function waitForHttp(
   }
 }
 
-/** Real Fly leaves this unset and the image derives `<app>.fly.dev`, which does not exist here. */
+/**
+ * Real Fly leaves this unset and the image derives `<app>.fly.dev`, which does not exist here.
+ * It goes only into the container, so the machine config matches what real Fly reports.
+ */
 function localPublicUrl(
-  configEnv: Readonly<Record<string, string>>,
-  extraEnv: Readonly<Record<string, string>>,
+  env: Readonly<Record<string, string>>,
   url: string,
 ): Readonly<Record<string, string>> {
-  return configEnv.SAIL_PUBLIC_URL || extraEnv.SAIL_PUBLIC_URL ? {} : { SAIL_PUBLIC_URL: url };
+  return env.SAIL_PUBLIC_URL ? {} : { SAIL_PUBLIC_URL: url };
 }
 
 function deploy(ctx: Ctx): number {
-  const appName = requireAppName(ctx);
+  const workingDirectory = ctx.args[0] === undefined ? undefined : NodePath.resolve(ctx.args[0]);
+  const loaded = loadConfig(ctx, workingDirectory);
+  const appName = str(ctx, "app") || process.env.FLY_APP || loaded.config.app;
+  if (!appName)
+    throw new FlyError(
+      "the config for your app is missing an app name, add an app field to the fly.toml file or specify with the -a flag",
+    );
   const app = requireApp(appName);
-  const loaded = loadConfig(ctx);
+  const waitText = str(ctx, "wait-timeout") ?? "5m0s";
+  const waitMs = durationMs(waitText);
+  if (waitMs === undefined) throw new FlyError(`invalid duration "${waitText}" for --wait-timeout`);
+  if (!reserveName(APP_NAMES, appName, HOME))
+    throw new FlyError(`app ${appName} belongs to another fake fly home`);
+  refuseForeign("container", containerName(appName));
   out("==> Verifying app config\n");
   const config = loaded.file ? loaded.config : (app.config ?? EMPTY_CONFIG);
   out(`--> Verified app config\n`);
+  if (ctx.flags.get("ha") !== false)
+    err("fake fly: runs one machine per app; real Fly adds a standby machine unless --ha=false\n");
   const image = resolveImage(ctx, appName, loaded);
   const previous = machineOf(appName);
   const region = str(ctx, "primary-region") ?? config.primaryRegion ?? previous?.region ?? "iad";
@@ -1416,7 +1517,6 @@ function deploy(ctx: Ctx): number {
     ...extraEnv,
     FLY_PROCESS_GROUP: "app",
     PRIMARY_REGION: region,
-    ...localPublicUrl(config.env, extraEnv, url),
   };
   const http = config.http;
   const machineConfig: MachineConfigJson = {
@@ -1465,6 +1565,7 @@ function deploy(ctx: Ctx): number {
       : {}),
     image: fullImageRef(image.ref),
     restart: { policy: "on-failure", max_retries: 10 },
+    ...(config.stop ? { stop_config: config.stop } : {}),
   };
   const timestamp = flapsTime(now());
   const machine: MachineRecord = {
@@ -1488,9 +1589,13 @@ function deploy(ctx: Ctx): number {
     FLY_IMAGE_REF: fullImageRef(image.ref),
     FLY_MACHINE_VERSION: version,
     FLY_VM_MEMORY_MB: String(memory),
+    ...localPublicUrl(env, url),
   };
 
-  if (previous) out(`Updating existing machines in '${appName}' with rolling strategy\n`);
+  if (previous) {
+    out(`Updating existing machines in '${appName}' with rolling strategy\n`);
+    stopMachineContainer(appName, previous.config.stop_config);
+  }
   destroyMachineContainer(appName);
   write("machines", machine.id, machine);
   if (previous?.builtTag && previous.builtTag !== image.builtTag) removeBuiltTag(previous.builtTag);
@@ -1507,6 +1612,8 @@ function deploy(ctx: Ctx): number {
     `${FIXTURE_LABEL}=fly-machine`,
     "--label",
     `${FIXTURE_LABEL}.fly-app=${appName}`,
+    "--label",
+    `${HOME_LABEL}=${HOME_ID}`,
     "--restart",
     "on-failure",
     "--memory",
@@ -1527,17 +1634,16 @@ function deploy(ctx: Ctx): number {
     upstream: `${containerName(appName)}:${port}`,
     plainHttp: http !== undefined && !http.forceHttps,
     headers: {
-      "Fly-Forwarded-Proto": "https",
-      "Fly-Forwarded-Port": "443",
-      "X-Forwarded-Port": "443",
-      "X-Forwarded-Ssl": "on",
+      "Fly-Forwarded-Proto": "{http.request.scheme}",
+      "Fly-Forwarded-Port": "{http.request.local.port}",
+      "X-Forwarded-Port": "{http.request.local.port}",
       "Fly-Client-IP": "{remote_host}",
     },
   });
   out(`Machine ${machineId} [app] ${previous ? "update" : "launch"} started\n`);
   if (!bool(ctx, "detach")) {
     out(`Waiting for ${machineId} to become healthy (started)\n`);
-    waitForHttp(appName, machine, http, durationMs(str(ctx, "wait-timeout") ?? "5m0s"));
+    waitForHttp(appName, machine, http, waitMs);
     out(`Machine ${machineId} [app] ${previous ? "update" : "launch"} succeeded\n`);
   }
   out(`\nVisit your newly deployed app at ${url}/\n`);
@@ -1829,6 +1935,62 @@ function machineList(ctx: Ctx): number {
   return 0;
 }
 
+/** The map flyctl's `renderMachineJSONStatus` prints; real `Hostname` is `<app>.fly.dev`. */
+function statusJson(app: AppRecord) {
+  const status = appStatus(app);
+  const { ID, InternalNumericID, Name, Slug, RawSlug, PaidPlan } = organizationJson();
+  return {
+    ID: app.name,
+    Name: app.name,
+    Deployed: status === "deployed",
+    Status: status,
+    Hostname: appHost(app.name),
+    Version: app.releaseVersion,
+    AppURL: exists("container", CADDY_CONTAINER)
+      ? publicUrl(appHost(app.name))
+      : `https://${appHost(app.name)}`,
+    Organization: { ID, InternalNumericID, Name, Slug, RawSlug, PaidPlan },
+    PlatformVersion: "machines",
+    Machines: all<MachineRecord>("machines")
+      .filter((m) => m.app === app.name)
+      .toSorted((a, b) => b.id.localeCompare(a.id))
+      .map(machineJson),
+  };
+}
+
+function status(ctx: Ctx): number {
+  const app = requireApp(requireAppName(ctx));
+  const json = statusJson(app);
+  if (bool(ctx, "json")) {
+    printJson(json);
+    return 0;
+  }
+  const machines = all<MachineRecord>("machines").filter((m) => m.app === app.name);
+  const image = machines[0] ? `${machines[0].imageRef.repository}:${machines[0].imageRef.tag}` : "";
+  verticalTable("App", [
+    ["Name", json.Name],
+    ["Owner", json.Organization.Slug],
+    ["Hostname", json.Hostname],
+    ["Image", image],
+  ]);
+  if (machines.length === 0) return 0;
+  out("Machines\n");
+  table(
+    ["Process", "ID", "Version", "Region", "State", "Role", "Checks", "Last Updated"],
+    machines.map((m) => [
+      "app",
+      m.id,
+      m.config.metadata.fly_release_version ?? "",
+      m.region,
+      machineState(m),
+      "",
+      "",
+      m.updatedAt,
+    ]),
+  );
+  return 0;
+}
+
 function machineDestroy(ctx: Ctx): number {
   const appName = appNameOf(ctx);
   for (const id of ctx.args) {
@@ -1968,9 +2130,17 @@ const COMMANDS: ReadonlyArray<Command> = [
     run: snapshotsList,
   },
   {
+    path: ["status"],
+    short: `Show app status. This fake's Hostname is <app>.${DOMAIN} where real Fly's is <app>.fly.dev.`,
+    flags: [APP, CONFIG, JSON_OUT],
+    args: [0, 0],
+    mutating: false,
+    session: true,
+    run: status,
+  },
+  {
     path: ["deploy"],
-    short:
-      "Deploy Fly applications. This fake also sets SAIL_PUBLIC_URL=https://<app>.localtest.me unless the config or --env sets it.",
+    short: `Deploy Fly applications. This fake runs one machine per app, and sets SAIL_PUBLIC_URL=https://<app>.${DOMAIN} in the machine's runtime environment (not its config) unless the config or --env sets it.`,
     flags: [
       APP,
       flag("image", "string", "The Docker image to deploy", "i"),
@@ -2077,17 +2247,27 @@ type Resolved =
   | { readonly kind: "group"; readonly path: ReadonlyArray<string> }
   | { readonly kind: "unknown"; readonly word: string; readonly path: ReadonlyArray<string> };
 
+/**
+ * Cobra finds the command before it parses flags: a group knows only the global flags, and any
+ * other flag before a word is assumed to take a value unless written `--flag=value`.
+ */
+function takesValue(token: string): boolean {
+  if (token.includes("=")) return false;
+  if (token.startsWith("--"))
+    return GLOBAL_FLAGS.find((s) => s.name === token.slice(2))?.kind !== "bool";
+  return token.length === 2 && GLOBAL_FLAGS.find((s) => s.short === token[1])?.kind !== "bool";
+}
+
 function resolve(argv: ReadonlyArray<string>): Resolved {
-  const words: Array<string> = [];
-  for (let i = 0; i < argv.length; i++) {
-    const token = argv[i] ?? "";
-    if (token === "--") break;
-    if (token === "-t" || token === "--access-token") i++;
-    else if (!token.startsWith("-")) words.push(token);
-  }
   const path: Array<string> = [];
-  for (const word of words) {
-    const below = COMMANDS.filter((c) => path.every((segment, i) => c.path[i] === segment));
+  for (let i = 0; i < argv.length; i++) {
+    const word = argv[i] ?? "";
+    if (word === "--") break;
+    if (word.startsWith("-") && word.length > 1) {
+      if (takesValue(word)) i++;
+      continue;
+    }
+    const below = COMMANDS.filter((c) => path.every((segment, j) => c.path[j] === segment));
     const match = below.find((c) => {
       const segment = c.path[path.length];
       if (segment === undefined) return false;
@@ -2195,6 +2375,9 @@ function printHelp(path: ReadonlyArray<string>, command?: Command): void {
   ];
   out(`Usage:\n  ${name} [command]\n\nAvailable Commands:\n`);
   for (const child of children) out(`  ${child}\n`);
+  out(
+    `\nThis fake does not implement any other ${name} command and fails on one, where flyctl prints this help.\n`,
+  );
   out(`\nUse "${name} [command] --help" for more information about a command.\n`);
 }
 
@@ -2216,14 +2399,10 @@ const signedIn = (flags: ReadonlyMap<string, FlagValue>) =>
 let mutating = false;
 let logged = false;
 
-function logCall(exitCode: number): void {
+function recordCall(exitCode: number): void {
   if (logged) return;
   logged = true;
-  NodeFS.mkdirSync(HOME, { recursive: true });
-  NodeFS.appendFileSync(
-    NodePath.join(HOME, "calls.jsonl"),
-    `${JSON.stringify({ time: now(), argv: process.argv.slice(2), cwd: process.cwd(), mutating, exitCode })}\n`,
-  );
+  logCall(HOME, { argv: process.argv.slice(2), mutating, exitCode }, ["-t", "--access-token"]);
 }
 
 async function main(argv: ReadonlyArray<string>): Promise<number> {
@@ -2232,7 +2411,16 @@ async function main(argv: ReadonlyArray<string>): Promise<number> {
     err(`Error: unknown command "${resolved.word}" for "fly"\nRun 'fly --help' for usage.\n`);
     return 1;
   }
-  if (resolved.kind !== "command") {
+  if (resolved.kind === "unknown") {
+    if (argv.includes("--help") || argv.includes("-h")) {
+      printHelp(resolved.path);
+      return 0;
+    }
+    throw new FlyError(
+      `fake fly does not implement "${["fly", ...resolved.path, resolved.word].join(" ")}"`,
+    );
+  }
+  if (resolved.kind === "group") {
     parseFlags(argv, GLOBAL_FLAGS);
     printHelp(resolved.path);
     return 0;
@@ -2258,7 +2446,7 @@ for (const [signal, code] of [
 ] as const) {
   process.on(signal, () => {
     activeChild?.kill("SIGTERM");
-    logCall(code);
+    recordCall(code);
     process.exit(code);
   });
 }
@@ -2272,5 +2460,5 @@ try {
   else err(`Error: ${error instanceof Error ? error.message : String(error)}\n`);
   exitCode = 1;
 }
-logCall(exitCode);
+recordCall(exitCode);
 process.exitCode = exitCode;
