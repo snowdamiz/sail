@@ -65,20 +65,29 @@ jobs:
         env:
           T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: vp run build:desktop
+        run: |
+          set -euo pipefail
+          vp run build:desktop
+          test -f apps/server/dist/client/index.html
+          test -d apps/desktop/dist-electron
       - name: Render CLI installer script
         run: |
           node scripts/build-desktop-installers.ts \
             --version "${{ steps.resolve.outputs.version }}" \
             --repository "${{ github.repository }}" \
             --output-dir release-installers
-      - name: Upload JS bundle
+      - name: Upload server dist bundle
         uses: actions/upload-artifact@v4
         with:
-          name: sail-js-bundle
-          path: |
-            apps/server/dist
-            apps/desktop/dist-electron
+          name: sail-server-dist
+          path: apps/server/dist
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload desktop dist bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: sail-desktop-dist
+          path: apps/desktop/dist-electron
           if-no-files-found: error
           retention-days: 1
       - name: Upload installer script
@@ -140,11 +149,23 @@ jobs:
           workspaces: |
             native/resource-monitor -> target
             native/sail-boat -> target
-      - name: Download JS bundle
+            native/kde-snap-shot -> target
+            native/hyprland-snap-shot -> target
+      - name: Download server dist bundle
         uses: actions/download-artifact@v4
         with:
-          name: sail-js-bundle
-          path: .
+          name: sail-server-dist
+          path: apps/server/dist
+      - name: Download desktop dist bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: sail-desktop-dist
+          path: apps/desktop/dist-electron
+      - name: Verify downloaded JS bundles
+        run: |
+          set -euo pipefail
+          test -f apps/server/dist/client/index.html
+          test -d apps/desktop/dist-electron
       - name: Align workspace package versions
         run: node scripts/update-release-package-versions.ts "${{ needs.prepare.outputs.version }}"
       - name: Install Linux desktop build dependencies
