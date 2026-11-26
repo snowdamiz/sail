@@ -1,5 +1,4 @@
 import type {
-  DesktopBoatStatus,
   DesktopBridge,
   DesktopPreviewAnnotationVoiceEvent,
   DesktopPreviewFindResultEvent,
@@ -346,33 +345,6 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     install: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_INSTALL_CHANNEL),
     uninstall: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_UNINSTALL_CHANNEL),
     addToPath: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_ADD_TO_PATH_CHANNEL),
-  },
-  boat: {
-    getStatus: () => ipcRenderer.invoke(IpcChannels.BOAT_GET_STATUS_CHANNEL),
-    invoke: (command, args) =>
-      ipcRenderer.invoke(IpcChannels.BOAT_INVOKE_CHANNEL, {
-        command,
-        ...(args === undefined ? {} : { args }),
-      }),
-    onState: (listener) => {
-      const wrappedListener = (_event: Electron.IpcRendererEvent, state: unknown) => {
-        listener(state);
-      };
-      ipcRenderer.on(IpcChannels.BOAT_STATE_CHANNEL, wrappedListener);
-      return () => {
-        ipcRenderer.removeListener(IpcChannels.BOAT_STATE_CHANNEL, wrappedListener);
-      };
-    },
-    onStatus: (listener) => {
-      const wrappedListener = (_event: Electron.IpcRendererEvent, status: unknown) => {
-        if (typeof status !== "object" || status === null) return;
-        listener(status as DesktopBoatStatus);
-      };
-      ipcRenderer.on(IpcChannels.BOAT_STATUS_CHANNEL, wrappedListener);
-      return () => {
-        ipcRenderer.removeListener(IpcChannels.BOAT_STATUS_CHANNEL, wrappedListener);
-      };
-    },
   },
   onUpdateState: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, state: unknown) => {

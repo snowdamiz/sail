@@ -1035,6 +1035,57 @@ describe("DesktopBackendConfiguration", () => {
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
+  it.effect("resolvePrimary hands the server this app's sail-boatd and link channel", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-desktop-backend-config-test-",
+      });
+      const resourcesPath = path.join(baseDir, "resources");
+      const packagedDaemon = path.join(resourcesPath, "sail-boat/sail-boatd");
+      yield* fileSystem.makeDirectory(path.dirname(packagedDaemon), { recursive: true });
+      yield* fileSystem.writeFileString(packagedDaemon, "binary");
+
+      const resolveEnv = (
+        options: Parameters<typeof layerEnvironment>[1],
+        hostEnvironment: NodeJS.ProcessEnv,
+      ) =>
+        Effect.gen(function* () {
+          const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+          return (yield* configuration.resolvePrimary).env;
+        }).pipe(
+          Effect.provide(
+            layerBackendConfiguration().pipe(
+              Layer.provideMerge(layerServerExposure),
+              Layer.provideMerge(DesktopAppSettings.layerTest()),
+              Layer.provideMerge(DesktopWslServerTree.layerTest()),
+              Layer.provideMerge(DesktopWslEnvironment.layerTest()),
+              Layer.provideMerge(layerEnvironment(baseDir, options)),
+            ),
+          ),
+          Effect.provideService(HostProcess.Environment, hostEnvironment),
+        );
+      const packaged = { appPath: `${resourcesPath}/app.asar`, isPackaged: true, resourcesPath };
+
+      const fromPackage = yield* resolveEnv(packaged, {});
+      assert.equal(fromPackage.SAIL_BOATD_PATH, packagedDaemon);
+      assert.equal(fromPackage.SAIL_DEEP_LINK_SCHEME, "sail");
+      assert.equal(fromPackage.SAIL_APP_BUNDLE_ID, "com.sail.desktop");
+
+      const overridden = yield* resolveEnv(packaged, { SAIL_BOATD_PATH: "/opt/sail-boatd" });
+      assert.equal(overridden.SAIL_BOATD_PATH, "/opt/sail-boatd");
+
+      const development = yield* resolveEnv(
+        { isPackaged: false, devServerUrl: "http://127.0.0.1:5733", resourcesPath },
+        {},
+      );
+      assert.isUndefined(development.SAIL_BOATD_PATH);
+      assert.equal(development.SAIL_DEEP_LINK_SCHEME, "sail-dev");
+      assert.equal(development.SAIL_APP_BUNDLE_ID, "com.sail.desktop.dev");
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
+
   it("resolvePrimaryLabel is runSync-safe against the real WSL availability probe", async () => {
     // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- This test intentionally replicates the sync IPC handler's runSync path to catch a regression to async-only resolution; it.effect would mask it.
     const runtime = ManagedRuntime.make(
