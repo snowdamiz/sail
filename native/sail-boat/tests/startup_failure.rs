@@ -1,12 +1,23 @@
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
+
+fn start_with_a_bad_port(stdout: Stdio) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_sail-boatd"))
+        .env_clear()
+        .env("SAIL_BOAT_CONTROL_PORT", "not-a-port")
+        .env(
+            "SAIL_BOAT_DATA_DIR",
+            std::env::temp_dir().join("sail-boatd-startup-failure"),
+        )
+        .stdin(Stdio::null())
+        .stdout(stdout)
+        .stderr(Stdio::piped())
+        .output()
+        .expect("sail-boatd runs")
+}
 
 #[test]
 fn a_failed_start_reports_its_reason_as_one_json_line_on_stdout() {
-    let output = Command::new(env!("CARGO_BIN_EXE_sail-boatd"))
-        .env("SAIL_BOAT_CONTROL_PORT", "not-a-port")
-        .stdin(Stdio::null())
-        .output()
-        .expect("sail-boatd runs");
+    let output = start_with_a_bad_port(Stdio::piped());
 
     assert!(!output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
@@ -23,5 +34,20 @@ fn a_failed_start_reports_its_reason_as_one_json_line_on_stdout() {
             .as_str()
             .is_some_and(|error| error.contains("SAIL_BOAT_CONTROL_PORT")),
         "the reason names what failed: {line}"
+    );
+}
+
+#[test]
+fn a_failed_start_keeps_its_reason_when_stdout_is_gone() {
+    let (reader, writer) = std::io::pipe().expect("pipe");
+    drop(reader);
+
+    let output = start_with_a_bad_port(writer.into());
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(
+        stderr.contains("SAIL_BOAT_CONTROL_PORT"),
+        "stderr names the startup error, not the closed pipe: {stderr:?}"
     );
 }

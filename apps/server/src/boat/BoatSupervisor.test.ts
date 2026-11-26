@@ -138,9 +138,9 @@ const server = http.createServer((req, res) => {
   });
 });
 if (process.env.FAKE_BOATD_REFUSE_START) {
-  console.error("reaping sb-1: boat list failed: ${BOAT_OUTPUT}");
   console.log(JSON.stringify({ ready: false, error: "another sail-boatd is using " + env.SAIL_BOAT_DATA_DIR }));
-  process.exit(1);
+  setTimeout(() => process.stderr.write("Error: reaping sb-1: boat list failed: ${BOAT_OUTPUT}\\n", () => process.exit(1)), 100);
+  return;
 }
 server.listen(0, "127.0.0.1", async () => {
   const cli = JSON.parse(execFileSync(env.SAIL_DESKTOP_CLI, ["environment", "list", "--json"], { encoding: "utf8" }));
@@ -619,13 +619,20 @@ describe("BoatSupervisor", () => {
             Stream.runCollect,
             Effect.forkScoped({ startImmediately: true }),
           );
+          assert.deepEqual(
+            (yield* boats.events.pipe(Stream.runHead)).pipe(
+              Option.map((event) => (event._tag === "status" ? event.status.phase : event._tag)),
+            ),
+            Option.some("error"),
+            "following Boats after a crash starts nothing",
+          );
           const restarted = yield* boats.invoke({ command: "get_state" });
           assert.deepEqual(
             (yield* Fiber.join(joinedAfterCrash)).map((event) =>
               event._tag === "status" ? event.status.phase : event._tag,
             ),
             ["error", "starting"],
-            "a client joining after the crash sees no dead daemon's state and starts nothing itself",
+            "a client joining after the crash sees no dead daemon's state",
           );
           const second = yield* Queue.take(reports);
           assert.notEqual(second.pid, first.pid);

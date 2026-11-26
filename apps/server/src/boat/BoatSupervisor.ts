@@ -374,9 +374,15 @@ const make = Effect.gen(function* () {
       Effect.ignore,
       Effect.forkScoped,
     );
+    const exited = yield* child.exitCode.pipe(Effect.exit, Effect.forkScoped);
     // Runs before the scope stops the reader, so the log keeps what a dead daemon printed last.
     yield* Effect.addFinalizer((exit) =>
-      Exit.hasInterrupts(exit) ? Effect.void : drained(stderrDrained),
+      Exit.hasInterrupts(exit)
+        ? Effect.void
+        : child.isRunning.pipe(
+            Effect.orElseSucceed(() => true),
+            Effect.flatMap((running) => (running ? Effect.void : drained(stderrDrained))),
+          ),
     );
 
     const startup = yield* Deferred.make<Handshake, BoatError>();
@@ -390,16 +396,20 @@ const make = Effect.gen(function* () {
           onSome: (report) =>
             report.ready
               ? Deferred.succeed(startup, report)
-              : Deferred.fail(
-                  startup,
-                  new BoatError({ message: `sail-boatd could not start: ${report.error}` }),
+              : // sail-boatd prints the error to stderr too, after this line, and then exits.
+                drained(exited).pipe(
+                  Effect.andThen(
+                    Deferred.fail(
+                      startup,
+                      new BoatError({ message: `sail-boatd could not start: ${report.error}` }),
+                    ),
+                  ),
                 ),
         }),
       ),
       Effect.ignore,
       Effect.forkScoped,
     );
-    const exited = yield* child.exitCode.pipe(Effect.exit, Effect.forkScoped);
     yield* Fiber.join(exited).pipe(
       Effect.tap(() => drained(stdoutDrained)),
       Effect.flatMap((exit) =>
@@ -492,6 +502,8 @@ const make = Effect.gen(function* () {
       shouldStart(current) ? Effect.map(start, ([, next]) => next) : Effect.succeed(current),
     );
 
+  const startIfStopped = startIf((current) => current._tag === "Stopped");
+
   const restartLater = Effect.fnUntraced(function* (failed: Lifecycle) {
     yield* Effect.sleep(restartDelay(yield* Ref.updateAndGet(crashesInARow, (n) => n + 1)));
     yield* startIf((current) => current === failed);
@@ -499,7 +511,7 @@ const make = Effect.gen(function* () {
 
   const restartIfNeeded = (failed: Lifecycle) =>
     dataDirNeedsDaemon.pipe(
-      Effect.timeoutOrElse({ duration: STATE_READ_TIMEOUT, orElse: () => Effect.succeed(false) }),
+      Effect.timeoutOrElse({ duration: STATE_READ_TIMEOUT, orElse: () => Effect.succeed(true) }),
       Effect.flatMap((needed) =>
         needed
           ? Effect.forkIn(restartLater(failed), serviceScope, { startImmediately: true })
@@ -568,7 +580,7 @@ const make = Effect.gen(function* () {
       const [subscription, status] = yield* subscribeWithCurrentStatus;
       const state = yield* Ref.get(latestState);
       // A failed daemon waits for a command such as Retry, so a page that reconnects never retries.
-      yield* startIf((current) => current._tag === "Stopped");
+      yield* startIfStopped;
       return Stream.concat(
         Stream.fromIterable<BoatEvent>([
           { _tag: "status", status },
@@ -583,7 +595,7 @@ const make = Effect.gen(function* () {
 
   yield* ServerActivation.forkParked(
     dataDirNeedsDaemon.pipe(
-      Effect.flatMap((needed) => (needed ? Effect.flatten(ensureStarted) : Effect.void)),
+      Effect.flatMap((needed) => (needed ? startIfStopped : Effect.void)),
       Effect.ignore,
     ),
   );
