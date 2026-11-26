@@ -103,7 +103,7 @@ impl MachineRuntime {
             .forward(&id, port)
             .await
             .with_context(|| format!("forwarding port {port} for the {agent:?} login"))?;
-        self.shared.t3.open_url(&url)?;
+        crate::app::open_url(&url)?;
         loop {
             tokio::time::sleep(Duration::from_secs(3)).await;
             if boat.exec(&id, agent.status(), 30).await?.exit_code == Some(0) {

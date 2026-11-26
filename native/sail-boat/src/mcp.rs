@@ -399,6 +399,10 @@ async fn run(app: &Arc<App>, call: Call) -> Result<String> {
         Call::ListMachines {} => json!({ "machines": app.views(), "costs": app.costs() }).to_string(),
         Call::CreateMachine { name, size, projects } => {
             let m = app.create_machine(&name, size.as_deref().unwrap_or("default"), projects).await?;
+            // The machine exists either way; its row still offers "Add to Sail".
+            if let Err(e) = crate::app::open_url(&app.pair(&m)) {
+                app.shared.notify(format!("Couldn't open Sail for {name}"), format!("{e:#}; use Add to Sail"));
+            }
             format!(
                 "Created {} ({}). Sail now asks the user to add it as a backend; tell them to confirm.",
                 m.record().name,
@@ -457,12 +461,15 @@ async fn run(app: &Arc<App>, call: Call) -> Result<String> {
         }
         Call::OpenInT3 { machine } => {
             let m = app.machine(&machine)?;
-            app.open_in_t3(&m, m.latest_thread().await.as_deref())?;
+            match app.open_in_t3(&m, m.latest_thread().await.as_deref()) {
+                Some(link) => crate::app::open_url(&link)?,
+                None => crate::t3desktop::activate()?,
+            }
             format!("Showed {} in Sail.", m.record().name)
         }
         Call::AddToT3 { machine } => {
             let m = app.machine(&machine)?;
-            app.pair(&m)?;
+            crate::app::open_url(&app.pair(&m))?;
             format!("Sail now asks the user to add {}; tell them to confirm.", m.record().name)
         }
         Call::DeleteMachine { machine, discard } => {

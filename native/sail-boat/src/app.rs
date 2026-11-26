@@ -445,7 +445,8 @@ impl App {
         self.shared.changed();
     }
 
-    /// Creates a machine, then adds this computer's Sail projects `projects` (ids) to it.
+    /// Creates a machine, then adds this computer's Sail projects `projects` (ids) to it. The
+    /// caller hands its `pair` link to Sail.
     pub async fn create_machine(self: &Arc<Self>, name: &str, size: &str, projects: Vec<String>) -> Result<Arc<MachineRuntime>> {
         if !valid_name(name) {
             bail!("machine names are 1-32 lowercase letters, digits or dashes, starting with a letter or digit");
@@ -499,10 +500,6 @@ impl App {
                 }
             }
         });
-        // The machine exists either way; its row still offers "Add to Sail".
-        if let Err(e) = self.pair(&machine) {
-            self.shared.notify(format!("Couldn't open Sail for {name}"), format!("{e:#}; use Add to Sail"));
-        }
         Ok(machine)
     }
 
@@ -532,19 +529,16 @@ impl App {
         Ok(project)
     }
 
-    /// Opens Sail's own "add backend" confirmation for this machine.
-    pub fn pair(&self, machine: &MachineRuntime) -> Result<()> {
+    /// The deep link to Sail's own "add backend" confirmation for this machine, with a new
+    /// one-time pairing code.
+    pub fn pair(&self, machine: &MachineRuntime) -> String {
         let code = machine.auth.new_pairing_code();
         let pairing_url = format!("http://localhost:{}/pair#token={code}", machine.record().local_port);
-        let scheme = crate::t3desktop::deep_link_scheme();
-        self.shared
-            .t3
-            .open_url(&format!("{scheme}://pair?pairingUrl={}", urlencoding::encode(&pairing_url)))
+        crate::t3desktop::pair_link(&pairing_url)
     }
 
     /// Refuses while work runs on the machine, unless `discard`. Sail offers no way to remove
-    /// a backend from outside, so a paired machine ends with Sail in front and a note on what
-    /// to remove there.
+    /// a backend from outside, so a paired machine ends with a note on what to remove there.
     pub async fn delete_machine(&self, machine: &MachineRuntime, discard: bool) -> Result<()> {
         // Boat can't report a deleted sandbox's usage: the last chance to count its tail.
         let (day, month) = periods();
@@ -586,7 +580,6 @@ impl App {
                 format!("Remove {} from Sail", record.name),
                 "Sail still lists it. Remove it there under Settings → Environments.",
             );
-            let _ = self.shared.t3.activate();
         }
         Ok(())
     }
@@ -759,17 +752,14 @@ impl App {
         })
     }
 
-    /// Brings Sail forward on `thread`, or just to the front; an unpaired machine gets the
-    /// "add backend" dialog instead.
-    pub fn open_in_t3(&self, machine: &MachineRuntime, thread: Option<&str>) -> Result<()> {
+    /// The deep link that shows the machine in Sail: `thread` on it, or its "add backend"
+    /// dialog while Sail doesn't have it. None when Sail only needs to come to the front.
+    pub fn open_in_t3(&self, machine: &MachineRuntime, thread: Option<&str>) -> Option<String> {
         let record = machine.record();
         if record.client_tokens.is_empty() {
-            return self.pair(machine);
+            return Some(self.pair(machine));
         }
-        match thread {
-            Some(thread) => self.shared.t3.open_thread(&record.environment_id, thread),
-            None => self.shared.t3.activate(),
-        }
+        thread.map(|thread| crate::t3desktop::thread_link(&record.environment_id, thread))
     }
 }
 
@@ -863,7 +853,7 @@ fn human_secs(s: u64) -> String {
     }
 }
 
-/// Fallback OS URL opener when running without a connected Electron desktop event consumer.
+/// Opens `url` with this computer's default handler.
 pub fn open_url(url: &str) -> Result<()> {
     let status = if cfg!(target_os = "macos") {
         std::process::Command::new("open").arg(url).status()?

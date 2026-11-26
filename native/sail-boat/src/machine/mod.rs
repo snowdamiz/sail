@@ -142,8 +142,6 @@ pub enum Event {
     /// A machine record changed and must be saved.
     Persist,
     Notify { title: String, body: String },
-    OpenUrl { url: String },
-    Activate,
 }
 
 /// What every machine shares: the user's CLIs, settings and the app's event channel.
@@ -167,12 +165,6 @@ impl Shared {
     }
     pub fn notify(&self, title: impl Into<String>, body: impl Into<String>) {
         let _ = self.events.send(Event::Notify { title: title.into(), body: body.into() });
-    }
-    pub fn open_url(&self, url: impl Into<String>) {
-        let _ = self.events.send(Event::OpenUrl { url: url.into() });
-    }
-    pub fn activate(&self) {
-        let _ = self.events.send(Event::Activate);
     }
 }
 
