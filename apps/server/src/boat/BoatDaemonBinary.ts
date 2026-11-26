@@ -39,7 +39,7 @@ const make = Effect.gen(function* () {
   const environment = yield* HostProcess.Environment;
   const executableName = platform === "win32" ? "sail-boatd.exe" : "sail-boatd";
   const override = environment.SAIL_BOATD_PATH?.trim();
-  // A repo checkout runs the server from src/boat or from dist, two and three levels below the repo.
+  // A repo checkout runs this module from apps/server/src/boat, or bundled from apps/server/dist.
   const repoCandidates = [
     path.resolve(import.meta.dirname, "../../../../native/sail-boat"),
     path.resolve(import.meta.dirname, "../../../native/sail-boat"),

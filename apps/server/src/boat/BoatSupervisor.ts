@@ -65,7 +65,6 @@ const decodeNotifyEvent = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ title: Schema.String, body: Schema.String })),
 );
 
-/** The records in `state.json` that the daemon's reaper still has to act on. */
 const SavedBoatState = Schema.Struct({
   machines: Schema.optional(Schema.Array(Schema.Unknown)),
   doomed: Schema.optional(Schema.Array(Schema.Unknown)),
