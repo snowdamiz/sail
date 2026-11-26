@@ -101,7 +101,7 @@ echo "$name is not installed for sail" >&2
 exit 127
 EOF
 RUN ln /usr/local/bin/claude /usr/local/bin/codex && ln /usr/local/bin/claude /usr/local/bin/opencode
-# /etc/profile resets PATH for login shells, such as the web terminal and fly ssh console.
+# /etc/profile resets PATH for login shells, such as fly ssh console; the web terminal inherits the server's environment.
 COPY <<'EOF' /etc/profile.d/sail-env.sh
 [ "$(/usr/bin/id -u)" = 0 ] || . /etc/sail/env.sh
 EOF
