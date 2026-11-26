@@ -1,10 +1,4 @@
-import {
-  type BoatDaemonStatus,
-  type BoatEvent,
-  type BoatNotice,
-  WS_METHODS,
-} from "@t3tools/contracts";
-import * as Effect from "effect/Effect";
+import { type BoatDaemonStatus, type BoatEvent, WS_METHODS } from "@t3tools/contracts";
 import * as Stream from "effect/Stream";
 import type { Atom } from "effect/reactivity";
 
@@ -40,7 +34,6 @@ export const foldBoatEvents = <E, R>(
 
 export function createBoatsEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
-  options: { readonly onNotice: (notice: BoatNotice) => void },
 ) {
   return {
     view: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
@@ -48,12 +41,6 @@ export function createBoatsEnvironmentAtoms<R, E>(
       tag: WS_METHODS.subscribeBoats,
       idleTtlMs: 0,
       transform: foldBoatEvents,
-    }),
-    notices: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
-      label: "environment-data:boats:notices",
-      tag: WS_METHODS.subscribeBoatNotices,
-      idleTtlMs: 0,
-      transform: Stream.tap((notice) => Effect.sync(() => options.onNotice(notice))),
     }),
     invoke: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:boats:invoke",

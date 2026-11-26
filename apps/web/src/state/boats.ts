@@ -2,12 +2,9 @@ import { createBoatsEnvironmentAtoms } from "@t3tools/client-runtime/state/boats
 import { BOAT_COMMAND_SCOPES, type BoatCommand, type EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
-import { toastManager } from "../components/ui/toast";
 import { connectionAtomRuntime } from "../connection/runtime";
 
-export const boatsEnvironment = createBoatsEnvironmentAtoms(connectionAtomRuntime, {
-  onNotice: ({ title, body }) => toastManager.add({ type: "info", title, description: body }),
-});
+export const boatsEnvironment = createBoatsEnvironmentAtoms(connectionAtomRuntime);
 
 const BOAT_COMMANDS = Object.keys(BOAT_COMMAND_SCOPES) as BoatCommand[];
 

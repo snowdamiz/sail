@@ -428,11 +428,11 @@ describe("BoatSupervisor", () => {
             "clients that only follow notices leave sail-boatd stopped",
           );
 
-          // The daemon's event stream opens with its state, so a notice sent after that arrives.
-          yield* boats.events.pipe(
+          const daemonEventsFollowed = boats.events.pipe(
             Stream.filter((event) => event._tag === "state"),
             Stream.runHead,
           );
+          yield* daemonEventsFollowed;
           yield* boats.invoke({ command: "update_settings", args: {} });
 
           const notice = { title: "Machine ready", body: "m1 is awake." };

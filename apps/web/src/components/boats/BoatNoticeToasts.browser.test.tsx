@@ -12,7 +12,6 @@ import { getRouter } from "~/router";
 import { answerRpc, installFakeEnvironment, type FakeDriver } from "../../../test/fakeEnvironment";
 import { render } from "../../../test/render";
 
-// The socket is the only fake layer; see test/appScenarios.renders.tsx.
 vi.mock(
   "../../../../../packages/client-runtime/src/connection/driver.ts",
   async (importOriginal) => {
@@ -47,7 +46,6 @@ it("shows the server's Boat notices as toasts on a page that is not Boats", asyn
   const router = getRouter(createMemoryHistory({ initialEntries: ["/"] }));
   await router.load();
   await using _app = await render(<AppRoot router={router} />, {
-    // AppRoot brings its own router.
     router: false,
   });
 

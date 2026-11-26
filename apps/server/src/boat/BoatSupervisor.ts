@@ -168,7 +168,6 @@ export class BoatSupervisor extends Context.Service<
   {
     readonly invoke: (input: BoatInvokeInput) => Effect.Effect<BoatInvokeResult, BoatError>;
     readonly events: Stream.Stream<BoatEvent>;
-    /** Never starts sail-boatd: every client follows this, not only those showing Boats. */
     readonly notices: Stream.Stream<BoatNotice>;
   }
 >()("t3/boat/BoatSupervisor") {}
