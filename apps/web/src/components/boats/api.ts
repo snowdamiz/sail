@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { readLocalApi } from "~/localApi";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { boatsEnvironment } from "~/state/boats";
-import { readPrimaryEnvironmentId } from "~/state/environments";
+import { readLocalEnvironmentId } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { usePairFromLink } from "../desktop/DesktopWebLinkCoordinator";
 import { type BoatLink, type BoatReply, classifyBoatLink, errorText } from "./reply";
@@ -17,8 +17,8 @@ export async function call<C extends CommandName>(
   command: C,
   args: CommandArgs<C>,
 ): Promise<BoatReply<C>> {
-  const environmentId = readPrimaryEnvironmentId();
-  if (environmentId === null) throw new Error("This server is not connected yet.");
+  const environmentId = readLocalEnvironmentId();
+  if (environmentId === null) throw new Error("This app is not connected to a server.");
   const result = await runAtomCommand(
     appAtomRegistry,
     boatsEnvironment.invoke,
@@ -30,6 +30,7 @@ export async function call<C extends CommandName>(
 }
 
 export type BoatsPage =
+  | { readonly kind: "noServer" }
   | { readonly kind: "starting" }
   | { readonly kind: "offline"; readonly message: string; readonly daemon: boolean }
   | { readonly kind: "setup" | "ready"; readonly state: UiState };
@@ -48,7 +49,8 @@ export function useBoatsPage(environmentId: EnvironmentId | null) {
   const query = useEnvironmentQuery(
     environmentId === null ? null : boatsEnvironment.view({ environmentId, input: {} }),
   );
-  const page = boatsPage(query.data, query.error);
+  const page: BoatsPage =
+    environmentId === null ? { kind: "noServer" } : boatsPage(query.data, query.error);
   const retry = () =>
     page.kind === "offline" && page.daemon
       ? call("get_state", undefined).then(() => undefined)

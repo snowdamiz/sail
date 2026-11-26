@@ -1,3 +1,5 @@
+import type { BoatCommand } from "@t3tools/contracts";
+
 // Mirrors docs/ui-contract.md exactly.
 
 export type Setup = "starting" | "ready" | "installBoat" | "signInBoat" | "installT3";
@@ -87,26 +89,31 @@ export interface MachineDetails {
 
 export type SetupAction = "installBoat" | "signInBoat" | "installT3" | "recheck";
 
-export interface Commands {
-  get_state: [undefined, UiState];
-  create_machine: [{ name: string; size: string; projects?: string[] }, void]; // projects: LocalProject ids to add once up
-  local_projects: [undefined, LocalProject[]]; // pinned first, then most recent
-  add_project: [{ id: string; projectId: string }, void]; // resolves once cloned
-  wake_machine: [{ id: string }, void];
-  sleep_machine: [{ id: string }, void];
-  open_machine: [{ id: string; thread?: string }, void];
-  pair_machine: [{ id: string }, void];
-  delete_machine: [{ id: string; discard?: boolean }, void];
-  resize_machine: [{ id: string; size: string }, void];
-  keep_awake: [{ id: string; minutes: number | null }, void]; // null: until stopped; 0: stop
-  sign_in_agent: [{ id: string; agent: string }, void];
-  turn_on_connect: [{ id: string }, void]; // resolves once reachable, after the browser sign-in
-  latest_thread: [{ id: string }, string | null]; // thread id
-  get_machine_details: [{ id: string }, MachineDetails];
-  add_mcp: [{ client: McpClient }, void];
-  update_settings: [{ settings: Settings }, void];
-  setup_action: [{ action: SetupAction }, void];
-}
+type Covering<K extends PropertyKey, T extends Record<K, unknown>> = T;
+
+export type Commands = Covering<
+  BoatCommand,
+  {
+    get_state: [undefined, UiState];
+    create_machine: [{ name: string; size: string; projects?: string[] }, void]; // projects: LocalProject ids to add once up
+    local_projects: [undefined, LocalProject[]]; // pinned first, then most recent
+    add_project: [{ id: string; projectId: string }, void]; // resolves once cloned
+    wake_machine: [{ id: string }, void];
+    sleep_machine: [{ id: string }, void];
+    open_machine: [{ id: string; thread?: string }, void];
+    pair_machine: [{ id: string }, void];
+    delete_machine: [{ id: string; discard?: boolean }, void];
+    resize_machine: [{ id: string; size: string }, void];
+    keep_awake: [{ id: string; minutes: number | null }, void]; // null: until stopped; 0: stop
+    sign_in_agent: [{ id: string; agent: string }, void];
+    turn_on_connect: [{ id: string }, void]; // resolves once reachable, after the browser sign-in
+    latest_thread: [{ id: string }, string | null]; // thread id
+    get_machine_details: [{ id: string }, MachineDetails];
+    add_mcp: [{ client: McpClient }, void];
+    update_settings: [{ settings: Settings }, void];
+    setup_action: [{ action: SetupAction }, void];
+  }
+>;
 
 export type CommandName = keyof Commands;
 export type CommandArgs<C extends CommandName> = Commands[C][0];

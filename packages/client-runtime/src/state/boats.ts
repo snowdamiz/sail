@@ -36,7 +36,10 @@ export const foldBoatEvents =
         () => EMPTY_BOATS_VIEW,
         (view, event) =>
           event._tag === "status"
-            ? { ...view, status: event.status }
+            ? {
+                status: event.status,
+                state: event.status.phase === "ready" ? view.state : null,
+              }
             : { ...view, state: event.state },
       ),
     );

@@ -16,7 +16,7 @@ import {
   environmentSummaries,
   useEnvironmentPresentation,
 } from "./presentation";
-import { primaryEnvironmentIdAtom } from "./primaryEnvironment";
+import { localEnvironmentIdAtom, primaryEnvironmentIdAtom } from "./primaryEnvironment";
 import { relayEnvironmentDiscovery } from "./relay";
 import { usePreparedConnection } from "./session";
 
@@ -74,6 +74,14 @@ export function usePrimaryEnvironmentId(): EnvironmentId | null {
 
 export function readPrimaryEnvironmentId(): EnvironmentId | null {
   return appAtomRegistry.get(primaryEnvironmentIdAtom);
+}
+
+export function useLocalEnvironmentId(): EnvironmentId | null {
+  return useAtomValue(localEnvironmentIdAtom);
+}
+
+export function readLocalEnvironmentId(): EnvironmentId | null {
+  return appAtomRegistry.get(localEnvironmentIdAtom);
 }
 
 /** The environment's state now, for handlers that should not re-render on every change. */

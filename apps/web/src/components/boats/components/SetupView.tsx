@@ -44,6 +44,7 @@ export function SetupView({
 }) {
   const canAct = useBoatAccess().can("setup_action");
   const locked = busy || !canAct;
+  const canShowPendingSignIn = setup === "signInBoat" && busy && signIn === null && canAct;
   if (setup === "starting" || setup === "ready") {
     return (
       <div className="view center">
@@ -81,11 +82,13 @@ export function SetupView({
                     <button
                       type="button"
                       className="btn btn-solid btn-lg"
-                      disabled={locked}
+                      disabled={locked && !canShowPendingSignIn}
                       aria-busy={busy}
                       onClick={() => onAction(s.id)}
                     >
-                      {busy ? (
+                      {canShowPendingSignIn ? (
+                        "Show sign-in page"
+                      ) : busy ? (
                         <>
                           <Dots /> {s.busy}
                         </>
@@ -120,8 +123,8 @@ export function SetupView({
         </ol>
         {setup === "installT3" ? (
           <p className="lede" style={{ marginTop: 12 }}>
-            This server's <code>t3</code> launcher was not found (for example in unpackaged dev
-            mode). Set <code>SAIL_DESKTOP_CLI</code> where this server runs, then check again.
+            This server could not run its own <code>t3</code> command. Restart the server, then
+            check again.
           </p>
         ) : null}
       </div>

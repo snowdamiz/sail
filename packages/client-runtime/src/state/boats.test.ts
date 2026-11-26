@@ -31,3 +31,28 @@ it.effect("keeps the latest status and state, and hands notices to onNotify", ()
     expect(notices).toEqual([{ _tag: "notify", title: "Sail Boat", body: "Machine ready" }]);
   }),
 );
+
+it.effect("forgets a stopped daemon's state until the restarted one sends its own", () =>
+  Effect.gen(function* () {
+    const events: BoatEvent[] = [
+      { _tag: "status", status: { phase: "ready", error: null } },
+      { _tag: "state", state: { setup: "ready", machines: ["old"] } },
+      { _tag: "status", status: { phase: "error", error: "sail-boatd exited" } },
+      { _tag: "status", status: { phase: "starting", error: null } },
+      { _tag: "status", status: { phase: "ready", error: null } },
+      { _tag: "state", state: { setup: "ready", machines: ["new"] } },
+    ];
+
+    const views = yield* Stream.fromIterable(events).pipe(
+      foldBoatEvents(() => undefined),
+      Stream.runCollect,
+    );
+
+    expect(views.slice(3).map((view) => view.state)).toEqual([
+      null,
+      null,
+      null,
+      { setup: "ready", machines: ["new"] },
+    ]);
+  }),
+);

@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
   replies: {} as Partial<Record<string, unknown>>,
   invoked: [] as BoatInvokeInput[],
   openExternal: vi.fn(async (_url: string) => undefined),
+  environmentId: "env-1" as string | null,
 }));
 
 vi.mock(import("../../state/boats"), () => ({
@@ -38,8 +39,8 @@ vi.mock(import("../../state/clientHostEnvironment"), () => ({
 }));
 vi.mock(import("../../state/environments"), async (original) => ({
   ...(await original()),
-  usePrimaryEnvironmentId: (() => "env-1") as never,
-  readPrimaryEnvironmentId: (() => "env-1") as never,
+  useLocalEnvironmentId: (() => state.environmentId) as never,
+  readLocalEnvironmentId: (() => state.environmentId) as never,
 }));
 vi.mock(import("../../localApi"), async (original) => ({
   ...(await original()),
@@ -98,6 +99,7 @@ function setup(input: {
   state.replies = {};
   state.invoked = [];
   state.openExternal.mockClear();
+  state.environmentId = "env-1";
 }
 
 function mount() {
@@ -149,13 +151,51 @@ it("shows the sign-in page and code only to the tab whose click answered with th
   await expect.element(screen.getByText("WXYZ-1234")).not.toBeInTheDocument();
 });
 
-it("shows another tab's sign-in as busy, with no link or code", async () => {
+it("shows another tab's sign-in as busy, with no link or code until that tab asks", async () => {
+  const url = "https://auth.localtest.me/boat/device?code=WXYZ-1234";
   setup({ state: uiState({ setup: "signInBoat", setupBusy: true }) });
+  state.replies.setup_action = { data: null, openUrl: url, userCode: "WXYZ-1234" };
   await using screen = await mount();
 
-  await expect.element(screen.getByRole("button", { name: "Waiting for sign-in" })).toBeDisabled();
   await expect.element(screen.getByRole("link")).not.toBeInTheDocument();
   await expect.element(screen.getByText(/If it asks for a code/)).not.toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole("button", { name: "Show sign-in page" }));
+
+  await expect
+    .element(screen.getByRole("link", { name: "Boat's sign-in page" }))
+    .toHaveAttribute("href", url);
+  await expect.element(screen.getByText("WXYZ-1234")).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Waiting for sign-in" })).toBeDisabled();
+  expect(state.invoked).toEqual([{ command: "setup_action", args: { action: "signInBoat" } }]);
+});
+
+it("drops a sign-in page once its wait ends, so a later attempt never shows an old code", async () => {
+  setup({ state: uiState({ setup: "signInBoat" }) });
+  state.replies.setup_action = {
+    data: null,
+    openUrl: "https://auth.localtest.me/boat/device?code=OLD-CODE",
+    userCode: "OLD-CODE",
+  };
+  await using screen = await mount();
+
+  await userEvent.click(screen.getByRole("button", { name: "Sign in to Boat" }));
+  await publish(uiState({ setup: "signInBoat", setupBusy: true }));
+  await expect.element(screen.getByText("OLD-CODE")).toBeVisible();
+
+  await publish(uiState({ setup: "signInBoat", setupBusy: false }));
+  await publish(uiState({ setup: "signInBoat", setupBusy: true }));
+
+  await expect.element(screen.getByText("OLD-CODE")).not.toBeInTheDocument();
+  await expect.element(screen.getByRole("button", { name: "Show sign-in page" })).toBeEnabled();
+});
+
+it("says no server is connected instead of starting forever", async () => {
+  setup({ state: uiState({}) });
+  state.environmentId = null;
+  await using screen = await mount();
+
+  await expect.element(screen.getByRole("heading", { name: "No server connected" })).toBeVisible();
 });
 
 it("renders state but disables every action for a client that can only read", async () => {
@@ -242,4 +282,28 @@ it("restarts a failed daemon from Retry without reloading the page", async () =>
   await expect.element(screen.getByText("sail-boatd exited unexpectedly")).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: "Retry" }));
   await vi.waitFor(() => expect(state.invoked).toEqual([{ command: "get_state" }]));
+});
+
+it("offers Open in Sail on a paired machine only once its latest thread is known", async () => {
+  setup({ state: uiState({ machines: [machine({ id: "m-2", name: "dory", paired: true })] }) });
+  state.replies.get_machine_details = {
+    data: {
+      id: "m-2",
+      costToday: 0,
+      costMonth: 0,
+      awakeSecsToday: 0,
+      agents: [],
+      t3Version: "1.0.0",
+      createdAt: 0,
+      connect: false,
+    },
+  };
+  state.replies.latest_thread = { data: null };
+  await using screen = await mount();
+
+  await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+  await expect.element(screen.getByText("Sail 1.0.0")).toBeVisible();
+  await expect
+    .element(screen.getByRole("button", { name: /Open .*in Sail/ }))
+    .not.toBeInTheDocument();
 });

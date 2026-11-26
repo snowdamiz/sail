@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { boatCommandsAllowedAtom } from "~/state/boats";
 import { clientHostEnvironmentAtom } from "~/state/clientHostEnvironment";
-import { usePrimaryEnvironmentId } from "~/state/environments";
+import { useLocalEnvironmentId } from "~/state/environments";
 import { SailBrandMark } from "../SailBrandMark";
 import { type BoatAccess, BoatAccessContext, useBoatAccess } from "./access";
 import { call, useBoatsPage, useFollowBoatLink } from "./api";
@@ -50,15 +50,18 @@ function Setup({
   follow: FollowLink;
   onError: (t: string) => void;
 }) {
-  const [signIn, setSignIn] = useState<SignInPrompt | null>(null);
-  if (signIn !== null && state.setup !== "signInBoat") setSignIn(null);
+  const [signIn, setSignIn] = useState<{ prompt: SignInPrompt; waited: boolean } | null>(null);
+  if (signIn !== null) {
+    if (state.setup !== "signInBoat" || (signIn.waited && !state.setupBusy)) setSignIn(null);
+    else if (state.setupBusy && !signIn.waited) setSignIn({ ...signIn, waited: true });
+  }
 
   const act = (action: SetupAction) =>
     void call("setup_action", { action }).then(
       (reply) => {
         const link = follow(reply.openUrl);
         if (action === "signInBoat" && link.kind === "browser")
-          setSignIn({ url: link.url, userCode: reply.userCode ?? null });
+          setSignIn({ prompt: { url: link.url, userCode: reply.userCode ?? null }, waited: false });
       },
       (e) => onError(errorText(e)),
     );
@@ -70,7 +73,7 @@ function Setup({
       <SetupView
         setup={state.setup}
         busy={state.setupBusy}
-        signIn={state.setup === "signInBoat" && state.setupBusy ? signIn : null}
+        signIn={state.setup === "signInBoat" ? (signIn?.prompt ?? null) : null}
         onAction={act}
       />
     </>
@@ -307,7 +310,7 @@ function Ready({
 }
 
 export function SailBoatsApp() {
-  const environmentId = usePrimaryEnvironmentId();
+  const environmentId = useLocalEnvironmentId();
   const { page, retry } = useBoatsPage(environmentId);
   const allowed = useAtomValue(boatCommandsAllowedAtom(environmentId));
   const onHost = useAtomValue(clientHostEnvironmentAtom(environmentId));
@@ -336,6 +339,20 @@ export function SailBoatsApp() {
             <Ready state={page.state} follow={follow} toast={toast} />
           ) : page.kind === "setup" ? (
             <Setup state={page.state} follow={follow} onError={toast} />
+          ) : page.kind === "noServer" ? (
+            <>
+              <Ocean boats={[{ key: "none", name: "Sail", state: "asleep" }]}>
+                <Brand />
+              </Ocean>
+              <div className="view center">
+                <div className="empty">
+                  <h1 className="display">No server connected</h1>
+                  <p className="lede">
+                    Boats runs on the server this app connects to. Connect one, then come back.
+                  </p>
+                </div>
+              </div>
+            </>
           ) : page.kind === "offline" ? (
             <>
               <Ocean boats={[{ key: "err", name: "Sail", state: "error" }]}>

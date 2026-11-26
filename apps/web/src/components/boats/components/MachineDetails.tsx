@@ -66,7 +66,7 @@ export function MachineDetails({
   const access = useBoatAccess();
   const primary = offered(
     access,
-    primaryAction(m) ?? (m.paired ? openIn(latestThread) : ACTIONS.pair),
+    primaryAction(m) ?? (m.paired ? (latestThread ? openIn(latestThread) : null) : ACTIONS.pair),
   );
   const [primaryArmed, armPrimary] = useArmed();
 
@@ -130,6 +130,12 @@ export function MachineDetails({
               </>
             )}
           </button>
+        </div>
+      ) : pending ? (
+        <div className="view-foot details-foot">
+          <p className="caption">
+            <Dots /> {pending}
+          </p>
         </div>
       ) : null}
     </div>
@@ -218,7 +224,8 @@ function Power({
   onAction: (a: Action) => void;
 }) {
   const power = powerAction(m);
-  const canKeepAwake = useBoatAccess().can("keep_awake");
+  const access = useBoatAccess();
+  const canKeepAwake = access.can("keep_awake");
   // optimistic, so the switch moves on click; the next state is the source of truth
   const [want, setWant] = useState<boolean | null>(null);
   useEffect(() => {
@@ -252,7 +259,7 @@ function Power({
       <div className="power-row">
         <button
           className="btn btn-sm btn-quiet"
-          disabled={busy || !power || !canKeepAwake}
+          disabled={busy || !power || !access.can(power.cmd)}
           onClick={() => power && onAction(power)}
         >
           {(power ?? ACTIONS.sleep).label}
