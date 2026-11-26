@@ -119,6 +119,9 @@ function parseRequest(body: string): RelayRequest {
   if (typeof container !== "string" || container === "")
     throw new RequestError("container is required");
   if (!isStrings(argv)) throw new RequestError("argv must be strings");
+  // The fake `boat` also runs its own background work from a leading flag; callers name commands.
+  if (subcommand(argv)?.startsWith("-"))
+    throw new RequestError("the relay runs boat subcommands only", "invalid_arguments");
   if (!isRecord(env)) throw new RequestError("env must be an object");
   const callerEnv = Object.entries(env).filter(
     (entry): entry is [string, string] => CALLER_ENV.test(entry[0]) && typeof entry[1] === "string",
@@ -137,7 +140,15 @@ function readIfPresent(file: string): string {
   }
 }
 
-const listDir = (dir: string) => (NodeFS.existsSync(dir) ? NodeFS.readdirSync(dir) : []);
+/** The fake removes a sandbox's directory when it deletes the sandbox, maybe mid-read. */
+function listDir(dir: string): ReadonlyArray<string> {
+  try {
+    return NodeFS.readdirSync(dir);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+    throw error;
+  }
+}
 
 /**
  * Hosts the fake `boat` in `home` published, read from their Caddy site files, which the caller's
@@ -163,26 +174,42 @@ have=$(grep -F ' ${HOSTS_MARKER}' /etc/hosts || true)
 kept=$(grep -vF ' ${HOSTS_MARKER}' /etc/hosts || true)
 { printf '%s\\n' "$kept"; [ -z "$want" ] || printf '%s\\n' "$want"; } > /etc/hosts`;
 
+/** What each container's /etc/hosts last got, by container and start time, since Docker resets it at start. */
+const synced = new Map<string, string>();
+
 /**
- * Points every published host at Caddy inside `container`. Docker bind-mounts /etc/hosts, so it is
- * rewritten in place. Runs synchronously, which keeps two requests from interleaving the rewrite.
+ * Points every published host at Caddy inside `container`, writing only when that changed. Docker
+ * bind-mounts /etc/hosts, so it is rewritten in place. Runs synchronously, which keeps two
+ * requests from interleaving the rewrite.
  */
 function syncHosts(container: string): void {
-  const networks = inspect<Record<string, unknown>>(container, ".NetworkSettings.Networks");
-  if (!(NETWORK in networks))
+  const [networks = "{}", started = ""] = docker([
+    "inspect",
+    "--format",
+    "{{json .NetworkSettings.Networks}}\n{{.State.StartedAt}}",
+    container,
+  ])
+    .trim()
+    .split("\n");
+  if (!(NETWORK in (JSON.parse(networks) as Record<string, unknown>)))
     throw new RequestError(`${container} is not on the ${NETWORK} network`);
   const caddyIp = exists("container", CADDY_CONTAINER)
     ? inspect<string>(CADDY_CONTAINER, `(index .NetworkSettings.Networks "${NETWORK}").IPAddress`)
     : "";
-  const lines = caddyIp
-    ? publishedHosts(NodePath.join(caddyDir(), "sites"), HOME).map(
-        (host) => `${caddyIp}\t${host} ${HOSTS_MARKER}`,
-      )
-    : [];
+  const want = (
+    caddyIp
+      ? publishedHosts(NodePath.join(caddyDir(), "sites"), HOME).map(
+          (host) => `${caddyIp}\t${host} ${HOSTS_MARKER}`,
+        )
+      : []
+  ).join("\n");
+  const key = `${container} ${started}`;
+  if (synced.get(key) === want) return;
   docker(["exec", "-i", "-u", "0", container, "sh", "-c", SYNC_HOSTS], {
-    input: lines.join("\n"),
-    timeoutMs: 120_000,
+    input: want,
+    timeoutMs: 60_000,
   });
+  synced.set(key, want);
 }
 
 function runBoat(

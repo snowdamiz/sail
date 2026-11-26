@@ -6,10 +6,13 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
-import { docker, FIXTURE_LABEL, hasDocker } from "./lib/docker.ts";
+import { docker, DOCKER_TEST_TIMEOUT_MS, FIXTURE_LABEL, hasDocker } from "./lib/docker.ts";
 import { startMirror, type Mirror } from "./release-mirror.ts";
+
+// oxlint-disable-next-line t3code/no-test-timeout-or-unreasoned-skip -- Docker work on the VM every lane shares, not a hidden wait.
+vi.setConfig({ testTimeout: DOCKER_TEST_TIMEOUT_MS, hookTimeout: DOCKER_TEST_TIMEOUT_MS });
 
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 const VERSION = "1.2.3";
@@ -133,7 +136,7 @@ describe.skipIf(!hasDocker())("release mirror from a container", () => {
       `wget -qO- http://host.docker.internal:${port}/install.sh | T3CODE_VERSION=${VERSION} sh && "$HOME/.local/bin/t3" --version`,
     ]).trim();
     const { stdout: exitCode } = await execFile("docker", ["wait", containerId], {
-      timeout: 60_000,
+      timeout: DOCKER_TEST_TIMEOUT_MS,
     });
     const logs = NodeChildProcess.spawnSync("docker", ["logs", containerId], { encoding: "utf8" });
     expect(exitCode.trim(), logs.stdout + logs.stderr).toBe("0");

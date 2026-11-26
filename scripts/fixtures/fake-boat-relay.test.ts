@@ -164,6 +164,23 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
     (await run("docker", ["exec", into, "cat", "/etc/hosts"])).stdout
       .split("\n")
       .filter((line) => line.endsWith(MARKER));
+  const dockerNow = () => docker(["system", "info", "--format", "{{.SystemTime}}"]).trim();
+  const hostsRewrites = (since: string, until: string) =>
+    docker([
+      "events",
+      "--since",
+      since,
+      "--until",
+      until,
+      "--filter",
+      `container=${container}`,
+      "--filter",
+      "event=exec_start",
+      "--format",
+      "{{json .Action}}",
+    ])
+      .split("\n")
+      .filter((line) => line.includes("want=$(cat)")).length;
   const fetchInside = async (url: string) =>
     (
       await inside([
@@ -278,6 +295,17 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
     expect((await post(request)).status).toBe(401);
     expect((await post(request, "0".repeat(64))).status).toBe(401);
     expect(await calls()).toBe(before);
+  });
+
+  it("runs none of the fake's own background entry points for a caller", async () => {
+    for (const argv of [
+      ["--finish-transition", "bx-000000000000"],
+      ["--json", "--drain-outbox"],
+    ]) {
+      const ran = await post({ container, argv, env: {} }, bound);
+      expect(ran.status, argv.join(" ")).toBe(400);
+      expect(lastJson<{ code: string }>(ran.result.stderr).code).toBe("invalid_arguments");
+    }
   });
 
   it("runs nothing for, and never edits, a container it did not install into", async () => {
@@ -409,8 +437,10 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
         .split("\n")
         .filter((line) => line !== "" && !line.endsWith(MARKER));
     const before = await dockerLines();
+    const quiet = dockerNow();
     await ok(["status"]);
     await ok(["status"]);
+    expect(hostsRewrites(quiet, dockerNow()), "an unchanged /etc/hosts is left alone").toBe(0);
     expect(await dockerLines(), "Docker's own entries survive every rewrite").toEqual(before);
     expect(before.some((line) => line.includes("localhost"))).toBe(true);
     const relayed = await relayedHosts();

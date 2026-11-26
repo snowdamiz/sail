@@ -67,7 +67,7 @@ describe("fixture state", () => {
     const fake = NodePath.join(fixtures, `fake-${kind}`, `${kind}.ts`);
     const child = NodeChildProcess.spawnSync(process.execPath, [fake, ...argv], {
       encoding: "utf8",
-      env: { ...process.env, [envName]: "", XDG_STATE_HOME: state },
+      env: { ...process.env, [envName]: "", XDG_STATE_HOME: state, HOME: state },
     });
     expect(child.stderr).toBe("");
     expect(child.status).toBe(0);
