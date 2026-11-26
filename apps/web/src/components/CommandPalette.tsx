@@ -1468,10 +1468,10 @@ function OpenCommandPaletteDialog(props: {
           threadModelSelection: activeThread?.modelSelection ?? null,
           threadStarted: threadHasStarted(activeThread),
         };
-  const plainPromptLink = promptLinkInput
-    ? composerPromptLink({ ...promptLinkInput, withContext: false })
-    : null;
-  if (promptLinkInput !== null && plainPromptLink !== null) {
+  if (
+    promptLinkInput !== null &&
+    composerPromptLink({ ...promptLinkInput, withContext: false }) !== null
+  ) {
     actionItems.push({
       kind: "action",
       value: "action:copy-prompt-link",
@@ -1481,19 +1481,19 @@ function OpenCommandPaletteDialog(props: {
       run: () =>
         copyPromptLink(() => composerPromptLink({ ...promptLinkInput, withContext: false })),
     });
-    if (promptLinkRepositoryOf(promptLinkInput.project) !== null) {
-      const contextLink = composerPromptLink({ ...promptLinkInput, withContext: true });
-      if (contextLink !== null) {
-        actionItems.push({
-          kind: "action",
-          value: "action:copy-prompt-link-with-context",
-          searchTerms: ["copy", "share", "prompt", "link", "repository", "model"],
-          title: gt("Copy prompt link with repo and model"),
-          icon: <LinkIcon className={ITEM_ICON_CLASS} />,
-          run: () =>
-            copyPromptLink(() => composerPromptLink({ ...promptLinkInput, withContext: true })),
-        });
-      }
+    if (
+      promptLinkRepositoryOf(promptLinkInput.project) !== null &&
+      composerPromptLink({ ...promptLinkInput, withContext: true }) !== null
+    ) {
+      actionItems.push({
+        kind: "action",
+        value: "action:copy-prompt-link-with-context",
+        searchTerms: ["copy", "share", "prompt", "link", "repository", "model"],
+        title: gt("Copy prompt link with repo and model"),
+        icon: <LinkIcon className={ITEM_ICON_CLASS} />,
+        run: () =>
+          copyPromptLink(() => composerPromptLink({ ...promptLinkInput, withContext: true })),
+      });
     }
   }
 

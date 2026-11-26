@@ -23,7 +23,6 @@ export function cancelCodexAuthCallback(authorizationUrl: string) {
 export async function receiveCodexAuthCallback(
   authorizationUrl: string,
   openBrowser: (url: string) => Promise<boolean>,
-  // Asked when the code arrives; a refusal sends the code nowhere and ends this sign-in.
   destination?: (callbackUrl: string) => string | Promise<string>,
   signal?: AbortSignal,
 ) {
@@ -66,20 +65,21 @@ export async function receiveCodexAuthCallback(
       callback.resolve(url);
       return;
     }
-    Promise.resolve(url)
-      .then(destination)
-      .then(
-        (returnUrl) => {
-          response.writeHead(303, { location: returnUrl }).end();
-          callback.resolve(url);
-        },
-        (error: unknown) => {
+    void (async () => {
+      try {
+        const returnUrl = await destination(url);
+        if (abort.signal.aborted) throw new Error("Sign-in cancelled on this computer.");
+        response.writeHead(303, { location: returnUrl }).end();
+        callback.resolve(url);
+      } catch (error) {
+        if (!response.headersSent) {
           response
             .writeHead(403, { "content-type": "text/plain; charset=utf-8" })
             .end("This sign-in was not returned to T3 Code. Start it again from T3 Code.");
-          callback.reject(error);
-        },
-      );
+        }
+        callback.reject(error);
+      }
+    })();
   });
   const cancelled = () => callback.reject(new Error("Sign-in cancelled on this computer."));
   abort.signal.addEventListener("abort", cancelled, { once: true });

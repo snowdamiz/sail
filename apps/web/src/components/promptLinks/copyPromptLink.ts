@@ -72,7 +72,6 @@ export function composerPromptLink(input: {
   });
 }
 
-/** Builds the link when copying: the origin it links to can change after render. */
 export async function copyPromptLink(build: () => string | null): Promise<void> {
   try {
     const link = build();

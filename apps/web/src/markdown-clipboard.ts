@@ -1,5 +1,8 @@
+import { EnvironmentId, type ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { UNFINISHED_DRIVE_PATH } from "@t3tools/shared/markdownLinks";
-import { formatHostedThreadLink, replaceThreadLinks } from "@t3tools/shared/threadLinks";
+import { formatHostedThreadLink } from "@t3tools/shared/threadLinks";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import { linkOrigin } from "./hostedPairing";
 
@@ -22,6 +25,27 @@ const LIST_ITEM_CHECKBOX = ':scope > input[type="checkbox"], :scope > p > input[
 export interface MarkdownClipboardPayload {
   text: string;
   html: string;
+}
+
+const ThreadLinkCopy = Schema.fromJsonString(
+  Schema.Tuple([EnvironmentId, ThreadId, Schema.String]),
+);
+const encodeThreadLinkCopy = Schema.encodeSync(ThreadLinkCopy);
+const decodeThreadLinkCopy = Schema.decodeUnknownOption(ThreadLinkCopy);
+
+export function threadLinkCopyData(ref: ScopedThreadRef, title: string): string {
+  return encodeThreadLinkCopy([ref.environmentId, ref.threadId, title]);
+}
+
+/** A thread chip without its own Markdown copies as a link at the origin in use now. */
+export function markdownCopyOf(element: Element): string | null {
+  const markdown = element.getAttribute("data-markdown-copy");
+  if (markdown !== null) return markdown;
+  return Option.match(decodeThreadLinkCopy(element.getAttribute("data-markdown-thread-link")), {
+    onNone: () => null,
+    onSome: ([environmentId, threadId, title]) =>
+      formatHostedThreadLink({ environmentId, threadId }, title, linkOrigin()),
+  });
 }
 
 function isSkippedElement(element: Element): boolean {
@@ -241,7 +265,7 @@ function escapeProse(text: string): string {
 }
 
 function serializeAnchor(anchor: Element, inTableCell: boolean): string {
-  const markdownCopy = anchor.getAttribute("data-markdown-copy");
+  const markdownCopy = markdownCopyOf(anchor);
   if (markdownCopy !== null) return escapeTablePipes(markdownCopy, inTableCell);
   const content = serializeChildren(anchor, inTableCell);
   const href = anchor.getAttribute("href") ?? "";
@@ -285,7 +309,7 @@ function serializeNode(node: Node, inTableCell = false): string {
   if (element.hasAttribute("data-markdown-details")) {
     return escapeTablePipes(serializeDetails(element), inTableCell);
   }
-  const markdownCopy = element.getAttribute("data-markdown-copy");
+  const markdownCopy = markdownCopyOf(element);
   if (markdownCopy !== null) {
     // A diagram copies as its fenced source, which is code too.
     if (element.hasAttribute("data-markdown-mermaid")) {
@@ -816,33 +840,16 @@ function cloneWithListMarkers(range: Range, container: Element): void {
   }
 }
 
-// A thread chip renders before the link origin can be known, as on a desktop whose server starts later.
-function linkThreadChips(container: Element, origin: string | undefined) {
-  for (const chip of container.querySelectorAll("[data-markdown-thread-link]")) {
-    const markdown = chip.getAttribute("data-markdown-copy") ?? "";
-    chip.setAttribute(
-      "data-markdown-copy",
-      replaceThreadLinks(markdown, ({ environmentId, threadId }, label) =>
-        environmentId === null
-          ? undefined
-          : formatHostedThreadLink({ environmentId, threadId }, label ?? "", origin),
-      ),
-    );
-  }
-}
-
 export function chatMarkdownClipboardPayload(
   selection: Selection,
 ): MarkdownClipboardPayload | null {
   const texts: string[] = [];
   const htmls: string[] = [];
-  const origin = linkOrigin();
   for (let index = 0; index < selection.rangeCount; index += 1) {
     const range = selection.getRangeAt(index);
     if (range.collapsed) continue;
     const container = document.createElement("div");
     cloneWithListMarkers(range, container);
-    linkThreadChips(container, origin);
     // The indentation typed at a line start only shows; pasted, it would turn lines into code.
     for (const indentation of container.querySelectorAll("[data-leading-whitespace]")) {
       indentation.remove();

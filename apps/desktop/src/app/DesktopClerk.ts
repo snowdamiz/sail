@@ -9,6 +9,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
+import type { EnvironmentId } from "@t3tools/contracts";
 import {
   ConnectionCatalogDocument,
   EMPTY_CONNECTION_CATALOG_DOCUMENT,
@@ -23,7 +24,6 @@ import * as ElectronShell from "../electron/ElectronShell.ts";
 import { providerAuthReturnUrl } from "@t3tools/shared/providerAuthReturnUrl";
 import { promptLinkAppPath } from "@t3tools/shared/promptLinks";
 import { readPairingAppLink } from "@t3tools/shared/remote";
-import { webOrigin } from "@t3tools/shared/url";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/relayAuth";
 import * as ElectronApp from "../electron/ElectronApp.ts";
@@ -41,48 +41,33 @@ const decodeConnectionCatalog = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ConnectionCatalogDocument),
 );
 
-/**
- * Any page can open a handoff link, so trust comes only from what this desktop knows now. A saved
- * server's own page takes a code only for that server. The hosted app and pages on this computer
- * serve many environments, so they take one only for an environment saved and enabled here.
- */
+/** Any page can open a handoff link, so trust comes only from what this desktop knows now. */
 function acceptCodexAuthHandoff(
   value: string,
   development: boolean,
   { targets, profiles, disabledEnvironmentIds }: ConnectionCatalogDocument,
 ) {
-  const enabled = new Set(
-    targets.flatMap(({ environmentId }) =>
-      disabledEnvironmentIds.includes(environmentId) ? [] : [environmentId],
-    ),
-  );
-  const serverPages = profiles.flatMap((profile) => {
-    // A learned route is an address its server reported, not one the user chose.
-    const origin =
-      profile._tag === "BearerConnectionProfile" &&
-      profile.learned !== true &&
-      enabled.has(profile.environmentId)
-        ? webOrigin(profile.httpBaseUrl)
-        : undefined;
-    return origin === undefined ? [] : [{ origin, environmentId: profile.environmentId }];
-  });
   const hostedAppUrl =
     typeof __T3CODE_BUILD_HOSTED_APP_URL__ === "undefined"
       ? undefined
       : __T3CODE_BUILD_HOSTED_APP_URL__.trim() || undefined;
-  const trustedOrigins = [hostedAppUrl, ...serverPages.map(({ origin }) => origin)];
-  const request = readCodexAuthHandoff(value, development, trustedOrigins);
+  const serverPages = (environmentId?: EnvironmentId) =>
+    profiles.flatMap((profile) => {
+      const chosenByUser = profile._tag === "BearerConnectionProfile" && profile.learned !== true;
+      return chosenByUser &&
+        (environmentId === undefined || profile.environmentId === environmentId)
+        ? [profile.httpBaseUrl]
+        : [];
+    });
+  const request = readCodexAuthHandoff(value, development, [hostedAppUrl, ...serverPages()]);
   if (!request) return undefined;
-  const returnOrigin = new URL(request.returnUrl).origin;
-  const servers =
-    returnOrigin === webOrigin(hostedAppUrl)
-      ? []
-      : serverPages.filter(({ origin }) => origin === returnOrigin);
-  const accepted =
-    servers.length > 0
-      ? servers.some(({ environmentId }) => environmentId === request.environmentId)
-      : enabled.has(request.environmentId);
-  return accepted ? { request, trustedOrigins } : undefined;
+  const enabled =
+    targets.some(({ environmentId }) => environmentId === request.environmentId) &&
+    !disabledEnvironmentIds.includes(request.environmentId);
+  const trustedOrigins = [hostedAppUrl, ...serverPages(request.environmentId)];
+  return enabled && providerAuthReturnUrl(request.returnUrl, trustedOrigins)
+    ? { request, trustedOrigins }
+    : undefined;
 }
 
 export class DesktopClerkBridgeInitializationError extends Schema.TaggedError<DesktopClerkBridgeInitializationError>()(
@@ -265,22 +250,24 @@ export const make = Effect.gen(function* () {
               );
               return yield* revealMainWindow;
             }
+            const deliveryUrlIfStillTrusted = async (callbackUrl: string) => {
+              const current = await runPromise(acceptHandoff(value));
+              if (!current) {
+                await runPromise(
+                  Effect.logWarning(
+                    "Refused a ChatGPT desktop handoff whose environment was disabled or removed during sign-in.",
+                  ),
+                );
+                throw new Error("This sign-in's environment is no longer trusted.");
+              }
+              return codexAuthDeliveryUrl(current.request, callbackUrl, current.trustedOrigins);
+            };
             yield* Effect.tryPromise({
               try: (signal) =>
                 receiveCodexAuthCallback(
                   accepted.request.authorizationUrl,
                   (url) => runPromise(shell.openExternal(url)),
-                  // Asked again on arrival: the environment can be disabled or removed during sign-in.
-                  async (callbackUrl) => {
-                    const current = await runPromise(acceptHandoff(value));
-                    if (!current)
-                      throw new Error("This sign-in's environment is no longer trusted.");
-                    return codexAuthDeliveryUrl(
-                      current.request,
-                      callbackUrl,
-                      current.trustedOrigins,
-                    );
-                  },
+                  deliveryUrlIfStillTrusted,
                   signal,
                 ),
               catch: () =>

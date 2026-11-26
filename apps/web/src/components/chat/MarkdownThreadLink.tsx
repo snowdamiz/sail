@@ -136,7 +136,6 @@ export function MarkdownThreadLink(props: {
     <ThreadContextChip
       record={{ ...ref, title }}
       projectId={resolved?.metadata.projectId ?? null}
-      copyAsLink
     />
   );
 }

@@ -9,6 +9,7 @@ import {
 } from "../ui/anchoredCopyToast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { promptLinkFor } from "../promptLinks/copyPromptLink";
+import { usePrimaryEnvironmentId } from "~/state/environments";
 
 export const MessageCopyButton = memo(function MessageCopyButton({
   text,
@@ -19,7 +20,6 @@ export const MessageCopyButton = memo(function MessageCopyButton({
   variant = "outline",
   className,
 }: {
-  /** A function is read when clicked; null copies nothing. */
   text: string | (() => string | null);
   label?: string;
   icon?: LucideIcon;
@@ -65,9 +65,14 @@ export const MessageCopyButton = memo(function MessageCopyButton({
   );
 });
 
-/** The link is built when clicked: the origin it links to can change after render. */
-export function PromptLinkCopyButton({ prompt }: { prompt: string }) {
+export const PromptLinkCopyButton = memo(function PromptLinkCopyButton({
+  prompt,
+}: {
+  prompt: string;
+}) {
   const gt = useGT();
+  // A desktop has no link origin until its local server registers as the primary environment.
+  usePrimaryEnvironmentId();
   if (promptLinkFor(prompt) === null) return null;
   return (
     <MessageCopyButton
@@ -77,4 +82,4 @@ export function PromptLinkCopyButton({ prompt }: { prompt: string }) {
       variant="ghost"
     />
   );
-}
+});
