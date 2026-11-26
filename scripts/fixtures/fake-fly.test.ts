@@ -187,6 +187,8 @@ const MUTATING: Readonly<Record<string, boolean>> = {
   bogus: false,
 };
 const VALUE_FLAGS = new Set(["-t", "--access-token", "-a", "--app"]);
+// flyctl's `env.IsCI`; with Depot, flyctl's default builder, none of them changes where it looks.
+const CI_VARIABLES = ["CI", "GITHUB_ACTIONS", "CONTINUOUS_INTEGRATION", "BUILD_NUMBER", "RUN_ID"];
 
 const keys = (value: unknown) => Object.keys(value as object).toSorted();
 const sorted = (list: ReadonlyArray<string>) => list.toSorted();
@@ -225,8 +227,8 @@ describe.skipIf(!hasDocker())("fake fly", () => {
   const suffix = NodeCrypto.randomBytes(3).toString("hex");
   const app = `fake-fly-test-${suffix}`;
   const image = `sail-fake-fly-test:${suffix}`;
-  // Pulling from a closed local port fails at once, so a remote lookup of it never finds it.
-  const unpullable = `localhost:1/sail-fake-fly-test:${suffix}`;
+  // Docker refuses a closed IPv4 port at once; `localhost` tries `[::1]` in the VM and waits 30 s.
+  const unpullable = `127.0.0.1:1/sail-fake-fly-test:${suffix}`;
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "fake-fly-test-"));
   const home = NodePath.join(root, "home");
   const appDir = NodePath.join(root, "app");
@@ -263,7 +265,7 @@ describe.skipIf(!hasDocker())("fake fly", () => {
   };
   const fly = (
     args: ReadonlyArray<string>,
-    extraEnv: Readonly<Record<string, string>> = {},
+    extraEnv: Readonly<Record<string, string | undefined>> = {},
     cwd = appDir,
   ): Run => {
     calls++;
@@ -348,6 +350,7 @@ primary_region = "iad" # comment
 
   [[http_service.checks]]
     path = "/checked"
+    grace_period = "0"
     headers = { X-Check = "yes" }
 
 [[mounts]]
@@ -364,7 +367,16 @@ primary_region = "iad" # comment
 
   afterAll(() => {
     follower?.kill("SIGTERM");
-    for (const name of [app, `${app}-b`, `${app}-c`, `${app}-d`, `${app}-f`, `${app}-s`]) {
+    for (const name of [
+      app,
+      `${app}-b`,
+      `${app}-c`,
+      `${app}-d`,
+      `${app}-f`,
+      `${app}-l`,
+      `${app}-s`,
+      `${app}-t`,
+    ]) {
       fly(["apps", "destroy", name, "--yes"]);
       flyElsewhere(["apps", "destroy", name, "--yes"]);
       run(["apps", "destroy", name, "--yes"], { FAKE_FLY_HOME: slashHome }, root);
@@ -591,6 +603,9 @@ primary_region = "iad" # comment
       ["internal_port", "[http_service]\n  internal_port = 8080.5\n"],
       ["kill_timeout", 'kill_timeout = "5 parsecs"\n'],
       ["interval", `${CHECK}    interval = "5 parsecs"\n`],
+      ["interval", `${CHECK}    interval = "${"9".repeat(400)}s"\n`],
+      ["unsupported value: +Inf", `${CHECK}    interval = inf\n`],
+      ["unsupported value: NaN", `${CHECK}    timeout = nan\n`],
       ["headers", `${CHECK}    headers = { X-Check = 1 }\n`],
       [
         "checks",
@@ -600,14 +615,21 @@ primary_region = "iad" # comment
     for (const [field, body] of configs) {
       const file = NodePath.join(root, `bad-${NodeCrypto.randomBytes(3).toString("hex")}.toml`);
       NodeFS.writeFileSync(file, `app = "${app}"\n${body}`);
-      const result = fly(["deploy", "-c", file, "--image", image]);
+      const result = fly(["deploy", "-c", file, "--image", image, "--local-only"]);
       expect(result.status, body).toBe(1);
       expect(result.stderr, body).toMatch(
         /^Error: (failed loading app config|App configuration is not valid)/,
       );
       if (field !== "duplicate" && field !== "bare") expect(result.stderr, body).toContain(field);
     }
-    const timeout = fly(["deploy", "--image", image, "--wait-timeout", "5sgarbage"]);
+    const timeout = fly([
+      "deploy",
+      "--image",
+      image,
+      "--local-only",
+      "--wait-timeout",
+      "5sgarbage",
+    ]);
     expect(timeout).toMatchObject({
       status: 1,
       stderr: expect.stringContaining("invalid duration"),
@@ -616,36 +638,62 @@ primary_region = "iad" # comment
   });
 
   it("refuses deploy flags flyctl refuses, before touching Docker", () => {
-    expect(fly(["deploy", "--image", image, "--strategy", "bogus"])).toMatchObject({
+    expect(fly(["deploy", "--image", image, "--local-only", "--strategy", "bogus"])).toMatchObject({
       status: 1,
       stderr: expect.stringContaining(
         "unsupported deployment strategy 'bogus'; Apps v2 supports the following strategies: canary, rolling, immediate, bluegreen",
       ),
     });
-    expect(fly(["deploy", "--image", image, "--strategy", "canary"])).toMatchObject({
-      status: 1,
-      stderr: expect.stringContaining(
-        "canary deployment strategy is not supported when using mounted volumes",
-      ),
-    });
+    expect(fly(["deploy", "--image", image, "--local-only", "--strategy", "canary"])).toMatchObject(
+      {
+        status: 1,
+        stderr: expect.stringContaining(
+          "canary deployment strategy is not supported when using mounted volumes",
+        ),
+      },
+    );
     expect(fly(["deploy", "--image", unpullable, "--remote-only"])).toMatchObject({
       status: 1,
       stderr: expect.stringContaining(`could not find image "${unpullable}"`),
     });
-    expect(fly(["deploy", "--image", image, "--remote-only", "--local-only"])).toMatchObject({
+    expect(
+      fly(["deploy", "--image", unpullable, "--remote-only", "--local-only", "--ha=false"]),
+    ).toMatchObject({
       status: 1,
-      stderr: "Error: no docker daemon available\n",
+      stderr: "Error: failed to fetch an image or build from source: no docker daemon available\n",
     });
     expect(exists("container", `sail-fly-${app}`)).toBe(false);
   });
 
+  it("looks in the local Docker daemon only with --local-only, in CI or not", () => {
+    const local = `${app}-l`;
+    ok(["apps", "create", local]);
+    const noCi = Object.fromEntries(CI_VARIABLES.map((name) => [name, undefined]));
+    for (const ci of [noCi, { ...noCi, CI: "" }, { ...noCi, GITHUB_ACTIONS: "true" }]) {
+      expect(
+        fly(["deploy", "-a", local, "--image", unpullable, "--ha=false"], ci, root),
+        JSON.stringify(ci),
+      ).toMatchObject({
+        status: 1,
+        stderr: expect.stringContaining(`could not find image "${unpullable}"`),
+      });
+    }
+    expect(exists("container", `sail-fly-${local}`)).toBe(false);
+    ok(["apps", "destroy", local, "--yes"]);
+  });
+
   it("deploys behind Caddy with Fly Proxy's headers", async () => {
     const [volume] = volumes();
-    const first = fly(["deploy", "--image", image, "--ha=false", "--strategy", "immediate"]);
-    expect(first).toMatchObject({ status: 0 });
-    expect(first.stderr, "real flyctl needs --local-only for a local image").toContain(
+    const first = fly([
+      "deploy",
+      "--image",
+      image,
       "--local-only",
-    );
+      "--ha=false",
+      "--strategy",
+      "immediate",
+    ]);
+    expect(first).toMatchObject({ status: 0 });
     const deployed = first.stdout;
     url = publicUrl(`${app}.localtest.me`);
     expect(deployed.trimEnd().split("\n").at(-1)).toBe(`Visit your newly deployed app at ${url}/`);
@@ -725,7 +773,6 @@ primary_region = "iad" # comment
       "immediate",
     ]);
     expect(redeployed).toMatchObject({ status: 0 });
-    expect(redeployed.stderr).not.toContain("--local-only");
     expect(redeployed.stdout).toContain(
       `Updating existing machines in '${app}' with immediate strategy\n`,
     );
@@ -852,7 +899,7 @@ primary_region = "iad" # comment
     expect(fly(["machine", "destroy", firstMachine]).status).toBe(1);
     ok(["machine", "destroy", firstMachine, "--force"]);
     ok(["volumes", "destroy", original, "-y"]);
-    ok(["deploy", "--image", image]);
+    ok(["deploy", "--image", image, "--local-only"]);
 
     expect(machineId()).not.toBe(firstMachine);
     expect(volumes()).toMatchObject([{ id: restored.id, attached_machine_id: machineId() }]);
@@ -912,7 +959,12 @@ primary_region = "iad" # comment
         method: "GET",
         path: "/",
       },
-      { type: "http", path: "/checked", headers: [{ name: "X-Check", values: ["yes"] }] },
+      {
+        type: "http",
+        grace_period: "0s",
+        path: "/checked",
+        headers: [{ name: "X-Check", values: ["yes"] }],
+      },
     ]);
   });
 
@@ -929,7 +981,7 @@ primary_region = "iad" # comment
       image,
     ]).trim();
     ok(["apps", "create", taken]);
-    const deployed = fly(["deploy", "-a", taken, "--image", image]);
+    const deployed = fly(["deploy", "-a", taken, "--image", image, "--local-only"]);
     expect(deployed.status).toBe(1);
     expect(deployed.stderr).toContain("another fake fly home");
     ok(["apps", "destroy", taken, "--yes"]);
@@ -987,6 +1039,14 @@ primary_region = "iad" # comment
       stderr: expect.stringContaining("BADPAIR"),
     });
     expect(builtImages(built)).toBe("");
+    expect(
+      fly(["deploy", dir, "--remote-only", "--local-only", "--ha=false"], {}, root),
+    ).toMatchObject({
+      status: 1,
+      stderr:
+        "Error: failed to fetch an image or build from source: docker is unavailable to build the deployment image\n",
+    });
+    expect(builtImages(built)).toBe("");
     expect(fly(["deploy", dir], {}, root)).toMatchObject({
       status: 1,
       stderr: expect.stringContaining("failed creating volume"),
@@ -1002,8 +1062,51 @@ primary_region = "iad" # comment
       `label=sail-fixture.fly-app=${built}`,
     ]).trim();
     expect(labelled).toBe(builtImages(built));
+    const otherTag = `sail-fake-fly-test-other:${suffix}`;
+    docker(["tag", labelled, otherTag]);
     ok(["apps", "destroy", built, "--yes"]);
     expect(builtImages(built)).toBe("");
+    expect(exists("image", otherTag), "a tag someone else added survives").toBe(true);
+    docker(["image", "rm", otherTag]);
+  });
+
+  it("reads [deploy] strategy from fly.toml, which --strategy overrides", () => {
+    const strategic = `${app}-t`;
+    const dir = NodePath.join(root, "strategy-app");
+    NodeFS.mkdirSync(dir, { recursive: true });
+    const deployWith = (strategy: string, more = "", flags: ReadonlyArray<string> = []) => {
+      NodeFS.writeFileSync(
+        NodePath.join(dir, "fly.toml"),
+        `app = "${strategic}"\n\n[deploy]\n  strategy = "${strategy}"\n${more}`,
+      );
+      return fly(
+        ["deploy", dir, "--image", image, "--local-only", "--ha=false", ...flags],
+        {},
+        root,
+      );
+    };
+    ok(["apps", "create", strategic]);
+    const bogus = deployWith("bogus", "", ["--strategy", "rolling"]);
+    expect(bogus).toMatchObject({ status: 1, stderr: "Error: App configuration is not valid\n" });
+    expect(bogus.stdout).toContain(
+      "unsupported deployment strategy 'bogus'; Apps v2 supports the following strategies: canary, rolling, immediate, bluegreen",
+    );
+    const mounts = '\n[[mounts]]\n  source = "data"\n  destination = "/data"\n';
+    expect(deployWith("canary", mounts)).toMatchObject({
+      status: 1,
+      stdout: expect.stringContaining(
+        "canary deployment strategy is not supported when using mounted volumes",
+      ),
+    });
+    expect(exists("container", `sail-fly-${strategic}`)).toBe(false);
+    expect(deployWith("bluegreen")).toMatchObject({ status: 0 });
+    expect(deployWith("bluegreen").stdout).toContain(
+      `Updating existing machines in '${strategic}' with bluegreen strategy\n`,
+    );
+    expect(deployWith("bluegreen", "", ["--strategy", "immediate"]).stdout).toContain(
+      `Updating existing machines in '${strategic}' with immediate strategy\n`,
+    );
+    ok(["apps", "destroy", strategic, "--yes"]);
   });
 
   it("treats a home written with a trailing slash as the same home", () => {
@@ -1014,7 +1117,7 @@ primary_region = "iad" # comment
       0,
     );
     const deployed = run(
-      ["deploy", "-a", slashed, "--image", image, "--ha=false"],
+      ["deploy", "-a", slashed, "--image", image, "--local-only", "--ha=false"],
       { FAKE_FLY_HOME: slashHome },
       root,
     );
@@ -1059,7 +1162,16 @@ primary_region = "iad" # comment
       `app = "${checked}"\n\n[http_service]\n  internal_port = 8080\n\n  [[http_service.checks]]\n    path = "/"\n\n  [[http_service.checks]]\n    path = "/unhealthy"\n`,
     );
     ok(["apps", "create", checked]);
-    const failed = fly(["deploy", "-c", "checks.toml", "--image", image, "--wait-timeout", "20s"]);
+    const failed = fly([
+      "deploy",
+      "-c",
+      "checks.toml",
+      "--image",
+      image,
+      "--local-only",
+      "--wait-timeout",
+      "20s",
+    ]);
     expect(failed.status).toBe(1);
     expect(failed.stderr).toContain("timeout reached waiting for machine");
     ok(["apps", "destroy", checked, "--yes"]);

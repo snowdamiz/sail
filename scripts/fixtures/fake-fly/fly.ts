@@ -727,19 +727,24 @@ function stopMachineContainer(app: string, stop: StopConfig | undefined): void {
   );
 }
 
-/** By label, so a deploy that failed after its build leaves nothing behind either. */
-function removeBuiltImages(app: string): void {
-  const ids = docker([
+/**
+ * By label, so a deploy that failed after its build leaves nothing behind either, and by the
+ * builds' own tags, so a tag someone else put on the image keeps it.
+ */
+function removeBuiltImages(app: string, recordedTag: string | undefined): void {
+  const tags = docker([
     "image",
     "ls",
-    "--quiet",
-    "--no-trunc",
     "--filter",
     `label=${HOME_LABEL}=${HOME_ID}`,
     "--filter",
     `label=${APP_LABEL}=${app}`,
-  ]).trim();
-  if (ids) docker(["image", "rm", "--force", ...new Set(ids.split("\n"))]);
+    "--format",
+    "{{.Repository}}:{{.Tag}}",
+  ])
+    .split("\n")
+    .filter((tag) => tag.startsWith(`registry.fly.io/${app}:deployment-`));
+  for (const tag of new Set([...tags, recordedTag])) removeBuiltTag(tag);
 }
 
 function removeBuiltTag(tag: string | undefined): void {
@@ -823,7 +828,7 @@ function appsList(ctx: Ctx): number {
 function destroyApp(name: string): void {
   const machine = machineOf(name);
   destroyMachineContainer(name);
-  removeBuiltImages(name);
+  removeBuiltImages(name, machine?.builtTag);
   if (machine) remove("machines", machine.id);
   for (const volume of all<VolumeRecord>("volumes").filter((v) => v.app === name)) {
     removeDockerVolume(volumeName(volume.id));
@@ -1103,11 +1108,26 @@ function findLocally(ref: string): LocalImage | undefined {
   return localImage(ref);
 }
 
+/**
+ * The daemon flyctl's `newDockerClientFactory` picks (imgsrc/docker.go:184-202). Depot, its default
+ * builder, keeps `env.IsCI` from preferring the local daemon (`NewDockerDaemonType`), so only
+ * `--local-only` reaches it.
+ */
+function dockerDaemon(ctx: Ctx): "local" | "remote" | "none" {
+  if (!bool(ctx, "local-only")) return "remote";
+  return bool(ctx, "remote-only") ? "none" : "local";
+}
+
 function resolveImage(ctx: Ctx, appName: string, loaded: LoadedConfig): ResolvedImage {
   const requested = str(ctx, "image") ?? loaded.config.buildImage;
   const deployment = `deployment-${ulid()}`;
+  const daemon = dockerDaemon(ctx);
   out("==> Building image\n");
   if (!requested) {
+    if (daemon === "none")
+      throw new FlyError(
+        "failed to fetch an image or build from source: docker is unavailable to build the deployment image",
+      );
     const dockerfile = NodePath.resolve(
       loaded.dir,
       str(ctx, "dockerfile") ?? loaded.config.dockerfile ?? "Dockerfile",
@@ -1153,14 +1173,11 @@ function resolveImage(ctx: Ctx, appName: string, loaded: LoadedConfig): Resolved
       },
     };
   }
-  // flyctl's local resolver skips itself when --remote-only leaves it no local daemon.
-  const local = bool(ctx, "remote-only") ? undefined : findLocally(requested);
+  // flyctl's no-daemon factory is not remote, so its local resolver runs and fails first.
+  if (daemon === "none")
+    throw new FlyError("failed to fetch an image or build from source: no docker daemon available");
+  const local = daemon === "local" ? findLocally(requested) : undefined;
   if (local) {
-    // flyctl prefers its remote builder outside CI (imgsrc/docker.go:184), which cannot see this image.
-    if (!bool(ctx, "local-only"))
-      err(
-        `fake fly: found ${requested} in the local Docker daemon, which real flyctl searches outside CI only with --local-only\n`,
-      );
     out(`image found: ${local.id}\n`);
     return {
       run: local.id,
@@ -1318,13 +1335,13 @@ function parseEnv(pairs: ReadonlyArray<string>): Readonly<Record<string, string>
 
 const STRATEGIES = ["canary", "rolling", "immediate", "bluegreen"];
 
-/** flyctl's `validateDeploySection` on `--strategy`; this fake replaces its one machine in place for each. */
-function deployStrategy(
-  strategy: string | undefined,
+/** flyctl's `validateDeploySection` on a strategy; this fake replaces its one machine in place for each. */
+function validateStrategy(
+  strategy: string,
   config: DeployConfig,
   file: string | undefined,
-): string {
-  if (!strategy) return "rolling";
+  print: (text: string) => void,
+): void {
   const problems = [
     ...(STRATEGIES.includes(strategy)
       ? []
@@ -1335,8 +1352,8 @@ function deployStrategy(
       ? ["error canary deployment strategy is not supported when using mounted volumes"]
       : []),
   ];
-  if (problems.length === 0) return strategy;
-  err(`Validating ${file ?? ""}\n${problems.join("")}\n   ✘invalid app configuration\n`);
+  if (problems.length === 0) return;
+  print(`Validating ${file ?? ""}\n${problems.join("")}\n   ✘invalid app configuration\n`);
   throw new FlyError("App configuration is not valid");
 }
 
@@ -1358,10 +1375,11 @@ function deploy(ctx: Ctx): number {
   out("==> Verifying app config\n");
   const config = loaded.file ? loaded.config : (app.config ?? EMPTY_CONFIG);
   const extraEnv = parseEnv(list(ctx, "env"));
-  const strategy = deployStrategy(str(ctx, "strategy"), config, loaded.file);
+  // flyctl checks the fly.toml strategy before `--strategy` replaces it (deploy.go:773, machines.go:853-858).
+  if (config.deployStrategy) validateStrategy(config.deployStrategy, config, loaded.file, out);
+  const strategy = str(ctx, "strategy") || config.deployStrategy || "rolling";
+  validateStrategy(strategy, config, loaded.file, err);
   out(`--> Verified app config\n`);
-  if (bool(ctx, "remote-only") && bool(ctx, "local-only"))
-    throw new FlyError("no docker daemon available");
   const http = config.http;
   const probes = healthProbes(appName, http);
   if (ctx.flags.get("ha") !== false)

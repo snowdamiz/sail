@@ -55,6 +55,7 @@ export interface DeployConfig {
   readonly cpuKind: string | undefined;
   readonly buildImage: string | undefined;
   readonly dockerfile: string | undefined;
+  readonly deployStrategy: string | undefined;
 }
 
 export const EMPTY_CONFIG: DeployConfig = {
@@ -69,9 +70,10 @@ export const EMPTY_CONFIG: DeployConfig = {
   cpuKind: undefined,
   buildImage: undefined,
   dockerfile: undefined,
+  deployStrategy: undefined,
 };
 
-const GO_DURATION = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
+const GO_DURATION = /^(0|(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+)$/;
 const DURATION_UNIT_NS: Readonly<Record<string, number>> = {
   ns: 1,
   us: 1e3,
@@ -82,13 +84,13 @@ const DURATION_UNIT_NS: Readonly<Record<string, number>> = {
   h: 3.6e12,
 };
 
-/** Go's `time.ParseDuration` in nanoseconds, minus signs and the bare `0`, which nothing here passes. */
+/** Go's `time.ParseDuration` in nanoseconds, up to its int64 limit, minus signs, which nothing here passes. */
 function durationNs(text: string): number | undefined {
   if (!GO_DURATION.test(text)) return undefined;
   let total = 0;
   for (const [, amount, , unit] of text.matchAll(/(\d+(\.\d+)?)(ns|us|µs|ms|s|m|h)/g))
     total += Number(amount) * (DURATION_UNIT_NS[unit ?? ""] ?? 0);
-  return Math.round(total);
+  return total < 2 ** 63 ? Math.round(total) : undefined;
 }
 
 export function durationMs(text: string): number | undefined {
@@ -160,6 +162,20 @@ const STOP_SIGNALS = new Set([
 const isRawTable = (value: RawValue): value is Raw =>
   typeof value === "object" && !Array.isArray(value) && !(value instanceof Date);
 
+/** flyctl turns fly.toml into JSON before decoding it, and `encoding/json` refuses these. */
+function notFinite(value: RawValue): string | undefined {
+  if (typeof value === "number") {
+    if (Number.isNaN(value)) return "NaN";
+    return Number.isFinite(value) ? undefined : value > 0 ? "+Inf" : "-Inf";
+  }
+  if (typeof value !== "object" || value instanceof Date) return undefined;
+  for (const item of Object.values(value)) {
+    const found = notFinite(item);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
 /** Reads `fly.toml` the way flyctl's patches and JSON decode do, failing on what they reject. */
 function configReader(file: string) {
   const fail = (message: string) =>
@@ -215,6 +231,8 @@ function configReader(file: string) {
 
 function toDeployConfig(toml: Raw, file: string): DeployConfig {
   const field = configReader(file);
+  const unsupported = notFinite(toml);
+  if (unsupported !== undefined) throw field.fail(`json: unsupported value: ${unsupported}`);
   const env = Object.fromEntries(
     Object.entries(field.table(toml.env, "env")).map(([key, value]) => [
       key,
@@ -285,6 +303,7 @@ function toDeployConfig(toml: Raw, file: string): DeployConfig {
   const killTimeout = killTimeoutText(toml.kill_timeout, field.fail);
 
   const build = field.table(toml.build, "build");
+  const deploy = field.table(toml.deploy, "deploy");
   return {
     app: field.string(toml.app, "Config.app"),
     primaryRegion: field.string(toml.primary_region, "Config.primary_region"),
@@ -303,6 +322,7 @@ function toDeployConfig(toml: Raw, file: string): DeployConfig {
     cpuKind: field.string(vm.cpu_kind, "Compute.vm.cpu_kind") ?? size?.[1],
     buildImage: field.string(build.image, "Build.build.image"),
     dockerfile: field.string(build.dockerfile, "Build.build.dockerfile"),
+    deployStrategy: field.string(deploy.strategy, "Deploy.deploy.strategy"),
   };
 }
 
