@@ -32,8 +32,8 @@ export interface Outbox {
   readonly dir: (sandboxId: string) => string;
   /** Hands queued requests to a detached worker, so no command waits on another's commit. */
   readonly start: () => void;
-  /** The worker's own loop; it exits once the queue is empty. */
-  readonly work: () => void;
+  /** Saves the queued requests `match` covers until none are left or another process holds the lock. */
+  readonly work: (match?: Match) => void;
   /**
    * Saves the matching requests, or waits for the worker saving them, within `budgetMs`. False
    * when the budget ran out with one still queued or saving.
@@ -60,8 +60,8 @@ function hasCode(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
 }
 
-/** Alive only while that pid still runs this fake: a dead worker's pid can be reused by anything. */
-function isAlive(pid: number): boolean {
+/** Alive only while that pid still runs this fake: a dead process's pid can be reused by anything. */
+export function isAlive(pid: number): boolean {
   const ps = NodeChildProcess.spawnSync("ps", ["-o", "command=", "-p", String(pid)], {
     encoding: "utf8",
   });
@@ -189,8 +189,8 @@ export function outbox({ home, entry, save }: OutboxOptions): Outbox {
     return true;
   };
 
-  const work = (): void => {
-    while (queued().length > 0) if (!drainHolding()) return;
+  const work = (match: Match = {}): void => {
+    while (queued(match).length > 0) if (!drainHolding(match)) return;
   };
 
   const settle = async (match: Match, budgetMs: number): Promise<boolean> => {

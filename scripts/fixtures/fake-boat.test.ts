@@ -12,7 +12,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { AUTH_HOST, caddyDir, publicUrl, removeSite, rootCertPath } from "./lib/caddy.ts";
 import { docker, dockerSucceeds, hasDocker, DOCKER_TEST_TIMEOUT_MS } from "./lib/docker.ts";
 import { breakStaleLock, homeId } from "./lib/state.ts";
-import { takeWorkerLock } from "./fake-boat/outbox-worker.ts";
+import { takeWorkerLock, WORKER_ARG } from "./fake-boat/outbox-worker.ts";
 import { waitForApproval } from "./fake-boat/sandbox/auth.ts";
 import { requestFile } from "./fake-boat/sandbox/outbox.ts";
 
@@ -393,13 +393,14 @@ function fakeBoatProcess() {
   };
 }
 
+function deadPid(): number {
+  const ran = NodeChildProcess.spawnSync("true");
+  if (ran.pid === undefined) throw new Error("no pid");
+  return ran.pid;
+}
+
 describe("fake boat worker lock", () => {
   let dir: string;
-  const deadPid = () => {
-    const ran = NodeChildProcess.spawnSync("true");
-    if (ran.pid === undefined) throw new Error("no pid");
-    return ran.pid;
-  };
   const holder = (lock: string) =>
     (JSON.parse(NodeFS.readFileSync(lock, "utf8")) as { pid: number }).pid;
 
@@ -759,6 +760,30 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     exec(
       `systemd-run --user --unit fake-boat-test-web node -e 'require("http").createServer((q, s) => s.end(${JSON.stringify(WEB_BODY)})).listen(${WEB_PORT}, "127.0.0.1")'`,
     );
+  /** The watchdog's `boat snapshot` with no controller: plain `docker exec`, no host `boat`. */
+  const askUnattended = (name: string) =>
+    run(
+      "docker",
+      ["exec", "-u", "user", `sail-boat-${sandbox}`, "boat", "--json", "snapshot", sandbox, name],
+      env,
+      120_000,
+    );
+  const savedUnattended = { status: 0, stdout: "{}\n", stderr: "" };
+  const linesOf = (file: string) =>
+    NodeFS.existsSync(file) ? NodeFS.readFileSync(file, "utf8").split("\n").filter(Boolean) : [];
+  const starts = () => linesOf(NodePath.join(home, "starts.jsonl")).length;
+  const state = async () => (await info()).state;
+  const transitionFiles = () => {
+    const dir = NodePath.join(home, "transitions");
+    return NodeFS.existsSync(dir) ? NodeFS.readdirSync(dir).filter((f) => f.includes(sandbox)) : [];
+  };
+  /** A `docker` that holds `docker start` until the test writes `release`, then starts or fails. */
+  const holdStart = (then: "start" | "fail") =>
+    withDocker(`if [ "$1" = start ]; then
+  : > "$here/starting"
+  i=0; while [ ! -e "$here/release" ] && [ $i -lt 600 ]; do sleep 0.2; i=$((i+1)); done
+  ${then === "fail" ? "exit 1" : ":"}
+fi`);
 
   beforeAll(async () => {
     home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "fake-boat-test-"));
@@ -1175,17 +1200,10 @@ fi`);
   it("saves a snapshot asked for inside with no boat command running on the computer", async () => {
     await expect.poll(() => workerIdle(home), POLL).toBe(true);
     const name = `fake-boat-test-${suffix}-unattended`;
-    const asked = await run(
-      "docker",
-      ["exec", "-u", "user", `sail-boat-${sandbox}`, "boat", "--json", "snapshot", sandbox, name],
-      env,
-      120_000,
-    );
-    expect(asked, "the watchdog's call with no controller, well inside its 10 minutes").toEqual({
-      status: 0,
-      stdout: "{}\n",
-      stderr: "",
-    });
+    expect(
+      await askUnattended(name),
+      "the watchdog's call with no controller, well inside its 10 minutes",
+    ).toEqual(savedUnattended);
     expect(await names()).toEqual([snapshot, name]);
     expect((await json(["snapshot", "rm", name])).status).toBe(0);
   });
@@ -1342,6 +1360,71 @@ fi`);
     await expect.poll(async () => (await exec("codex login status")).exitCode, POLL).toBe(0);
   });
 
+  it("saves a snapshot asked for inside, unattended, that a worker which died had claimed", async () => {
+    await expect.poll(() => workerIdle(home), POLL).toBe(true);
+    const name = `fake-boat-test-${suffix}-orphaned`;
+    const outbox = NodePath.join(home, "outbox", sandbox);
+    const pending = NodePath.join(outbox, requestFile({ stage: "pending", base: name }));
+    let asked: Promise<Ran>;
+    {
+      // A live holder of the worker lock keeps the request unsaved until it is a dead worker's claim.
+      await using holder = fakeBoatProcess();
+      await NodeFSP.writeFile(
+        NodePath.join(home, "worker.json"),
+        JSON.stringify({ pid: holder.pid }),
+      );
+      asked = askUnattended(name);
+      await expect.poll(() => NodeFS.existsSync(pending), POLL).toBe(true);
+      const claimed = requestFile({ stage: "claimed", base: name, pid: deadPid() });
+      await NodeFSP.rename(pending, NodePath.join(outbox, claimed));
+    }
+    expect(await asked, "a dead worker's claim saves as if still queued").toEqual(savedUnattended);
+    expect(await names()).toEqual([snapshot, name]);
+    expect((await json(["snapshot", "rm", name])).status).toBe(0);
+  });
+
+  it("saves unattended in the watcher itself, starting no worker per poll", async () => {
+    await expect.poll(() => workerIdle(home), POLL).toBe(true);
+    const workers = NodePath.join(home, "worker-starts");
+    const slowWorker = NodePath.join(home, "slow-worker.mjs");
+    await NodeFSP.writeFile(
+      slowWorker,
+      [
+        'import * as NodeFS from "node:fs";',
+        `if (process.argv.includes(${JSON.stringify(WORKER_ARG)})) {`,
+        `  NodeFS.appendFileSync(${JSON.stringify(workers)}, process.pid + "\\n");`,
+        "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);",
+        "}",
+      ].join("\n"),
+    );
+    // Every Node process the new watcher starts loads it: a worker takes a second, as at load 40.
+    const slowStart = { NODE_OPTIONS: `${env.NODE_OPTIONS ?? ""} --import=${slowWorker}`.trim() };
+    expect((await json(["stop", sandbox])).status).toBe(0);
+    expect((await json(["resume", sandbox], slowStart)).status).toBe(0);
+    const name = `fake-boat-test-${suffix}-one-saver`;
+    expect(await askUnattended(name)).toEqual(savedUnattended);
+    expect(linesOf(workers).length, "worker processes started for one save").toBeLessThanOrEqual(1);
+    expect((await json(["snapshot", "rm", name])).status).toBe(0);
+  });
+
+  it("keeps saving unattended after docker wait fails while the sandbox runs", async () => {
+    await expect.poll(() => workerIdle(home), POLL).toBe(true);
+    const failed = NodePath.join(home, "wait-failed");
+    {
+      await using _flaky = await hookDocker(
+        `[ "$1" = wait ] && [ ! -e '${failed}' ] && { : > '${failed}'; exit 1; }`,
+      );
+      expect((await json(["stop", sandbox])).status).toBe(0);
+      expect((await json(["resume", sandbox])).status).toBe(0);
+      await expect.poll(() => NodeFS.existsSync(failed), POLL).toBe(true);
+    }
+    const name = `fake-boat-test-${suffix}-waited-again`;
+    expect(await askUnattended(name), "the watcher outlived its failed docker wait").toEqual(
+      savedUnattended,
+    );
+    expect((await json(["snapshot", "rm", name])).status).toBe(0);
+  });
+
   it("counts every awake stretch since a time in usage, across a stop and resume", async () => {
     const awake = async (since: string) =>
       lastJson<{ seconds: number }>((await json(["usage", sandbox, "--since", since])).stdout)
@@ -1358,7 +1441,6 @@ fi`);
   });
 
   it("returns from stop while it still stops, and from resume once running, with FAKE_BOAT_TRANSITION_SECS", async () => {
-    const state = async () => (await info()).state;
     const listed = async () =>
       lastJson<{ sandboxes: Array<SandboxJson> }>((await json(["list", "--all"])).stdout)
         .sandboxes.filter((row) => row.id === sandbox)
@@ -1387,16 +1469,21 @@ fi`);
     await expect.poll(state, POLL).toBe("stopped");
     expect((await info()).stoppedAt).toMatch(ISO);
 
-    const resuming = background(["--json", "resume", sandbox, "--ttl", "7200"], {
-      FAKE_BOAT_TRANSITION_SECS: "10",
-    });
-    const seen: Array<string> = [];
-    while (resuming.child.exitCode === null && resuming.child.signalCode === null) {
-      seen.push(await state());
+    const startsBefore = starts();
+    const resumes = [0, 1].map(() =>
+      background(["--json", "resume", sandbox, "--ttl", "7200"], {
+        FAKE_BOAT_TRANSITION_SECS: "10",
+      }),
+    );
+    await expect.poll(state, POLL).toBe("resuming");
+    for (const resuming of resumes) {
+      expect(await resuming.exited, resuming.stderr()).toBe(0);
+      expect(lastJson<SandboxJson>(resuming.stdout()).state, "returns once running").toBe(
+        "running",
+      );
+      expect(resuming.stderr()).toBe("");
     }
-    expect(await resuming.exited, resuming.stderr()).toBe(0);
-    expect(seen, "info said resuming while the resume ran").toContain("resuming");
-    expect(lastJson<SandboxJson>(resuming.stdout()).state).toBe("running");
+    expect(starts() - startsBefore, "only one of the two resumes booted it").toBe(1);
     expect(await state(), "running once resume returns").toBe("running");
     const hosted = await json(["host", sandbox, String(WEB_PORT), "--public", "--localhost"]);
     expect(hosted.status, `host right after the resume: ${hosted.stderr}`).toBe(0);
@@ -1404,6 +1491,56 @@ fi`);
       ttlSeconds: 7200,
       archiveAfter: expect.stringMatching(ISO),
     });
+  });
+
+  it("writes no transition for a resume without FAKE_BOAT_TRANSITION_SECS, and nothing on stderr", async () => {
+    expect((await json(["stop", sandbox])).status).toBe(0);
+    const held = await holdStart("start");
+    const resuming = background(["--json", "resume", sandbox], held.env);
+    try {
+      await expect
+        .poll(() => NodeFS.existsSync(NodePath.join(held.dir, "starting")), POLL)
+        .toBe(true);
+      expect([await state(), transitionFiles()], "Docker's own state while it boots").toEqual([
+        "stopped",
+        [],
+      ]);
+    } finally {
+      await NodeFSP.writeFile(NodePath.join(held.dir, "release"), "");
+    }
+    expect(await resuming.exited, resuming.stderr()).toBe(0);
+    expect(lastJson<SandboxJson>(resuming.stdout()).state).toBe("running");
+    expect(resuming.stderr()).toBe("");
+  });
+
+  it("reports Docker's own state at once after a resume in flight is killed", async () => {
+    expect((await json(["stop", sandbox])).status).toBe(0);
+    const held = await holdStart("fail");
+    try {
+      const killed = background(["--json", "resume", sandbox], {
+        FAKE_BOAT_TRANSITION_SECS: "1",
+        ...held.env,
+      });
+      await expect.poll(state, POLL).toBe("resuming");
+      killed.child.kill("SIGKILL");
+      await killed.exited;
+      expect([await state(), running(sandbox)], "as Sail Boat's next wake reads it").toEqual([
+        "stopped",
+        false,
+      ]);
+    } finally {
+      await NodeFSP.writeFile(NodePath.join(held.dir, "release"), "");
+    }
+    const slowBoot = await withDocker(`[ "$1" = start ] && sleep 2`);
+    const resumed = await json(["resume", sandbox], {
+      FAKE_BOAT_TRANSITION_SECS: "1",
+      ...slowBoot.env,
+    });
+    expect(resumed, "the next wake's resume, booting past its window").toMatchObject({
+      status: 0,
+      stderr: "",
+    });
+    expect(lastJson<SandboxJson>(resumed.stdout).state).toBe("running");
   });
 
   it("stops a sandbox when its lifetime ends, with nobody calling boat", async () => {

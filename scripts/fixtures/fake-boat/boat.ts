@@ -26,6 +26,7 @@ import {
   NETWORK,
 } from "../lib/docker.ts";
 import {
+  breakStaleLock,
   createJsonExclusive,
   homeId,
   logCall,
@@ -40,14 +41,13 @@ import {
   waitForApproval,
 } from "./sandbox/auth.ts";
 import { type CommandSpec, type Invocation, parse, UsageError } from "./sandbox/cli.ts";
-import { type Match, outbox, type SnapshotFailure, WORKER_ARG } from "./outbox-worker.ts";
+import { isAlive, type Match, outbox, type SnapshotFailure, WORKER_ARG } from "./outbox-worker.ts";
 import {
   AUTH_LOG,
   AUTH_ORIGIN_FILE,
   DEADLINE_FILE,
   ID_FILE,
   OUTBOX_DIR,
-  parseRequestFile,
   READONLY_DIR,
   SNAPSHOT_NAME,
 } from "./sandbox/outbox.ts";
@@ -72,8 +72,7 @@ const FINISH_ARG = "--finish-transition";
 /** The argument that makes the fake `boat` save what a running sandbox asks for, as Boat does. */
 const WATCH_ARG = "--watch-outbox";
 const WATCH_POLL_MS = 250;
-/** After this, a transition whose command or finisher died no longer hides Docker's own state. */
-const TRANSITION_STALE_MS = BOOT_TIMEOUT_MS + 2 * 60_000;
+const WAIT_AGAIN_MS = 1000;
 
 type Size = keyof typeof SIZES;
 type Plan = "paid" | "trial";
@@ -126,7 +125,7 @@ interface Live {
   readonly finishedAt: string;
 }
 
-/** A stop or resume in flight, which `info` and `list` report until it ends. */
+/** A stop or resume in flight, which `info` and `list` report while its owner runs. */
 interface Transition {
   readonly id: string;
   readonly state: "stopping" | "resuming";
@@ -134,6 +133,8 @@ interface Transition {
   readonly until: string;
   /** Only the command that began it, or its finisher, may end it. */
   readonly token: string;
+  /** The process that ends it: the resume itself, or the stop's finisher. */
+  readonly pid: number;
 }
 
 /** One stretch the sandbox ran, which Docker forgets at its next start. */
@@ -168,7 +169,7 @@ const runsFile = (id: string) => at("runs", `${id}.jsonl`);
 const snapshotFile = (name: string) => at("snapshots", `${name}.json`);
 const signInFile = (code: string) => NodePath.join(SIGN_INS, `${code}.json`);
 const readonlyDir = (id: string) => at("readonly", id);
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 const print = (value: unknown) => console.log(JSON.stringify(value));
 
 function errorMessage(error: unknown): string {
@@ -247,7 +248,7 @@ function diskTtlSeconds(): number {
   return Number(raw);
 }
 
-/** The least time a stop or resume reports stopping or resuming. Above 0, a stop returns at once. */
+/** Above 0, a stop returns at once, and a stop or resume reports its state for at least this long. */
 function transitionSecs(): number {
   const raw = process.env.FAKE_BOAT_TRANSITION_SECS;
   if (raw === undefined || raw === "") return 0;
@@ -341,9 +342,10 @@ function snapshotRecord(name: string): SnapshotRecord {
   return record;
 }
 
+/** The stop or resume in flight, while the process that ends it still runs. */
 function transition(id: string): Transition | undefined {
   const moving = readJson<Transition>(transitionFile(id));
-  return moving && Date.now() < Date.parse(moving.until) + TRANSITION_STALE_MS ? moving : undefined;
+  return moving && isAlive(moving.pid) ? moving : undefined;
 }
 
 function live(id: string): Live | null {
@@ -467,6 +469,13 @@ function resize(id: string, type: Size): void {
   docker(["update", "--memory", memory, "--memory-swap", memory, container(id)]);
 }
 
+/** Gives the sandbox `next`'s size and lifetime, and the sign-in origin as of now. */
+function applyRecord(next: SandboxRecord): void {
+  resize(next.id, next.type);
+  setDeadline(next.id, next.archiveAfter);
+  writeAuthOrigin(next.id);
+}
+
 function runContainer(record: SandboxRecord, image: string): void {
   const memory = SIZES[record.type];
   ensureNetwork();
@@ -559,15 +568,26 @@ function stopContainer(id: string): void {
   docker(["stop", "--time", "30", container(id)], { timeoutMs: 60_000 });
 }
 
-function beginTransition(id: string, state: Transition["state"], secs: number): Transition {
+/** Begins a stop or resume this process owns, unless one whose owner still runs is in flight. */
+function claimTransition(
+  id: string,
+  state: Transition["state"],
+  secs: number,
+): Transition | undefined {
+  const file = transitionFile(id);
   const moving: Transition = {
     id,
     state,
     until: new Date(Date.now() + secs * 1000).toISOString(),
     token: NodeCrypto.randomBytes(8).toString("hex"),
+    pid: process.pid,
   };
-  writeJsonAtomic(transitionFile(id), moving);
-  return moving;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (createJsonExclusive(file, moving)) return moving;
+    const held = readJson<Transition>(file);
+    if (held && (isAlive(held.pid) || !breakStaleLock(file, held.pid))) return undefined;
+  }
+  return undefined;
 }
 
 function holds(moving: Transition): boolean {
@@ -579,15 +599,16 @@ function endTransition(moving: Transition): void {
 }
 
 /**
- * Starts a stopped sandbox as `to`, reporting `resuming` for at least `secs`, or puts `from`'s size
- * and lifetime back if it cannot boot.
+ * Starts a stopped sandbox as `to`, ending `moving` no sooner than its window, or puts `from`'s
+ * size and lifetime back if it cannot boot.
  */
-async function boot(from: SandboxRecord, to: SandboxRecord, secs: number): Promise<void> {
-  const moving = beginTransition(to.id, "resuming", secs);
+async function boot(from: SandboxRecord, to: SandboxRecord, moving?: Transition): Promise<void> {
   try {
     recordRun(to.id);
     try {
+      applyRecord(to);
       docker(["start", container(to.id)]);
+      detach(WATCH_ARG, to.id);
       await waitForBoot(to.id);
     } catch (error) {
       dockerSucceeds(["stop", "--time", "30", container(to.id)]);
@@ -598,25 +619,37 @@ async function boot(from: SandboxRecord, to: SandboxRecord, secs: number): Promi
         : new BoatError("resume_failed", errorMessage(error));
     }
     recordStart(to.id);
-    // A delete meanwhile took the transition with the rest; the record must not come back.
-    if (!holds(moving)) throw new BoatError("not_found", `Sandbox ${to.id} was deleted`);
+    // A delete meanwhile removed the record, which must not come back.
+    sandboxRecord(to.id);
     writeJsonAtomic(sandboxFile(to.id), to);
-    detach(WATCH_ARG, to.id);
-    await sleep(Date.parse(moving.until) - Date.now());
+    if (moving) await sleep(Date.parse(moving.until) - Date.now());
   } finally {
-    endTransition(moving);
+    if (moving) endTransition(moving);
+  }
+}
+
+/** Waits out the resume in flight, for no longer than a boot past its window. */
+async function resumeEnded(id: string): Promise<void> {
+  const moving = transition(id);
+  if (!moving) return;
+  const give = Date.parse(moving.until) + BOOT_TIMEOUT_MS;
+  while (transition(id)?.token === moving.token) {
+    if (Date.now() >= give) throw transitioning(id, moving.state);
+    await sleep(250);
   }
 }
 
 /** Runs this script again with `args`, detached, logging to the home's worker log. */
-function detach(...args: ReadonlyArray<string>): void {
+function detach(...args: ReadonlyArray<string>): number | undefined {
   const log = NodeFS.openSync(at("worker.log"), "a");
   try {
-    NodeChildProcess.spawn(process.execPath, [import.meta.filename, ...args], {
+    const child = NodeChildProcess.spawn(process.execPath, [import.meta.filename, ...args], {
       detached: true,
       stdio: ["ignore", log, log],
       env: { ...process.env, FAKE_BOAT_HOME: HOME },
-    }).unref();
+    });
+    child.unref();
+    return child.pid;
   } finally {
     NodeFS.closeSync(log);
   }
@@ -638,24 +671,43 @@ async function finishStop(id: string | undefined, token: string | undefined): Pr
   endTransition(moving);
 }
 
+/** Resolves once `docker wait` returns, which it also does when Docker could not answer. */
+function dockerWait(id: string): Promise<void> {
+  return new Promise((resolve) => {
+    const wait = NodeChildProcess.spawn("docker", ["wait", container(id)], { stdio: "ignore" });
+    wait.once("close", () => resolve());
+    wait.once("error", () => resolve());
+  });
+}
+
 /**
- * Starts the save worker whenever the sandbox asks for a snapshot, until the container stops.
- * The watchdog asks exactly when no controller answered, so no other `boat` may be running.
+ * Saves what the sandbox asks for, in this process, until the container stops. The watchdog asks
+ * exactly when no controller answered, so no other `boat` may be running.
  */
 async function watchOutbox(id: string | undefined): Promise<void> {
   const { id: own } = sandboxRecord(id);
-  const asks = () =>
-    listDir(OUTBOX.dir(own)).some((file) => parseRequestFile(file)?.stage === "pending");
-  const poll = setInterval(() => {
-    if (asks()) startWorker();
-  }, WATCH_POLL_MS);
-  const wait = NodeChildProcess.spawn("docker", ["wait", container(own)], { stdio: "ignore" });
-  await new Promise((resolve) => {
-    wait.once("close", resolve);
-    wait.once("error", resolve);
-  });
+  const save = () => {
+    try {
+      OUTBOX.work({ sandboxId: own });
+    } catch (error) {
+      console.error(JSON.stringify({ code: "outbox_failed", id: own, error: errorMessage(error) }));
+    }
+  };
+  const stopped = () => {
+    try {
+      return !inspect<boolean>(container(own), ".State.Running");
+    } catch (error) {
+      return isNoSuch(error);
+    }
+  };
+  const poll = setInterval(save, WATCH_POLL_MS);
+  for (;;) {
+    await dockerWait(own);
+    if (stopped()) break;
+    await sleep(WAIT_AGAIN_MS);
+  }
   clearInterval(poll);
-  startWorker();
+  save();
 }
 
 function hostedPorts(id: string): ReadonlyArray<number> {
@@ -1030,6 +1082,7 @@ const TABLE: ReadonlyArray<Command> = [
       writeJsonAtomic(sandboxFile(id), record);
       try {
         runContainer(record, image);
+        detach(WATCH_ARG, id);
         print({ progress: "booting", id });
         await waitForBoot(id);
       } catch (error) {
@@ -1039,7 +1092,6 @@ const TABLE: ReadonlyArray<Command> = [
           : new BoatError("create_failed", errorMessage(error));
       }
       recordStart(id);
-      detach(WATCH_ARG, id);
       print(view(record, requireLive(record)));
       return 0;
     },
@@ -1082,12 +1134,23 @@ const TABLE: ReadonlyArray<Command> = [
       const secs = transitionSecs();
       const record = sandboxRecord(invocation.args.sandbox);
       await settled({ sandboxId: record.id }, 20_000);
-      const { state } = requireLive(record);
-      if (state === "resuming" || state === "starting") throw transitioning(record.id, state);
-      if (state === "running" && secs > 0) {
-        detach(FINISH_ARG, record.id, beginTransition(record.id, "stopping", secs).token);
-      } else if (state === "running") {
-        stopContainer(record.id);
+      for (;;) {
+        const { state } = requireLive(record);
+        if (state === "resuming" || state === "starting") throw transitioning(record.id, state);
+        if (state !== "running") break;
+        if (secs === 0) {
+          stopContainer(record.id);
+          break;
+        }
+        const moving = claimTransition(record.id, "stopping", secs);
+        if (moving) {
+          const finisher = detach(FINISH_ARG, record.id, moving.token);
+          // The finisher ends it, so it must keep counting once this command exits.
+          if (finisher !== undefined && holds(moving)) {
+            writeJsonAtomic(transitionFile(record.id), { ...moving, pid: finisher });
+          }
+          break;
+        }
       }
       print({});
       return 0;
@@ -1103,38 +1166,49 @@ const TABLE: ReadonlyArray<Command> = [
     run: async (invocation, signedIn) => {
       const diskTtl = diskTtlSeconds();
       const secs = transitionSecs();
-      const record = sandboxRecord(invocation.args.sandbox);
-      const state = requireLive(record);
-      const type = invocation.flags.has("type") ? size(invocation.flags.get("type")) : record.type;
-      const life = lifetime(invocation, signedIn.plan) ?? { ttlSeconds: record.ttlSeconds };
-      if (state.state === "stopping") throw transitioning(record.id, state.state);
-      if (state.state === "resuming" || state.state === "starting") {
-        print(view(record, state));
+      const { id } = sandboxRecord(invocation.args.sandbox);
+      const type = invocation.flags.has("type") ? size(invocation.flags.get("type")) : undefined;
+      const life = lifetime(invocation, signedIn.plan);
+      for (;;) {
+        const state = requireLive(sandboxRecord(id));
+        if (state.state === "resuming") {
+          await resumeEnded(id);
+          continue;
+        }
+        if (state.state !== "running" && state.state !== "stopped") {
+          throw transitioning(id, state.state);
+        }
+        const booting = state.state === "stopped";
+        if (booting && Date.now() - Date.parse(state.finishedAt) > diskTtl * 1000) {
+          throw new BoatError(
+            "snapshot_data_expired",
+            "This sandbox's disk was deleted after it stayed stopped too long",
+          );
+        }
+        let moving: Transition | undefined;
+        if (booting && secs > 0) {
+          moving = claimTransition(id, "resuming", secs);
+          if (!moving) continue;
+        }
+        // Read once claimed, so an extend that came first is kept.
+        const record = sandboxRecord(id);
+        const { ttlSeconds } = life ?? record;
+        const next: SandboxRecord = {
+          ...record,
+          type: type ?? record.type,
+          ttlSeconds,
+          archiveAfter: deadline(ttlSeconds),
+        };
+        if (booting) {
+          print({ progress: "resuming", id });
+          await boot(record, next, moving);
+        } else {
+          applyRecord(next);
+          writeJsonAtomic(sandboxFile(id), next);
+        }
+        print(view(next, requireLive(next)));
         return 0;
       }
-      if (state.state === "stopped" && Date.now() - Date.parse(state.finishedAt) > diskTtl * 1000) {
-        throw new BoatError(
-          "snapshot_data_expired",
-          "This sandbox's disk was deleted after it stayed stopped too long",
-        );
-      }
-      const next: SandboxRecord = {
-        ...record,
-        type,
-        ttlSeconds: life.ttlSeconds,
-        archiveAfter: deadline(life.ttlSeconds),
-      };
-      resize(record.id, type);
-      setDeadline(record.id, next.archiveAfter);
-      writeAuthOrigin(record.id);
-      if (state.state === "running") {
-        writeJsonAtomic(sandboxFile(record.id), next);
-      } else {
-        print({ progress: "resuming", id: record.id });
-        await boot(record, next, secs);
-      }
-      print(view(next, requireLive(next)));
-      return 0;
     },
   },
   {
