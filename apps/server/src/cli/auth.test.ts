@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
+import * as CliError from "effect/cli/CliError";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -61,5 +62,26 @@ it.effect("revokes the link when the server stops before the link is kept", () =
 
     assert.match(error.message, /stopped before the pairing token was ready, so it was revoked/);
     assert.deepStrictEqual(yield* activeLinkIds, []);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("names the unprinted link when it cannot be revoked after the server stopped", () =>
+  Effect.gen(function* () {
+    const auth = yield* EnvironmentAuth.EnvironmentAuth;
+    const serverGoneAndDatabaseBusy = EnvironmentAuth.EnvironmentAuth.of({
+      ...auth,
+      revokePairingLink: () =>
+        Effect.fail(new EnvironmentAuth.ServerAuthPairingLinkRevocationError({ cause: "busy" })),
+    });
+
+    const error = yield* mintForRunningServer({ scopes: ["orchestration:read"] }).pipe(
+      Effect.provideService(EnvironmentAuth.EnvironmentAuth, serverGoneAndDatabaseBusy),
+      Effect.flip,
+    );
+
+    const [unrevoked] = yield* activeLinkIds;
+    assert.isDefined(unrevoked);
+    assert.instanceOf(error, CliError.UserError);
+    assert.include(error.message, `t3 auth pairing revoke ${unrevoked}`);
   }).pipe(Effect.provide(layer)),
 );

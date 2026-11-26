@@ -124,7 +124,14 @@ export const mintForRunningServer = Effect.fn("auth.mintForRunningServer")(funct
   const issued = yield* environmentAuth.createPairingLink(input);
   // The OS releases the lock when its holder exits, even on SIGKILL.
   if (isServerOwnershipHeld(serverRuntimeStatePath)) return issued;
-  yield* environmentAuth.revokePairingLink(issued.id);
+  yield* environmentAuth.revokePairingLink(issued.id).pipe(
+    Effect.mapError(
+      () =>
+        new CliError.UserError({
+          cause: `The T3 Code server for ${baseDir} stopped before the pairing token was ready, and revoking it failed. It was never printed; to remove it, run \`t3 auth pairing revoke ${issued.id}\`.`,
+        }),
+    ),
+  );
   return yield* new CliError.UserError({
     cause: `The T3 Code server for ${baseDir} stopped before the pairing token was ready, so it was revoked. Start the server, then retry.`,
   });
@@ -142,8 +149,11 @@ const pairingCreateCommand = Command.make("create", {
   Command.withDescription("Issue a new client pairing token."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      if (Option.exists(flags.ttl, (ttl) => !Duration.isPositive(ttl))) {
-        return yield* notMinted("--ttl must be longer than 0", "Pass a duration such as 5m or 1h.");
+      if (Option.exists(flags.ttl, (ttl) => !Duration.isPositive(ttl) || !Duration.isFinite(ttl))) {
+        return yield* notMinted(
+          "--ttl must be a finite duration longer than 0",
+          "Pass a duration such as 5m or 1h.",
+        );
       }
       const options = { quietLogs: flags.json };
       const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel, options);
