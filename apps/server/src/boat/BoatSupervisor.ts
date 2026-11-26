@@ -85,14 +85,17 @@ export const savedStateNeedsDaemon = (stateJson: string): boolean =>
 const cliHomeEnvironment = (
   config: ServerConfig.ServerConfig["Service"],
   path: Path.Path,
-): Readonly<Record<string, string | undefined>> =>
-  config.devUrl === undefined || config.stateDir === path.join(config.baseDir, "userdata")
+): Readonly<Record<string, string | undefined>> => {
+  const sailHomeOpensThisServersState =
+    config.devUrl === undefined || config.stateDir === path.join(config.baseDir, "userdata");
+  return sailHomeOpensThisServersState
     ? { SAIL_HOME: config.baseDir }
     : { SAIL_HOME: undefined, T3CODE_HOME: undefined, VITE_DEV_SERVER_URL: config.devUrl.href };
+};
 
 const quoteShell = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
 
-const launcherScript = (input: {
+export const launcherScript = (input: {
   readonly platform: NodeJS.Platform;
   readonly executable: string;
   readonly entry: string | undefined;
@@ -104,11 +107,12 @@ const launcherScript = (input: {
   });
   const command = [input.executable, ...(input.entry === undefined ? [] : [input.entry])];
   if (input.platform === "win32") {
+    const cmdText = (value: string) => value.replaceAll("%", "%%");
     return [
       "@echo off",
       "setlocal EnableExtensions DisableDelayedExpansion",
-      ...environment.map(([name, value]) => `set "${name}=${value ?? ""}"`),
-      `${command.map((part) => `"${part}"`).join(" ")} %*`,
+      ...environment.map(([name, value]) => `set "${name}=${cmdText(value ?? "")}"`),
+      `${command.map((part) => `"${cmdText(part)}"`).join(" ")} %*`,
       "",
     ].join("\r\n");
   }
@@ -182,7 +186,7 @@ const make = Effect.gen(function* () {
   const entryPath = isExecutable ? undefined : path.resolve(yield* resolveEntryPath);
   const serviceScope = yield* Effect.scope;
 
-  const dataDir = path.join(config.baseDir, "boat");
+  const dataDir = hostEnvironment.SAIL_BOAT_DATA_DIR?.trim() || path.join(config.baseDir, "boat");
   const launcherPath = path.join(config.stateDir, "boat", platform === "win32" ? "t3.cmd" : "t3");
   const address = httpServer.address;
   const origin =
@@ -195,7 +199,10 @@ const make = Effect.gen(function* () {
   const latestState = yield* Ref.make(Option.none<unknown>());
 
   const enter = (next: Lifecycle) =>
-    PubSub.publish(hub, { _tag: "status", status: statusOf(next) }).pipe(Effect.as(next));
+    (next._tag === "Running" ? Effect.void : Ref.set(latestState, Option.none())).pipe(
+      Effect.andThen(PubSub.publish(hub, { _tag: "status", status: statusOf(next) })),
+      Effect.as(next),
+    );
   const transition = (next: Lifecycle) =>
     SynchronizedRef.updateEffect(lifecycle, () => enter(next));
 
@@ -230,17 +237,20 @@ const make = Effect.gen(function* () {
         () => new BoatError({ message: `Could not write the t3 launcher at ${launcherPath}.` }),
       ),
     );
+    // Electron apps the daemon opens through the OS would inherit it and run as plain Node.
+    const { ELECTRON_RUN_AS_NODE: _, ...inherited } = hostEnvironment;
     return ChildProcess.make(executable, [], {
       env: {
-        ...hostEnvironment,
+        ...inherited,
         SAIL_HOME: config.baseDir,
         SAIL_DESKTOP_CLI: launcherPath,
         SAIL_DESKTOP_ORIGIN: origin,
         SAIL_BOAT_DATA_DIR: dataDir,
         SAIL_BOAT_CONTROL_PORT: "0",
+        SAIL_BOATD_EXIT_ON_STDIN_EOF: "1",
       },
       extendEnv: false,
-      stdin: "ignore",
+      stdin: { stream: "pipe", endOnDone: false },
       stdout: "pipe",
       stderr: "pipe",
       killSignal: "SIGTERM",
@@ -411,7 +421,7 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const kick = SynchronizedRef.modifyEffect(lifecycle, (current) => {
+  const ensureStarted = SynchronizedRef.modifyEffect(lifecycle, (current) => {
     switch (current._tag) {
       case "Running":
         return Effect.succeed([Effect.succeed(current.daemon), current] as const);
@@ -452,9 +462,12 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const outlivingCaller = <A, E>(effect: Effect.Effect<A, E>) =>
+    Effect.forkIn(effect, serviceScope).pipe(Effect.flatMap(Fiber.join));
+
   const invoke = Effect.fn("BoatSupervisor.invoke")(function* (input: BoatInvokeInput) {
-    const daemon = yield* Effect.flatten(kick);
-    const reply = yield* Fiber.join(yield* Effect.forkIn(send(daemon, input), serviceScope));
+    const daemon = yield* Effect.flatten(ensureStarted);
+    const reply = yield* outlivingCaller(send(daemon, input));
     if (!reply.ok) return yield* new BoatError({ message: reply.error });
     return {
       data: reply.data ?? null,
@@ -463,15 +476,17 @@ const make = Effect.gen(function* () {
     } satisfies BoatInvokeResult;
   });
 
+  const subscribeWithCurrentStatus = SynchronizedRef.modifyEffect(lifecycle, (current) =>
+    PubSub.subscribe(hub).pipe(
+      Effect.map((subscription) => [[subscription, statusOf(current)] as const, current]),
+    ),
+  );
+
   const events: BoatSupervisor["Service"]["events"] = Stream.unwrap(
     Effect.gen(function* () {
-      const [subscription, status] = yield* SynchronizedRef.modifyEffect(lifecycle, (current) =>
-        PubSub.subscribe(hub).pipe(
-          Effect.map((subscription) => [[subscription, statusOf(current)] as const, current]),
-        ),
-      );
+      const [subscription, status] = yield* subscribeWithCurrentStatus;
       const state = yield* Ref.get(latestState);
-      yield* Effect.asVoid(kick);
+      yield* Effect.asVoid(ensureStarted);
       return Stream.concat(
         Stream.fromIterable<BoatEvent>([
           { _tag: "status", status },
@@ -488,7 +503,7 @@ const make = Effect.gen(function* () {
     fileSystem.readFileString(path.join(dataDir, "state.json")).pipe(
       Effect.map(savedStateNeedsDaemon),
       Effect.orElseSucceed(() => false),
-      Effect.flatMap((needed) => (needed ? Effect.flatten(kick) : Effect.void)),
+      Effect.flatMap((needed) => (needed ? Effect.flatten(ensureStarted) : Effect.void)),
       Effect.ignore,
     ),
   );

@@ -26,6 +26,8 @@ const DAEMON_ENV = [
   "SAIL_DESKTOP_ORIGIN",
   "SAIL_BOAT_DATA_DIR",
   "SAIL_BOAT_CONTROL_PORT",
+  "SAIL_BOATD_EXIT_ON_STDIN_EOF",
+  "ELECTRON_RUN_AS_NODE",
 ] as const;
 
 interface CliRun {
@@ -41,6 +43,7 @@ type Report =
       readonly event: "started";
       readonly pid: number;
       readonly env: Record<(typeof DAEMON_ENV)[number], string | null>;
+      readonly stdinIsPipe: boolean;
       readonly cli: CliRun;
     }
   | { readonly event: "shutdown"; readonly pid: number }
@@ -123,7 +126,9 @@ const server = http.createServer((req, res) => {
 });
 server.listen(0, "127.0.0.1", async () => {
   const cli = JSON.parse(execFileSync(env.SAIL_DESKTOP_CLI, ["environment", "list", "--json"], { encoding: "utf8" }));
-  await report({ event: "started", env, cli });
+  const stdin = require("node:fs").fstatSync(0);
+  const stdinIsPipe = stdin.isFIFO() || stdin.isSocket();
+  await report({ event: "started", env, cli, stdinIsPipe });
   console.log("sail-boatd starting");
   console.log(JSON.stringify({ ready: true, port: server.address().port, token, mcpPort: 0 }));
 });
@@ -175,15 +180,12 @@ const setup = Effect.gen(function* () {
   yield* fileSystem.chmod(daemonPath, 0o755);
   yield* fileSystem.writeFileString(serverEntry, fakeServerEntrySource);
   const { reports, port } = yield* reportListener;
-  const saveBoatState = (state: unknown) =>
+  const saveBoatState = (state: unknown, dataDir = path.join(baseDir, "boat")) =>
     fileSystem
-      .makeDirectory(path.join(baseDir, "boat"), { recursive: true })
+      .makeDirectory(dataDir, { recursive: true })
       .pipe(
         Effect.andThen(
-          fileSystem.writeFileString(
-            path.join(baseDir, "boat", "state.json"),
-            JSON.stringify(state),
-          ),
+          fileSystem.writeFileString(path.join(dataDir, "state.json"), JSON.stringify(state)),
         ),
       );
 
@@ -191,6 +193,7 @@ const setup = Effect.gen(function* () {
     configure?: (
       config: ServerConfig.ServerConfig["Service"],
     ) => Partial<ServerConfig.ServerConfig["Service"]>,
+    hostEnvironment: Readonly<Record<string, string>> = {},
   ) =>
     BoatSupervisor.layer.pipe(
       Layer.provide(BoatDaemonBinary.layer),
@@ -221,6 +224,8 @@ const setup = Effect.gen(function* () {
           Layer.succeed(HostProcess.Environment, {
             PATH: process.env.PATH,
             SAIL_BOATD_PATH: daemonPath,
+            ELECTRON_RUN_AS_NODE: "1",
+            ...hostEnvironment,
           }),
           Layer.succeed(HostProcess.IsExecutable, false),
           Layer.succeed(HostProcess.ExecutablePath, process.execPath),
@@ -314,7 +319,10 @@ describe("BoatSupervisor", () => {
           SAIL_DESKTOP_ORIGIN: `http://127.0.0.1:${port}`,
           SAIL_BOAT_DATA_DIR: path.join(baseDir, "boat"),
           SAIL_BOAT_CONTROL_PORT: "0",
+          SAIL_BOATD_EXIT_ON_STDIN_EOF: "1",
+          ELECTRON_RUN_AS_NODE: null,
         },
+        stdinIsPipe: true,
         cli: {
           argv: ["environment", "list", "--json"],
           electronRunAsNode: "1",
@@ -336,6 +344,40 @@ describe("BoatSupervisor", () => {
       assert.equal(report.event, "started");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
+
+  it.live(
+    "keeps a SAIL_BOAT_DATA_DIR the server was started with, and starts at boot from it",
+    () =>
+      Effect.gen(function* () {
+        const { reports, saveBoatState, supervisor } = yield* setup;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const dataDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-boat-data-" });
+        yield* saveBoatState({ doomed: [{ sandbox: "sb-1" }] }, dataDir);
+
+        const report = yield* Queue.take(reports).pipe(
+          Effect.provide(supervisor(undefined, { SAIL_BOAT_DATA_DIR: dataDir })),
+        );
+
+        assert.deepInclude(report, { event: "started" });
+        assert.equal(
+          report.event === "started" ? report.env.SAIL_BOAT_DATA_DIR : null,
+          dataDir,
+          "an upgrade must not strand machines saved under an overridden data dir",
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it("keeps a percent sign in a Windows launcher literal", () => {
+    const script = BoatSupervisor.launcherScript({
+      platform: "win32",
+      executable: "C:\\Sail 100%\\node.exe",
+      entry: "C:\\Sail 100%\\bin.mjs",
+      environment: { VITE_DEV_SERVER_URL: "http://localhost:5733/a%20b", SAIL_HOME: undefined },
+    });
+    assert.include(script, 'set "VITE_DEV_SERVER_URL=http://localhost:5733/a%%20b"');
+    assert.include(script, 'set "SAIL_HOME="');
+    assert.include(script, '"C:\\Sail 100%%\\node.exe" "C:\\Sail 100%%\\bin.mjs" %*');
+  });
 
   it.each([
     { name: "an unreadable file", saved: undefined, needsDaemon: false },
