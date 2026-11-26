@@ -432,7 +432,8 @@ impl MachineRuntime {
             Err(e) => {
                 let msg = format!("{e:#}");
                 if !was_failing {
-                    self.shared.notify(format!("{} could not wake", self.record().name), msg.clone());
+                    tracing::warn!("waking {}: {msg}", self.id());
+                    self.shared.notify(format!("{} could not wake", self.record().name), "Boats shows why.");
                 }
                 *self.wake_failure.lock().unwrap() = Some((msg, Instant::now()));
                 let _ = self.refresh_power().await;
@@ -1059,7 +1060,10 @@ impl MachineRuntime {
                                 Err(e) => {
                                     tracing::warn!("stopping {}: {e:#}", self.id());
                                     if !std::mem::replace(&mut overdue_stop_failed, true) {
-                                        self.shared.notify(format!("{} won't go to sleep", self.record().name), format!("{e:#}"));
+                                        self.shared.notify(
+                                            format!("{} won't go to sleep", self.record().name),
+                                            "Boat would not stop it, so it may keep running. Sail keeps trying.",
+                                        );
                                     }
                                 }
                             }

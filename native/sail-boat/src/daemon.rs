@@ -966,6 +966,10 @@ mod tests {
 
     async fn daemon_with_machine() -> (Arc<App>, u16, PathBuf) {
         let dir = test_dir();
+        daemon_with_machine_on(Boat::at(dir.join("no-boat")), dir).await
+    }
+
+    async fn daemon_with_machine_on(boat: Boat, dir: PathBuf) -> (Arc<App>, u16, PathBuf) {
         let local_port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
         let machine = crate::store::Machine {
             id: "bx_dev".into(),
@@ -991,7 +995,7 @@ mod tests {
         crate::store::Store::new(&dir).save(&state).unwrap();
         let (tx, rx) = mpsc::unbounded_channel();
         let t3 = t3desktop::T3Desktop::at(dir.join("no-sail"));
-        let app = App::new(Boat::at(dir.join("no-boat")), t3, dir.clone(), tx).unwrap();
+        let app = App::new(boat, t3, dir.clone(), tx).unwrap();
         let daemon = Daemon::new(TOKEN.to_owned(), dir.clone(), 0);
         *daemon.app.lock().unwrap() = Some(app.clone());
         tokio::spawn(event_loop(daemon.clone(), app.clone(), rx));
@@ -1206,6 +1210,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Every client of the server shows a notice, so Boat's own output stays in the log.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_wake_notice_leaves_out_what_boat_said() {
+        use std::os::unix::fs::PermissionsExt;
+        const BOAT: &str = r#"#!/bin/sh
+shift
+case "$1" in
+  info) echo '{"sandbox":{"id":"bx_dev","state":"stopped"}}' ;;
+  resume) echo 'quota exceeded, see https://boat.example/billing?token=boat-output' >&2; exit 1 ;;
+  *) exit 1 ;;
+esac
+"#;
+        let dir = test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("boat");
+        std::fs::write(&bin, BOAT).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (app, port, dir) = daemon_with_machine_on(Boat::at(bin), dir).await;
+        let client = reqwest::Client::new();
+        let res = client.get(format!("http://127.0.0.1:{port}/api/events")).bearer_auth(TOKEN).send().await.unwrap();
+        let mut stream = res.bytes_stream();
+        let mut buf = String::new();
+        read_events_until(&mut stream, &mut buf, "event: state").await;
+
+        let reply = client
+            .post(format!("http://127.0.0.1:{port}/api/command/wake_machine"))
+            .bearer_auth(TOKEN)
+            .json(&json!({ "id": "dev" }))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(reply.contains("boat-output"), "the caller sees why: {reply}");
+        read_events_until(&mut stream, &mut buf, "dev could not wake").await;
+        let notice = buf.lines().skip_while(|l| *l != "event: notify").nth(1).unwrap_or_default();
+        assert!(!notice.contains("boat-output") && !notice.contains("https://"), "Boat's output went to every client: {notice}");
+
+        drop(stream);
+        app.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn a_second_daemon_on_the_same_data_dir_refuses_to_start() {
         let (first, dir) = spawn_test_daemon().await;
@@ -1220,12 +1269,13 @@ mod tests {
         assert!(format!("{refused:#}").contains("another sail-boatd is using"), "{refused:#}");
 
         first.shutdown().await;
+        // Under parallel tests the lock lets go a moment after the shutdown; a real restart waits too.
         let config = DaemonConfig {
             control_port: 0,
             mcp_port: 0,
             token: TOKEN.to_owned(),
             data_dir: dir.clone(),
-            lock_wait: Duration::ZERO,
+            lock_wait: Duration::from_secs(2),
         };
         let next = start(config).await.expect("the data dir is free once its daemon is gone");
         stop_test_daemon(next, dir).await;

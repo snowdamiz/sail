@@ -384,7 +384,8 @@ impl Tools for App {
         // Detached, so a client that gives up does not cancel the work halfway.
         tokio::spawn(async move {
             if let Err(Err(e)) = tx.send(run(&self, call).await) {
-                self.shared.notify("Sail Boat", format!("{e:#}"));
+                tracing::warn!("a Boats tool call failed after its client stopped waiting: {e:#}");
+                self.shared.notify("Sail Boat", "An agent's Boats request failed after the agent stopped waiting.");
             }
         });
         match tokio::time::timeout(WAIT, rx).await {

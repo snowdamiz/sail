@@ -88,7 +88,7 @@ export const BoatEvent = Schema.Union([
 ]);
 export type BoatEvent = typeof BoatEvent.Type;
 
-/** Goes to every client of the server, so a notice must carry no link or code. */
+/** Every client of the server shows it, so sail-boatd keeps links, codes, and Boat output out. */
 export const BoatNotice = Schema.Struct({ title: Schema.String, body: Schema.String });
 export type BoatNotice = typeof BoatNotice.Type;
 

@@ -63,10 +63,8 @@ impl MachineRuntime {
                     f.told = true;
                     self.shared.notify(
                         format!("{}'s backup snapshot isn't saving", record.name),
-                        format!(
-                            "{e:#}. Sail keeps trying. If Boat deletes the sleeping machine's disk before a save succeeds, \
-                             it is restored from its last saved snapshot, losing later work, or cannot be restored if it never had one."
-                        ),
+                        "Sail keeps trying. If Boat deletes the sleeping machine's disk before a save succeeds, \
+                         it is restored from its last saved snapshot, losing later work, or cannot be restored if it never had one.",
                     );
                 }
             }

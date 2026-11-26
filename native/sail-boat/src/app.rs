@@ -494,7 +494,8 @@ impl App {
         tokio::spawn(async move {
             for id in projects {
                 if let Err(e) = app.add_project(&m, &id).await {
-                    app.shared.notify(format!("A project didn't reach {}", m.record().name), format!("{e:#}"));
+                    tracing::warn!("adding {id} to {}: {e:#}", m.id());
+                    app.shared.notify(format!("A project didn't reach {}", m.record().name), "Add it again from Boats.");
                 }
             }
         });
