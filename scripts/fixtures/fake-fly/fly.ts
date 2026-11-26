@@ -1627,6 +1627,7 @@ function deploy(ctx: Ctx): number {
     publishSite({
       id: siteId(appName),
       home: HOME_ID,
+      container: containerName(appName),
       host: appHost(appName),
       upstream: `${machineHost(target)}:${port}`,
       plainHttp: http !== undefined && !http.forceHttps,

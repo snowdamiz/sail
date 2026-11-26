@@ -46,7 +46,7 @@ const inChild = (script: string, env: NodeJS.ProcessEnv = process.env) =>
 
 const publishScript = (id: string, to: string, home: string) =>
   `import { publishSite } from ${CADDY_TS};
-   publishSite({ id: ${JSON.stringify(id)}, home: ${JSON.stringify(home)}, host: ${JSON.stringify(`${id}.localtest.me`)}, upstream: ${JSON.stringify(to)} });`;
+   publishSite({ id: ${JSON.stringify(id)}, home: ${JSON.stringify(home)}, container: ${JSON.stringify(to.split(":")[0])}, host: ${JSON.stringify(`${id}.localtest.me`)}, upstream: ${JSON.stringify(to)} });`;
 
 const publishInChild = (id: string, to = `${upstream}:8080`) =>
   inChild(publishScript(id, to, HOME));
@@ -513,13 +513,20 @@ describe.skipIf(!hasDocker())("fixture Caddy", () => {
       publishSite({
         id: `caddy-test-${run}-auth`,
         home: HOME,
+        container: "x",
         host: "auth.localtest.me",
         upstream: "x:1",
       }),
     ).toThrow(/reserved/);
     for (const host of ["evil-localtest.me", "localtest.me.example.com", "a.b.localtest.me"])
       expect(() =>
-        publishSite({ id: `caddy-test-${run}-outside`, home: HOME, host, upstream: "x:1" }),
+        publishSite({
+          id: `caddy-test-${run}-outside`,
+          home: HOME,
+          container: "x",
+          host,
+          upstream: "x:1",
+        }),
       ).toThrow(/not a name under localtest.me/);
     expect(
       NodeFS.existsSync(NodePath.join(caddyDir(), "sites", `caddy-test-${run}-outside.caddy`)),

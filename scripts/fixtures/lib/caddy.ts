@@ -332,12 +332,12 @@ export const isOlderCaddyfile = (text: string) =>
 
 const dataVolume = (root: string) => `${caddyContainer()}-data-${root}`;
 
-const HOME_LINE = /^# sail-fixture home (\S+)$/m;
+const HOME_LINE = /^# sail-fixture home (\S+)(?: container (\S+))?$/m;
 
 /**
- * Sites another home publishes that something may still be using. Only a site whose upstream is a
- * fixture container that is gone is provably idle; one without a home line came from an older
- * revision and counts as another home's.
+ * Sites another home publishes that something may still be using. Only a site whose container is
+ * gone is provably idle. A site without a home line came from an older revision: it counts as
+ * another home's, idle only when its upstream names a fixture container that is gone.
  */
 function othersServing(dir: string, home: string): ReadonlyArray<string> {
   const sites = NodePath.join(dir, "sites");
@@ -352,9 +352,11 @@ function othersServing(dir: string, home: string): ReadonlyArray<string> {
       if (isMissing(error)) return false;
       throw error;
     }
-    if (HOME_LINE.exec(body)?.[1] === home) return false;
+    const line = HOME_LINE.exec(body);
+    if (line?.[1] === home) return false;
     const upstream = /reverse_proxy\s+([^\s:{]+)/.exec(body)?.[1];
-    return !(upstream?.startsWith("sail-") && !containers.has(upstream));
+    const container = line?.[2] ?? (upstream?.startsWith("sail-") ? upstream : undefined);
+    return !(container && !containers.has(container));
   });
 }
 
@@ -546,6 +548,8 @@ export interface Site {
   readonly id: string;
   /** The `homeId` of the fake that publishes it. */
   readonly home: string;
+  /** The container behind `upstream`; once it is gone, nobody can be using the site. */
+  readonly container: string;
   readonly host: string;
   readonly upstream: string;
   readonly plainHttp?: boolean;
@@ -569,7 +573,7 @@ export function publishSite(site: Site): string {
   const headers = Object.entries(site.headers ?? {})
     .map(([name, value]) => `\t\theader_up ${name} "${value}"\n`)
     .join("");
-  const body = `${address} {\n\ttls internal\n\treverse_proxy ${site.upstream} {\n${headers}\t}\n}\n# sail-fixture home ${site.home}\n`;
+  const body = `${address} {\n\ttls internal\n\treverse_proxy ${site.upstream} {\n${headers}\t}\n}\n# sail-fixture home ${site.home} container ${site.container}\n`;
   const dir = prepare();
   const url = withCaddyLock(dir, () => {
     ready(dir, site.home);

@@ -1431,6 +1431,7 @@ const TABLE: ReadonlyArray<Command> = [
       const https = publishSite({
         id: siteId(record.id, port),
         home: HOME_ID,
+        container: container(record.id),
         host,
         upstream,
         plainHttp: true,
