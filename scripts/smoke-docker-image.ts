@@ -25,6 +25,7 @@ import {
 } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { resolveDesktopWebAssetBrand } from "./build-desktop-artifact.ts";
 import { resolveWebIconOverrides } from "./lib/brand-assets.ts";
 
 /** The entrypoint's fallback when a run sets neither SAIL_PUBLIC_URL nor FLY_APP_NAME. */
@@ -46,6 +47,7 @@ const PLANTED_COMMANDS = [
   "sail-smoke-probe",
 ];
 const PLANTED_LOG = "/data/home/.sail-smoke-planted";
+const AGENT_CLIS = ["claude", "codex", "opencode"];
 const NATIVE_EXTERNALS_PROBE = `
 const { FileFinder } = await import("@ff-labs/fff-node");
 const finder = FileFinder.create({ basePath: "/opt/sail/server" });
@@ -75,6 +77,7 @@ const IssuedPairing = Schema.Struct({
 const decodeIssuedPairing = Schema.decodeEffect(Schema.fromJsonString(IssuedPairing));
 const EnvironmentDescriptor = Schema.Struct({
   platform: Schema.Struct({ os: Schema.String, arch: Schema.String }),
+  serverVersion: Schema.String,
 });
 const BrowserSession = Schema.Struct({ authenticated: Schema.Literal(true) });
 const SessionState = Schema.Struct({ authenticated: Schema.Boolean });
@@ -227,7 +230,7 @@ const pair = Effect.fn("smoke-docker-image.pair")(function* (
   });
   const token = new URLSearchParams(link.hash.slice(1)).get("token");
   if (`${link.origin}${link.pathname}` !== `${DEFAULT_PUBLIC_URL}/pair`) {
-    return yield* fail("pairing link", `points at ${link.origin}${link.pathname}`);
+    return yield* fail("pairing link", `is not on ${DEFAULT_PUBLIC_URL}/pair`);
   }
   if (token !== issued.credential) {
     return yield* fail("pairing link", "does not carry the issued token");
@@ -251,38 +254,30 @@ const pair = Effect.fn("smoke-docker-image.pair")(function* (
   return issued.credential;
 });
 
+/** Desktop releases brand the web client from the version; the image must match that rule. */
 const expectReleaseIcons = Effect.fn("smoke-docker-image.expectReleaseIcons")(function* (
   origin: string,
+  serverVersion: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const client = yield* HttpClient.HttpClient;
   const repoRoot = yield* path.fromFileUrl(new URL("..", import.meta.url));
-  const matches = Effect.fn("smoke-docker-image.matchesBrand")(function* (
-    brand: "production" | "nightly",
-  ) {
-    for (const icon of resolveWebIconOverrides(brand, origin)) {
-      const expected = yield* fs.readFile(path.join(repoRoot, icon.sourceRelativePath));
-      const served = new Uint8Array(
-        yield* client.get(icon.targetRelativePath).pipe(
-          Effect.flatMap(HttpClientResponse.filterStatusOk),
-          Effect.flatMap((response) => response.arrayBuffer),
-        ),
-      );
-      if (
-        served.length !== expected.length ||
-        served.some((byte, index) => byte !== expected[index])
-      ) {
-        return false;
-      }
-    }
-    return true;
-  });
-  if (!(yield* matches("production")) && !(yield* matches("nightly"))) {
-    return yield* fail(
-      "web client",
-      "the icons match neither the production nor the nightly brand",
+  const brand = resolveDesktopWebAssetBrand(serverVersion);
+  for (const icon of resolveWebIconOverrides(brand, origin)) {
+    const expected = yield* fs.readFile(path.join(repoRoot, icon.sourceRelativePath));
+    const served = new Uint8Array(
+      yield* client.get(icon.targetRelativePath).pipe(
+        Effect.flatMap(HttpClientResponse.filterStatusOk),
+        Effect.flatMap((response) => response.arrayBuffer),
+      ),
     );
+    if (
+      served.length !== expected.length ||
+      served.some((byte, index) => byte !== expected[index])
+    ) {
+      return yield* fail("web client", `${icon.targetRelativePath} is not the ${brand} icon`);
+    }
   }
 });
 
@@ -295,20 +290,24 @@ const expectRootIgnoresSailCommands = Effect.fn("smoke-docker-image.expectRootIg
           `mkdir -p ${dir} && printf '#!/bin/sh\\necho "$(/usr/bin/id -u) $0" >> ${PLANTED_LOG}\\nPATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin exec ${command} "$@"\\n' > ${dir}/${command} && chmod +x ${dir}/${command}`,
       ),
     ).join(" && ");
-    const plantClaude = `printf '#!/bin/sh\\necho "$(/usr/bin/id -u) $0" >> ${PLANTED_LOG}\\n' > /data/home/.local/bin/claude && chmod +x /data/home/.local/bin/claude`;
-    yield* docker(["exec", "--user", "sail", id, "/bin/sh", "-c", `${plant} && ${plantClaude}`]);
+    const plantAgents = AGENT_CLIS.map(
+      (name) =>
+        `printf '#!/bin/sh\\necho "$(/usr/bin/id -u) $0" >> ${PLANTED_LOG}\\n' > /data/home/.local/bin/${name} && chmod +x /data/home/.local/bin/${name}`,
+    ).join(" && ");
+    yield* docker(["exec", "--user", "sail", id, "/bin/sh", "-c", `${plant} && ${plantAgents}`]);
     yield* docker(["restart", "-t", "30", id]);
     yield* waitForApp(id, timeoutSeconds);
     yield* expectServerRunsAsSail(id);
     yield* docker(["exec", id, "id", "-u"]);
     yield* docker(["exec", id, "t3", "--version"]);
     yield* docker(["exec", id, "sh", "-lc", "id -u"]);
+    for (const name of AGENT_CLIS) yield* docker(["exec", id, name, "--version"]);
     yield* docker([
       "exec",
       id,
       "/bin/sh",
       "-c",
-      'sail-smoke-probe; claude --version; codex --version; opencode --version; touch "$HOME/.sail-smoke-root-home"',
+      'sail-smoke-probe; touch "$HOME/.sail-smoke-root-home"',
     ]);
     yield* docker(["exec", id, "bash", "-ic", "sail-smoke-probe; true"]);
     const planted = (yield* docker([
@@ -338,11 +337,25 @@ const expectRootIgnoresSailCommands = Effect.fn("smoke-docker-image.expectRootIg
         `left files sail does not own: ${notSails.replace(/\n/g, ", ")}`,
       );
     }
-    if (!planted.includes("1000 /data/home/.local/bin/claude")) {
-      return yield* fail(
-        "agent CLIs",
-        "root's claude did not run sail's ~/.local/bin/claude as sail",
-      );
+    for (const name of AGENT_CLIS) {
+      if (!planted.includes(`1000 /data/home/.local/bin/${name}`)) {
+        return yield* fail("agent CLIs", `root's ${name} did not run sail's copy as sail`);
+      }
+    }
+    for (const user of [["--user", "sail"], []]) {
+      const prefix = (yield* docker([
+        "exec",
+        ...user,
+        id,
+        "as-sail",
+        "npm",
+        "config",
+        "get",
+        "prefix",
+      ])).stdout;
+      if (prefix !== "/opt/npm-global") {
+        return yield* fail("as-sail", `npm prefix is ${prefix}, not /opt/npm-global`);
+      }
     }
     for (const shell of [
       ["sh", "-lc"],
@@ -374,7 +387,7 @@ export const smokeDockerImage = Effect.fn("smokeDockerImage")(function* (input: 
       .pipe(Effect.flatMap(HttpClientResponse.schemaBodyJson(EnvironmentDescriptor)));
     yield* Console.log(`Environment: ${descriptor.platform.os} ${descriptor.platform.arch}.`);
     yield* expectServerRunsAsSail(container.id);
-    yield* expectReleaseIcons(origin);
+    yield* expectReleaseIcons(origin, descriptor.serverVersion);
 
     const credential = yield* pair(container.id, origin, input.timeoutSeconds, secrets);
     yield* Console.log(
@@ -418,6 +431,11 @@ export const smokeDockerImage = Effect.fn("smokeDockerImage")(function* (input: 
       "After a restart, root ran no command sail planted on PATH, and root shells use /root.",
     );
   }).pipe(
+    Effect.catch((error) =>
+      Ref.get(secrets).pipe(
+        Effect.flatMap((issued) => Effect.fail(fail("smoke", redactTokens(error.message, issued)))),
+      ),
+    ),
     Effect.tapError(() =>
       Effect.gen(function* () {
         const logs = yield* docker(["logs", "--tail", "200", container.id]);

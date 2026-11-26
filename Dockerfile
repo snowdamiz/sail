@@ -30,12 +30,13 @@ COPY --exclude=deploy --exclude=native/sail-boat --exclude=native/resource-monit
 RUN test "v$(node -p 'require("./package.json").engines.node')" = "$(node --version)"
 RUN --mount=type=cache,id=sail-pnpm-store,target=/root/.local/share/pnpm/store,sharing=locked \
     vp install
-# The server build copies development icons into its client; brand it as desktop releases do.
+# The server build copies development icons into its client; brand it as desktop releases do,
+# from the version the bundle reports (APP_VERSION, else the server manifest without .git).
 ARG APP_VERSION=
 RUN APP_VERSION=$APP_VERSION vp run --filter t3 build \
-    && node scripts/apply-web-brand-assets.ts \
-      "$(case "$APP_VERSION" in *-nightly.*|*-preview.*) echo nightly ;; *) echo production ;; esac)" \
-      apps/server/dist/client \
+    && version="${APP_VERSION:-$(node -p 'require("./apps/server/package.json").version')}" \
+    && brand="$(node --input-type=module -e 'import { resolveDesktopWebAssetBrand } from "./scripts/build-desktop-artifact.ts"; console.log(resolveDesktopWebAssetBrand(process.argv[1]))' "$version")" \
+    && node scripts/apply-web-brand-assets.ts "$brand" apps/server/dist/client \
     && find apps/server/dist -name '*.map' -delete
 ARG TARGETARCH
 RUN --mount=type=cache,id=sail-pnpm-store,target=/root/.local/share/pnpm/store,sharing=locked \
@@ -90,8 +91,11 @@ EOF
 COPY --chmod=0755 <<'EOF' /usr/local/bin/claude
 #!/bin/sh
 name=${0##*/}
+if [ "$(/usr/bin/id -u)" = 0 ]; then
+  exec /usr/bin/setpriv --reuid=sail --regid=sail --init-groups "/usr/local/bin/$name" "$@"
+fi
 for dir in /data/home/.local/bin /opt/npm-global/bin; do
-  [ -x "$dir/$name" ] && exec /usr/local/bin/as-sail "$dir/$name" "$@"
+  [ -f "$dir/$name" ] && [ -x "$dir/$name" ] && exec /usr/local/bin/as-sail "$dir/$name" "$@"
 done
 echo "$name is not installed for sail" >&2
 exit 127
