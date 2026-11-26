@@ -31,6 +31,7 @@ import {
 import { T, useGT, useMessages } from "gt-react";
 
 import { ensureLocalApi } from "../../localApi";
+import { rememberProviderAuthSignIn } from "../../providerAuthDelivery";
 import { managedInstanceLocks, useManagedPolicy } from "../../state/managedPolicy";
 import { ManagedControl } from "../ManagedPolicy";
 import { useEnvironmentHttpBaseUrl } from "../../state/environments";
@@ -558,6 +559,9 @@ function ManagedCodexSetup({
       (started) => {
         setAwaitingProvider("sign-in");
         const startedFlowId = started.flowId;
+        if (startedFlowId !== null) {
+          rememberProviderAuthSignIn({ environmentId, instanceId, flowId: startedFlowId });
+        }
         // A remote browser cannot receive the callback, so the user opens the page from the card.
         if (remoteWeb || startedFlowId === null) return;
         const startedPage = settleAuthorizationPage(started, startedFlowId);

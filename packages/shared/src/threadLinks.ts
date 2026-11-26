@@ -66,34 +66,39 @@ export interface ThreadLink {
 }
 
 // Escapes even URL-safe punctuation, so a sentence's closing period never reads as part of an id.
-const hostedSegment = (id: string) =>
+const escapedSegment = (id: string) =>
   encodeURIComponent(id).replace(
     /[.!~*'()]/g,
     (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
   );
 
 export function hostedThreadLink(ref: ScopedThreadRef, origin: string): string {
-  const path = `/threads/${hostedSegment(ref.environmentId)}/${hostedSegment(ref.threadId)}`;
+  const path = `/threads/${escapedSegment(ref.environmentId)}/${escapedSegment(ref.threadId)}`;
   return new URL(path, origin).toString();
 }
 
 const HOSTED_PATH = new RegExp(`^(${HOSTED_SEGMENT})/(${HOSTED_SEGMENT})$`);
 
-function parseHostedThreadLink(href: string, hostedPrefix: string): ThreadLink | null {
-  const match = HOSTED_PATH.exec(href.slice(hostedPrefix.length));
-  if (!match) return null;
+function percentDecoded(value: string): string | null {
   try {
-    const environmentId = Option.getOrNull(decodeEnvironmentId(decodeURIComponent(match[1]!)));
-    const threadId = Option.getOrNull(decodeThreadId(decodeURIComponent(match[2]!)));
-    return environmentId === null || threadId === null ? null : { environmentId, threadId };
+    return decodeURIComponent(value);
   } catch {
     return null;
   }
 }
 
+function parseHostedThreadLink(href: string, hostedPrefix: string): ThreadLink | null {
+  const match = HOSTED_PATH.exec(href.slice(hostedPrefix.length));
+  if (!match) return null;
+  const environmentId = Option.getOrNull(decodeEnvironmentId(percentDecoded(match[1]!)));
+  const threadId = Option.getOrNull(decodeThreadId(percentDecoded(match[2]!)));
+  return environmentId === null || threadId === null ? null : { environmentId, threadId };
+}
+
 /**
- * The ids as written. Thread ids can hold percent escapes of their own, so they are not decoded,
- * except in a hosted link, which escapes them itself.
+ * The thread id as written, since thread ids can hold percent escapes of their own; candidates also
+ * try it decoded. A hosted link escapes both ids and a t3-thread link its environment id, so those
+ * are decoded.
  */
 export function parseThreadLinkHref(href: string, hostedOrigin?: string): ThreadLink | null {
   const hostedPrefix = hostedThreadPrefix(hostedOrigin);
@@ -108,18 +113,16 @@ export function parseThreadLinkHref(href: string, hostedOrigin?: string): Thread
   const path = href.slice(V2_PREFIX.length);
   const slash = path.indexOf("/");
   if (slash < 0) return null;
-  const environmentId = Option.getOrNull(decodeEnvironmentId(path.slice(0, slash)));
+  const environmentId = Option.getOrNull(decodeEnvironmentId(percentDecoded(path.slice(0, slash))));
   const threadId = Option.getOrNull(decodeThreadId(path.slice(slash + 1)));
   return environmentId === null || threadId === null ? null : { environmentId, threadId };
 }
 
 function percentDecodedThreadLinkId(threadId: ThreadId): ThreadId | null {
-  try {
-    const decoded = decodeURIComponent(threadId);
-    return decoded === threadId ? null : Option.getOrNull(decodeThreadId(decoded));
-  } catch {
-    return null;
-  }
+  const decoded = percentDecoded(threadId);
+  return decoded === null || decoded === threadId
+    ? null
+    : Option.getOrNull(decodeThreadId(decoded));
 }
 
 /** The threads a link can name, in its own environment or else the message's: as written, then decoded. */
@@ -152,10 +155,17 @@ export function guessThreadLinkRef(
   return null;
 }
 
+// Ids that use only these stay readable as written, as agents see them; any other id is escaped
+// whole, and its decoded candidate names it.
+const WRITTEN_AS_IS = /^[\w\-.~:@!$&'()*+,;=%/]+$/;
+
 function threadLinkHref(link: ThreadLink): string {
+  const threadId = WRITTEN_AS_IS.test(link.threadId)
+    ? link.threadId
+    : escapedSegment(link.threadId);
   return link.environmentId === null
-    ? `${V1_PREFIX}${link.threadId}`
-    : `${V2_PREFIX}${link.environmentId}/${link.threadId}`;
+    ? `${V1_PREFIX}${threadId}`
+    : `${V2_PREFIX}${escapedSegment(link.environmentId)}/${threadId}`;
 }
 
 const linkLabel = (label: string | undefined) =>

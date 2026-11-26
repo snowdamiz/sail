@@ -1,5 +1,7 @@
-import { isLoopbackHost } from "./preview.ts";
 import { parseUrl } from "./url.ts";
+
+// At any port. 0.0.0.0 is the address a server binds to, not one a page is served at.
+const THIS_COMPUTER = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 // A delivery carries the one-time OAuth code in the URL fragment, so plain HTTP never qualifies.
 const isTrustedHttpsOrigin = (origin: string, trustedOrigins: ReadonlyArray<string | undefined>) =>
@@ -19,7 +21,7 @@ export function providerAuthReturnUrl(
       ["sail:", "sail-dev:", "t3code:", "t3code-dev:"].includes(url.protocol) && url.host === "app";
     const web =
       ["http:", "https:"].includes(url.protocol) &&
-      (isLoopbackHost(url.hostname) || isTrustedHttpsOrigin(url.origin, trustedOrigins));
+      (THIS_COMPUTER.has(url.hostname) || isTrustedHttpsOrigin(url.origin, trustedOrigins));
     if (
       url.username ||
       url.password ||
