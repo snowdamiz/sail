@@ -155,7 +155,6 @@ const listPairingLinkIds = (home: string) =>
     }),
   );
 
-/** A home whose server holds the ownership lock and recorded itself, with every request to its origin counted. */
 const withOwnedServerHome = <A, E, R>(
   run: (home: string, requests: ReadonlyArray<ServerRequest>) => Effect.Effect<A, E, R>,
 ) =>
@@ -387,11 +386,15 @@ it.live(
     withRunningServerHome((home, requests, port) =>
       Effect.gen(function* () {
         yield* migrateDatabase(home);
-        // PID 1 answers EPERM, an unreadable start time proves nothing, and without ps no start time is read.
-        for (const { pid, startedAt, env } of [
-          { pid: 1, startedAt: DateTime.formatIso(yield* DateTime.now) },
-          { pid: process.pid, startedAt: "not-a-valid-timestamp" },
+        for (const { route, pid, startedAt, env } of [
           {
+            route: "PID 1, alive to kill(0) as EPERM",
+            pid: 1,
+            startedAt: DateTime.formatIso(yield* DateTime.now),
+          },
+          { route: "unreadable start time", pid: process.pid, startedAt: "not-a-valid-timestamp" },
+          {
+            route: "no ps to read the PID's start time",
             pid: process.pid,
             startedAt: "2020-01-01T00:00:00.000Z",
             env: { PATH: "/nonexistent" },
@@ -399,7 +402,7 @@ it.live(
         ]) {
           yield* recordServer(home, { port, publicUrl: PUBLIC_URL, pid, startedAt });
           const stderr = yield* expectNothingMinted(home, env);
-          assert.match(stderr, /without the ownership lock/);
+          assert.match(stderr, /without the ownership lock/, route);
         }
         assert.deepStrictEqual(requests, []);
       }),

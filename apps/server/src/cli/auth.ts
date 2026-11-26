@@ -116,7 +116,6 @@ const tokenOnlyFlag = Flag.Boolean("token-only").pipe(
 const notMinted = (reason: string, retry: string) =>
   new CliError.UserError({ cause: `${reason}, so no pairing token was minted. ${retry}` });
 
-/** Mints a link for the server that owns this home, revoking it if that server stopped first. */
 export const mintForRunningServer = Effect.fn("auth.mintForRunningServer")(function* (
   input: Parameters<EnvironmentAuth.EnvironmentAuth["Service"]["createPairingLink"]>[0],
 ) {
@@ -158,7 +157,6 @@ const pairingCreateCommand = Command.make("create", {
             "Start the server, or wait until it is ready, then retry.",
           );
         }
-        // Only the ownership lock shows the server is still alive; servers older than it leave none.
         if (running.value.ownerId === undefined) {
           return yield* notMinted(
             `The T3 Code server recorded for ${config.baseDir} was started by a release without the ownership lock`,

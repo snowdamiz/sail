@@ -173,7 +173,6 @@ it.effect("sets the selected browser session cookies through the HTTP route", ()
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
-/** Runs against the auth routes with a dev session cookie that may mint pairing codes. */
 const withDevSessionRoutes = (
   run: (
     request: (
