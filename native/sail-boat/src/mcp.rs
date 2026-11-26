@@ -400,7 +400,7 @@ async fn run(app: &Arc<App>, call: Call) -> Result<String> {
         Call::CreateMachine { name, size, projects } => {
             let m = app.create_machine(&name, size.as_deref().unwrap_or("default"), projects).await?;
             // The machine exists either way; its row still offers "Add to Sail".
-            if let Err(e) = crate::app::open_url(&app.pair(&m)) {
+            if let Err(e) = crate::app::open_url(&app.pair_link(&m)) {
                 app.shared.notify(format!("Couldn't open Sail for {name}"), format!("{e:#}; use Add to Sail"));
             }
             format!(
@@ -469,7 +469,7 @@ async fn run(app: &Arc<App>, call: Call) -> Result<String> {
         }
         Call::AddToT3 { machine } => {
             let m = app.machine(&machine)?;
-            crate::app::open_url(&app.pair(&m))?;
+            crate::app::open_url(&app.pair_link(&m))?;
             format!("Sail now asks the user to add {}; tell them to confirm.", m.record().name)
         }
         Call::DeleteMachine { machine, discard } => {

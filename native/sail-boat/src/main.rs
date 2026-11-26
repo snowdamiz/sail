@@ -22,12 +22,25 @@ async fn main() -> Result<()> {
         out.flush()?;
     }
 
-    wait_for_exit(&running).await;
+    // A parent that keeps stdin open for its own lifetime sets this, so the daemon exits with it
+    // even when the parent dies without stopping it.
+    let parent_gone = std::env::var_os("SAIL_BOATD_EXIT_ON_STDIN_EOF")
+        .is_some()
+        .then(|| daemon::closed(std::io::stdin()));
+    wait_for_exit(&running, parent_gone).await;
     running.shutdown().await;
     Ok(())
 }
 
-async fn wait_for_exit(running: &daemon::RunningDaemon) {
+async fn wait_for_exit(running: &daemon::RunningDaemon, parent_gone: Option<tokio::sync::oneshot::Receiver<()>>) {
+    let parent_gone = async {
+        match parent_gone {
+            Some(closed) => {
+                let _ = closed.await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
@@ -35,6 +48,7 @@ async fn wait_for_exit(running: &daemon::RunningDaemon) {
         tokio::select! {
             _ = running.wait_for_shutdown() => {}
             _ = tokio::signal::ctrl_c() => {}
+            _ = parent_gone => {}
             _ = async {
                 if let Some(ref mut s) = sigterm {
                     s.recv().await;
@@ -49,6 +63,7 @@ async fn wait_for_exit(running: &daemon::RunningDaemon) {
         tokio::select! {
             _ = running.wait_for_shutdown() => {}
             _ = tokio::signal::ctrl_c() => {}
+            _ = parent_gone => {}
         }
     }
 }

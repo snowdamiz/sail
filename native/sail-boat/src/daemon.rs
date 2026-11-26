@@ -350,7 +350,7 @@ impl Daemon {
                 let args: Args = parse_args(name, &body)?;
                 let app = self.app()?;
                 let machine = app.create_machine(&args.name, &args.size, args.projects).await.map_err(err)?;
-                Ok(Reply::open(Some(app.pair(&machine))))
+                Ok(Reply::open(Some(app.pair_link(&machine))))
             }
             "local_projects" => {
                 Reply::data(self.app()?.local_projects().await.map_err(err)?)
@@ -419,7 +419,7 @@ impl Daemon {
                 let args: Args = parse_args(name, &body)?;
                 let app = self.app()?;
                 let machine = app.machine(&args.id).map_err(err)?;
-                Ok(Reply::open(Some(app.pair(&machine))))
+                Ok(Reply::open(Some(app.pair_link(&machine))))
             }
             "latest_thread" => {
                 #[derive(Deserialize)]
@@ -589,15 +589,18 @@ impl Daemon {
                 let sign_in = boat.start_sign_in().await.inspect_err(|_| self.set_busy(false))?;
                 let daemon = self.clone();
                 let wait = tokio::spawn(async move {
-                    let result = boat.finish_sign_in().await;
-                    daemon.sign_in.finish().await;
-                    daemon.set_busy(false);
-                    if let Err(e) = result {
-                        daemon.emit_notify("Boat sign-in did not finish", &format!("{e:#}"));
+                    if let Err(e) = boat.finish_sign_in().await {
+                        // Boat's output can carry the sign-in code, and notices reach every client.
+                        tracing::warn!("Boat sign-in did not finish: {e:#}");
+                        daemon.emit_notify("Boat sign-in did not finish", "Sign in to Boat again.");
                     }
                     daemon.recheck_setup().await;
+                    daemon.sign_in.finish().await;
+                    daemon.set_busy(false);
                 });
-                self.background_tasks.lock().unwrap().push(wait);
+                let mut tasks = self.background_tasks.lock().unwrap();
+                tasks.retain(|task| !task.is_finished());
+                tasks.push(wait);
                 Ok(sign_in)
             })
             .await
@@ -774,6 +777,7 @@ pub struct RunningDaemon {
     pub handshake: Handshake,
     pub daemon: Arc<Daemon>,
     tasks: Vec<JoinHandle<()>>,
+    _data_dir_lock: std::fs::File,
 }
 
 impl RunningDaemon {
@@ -793,6 +797,7 @@ impl RunningDaemon {
 /// Binds the control API and MCP listeners, spawns their servers and startup setup check, and
 /// returns the handshake ready to print to stdout.
 pub async fn start(config: DaemonConfig) -> Result<RunningDaemon> {
+    let data_dir_lock = lock_data_dir(&config.data_dir)?;
     let control_listener = tokio::net::TcpListener::bind(("127.0.0.1", config.control_port))
         .await
         .with_context(|| format!("binding control port {}", config.control_port))?;
@@ -834,7 +839,43 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon> {
         init_daemon.init().await;
     });
 
-    Ok(RunningDaemon { handshake, daemon, tasks: vec![control_task, mcp_task, init_task] })
+    Ok(RunningDaemon {
+        handshake,
+        daemon,
+        tasks: vec![control_task, mcp_task, init_task],
+        _data_dir_lock: data_dir_lock,
+    })
+}
+
+/// Two daemons on one data dir would each reap, sleep and save the same machines.
+fn lock_data_dir(dir: &std::path::Path) -> Result<std::fs::File> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let path = dir.join("daemon.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            anyhow::bail!("another sail-boatd is using {}", dir.display())
+        }
+        Err(std::fs::TryLockError::Error(e)) => Err(e).with_context(|| format!("locking {}", path.display())),
+    }
+}
+
+/// Resolves once `input` reaches end of file. Read on a plain thread: a blocked read there never
+/// holds up the process exiting.
+pub fn closed(mut input: impl std::io::Read + Send + 'static) -> tokio::sync::oneshot::Receiver<()> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 256];
+        while matches!(input.read(&mut buf), Ok(n) if n > 0) {}
+        let _ = tx.send(());
+    });
+    rx
 }
 
 #[cfg(test)]
@@ -1094,6 +1135,32 @@ mod tests {
         drop(stream);
         app.shutdown();
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_second_daemon_on_the_same_data_dir_refuses_to_start() {
+        let (first, dir) = spawn_test_daemon().await;
+        let config = DaemonConfig { control_port: 0, mcp_port: 0, token: TOKEN.to_owned(), data_dir: dir.clone() };
+        let refused = start(config).await.err().expect("a second daemon must not start on a locked data dir");
+        assert!(format!("{refused:#}").contains("another sail-boatd is using"), "{refused:#}");
+
+        first.shutdown().await;
+        let config = DaemonConfig { control_port: 0, mcp_port: 0, token: TOKEN.to_owned(), data_dir: dir.clone() };
+        let next = start(config).await.expect("the data dir is free once its daemon is gone");
+        stop_test_daemon(next, dir).await;
+    }
+
+    #[tokio::test]
+    async fn closed_resolves_when_the_parent_closes_its_end() {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let mut closed = closed(reader);
+        std::io::Write::write_all(&mut writer, b"still here").unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut closed).await.is_err(),
+            "input that is still open keeps the daemon running"
+        );
+        drop(writer);
+        tokio::time::timeout(Duration::from_secs(5), closed).await.unwrap().unwrap();
     }
 
     #[tokio::test]

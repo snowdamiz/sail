@@ -527,7 +527,7 @@ impl App {
         Ok(project)
     }
 
-    pub fn pair(&self, machine: &MachineRuntime) -> String {
+    pub fn pair_link(&self, machine: &MachineRuntime) -> String {
         let code = machine.auth.new_pairing_code();
         let pairing_url = format!("http://localhost:{}/pair#token={code}", machine.record().local_port);
         crate::t3desktop::pair_link(&pairing_url)
@@ -751,7 +751,7 @@ impl App {
     pub fn open_in_t3(&self, machine: &MachineRuntime, thread: Option<&str>) -> Option<String> {
         let record = machine.record();
         if record.client_tokens.is_empty() {
-            return Some(self.pair(machine));
+            return Some(self.pair_link(machine));
         }
         thread.map(|thread| crate::t3desktop::thread_link(&record.environment_id, thread))
     }
@@ -860,7 +860,7 @@ pub fn open_url(url: &str) -> Result<()> {
         std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).status()?
     };
     if !status.success() {
-        bail!("could not open {url}");
+        bail!("could not open the link on this computer");
     }
     Ok(())
 }
