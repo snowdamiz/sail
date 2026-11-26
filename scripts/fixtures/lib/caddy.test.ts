@@ -122,7 +122,7 @@ async function nodeAccepts(ca: string, san: string, host: string): Promise<boole
   }
 }
 
-/** The root the build round made: `localtest.me` names permitted, nothing said about IPs. */
+/** A version 1 root: `localtest.me` names permitted, nothing said about IPs. */
 function makeVersionOneRoot(dir: string): void {
   const ca = NodePath.join(dir, "ca");
   NodeFS.mkdirSync(ca, { recursive: true });
