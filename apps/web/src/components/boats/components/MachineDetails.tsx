@@ -62,11 +62,15 @@ export function MachineDetails({
   const d = useMachineDetails(m.id, version, onError);
   const busy = !!pending;
   const gone = m.state === "missing";
-  const latestThread = useLatestThread(m.id, version);
   const access = useBoatAccess();
+  const first = primaryAction(m);
+  const latestThread = useLatestThread(
+    first === null && m.paired && access.onHost ? m.id : null,
+    m.state,
+  );
   const primary = offered(
     access,
-    primaryAction(m) ?? (m.paired ? (latestThread ? openIn(latestThread) : null) : ACTIONS.pair),
+    first ?? (m.paired ? (latestThread ? openIn(latestThread) : null) : ACTIONS.pair),
   );
   const [primaryArmed, armPrimary] = useArmed();
 

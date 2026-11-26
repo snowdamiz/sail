@@ -5,8 +5,9 @@ import { appAtomRegistry } from "./atomRegistry";
 
 const SLOW_RPC_ACK_THRESHOLD_MS = 15_000;
 /**
- * Updates wait for package installs; VCS refreshes may wait for background work and network calls.
- * Give these requests longer than the normal 15s warning threshold.
+ * Updates wait for package installs; VCS refreshes may wait for background work and network calls;
+ * creating a Boat machine takes about a minute. Give these requests longer than the normal 15s
+ * warning threshold.
  */
 const LONG_RUNNING_RPC_ACK_THRESHOLD_MS = 120_000;
 const MAX_TRACKED_RPC_ACK_REQUESTS = 256;
@@ -39,6 +40,7 @@ const longRunningRpcAckMethods = new Set<string>([
   WS_METHODS.serverRefreshProviders,
   WS_METHODS.serverUpdateServer,
   WS_METHODS.vcsRefreshStatus,
+  WS_METHODS.boatsInvoke,
 ]);
 
 const slowRpcAckRequestsAtom = Atom.make<ReadonlyArray<SlowRpcAckRequest>>([]).pipe(

@@ -205,6 +205,7 @@ it("never shows a sign-in page whose attempt already ended, even when its reply 
   expect(state.invoked).toEqual([{ command: "setup_action", args: { action: "signInBoat" } }]);
   await expect.element(screen.getByRole("button", { name: "Show sign-in page" })).toBeEnabled();
   await expect.element(screen.getByText("OLD-CODE")).not.toBeInTheDocument();
+  expect(state.openExternal).not.toHaveBeenCalled();
 });
 
 it("says Boats is not available here instead of starting forever", async () => {
@@ -283,6 +284,7 @@ it("hides Open and Add to Sail for a client that is not on the server's host", a
   await expect
     .element(screen.getByRole("button", { name: /Open .*in Sail/ }))
     .not.toBeInTheDocument();
+  expect(state.invoked.map((input) => input.command)).not.toContain("latest_thread");
 });
 
 it("restarts a failed daemon from Retry without reloading the page", async () => {
@@ -327,10 +329,21 @@ it("offers Open in Sail on a paired machine only once its latest thread is known
     .not.toBeInTheDocument();
 
   state.replies.latest_thread = { data: "thread-1" };
-  await publish(
-    uiState({ machines: [machine({ id: "m-2", name: "dory", paired: true, state: "working" })] }),
-  );
+  const working = machine({ id: "m-2", name: "dory", paired: true, state: "working" });
+  await publish(uiState({ machines: [working] }));
   await expect
     .element(screen.getByRole("button", { name: "Open last thread in Sail" }))
     .toBeVisible();
+
+  const count = (command: string) =>
+    state.invoked.filter((input) => input.command === command).length;
+  const detailsFetches = count("get_machine_details");
+  await publish(
+    uiState({
+      machines: [working],
+      costs: { today: 1, month: 1, startsToday: 1, startsLimit: 10 },
+    }),
+  );
+  await vi.waitFor(() => expect(count("get_machine_details")).toBe(detailsFetches + 1));
+  expect(count("latest_thread")).toBe(2);
 });

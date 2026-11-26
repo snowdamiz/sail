@@ -18,7 +18,7 @@ import { SettingsView } from "./components/SettingsView";
 import { type SignInPrompt, SetupView } from "./components/SetupView";
 import { Dots } from "./components/common";
 import { machineKey, type Action } from "./machine";
-import { errorText, type BoatLink } from "./reply";
+import { classifyBoatLink, errorText, type BoatLink } from "./reply";
 import type { LocalProject, MachineView, McpClient, SetupAction, UiState } from "./types";
 
 type View = "list" | "new" | "settings" | `machine:${string}`;
@@ -50,24 +50,44 @@ function Setup({
   follow: FollowLink;
   onError: (t: string) => void;
 }) {
-  const [signIn, setSignIn] = useState<{ prompt: SignInPrompt; attempt: number } | null>(null);
+  const { onHost } = useBoatAccess();
+  const [signIn, setSignIn] = useState<{
+    openUrl: string | undefined;
+    userCode: string | null;
+    attempt: number;
+  } | null>(null);
   const [requesting, setRequesting] = useState(false);
-  const pending =
+  const current =
     signIn !== null && state.setup === "signInBoat" && signIn.attempt === state.signInAttempt
-      ? signIn.prompt
+      ? signIn
       : null;
+  const link = current === null ? null : classifyBoatLink(current.openUrl, onHost);
+  const pending: SignInPrompt | null =
+    current !== null && link?.kind === "browser"
+      ? { url: link.url, userCode: current.userCode }
+      : null;
+
+  // A reply can come before or after the state that names its attempt, so the sign-in page opens
+  // once both agree. A reply for an attempt that already ended never opens a dead page.
+  const opened = useRef<number | null>(null);
+  useEffect(() => {
+    if (current === null || opened.current === current.attempt) return;
+    opened.current = current.attempt;
+    follow(current.openUrl);
+  }, [current, follow]);
 
   const act = (action: SetupAction) => {
     setRequesting(true);
     void call("setup_action", { action })
       .then(
         (reply) => {
-          const link = follow(reply.openUrl);
-          if (action === "signInBoat" && link.kind === "browser" && reply.data !== null)
+          if (action === "signInBoat" && reply.data !== null)
             setSignIn({
-              prompt: { url: link.url, userCode: reply.userCode ?? null },
+              openUrl: reply.openUrl,
+              userCode: reply.userCode ?? null,
               attempt: reply.data.attempt,
             });
+          else follow(reply.openUrl);
         },
         (e) => onError(errorText(e)),
       )
