@@ -74,6 +74,49 @@ export function createJsonExclusive(path: string, value: unknown): boolean {
   }
 }
 
+export function lockHolder(lock: string): number | undefined {
+  return readJson<{ readonly pid: number }>(lock)?.pid;
+}
+
+/**
+ * Removes `lock` only while `stalePid` still holds it. The rename lets one caller take it, and a
+ * lock a live holder took in the meantime goes back in place.
+ */
+export function breakStaleLock(lock: string, stalePid: number): boolean {
+  const moved = `${lock}.breaking-${process.pid}`;
+  try {
+    NodeFS.renameSync(lock, moved);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  if (lockHolder(moved) === stalePid) {
+    NodeFS.rmSync(moved);
+    return true;
+  }
+  try {
+    NodeFS.linkSync(moved, lock);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  NodeFS.rmSync(moved);
+  return false;
+}
+
+/** True when this process now holds `lock`, taking it over from a holder `isAlive` says died. */
+export function takeLock(lock: string, isAlive: (pid: number) => boolean): boolean {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (createJsonExclusive(lock, { pid: process.pid })) return true;
+    const holder = lockHolder(lock);
+    if (holder !== undefined && (isAlive(holder) || !breakStaleLock(lock, holder))) return false;
+  }
+  return false;
+}
+
+export function releaseLock(lock: string): void {
+  if (lockHolder(lock) === process.pid) NodeFS.rmSync(lock, { force: true });
+}
+
 const reservationPath = (namespace: string, name: string) =>
   NodePath.join(fixturesRoot(), "names", namespace, name);
 

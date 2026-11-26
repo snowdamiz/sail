@@ -11,8 +11,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import { AUTH_HOST, caddyDir, publicUrl, removeSite, rootCertPath } from "./lib/caddy.ts";
 import { docker, dockerSucceeds, hasDocker, DOCKER_TEST_TIMEOUT_MS } from "./lib/docker.ts";
-import { homeId } from "./lib/state.ts";
-import { breakStaleLock, takeLock } from "./fake-boat/outbox-worker.ts";
+import { breakStaleLock, homeId } from "./lib/state.ts";
+import { takeWorkerLock } from "./fake-boat/outbox-worker.ts";
 import { waitForApproval } from "./fake-boat/sandbox/auth.ts";
 import { requestFile } from "./fake-boat/sandbox/outbox.ts";
 
@@ -414,18 +414,18 @@ describe("fake boat worker lock", () => {
   it("takes over a lock whose holder died, and leaves a live holder's alone", async () => {
     const lock = NodePath.join(dir, "taken.json");
     await NodeFSP.writeFile(lock, JSON.stringify({ pid: deadPid() }));
-    expect(takeLock(lock)).toBe(true);
+    expect(takeWorkerLock(lock)).toBe(true);
     expect(holder(lock)).toBe(process.pid);
 
     await using worker = fakeBoatProcess();
     const live = NodePath.join(dir, "live.json");
     await NodeFSP.writeFile(live, JSON.stringify({ pid: worker.pid }));
-    expect(takeLock(live)).toBe(false);
+    expect(takeWorkerLock(live)).toBe(false);
     expect(holder(live)).toBe(worker.pid);
 
     const reused = NodePath.join(dir, "reused.json");
     await NodeFSP.writeFile(reused, JSON.stringify({ pid: process.ppid }));
-    expect(takeLock(reused), "a live pid that is not the fake is a dead holder").toBe(true);
+    expect(takeWorkerLock(reused), "a live pid that is not the fake is a dead holder").toBe(true);
   });
 
   it("never removes a lock that a live worker took after the dead holder was seen", async () => {

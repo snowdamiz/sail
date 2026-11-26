@@ -3,7 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
-import { createJsonExclusive, readJson, writeJsonAtomic } from "../lib/state.ts";
+import { lockHolder, readJson, releaseLock, takeLock, writeJsonAtomic } from "../lib/state.ts";
 import { parseRequest, parseRequestFile, requestFile, type RequestFile } from "./sandbox/outbox.ts";
 
 /** The argument that makes the fake `boat` run as the outbox worker. */
@@ -77,45 +77,8 @@ function entries(dir: string): ReadonlyArray<string> {
   }
 }
 
-function lockHolder(lock: string): number | undefined {
-  return readJson<{ readonly pid: number }>(lock)?.pid;
-}
-
-/**
- * Removes `lock` only while `stalePid` still holds it. The rename lets one caller take it, and a
- * lock a live worker took in the meantime goes back in place.
- */
-export function breakStaleLock(lock: string, stalePid: number): boolean {
-  const moved = `${lock}.breaking-${process.pid}`;
-  try {
-    NodeFS.renameSync(lock, moved);
-  } catch (error) {
-    if (hasCode(error, "ENOENT")) return false;
-    throw error;
-  }
-  const holder = lockHolder(moved);
-  if (holder === stalePid) {
-    NodeFS.rmSync(moved);
-    return true;
-  }
-  try {
-    NodeFS.linkSync(moved, lock);
-  } catch (error) {
-    if (!hasCode(error, "EEXIST")) throw error;
-  }
-  NodeFS.rmSync(moved);
-  return false;
-}
-
-/** True when this process now holds `lock`, taking it over from a holder that died. */
-export function takeLock(lock: string): boolean {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (createJsonExclusive(lock, { pid: process.pid })) return true;
-    const holder = lockHolder(lock);
-    if (holder !== undefined && (isAlive(holder) || !breakStaleLock(lock, holder))) return false;
-  }
-  return false;
-}
+/** The worker lock: held only by a live fake `boat`, since a dead worker's pid can be reused. */
+export const takeWorkerLock = (lock: string) => takeLock(lock, isAlive);
 
 export function outbox({ home, entry, save }: OutboxOptions): Outbox {
   const root = NodePath.join(home, "outbox");
@@ -213,13 +176,11 @@ export function outbox({ home, entry, save }: OutboxOptions): Outbox {
     }
   };
 
-  const release = () => {
-    if (lockHolder(lock) === process.pid) NodeFS.rmSync(lock, { force: true });
-  };
+  const release = () => releaseLock(lock);
 
   /** Only the lock's holder saves queued requests, so two of one name never land out of order. */
   const drainHolding = (match: Match = {}): boolean => {
-    if (!takeLock(lock)) return false;
+    if (!takeWorkerLock(lock)) return false;
     try {
       drain(match);
     } finally {
