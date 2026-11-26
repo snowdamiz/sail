@@ -1,14 +1,15 @@
 #!/bin/sh
 set -eu
 
-# A fresh Fly volume mounts as an empty root-owned /data.
-if [ "$(id -u)" = 0 ]; then
-  install -d -o sail -g sail /data/home /data/sail
+# A fresh Fly volume mounts as an empty root-owned /data. Root names commands by path, because
+# sail can write to directories on PATH.
+if [ "$(/usr/bin/id -u)" = 0 ]; then
+  /usr/bin/install -d -o sail -g sail "$HOME" "$SAIL_HOME"
 else
-  mkdir -p /data/home /data/sail
+  /usr/bin/mkdir -p "$HOME" "$SAIL_HOME"
 fi
 
-if [ -z "${SAIL_PUBLIC_URL:-}" ]; then
+if [ -z "${SAIL_PUBLIC_URL:-}${T3CODE_PUBLIC_URL:-}" ]; then
   if [ -n "${FLY_APP_NAME:-}" ]; then
     SAIL_PUBLIC_URL="https://${FLY_APP_NAME}.fly.dev"
   else
@@ -18,4 +19,4 @@ if [ -z "${SAIL_PUBLIC_URL:-}" ]; then
 fi
 
 cd "$HOME"
-exec t3 serve --host 0.0.0.0 --port 8080 "$@"
+exec /usr/local/bin/t3 serve --host 0.0.0.0 --port 8080 "$@"

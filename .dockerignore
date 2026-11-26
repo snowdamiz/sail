@@ -29,6 +29,13 @@ apps/web/.playwright
 apps/web/playwright-report
 scripts/.e2e
 artifacts
+.electron-runtime
+.showcase
+.tanstack
+.bun
+.gstack
+.plans
+squashfs-root
 .agents
 .claude
 .cursor
