@@ -1224,6 +1224,14 @@ primary_region = "iad" # comment
         status: 1,
         stderr: `Error: fake fly does not model bluegreen deploys of an app with ${table}\n`,
       });
+    // Tables that hold no checks add none, so flyctl's own refusal stands.
+    for (const empty of [
+      "\n[checks]\n",
+      '\n[[services]]\n  internal_port = 8081\n  protocol = "tcp"\n',
+    ])
+      expect(deployWith("bluegreen", empty).stderr, empty).toContain(
+        "You need to define at least 1 check in order to use blue-green deployments",
+      );
     expect(json(["machine", "list", "-j", "-a", strategic])).toMatchObject([
       { id: launched?.id, state: "started" },
     ]);

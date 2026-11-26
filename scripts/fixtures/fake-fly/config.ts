@@ -327,11 +327,25 @@ function toDeployConfig(toml: Raw, file: string): DeployConfig {
     dockerfile: field.string(build.dockerfile, "Build.build.dockerfile"),
     deployStrategy: field.string(deploy.strategy, "Deploy.deploy.strategy"),
     ignoredCheckTables: [
-      ...(toml.checks === undefined ? [] : ["[checks]" as const]),
-      ...(toml.services === undefined ? [] : ["[[services]]" as const]),
+      ...(hasEntries(toml.checks) ? ["[checks]" as const] : []),
+      ...(Array.isArray(toml.services) &&
+      toml.services.some(
+        (service: unknown) =>
+          typeof service === "object" &&
+          service !== null &&
+          ["checks", "tcp_checks", "http_checks"].some((key) => hasEntries((service as Raw)[key])),
+      )
+        ? ["[[services]]" as const]
+        : []),
     ],
   };
 }
+
+/** flyctl counts a table's checks, so one that holds none adds nothing to bluegreen's need. */
+const hasEntries = (value: unknown) =>
+  Array.isArray(value)
+    ? value.length > 0
+    : typeof value === "object" && value !== null && Object.keys(value).length > 0;
 
 /** flyctl's `ServiceHTTPCheck.toMachineCheck`, with fly-go's `Duration` decoding each duration. */
 function serviceCheck(check: Raw, field: ReturnType<typeof configReader>): ServiceCheck {
