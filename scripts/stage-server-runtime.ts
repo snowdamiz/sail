@@ -87,11 +87,15 @@ export class ServerRuntimeOutputNotEmptyError extends Schema.TaggedError<ServerR
   }
 }
 
-const readServerRuntimeInputs = Effect.fn("readServerRuntimeInputs")(function* (input: {
+interface ServerRuntimeTarget {
   readonly repoRoot: string;
   readonly platform: ServerRuntimePlatform;
   readonly arch: ServerRuntimeArch;
-}) {
+}
+
+const readServerRuntimeInputs = Effect.fn("readServerRuntimeInputs")(function* (
+  input: ServerRuntimeTarget,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const workspace = yield* decodeWorkspaceConfig(
@@ -120,17 +124,13 @@ const readServerRuntimeInputs = Effect.fn("readServerRuntimeInputs")(function* (
   };
 });
 
-export const resolveServerRuntimeDependencies = (
-  input: Parameters<typeof readServerRuntimeInputs>[0],
-) => readServerRuntimeInputs(input).pipe(Effect.map((inputs) => inputs.dependencies));
+export const resolveServerRuntimeDependencies = (target: ServerRuntimeTarget) =>
+  readServerRuntimeInputs(target).pipe(Effect.map((inputs) => inputs.dependencies));
 
 /** Installed runtimes cannot rely on pnpm's store layout surviving archival or a container copy. */
-export const stageServerRuntime = Effect.fn("stageServerRuntime")(function* (input: {
-  readonly repoRoot: string;
-  readonly stageDir: string;
-  readonly platform: ServerRuntimePlatform;
-  readonly arch: ServerRuntimeArch;
-}) {
+export const stageServerRuntime = Effect.fn("stageServerRuntime")(function* (
+  input: ServerRuntimeTarget & { readonly stageDir: string },
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
