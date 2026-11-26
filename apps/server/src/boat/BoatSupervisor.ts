@@ -7,6 +7,7 @@ import {
   BoatNotice,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { makeAsyncRotatingFileSink } from "@t3tools/shared/logging";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -18,6 +19,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import type { PlatformError } from "effect/PlatformError";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -41,6 +43,9 @@ const FORCE_KILL_AFTER = Duration.seconds(3);
 const SSE_RECONNECT_DELAY = Duration.millis(1_500);
 const STDERR_DRAIN_TIMEOUT = Duration.seconds(1);
 const STDERR_TAIL_LINES = 5;
+const DAEMON_LOG_MAX_BYTES = 1024 * 1024;
+const DAEMON_LOG_BACKUPS = 2;
+const RESTART_DELAY_CAP_SECONDS = 60;
 
 const Handshake = Schema.Struct({
   ready: Schema.Literal(true),
@@ -150,18 +155,51 @@ const statusOf = (lifecycle: Lifecycle): BoatDaemonStatus => {
   }
 };
 
-const describeExit = (exit: Exit.Exit<unknown, unknown>): string =>
+// Effect's Node spawner names a signal exit only in the message of its error's cause.
+const SIGNAL_EXIT = /^Process interrupted due to receipt of signal: '(SIG[A-Z0-9]+)'$/;
+
+const describeExit = (exit: Exit.Exit<ChildProcessSpawner.ExitCode, PlatformError>): string =>
   Exit.match(exit, {
     onSuccess: (code) => `exit code ${String(code)}`,
-    // Effect's spawner names a signal exit only in its error text.
-    onFailure: (cause) => {
-      const text = Cause.prettyErrors(cause)
-        .map((error) => error.message)
-        .join(" ");
-      const signal = /signal: '([A-Z0-9]+)'/.exec(text)?.[1];
-      return signal === undefined ? "an unknown exit" : `signal ${signal}`;
-    },
+    onFailure: (cause) =>
+      Option.match(
+        Option.flatMap(Cause.findErrorOption(cause), (error) =>
+          error.cause instanceof Error
+            ? Option.fromNullishOr(SIGNAL_EXIT.exec(error.cause.message)?.[1])
+            : Option.none(),
+        ),
+        { onNone: () => "an unknown exit", onSome: (signal) => `signal ${signal}` },
+      ),
   });
+
+/** Waits double after each failed start in a row, up to a minute. */
+export const restartDelay = (failuresInARow: number): Duration.Duration =>
+  Duration.seconds(Math.min(2 ** (failuresInARow - 1), RESTART_DELAY_CAP_SECONDS));
+
+// Sail desktop and operators set these on the server for sail-boatd. Every other SAIL_ and T3CODE_
+// value belongs to the server, and an ambient SAIL_BOAT_TOKEN would become the daemon's token.
+const DAEMON_SETTINGS = new Set([
+  "SAIL_DEEP_LINK_SCHEME",
+  "SAIL_APP_BUNDLE_ID",
+  "SAIL_CLI_INSTALL_URL",
+  "SAIL_MCP_PORT",
+]);
+
+const daemonInheritedEnvironment = (
+  environment: Readonly<Record<string, string | undefined>>,
+): Record<string, string | undefined> =>
+  Object.fromEntries(
+    Object.entries(environment).filter(
+      ([name]) =>
+        DAEMON_SETTINGS.has(name) ||
+        // Electron apps the daemon opens through the OS would inherit it and run as plain Node.
+        !(
+          name.startsWith("SAIL_") ||
+          name.startsWith("T3CODE_") ||
+          name === "ELECTRON_RUN_AS_NODE"
+        ),
+    ),
+  );
 
 export class BoatSupervisor extends Context.Service<
   BoatSupervisor,
@@ -188,6 +226,7 @@ const make = Effect.gen(function* () {
   const serviceScope = yield* Effect.scope;
 
   const dataDir = hostEnvironment.SAIL_BOAT_DATA_DIR?.trim() || path.join(config.baseDir, "boat");
+  const daemonLogPath = path.join(config.logsDir, "sail-boatd.log");
   const launcherPath = path.join(config.stateDir, "boat", platform === "win32" ? "t3.cmd" : "t3");
   const address = httpServer.address;
   const origin =
@@ -199,6 +238,20 @@ const make = Effect.gen(function* () {
   const noticeHub = yield* PubSub.unbounded<BoatNotice>();
   const lifecycle = yield* SynchronizedRef.make<Lifecycle>({ _tag: "Stopped" });
   const latestState = yield* Ref.make(Option.none<unknown>());
+  const failuresInARow = yield* Ref.make(0);
+  const daemonLog = yield* makeAsyncRotatingFileSink({
+    filePath: daemonLogPath,
+    maxBytes: DAEMON_LOG_MAX_BYTES,
+    maxFiles: DAEMON_LOG_BACKUPS,
+  }).pipe(
+    Effect.tapError((cause) => Effect.logWarning("sail-boatd will run without a log", { cause })),
+    Effect.orElseSucceed(() => ({ write: (_: string) => Effect.void })),
+  );
+
+  const dataDirNeedsDaemon = fileSystem.readFileString(path.join(dataDir, "state.json")).pipe(
+    Effect.map(savedStateNeedsDaemon),
+    Effect.orElseSucceed(() => false),
+  );
 
   const enter = (next: Lifecycle) =>
     (next._tag === "Running" ? Effect.void : Ref.set(latestState, Option.none())).pipe(
@@ -239,11 +292,9 @@ const make = Effect.gen(function* () {
         () => new BoatError({ message: `Could not write the t3 launcher at ${launcherPath}.` }),
       ),
     );
-    // Electron apps the daemon opens through the OS would inherit it and run as plain Node.
-    const { ELECTRON_RUN_AS_NODE: _, ...inherited } = hostEnvironment;
     return ChildProcess.make(executable, [], {
       env: {
-        ...inherited,
+        ...daemonInheritedEnvironment(hostEnvironment),
         SAIL_HOME: config.baseDir,
         SAIL_DESKTOP_CLI: launcherPath,
         SAIL_DESKTOP_ORIGIN: origin,
@@ -317,9 +368,12 @@ const make = Effect.gen(function* () {
         ),
       );
 
+    // Once the daemon is ready its stderr carries Boat CLI output, which can hold links and tokens,
+    // so the whole stream goes only to its own log. Before that it holds only startup errors.
     const stderrLines = yield* Ref.make<ReadonlyArray<string>>([]);
     const stderrDrained = yield* child.stderr.pipe(
       Stream.decodeText(),
+      Stream.tap((text) => Effect.ignore(daemonLog.write(text))),
       Stream.splitLines,
       Stream.runForEach((line) =>
         Ref.update(stderrLines, (lines) => [...lines.slice(1 - STDERR_TAIL_LINES), line]),
@@ -327,9 +381,11 @@ const make = Effect.gen(function* () {
       Effect.ignore,
       Effect.forkScoped,
     );
-    const stderrTail = Fiber.join(stderrDrained).pipe(
+    const stderrDone = Fiber.join(stderrDrained).pipe(
       Effect.timeout(STDERR_DRAIN_TIMEOUT),
       Effect.ignore,
+    );
+    const stderrTail = stderrDone.pipe(
       Effect.andThen(Ref.get(stderrLines)),
       Effect.map((lines) => (lines.length === 0 ? "" : `: ${lines.join(" | ")}`)),
     );
@@ -396,18 +452,19 @@ const make = Effect.gen(function* () {
     yield* Deferred.succeed(ready, daemon);
     yield* Effect.logInfo("sail-boatd is ready", { port: greeting.port });
     yield* followEvents(daemon).pipe(Effect.forkScoped);
+    yield* Effect.sleep(Duration.seconds(RESTART_DELAY_CAP_SECONDS)).pipe(
+      Effect.andThen(Ref.set(failuresInARow, 0)),
+      Effect.forkScoped,
+    );
 
     const exit = yield* Fiber.join(exited);
-    // After the handshake the daemon's log can hold Boat output. Status reaches every client and a
-    // log message reaches trace diagnostics; annotations reach neither.
-    const tail = yield* stderrTail;
-    yield* Effect.logWarning("sail-boatd exited").pipe(Effect.annotateLogs({ stderr: tail }));
+    yield* stderrDone;
     return yield* new BoatError({
       message: `sail-boatd exited unexpectedly (${describeExit(exit)})`,
     });
   }, Effect.scoped);
 
-  const supervise = (ready: Deferred.Deferred<Daemon, BoatError>) =>
+  const supervise = (ready: Deferred.Deferred<Daemon, BoatError>): Effect.Effect<void, BoatError> =>
     runDaemon(ready).pipe(
       Effect.onExit((exit) => {
         if (Exit.isSuccess(exit) || Cause.hasInterrupts(exit.cause)) {
@@ -420,12 +477,36 @@ const make = Effect.gen(function* () {
           Cause.findErrorOption(exit.cause),
           () => new BoatError({ message: "sail-boatd stopped for an unknown reason." }),
         );
+        const failed: Lifecycle = { _tag: "Failed", message: error.message };
         return Deferred.fail(ready, error).pipe(
-          Effect.andThen(transition({ _tag: "Failed", message: error.message })),
-          Effect.andThen(Effect.logWarning("sail-boatd is not running", { cause: exit.cause })),
+          Effect.andThen(transition(failed)),
+          Effect.andThen(
+            Effect.logWarning("sail-boatd is not running", {
+              cause: exit.cause,
+              log: daemonLogPath,
+            }),
+          ),
+          Effect.andThen(Effect.forkIn(restartWhileNeeded(failed), serviceScope)),
         );
       }),
     );
+
+  const start = Effect.gen(function* () {
+    const ready = yield* Deferred.make<Daemon, BoatError>();
+    const next = yield* enter({ _tag: "Starting", ready });
+    yield* Effect.forkIn(supervise(ready), serviceScope);
+    return [Deferred.await(ready), next] as const;
+  });
+
+  // Saved machines sleep and pending deletions finish only while the daemon runs, so the server
+  // brings it back by itself. Retry still starts it at once.
+  const restartWhileNeeded = Effect.fnUntraced(function* (failed: Lifecycle) {
+    if (!(yield* dataDirNeedsDaemon)) return;
+    yield* Effect.sleep(restartDelay(yield* Ref.updateAndGet(failuresInARow, (n) => n + 1)));
+    yield* SynchronizedRef.updateEffect(lifecycle, (current) =>
+      current === failed ? start.pipe(Effect.map(([, next]) => next)) : Effect.succeed(current),
+    );
+  });
 
   const ensureStarted = SynchronizedRef.modifyEffect(lifecycle, (current) => {
     switch (current._tag) {
@@ -435,12 +516,7 @@ const make = Effect.gen(function* () {
         return Effect.succeed([Deferred.await(current.ready), current] as const);
       case "Stopped":
       case "Failed":
-        return Effect.gen(function* () {
-          const ready = yield* Deferred.make<Daemon, BoatError>();
-          const next = yield* enter({ _tag: "Starting", ready });
-          yield* Effect.forkIn(supervise(ready), serviceScope);
-          return [Deferred.await(ready), next] as const;
-        });
+        return start;
     }
   });
 
@@ -506,9 +582,7 @@ const make = Effect.gen(function* () {
   );
 
   yield* ServerActivation.forkParked(
-    fileSystem.readFileString(path.join(dataDir, "state.json")).pipe(
-      Effect.map(savedStateNeedsDaemon),
-      Effect.orElseSucceed(() => false),
+    dataDirNeedsDaemon.pipe(
       Effect.flatMap((needed) => (needed ? Effect.flatten(ensureStarted) : Effect.void)),
       Effect.ignore,
     ),

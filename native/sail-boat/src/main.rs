@@ -2,13 +2,14 @@
 
 use anyhow::Result;
 use sail_boat::daemon::{self, DaemonConfig};
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Log exclusively to stderr so stdout only ever emits the JSON readiness handshake.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
         .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
         .init();
 
