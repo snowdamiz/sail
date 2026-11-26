@@ -105,13 +105,22 @@ function out(text: string): void {
 function err(text: string): void {
   process.stderr.write(text);
 }
+/** Go's `encoding/json`, which escapes these characters inside strings. */
+const goJson = (value: unknown, indent?: number) =>
+  JSON.stringify(value, null, indent).replace(
+    /[<>&\u2028\u2029]/g,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+
+/** flyctl's `render.JSON`: four-space indent, one value per line. */
 function printJson(value: unknown): void {
-  out(`${JSON.stringify(value, null, 2)}\n`);
+  out(`${goJson(value, 4)}\n`);
 }
 
 const HOME = standInHome("fly", "FAKE_FLY_HOME");
 const HOME_ID = homeId(HOME);
 const HOME_LABEL = `${FIXTURE_LABEL}.home`;
+const APP_LABEL = `${FIXTURE_LABEL}.fly-app`;
 const APP_NAMES = "fly-app";
 
 type Kind = "apps" | "machines" | "volumes" | "snapshots";
@@ -560,6 +569,14 @@ function machineJson(machine: MachineRecord) {
 
 const fullImageRef = (ref: ImageRef) => `${ref.registry}/${ref.repository}:${ref.tag}`;
 
+const FLY_VERSION = "fly.version";
+
+/** fly-go's `Machine.ImageRefWithVersion`, which the text views print. */
+function imageRefWithVersion(ref: ImageRef): string {
+  const version = ref.labels[FLY_VERSION];
+  return `${ref.repository}:${ref.tag}${version ? ` (${version})` : ""}`;
+}
+
 function table(headers: ReadonlyArray<string>, rows: ReadonlyArray<ReadonlyArray<string>>): void {
   const widths = headers.map((header, column) =>
     Math.max(header.length, ...rows.map((row) => (row[column] ?? "").length)),
@@ -610,7 +627,7 @@ function createDockerVolume(name: string, kind: string, app: string): void {
     "--label",
     `${FIXTURE_LABEL}=${kind}`,
     "--label",
-    `${FIXTURE_LABEL}.fly-app=${app}`,
+    `${APP_LABEL}=${app}`,
     "--label",
     `${HOME_LABEL}=${HOME_ID}`,
     name,
@@ -710,6 +727,21 @@ function stopMachineContainer(app: string, stop: StopConfig | undefined): void {
   );
 }
 
+/** By label, so a deploy that failed after its build leaves nothing behind either. */
+function removeBuiltImages(app: string): void {
+  const ids = docker([
+    "image",
+    "ls",
+    "--quiet",
+    "--no-trunc",
+    "--filter",
+    `label=${HOME_LABEL}=${HOME_ID}`,
+    "--filter",
+    `label=${APP_LABEL}=${app}`,
+  ]).trim();
+  if (ids) docker(["image", "rm", "--force", ...new Set(ids.split("\n"))]);
+}
+
 function removeBuiltTag(tag: string | undefined): void {
   if (!tag) return;
   try {
@@ -791,10 +823,8 @@ function appsList(ctx: Ctx): number {
 function destroyApp(name: string): void {
   const machine = machineOf(name);
   destroyMachineContainer(name);
-  if (machine) {
-    removeBuiltTag(machine.builtTag);
-    remove("machines", machine.id);
-  }
+  removeBuiltImages(name);
+  if (machine) remove("machines", machine.id);
   for (const volume of all<VolumeRecord>("volumes").filter((v) => v.app === name)) {
     removeDockerVolume(volumeName(volume.id));
     remove("volumes", volume.id);
@@ -876,6 +906,8 @@ function volumesCreate(ctx: Ctx): number {
 }
 
 function volumesList(ctx: Ctx): number {
+  if (bool(ctx, "all"))
+    throw new FlyError("fake fly keeps no destroyed volumes, so it cannot list them with --all");
   const appName = requireAppName(ctx);
   requireApp(appName);
   const volumes = all<VolumeRecord>("volumes").filter((v) => v.app === appName);
@@ -1020,10 +1052,14 @@ function localImage(ref: string): LocalImage | undefined {
     repoDigests: Array.isArray(record.RepoDigests)
       ? record.RepoDigests.filter((d): d is string => typeof d === "string")
       : [],
+    // The fixture's own labels mark what it built; a real build reports only the Dockerfile's.
     labels:
       typeof labels === "object" && labels !== null
         ? Object.fromEntries(
-            Object.entries(labels).filter((e): e is [string, string] => typeof e[1] === "string"),
+            Object.entries(labels).filter(
+              (e): e is [string, string] =>
+                typeof e[1] === "string" && !e[0].startsWith(FIXTURE_LABEL),
+            ),
           )
         : {},
   };
@@ -1062,6 +1098,11 @@ interface ResolvedImage {
   readonly builtTag?: string;
 }
 
+function findLocally(ref: string): LocalImage | undefined {
+  out(`Searching for image '${ref}' locally...\n`);
+  return localImage(ref);
+}
+
 function resolveImage(ctx: Ctx, appName: string, loaded: LoadedConfig): ResolvedImage {
   const requested = str(ctx, "image") ?? loaded.config.buildImage;
   const deployment = `deployment-${ulid()}`;
@@ -1077,9 +1118,23 @@ function resolveImage(ctx: Ctx, appName: string, loaded: LoadedConfig): Resolved
       );
     const tag = `registry.fly.io/${appName}:${deployment}`;
     const buildArgs = list(ctx, "build-arg").flatMap((arg) => ["--build-arg", arg]);
+    const labels = [
+      `${FIXTURE_LABEL}=fly-image`,
+      `${APP_LABEL}=${appName}`,
+      `${HOME_LABEL}=${HOME_ID}`,
+    ];
     const build = NodeChildProcess.spawnSync(
       "docker",
-      ["build", "--tag", tag, "--file", dockerfile, ...buildArgs, loaded.dir],
+      [
+        "build",
+        "--tag",
+        tag,
+        "--file",
+        dockerfile,
+        ...labels.flatMap((label) => ["--label", label]),
+        ...buildArgs,
+        loaded.dir,
+      ],
       { stdio: ["ignore", "inherit", "inherit"] },
     );
     if (build.status !== 0) throw new FlyError("failed to fetch an image or build from source");
@@ -1098,8 +1153,8 @@ function resolveImage(ctx: Ctx, appName: string, loaded: LoadedConfig): Resolved
       },
     };
   }
-  out(`Searching for image '${requested}' locally...\n`);
-  const local = localImage(requested);
+  // flyctl's local resolver skips itself when --remote-only leaves it no local daemon.
+  const local = bool(ctx, "remote-only") ? undefined : findLocally(requested);
   if (local) {
     out(`image found: ${local.id}\n`);
     return {
@@ -1150,23 +1205,69 @@ function chooseVolume(
   return newVolume(appName, mount.source, region, size);
 }
 
-/** With an `[[http_service.checks]]` entry, wait for it to pass as flyctl does; else any answer. */
-function waitForHttp(
+interface Probe {
+  readonly url: string;
+  readonly wget: ReadonlyArray<string>;
+  /** With no check configured, any HTTP answer shows the app is up. */
+  readonly anyAnswer: boolean;
+}
+
+/** The requests Fly Proxy makes for each check, refused up front when this fake cannot make them. */
+function healthProbes(appName: string, http: HttpService | undefined): ReadonlyArray<Probe> {
+  const base = `http://${containerName(appName)}:${http?.internalPort ?? 8080}`;
+  if (!http || http.checks.length === 0)
+    return [{ url: `${base}/`, wget: ["-T", "2", `${base}/`], anyAnswer: true }];
+  return http.checks.map((check) => {
+    const path = check.path ?? "/";
+    if (check.method !== undefined && check.method.toUpperCase() !== "GET")
+      throw new FlyError(
+        `fake fly sends checks only as GET, but the check of ${path} uses ${check.method}`,
+      );
+    if (check.protocol !== undefined && check.protocol !== "http")
+      throw new FlyError(
+        `fake fly sends checks only over http, but the check of ${path} uses ${check.protocol}`,
+      );
+    // Fly raises a check timeout under 1s and lowers one over 1m (flyctl's validation warns so).
+    const seconds = Math.min(
+      60,
+      Math.max(1, Math.ceil((durationMs(check.timeout ?? "2s") ?? 2000) / 1000)),
+    );
+    const headers = (check.headers ?? []).flatMap((header) =>
+      header.values.flatMap((value) => ["--header", `${header.name}: ${value}`]),
+    );
+    const url = `${base}${path}`;
+    return {
+      url,
+      wget: ["-T", String(seconds), ...headers, url],
+      anyAnswer: false,
+    };
+  });
+}
+
+function probePasses(probe: Probe): boolean {
+  try {
+    docker(["exec", CADDY_CONTAINER, "wget", "-q", "-O", "/dev/null", ...probe.wget]);
+    return true;
+  } catch (error) {
+    const answered = error instanceof DockerError && /server returned error/.test(error.stderr);
+    return answered && probe.anyAnswer;
+  }
+}
+
+/** Each probe is a `docker exec`, so rounds with no pause at all would load the shared Docker VM. */
+const HEALTH_POLL_MS = 200;
+
+/** As flyctl does, waits until every check passes in the same round. */
+function waitForHealthy(
   appName: string,
   machine: MachineRecord,
-  http: HttpService | undefined,
+  probes: ReadonlyArray<Probe>,
   ms: number,
 ): void {
   const deadline = Date.now() + ms;
-  const url = `http://${containerName(appName)}:${http?.internalPort ?? 8080}${http?.checkPath ?? "/"}`;
   for (;;) {
-    try {
-      docker(["exec", CADDY_CONTAINER, "wget", "-q", "-T", "2", "-O", "/dev/null", url]);
-      return;
-    } catch (error) {
-      const answered = error instanceof DockerError && /server returned error/.test(error.stderr);
-      if (answered && http?.checkPath === undefined) return;
-    }
+    const failing = probes.find((probe) => !probePasses(probe));
+    if (!failing) return;
     const state = containerState(appName);
     if (state && !state.Running && !state.Restarting && state.Status === "exited") {
       const logs = NodeChildProcess.spawnSync(
@@ -1179,9 +1280,9 @@ function waitForHttp(
     }
     if (Date.now() > deadline)
       throw new FlyError(
-        `timeout reached waiting for machine ${machine.id} to become healthy at ${url}`,
+        `timeout reached waiting for machine ${machine.id} to become healthy at ${failing.url}`,
       );
-    sleepSync(500);
+    sleepSync(HEALTH_POLL_MS);
   }
 }
 
@@ -1194,6 +1295,44 @@ function localPublicUrl(
   url: string,
 ): Readonly<Record<string, string>> {
   return env.SAIL_PUBLIC_URL ? {} : { SAIL_PUBLIC_URL: url };
+}
+
+/** flyctl's `cmdutil.ParseKVStringsToMap`, behind `--env`. */
+function parseEnv(pairs: ReadonlyArray<string>): Readonly<Record<string, string>> {
+  return Object.fromEntries(
+    pairs.map((pair) => {
+      const eq = pair.indexOf("=");
+      if (eq < 1)
+        throw new FlyError(
+          `failed parsing environment: '${pair}': must be in the format NAME=VALUE`,
+        );
+      return [pair.slice(0, eq), pair.slice(eq + 1)];
+    }),
+  );
+}
+
+const STRATEGIES = ["canary", "rolling", "immediate", "bluegreen"];
+
+/** flyctl's `validateDeploySection` on `--strategy`; this fake replaces its one machine in place for each. */
+function deployStrategy(
+  strategy: string | undefined,
+  config: DeployConfig,
+  file: string | undefined,
+): string {
+  if (!strategy) return "rolling";
+  const problems = [
+    ...(STRATEGIES.includes(strategy)
+      ? []
+      : [
+          `unsupported deployment strategy '${strategy}'; Apps v2 supports the following strategies: ${STRATEGIES.join(", ")}`,
+        ]),
+    ...(strategy === "canary" && config.mounts.length > 0
+      ? ["error canary deployment strategy is not supported when using mounted volumes"]
+      : []),
+  ];
+  if (problems.length === 0) return strategy;
+  err(`Validating ${file ?? ""}\n${problems.join("")}\n   ✘invalid app configuration\n`);
+  throw new FlyError("App configuration is not valid");
 }
 
 function deploy(ctx: Ctx): number {
@@ -1213,7 +1352,13 @@ function deploy(ctx: Ctx): number {
   refuseForeign("container", containerName(appName));
   out("==> Verifying app config\n");
   const config = loaded.file ? loaded.config : (app.config ?? EMPTY_CONFIG);
+  const extraEnv = parseEnv(list(ctx, "env"));
+  const strategy = deployStrategy(str(ctx, "strategy"), config, loaded.file);
   out(`--> Verified app config\n`);
+  if (bool(ctx, "remote-only") && bool(ctx, "local-only"))
+    throw new FlyError("no docker daemon available");
+  const http = config.http;
+  const probes = healthProbes(appName, http);
   if (ctx.flags.get("ha") !== false)
     err("fake fly: runs one machine per app; real Fly adds a standby machine unless --ha=false\n");
   const image = resolveImage(ctx, appName, loaded);
@@ -1223,7 +1368,7 @@ function deploy(ctx: Ctx): number {
   const version = ulid();
   const releaseVersion = app.releaseVersion + 1;
   const memory = config.memoryMb ?? 2048;
-  const port = config.http?.internalPort ?? 8080;
+  const port = http?.internalPort ?? 8080;
   ensureCaddy();
   const url = publicUrl(appHost(appName));
 
@@ -1236,20 +1381,12 @@ function deploy(ctx: Ctx): number {
 
   const mount = config.mounts[0];
   const volume = mount ? chooseVolume(appName, mount, region, previous) : undefined;
-  const extraEnv = Object.fromEntries(
-    list(ctx, "env").map((pair) => {
-      const eq = pair.indexOf("=");
-      if (eq < 1) throw new FlyError(`invalid env: ${pair}, must be in the format NAME=VALUE`);
-      return [pair.slice(0, eq), pair.slice(eq + 1)];
-    }),
-  );
   const env = {
     ...config.env,
     ...extraEnv,
     FLY_PROCESS_GROUP: "app",
     PRIMARY_REGION: region,
   };
-  const http = config.http;
   const machineConfig: MachineConfigJson = {
     env,
     init: {},
@@ -1289,6 +1426,7 @@ function deploy(ctx: Ctx): number {
                 { port: 80, handlers: ["http"], ...(http.forceHttps ? { force_https: true } : {}) },
                 { port: 443, handlers: ["http", "tls"] },
               ],
+              ...(http.checks.length > 0 ? { checks: http.checks } : {}),
               force_instance_key: null,
             },
           ],
@@ -1324,7 +1462,7 @@ function deploy(ctx: Ctx): number {
   };
 
   if (previous) {
-    out(`Updating existing machines in '${appName}' with rolling strategy\n`);
+    out(`Updating existing machines in '${appName}' with ${strategy} strategy\n`);
     stopMachineContainer(appName, previous.config.stop_config);
   }
   destroyMachineContainer(appName);
@@ -1342,7 +1480,7 @@ function deploy(ctx: Ctx): number {
     "--label",
     `${FIXTURE_LABEL}=fly-machine`,
     "--label",
-    `${FIXTURE_LABEL}.fly-app=${appName}`,
+    `${APP_LABEL}=${appName}`,
     "--label",
     `${HOME_LABEL}=${HOME_ID}`,
     "--restart",
@@ -1374,7 +1512,7 @@ function deploy(ctx: Ctx): number {
   out(`Machine ${machineId} [app] ${previous ? "update" : "launch"} started\n`);
   if (!bool(ctx, "detach")) {
     out(`Waiting for ${machineId} to become healthy (started)\n`);
-    waitForHttp(appName, machine, http, waitMs);
+    waitForHealthy(appName, machine, probes, waitMs);
     out(`Machine ${machineId} [app] ${previous ? "update" : "launch"} succeeded\n`);
   }
   out(`\nVisit your newly deployed app at ${url}/\n`);
@@ -1419,11 +1557,39 @@ function splitWords(command: string): Array<string> {
 const LOGIN_SHELL =
   'cd ~ 2>/dev/null; s=$(awk -F: -v u="$(id -un)" \'$1==u{print $7}\' /etc/passwd 2>/dev/null); exec "${s:-/bin/sh}" -l';
 
+/** flyctl's `selectMachine` for `ssh console`, with `--machine` and `--region`. */
+function sshMachine(ctx: Ctx, appName: string): MachineRecord {
+  const machines = all<MachineRecord>("machines").filter((m) => m.app === appName);
+  const id = str(ctx, "machine");
+  const requested = id ? machines.find((m) => m.id === id) : undefined;
+  if (id && !requested) {
+    const owner = read<MachineRecord>("machines", id)?.app;
+    throw new FlyError(
+      owner
+        ? `machine ${id} belongs to app ${owner}, not selected app ${appName}`
+        : `machine ${id} was not found in app ${appName}`,
+    );
+  }
+  const started = machines.filter((m) => machineState(m) === "started");
+  if (requested && !started.includes(requested)) throw new FlyError(`machine ${id} is not started`);
+  if (started.length === 0)
+    throw new FlyError(
+      `app ${appName} has no started VMs.\nIt may be unhealthy or not have been deployed yet.\nTry the following command to verify:\n\nfly status`,
+    );
+  const region = str(ctx, "region");
+  const [first] = region ? started.filter((m) => m.region === region) : started;
+  if (!first) throw new FlyError(`app ${appName} has no VMs in region ${region}`);
+  if (requested && region && requested.region !== region)
+    throw new FlyError(
+      `machine ${id} is in region ${requested.region}, not selected region ${region}`,
+    );
+  return requested ?? first;
+}
+
 function sshConsole(ctx: Ctx): number {
   const appName = requireAppName(ctx);
   requireApp(appName);
-  const machine = requireMachine(appName, str(ctx, "machine"));
-  if (machineState(machine) !== "started") throw new FlyError(`app ${appName} has no started VMs`);
+  const machine = sshMachine(ctx, appName);
   const command = str(ctx, "command");
   if (!bool(ctx, "quiet")) err(`Connecting to ${machine.privateIp}... complete\n`);
   const tty = process.stdin.isTTY && (bool(ctx, "pty") || command === undefined);
@@ -1484,17 +1650,34 @@ function streamLogs(
   });
 }
 
+/** flyctl's `logs.LogEntry` for a line the app wrote; only `meta`'s `status_code` has a JSON tag. */
+function logEntry(machine: MachineRecord, timestamp: string, message: string) {
+  return {
+    level: "info",
+    instance: machine.id,
+    message,
+    region: machine.region,
+    timestamp,
+    meta: {
+      Instance: machine.id,
+      Region: machine.region,
+      Event: { Provider: "app" },
+      HTTP: { Request: { ID: "", Method: "", Version: "" }, Response: { status_code: 0 } },
+      Error: { Code: 0, Message: "" },
+      URL: { Full: "" },
+    },
+  };
+}
+
 async function logs(ctx: Ctx): Promise<number> {
   const appName = requireAppName(ctx);
   requireApp(appName);
   const json = bool(ctx, "json");
   const machineFilter = str(ctx, "machine");
-  const regionFilter = str(ctx, "region");
+  // flyctl drops the region, flag or FLY_REGION, once a machine is named.
+  const regionFilter = machineFilter ? undefined : str(ctx, "region") || process.env.FLY_REGION;
   const print = (machine: MachineRecord) => (timestamp: string, message: string) => {
-    if (json)
-      out(
-        `${JSON.stringify({ timestamp, message, level: "info", instance: machine.id, region: machine.region })}\n`,
-      );
+    if (json) printJson(logEntry(machine, timestamp, message));
     else out(`${timestamp} app[${machine.id}] ${machine.region} [info] ${message}\n`);
   };
   const matches = (machine: MachineRecord) =>
@@ -1554,11 +1737,11 @@ function imageShow(ctx: Ctx): number {
       Registry: ref.registry,
       Repository: ref.repository,
       Tag: ref.tag,
-      Version: "N/A",
+      Version: ref.labels[FLY_VERSION] || "N/A",
       Digest: ref.digest,
       Labels: labels
         ? json
-          ? JSON.stringify(labels)
+          ? goJson(labels)
           : Object.entries(labels)
               .map(([key, value]) => `${key}=${value}`)
               .join("")
@@ -1590,13 +1773,33 @@ function imageShow(ctx: Ctx): number {
   return 0;
 }
 
-function machineStatus(ctx: Ctx): number {
-  const appName = requireAppName(ctx);
+/** flyctl's `selectOneMachine`: an app name when one is given, else the machine's own app. */
+function statusMachine(ctx: Ctx): MachineRecord {
+  const id = ctx.args[0];
+  const named = appNameOf(ctx);
+  if (id === undefined) {
+    if (!named) throw new FlyError("a machine ID or an app name is required");
+    if (!process.stdin.isTTY)
+      throw new FlyError("a machine ID must be specified when not running interactively");
+    throw new FlyError("fake fly does not prompt for a machine; pass its ID");
+  }
+  const machine = read<MachineRecord>("machines", id);
+  if (!named && !machine)
+    throw new FlyError(
+      `could not get machine from GraphQL to determine app name: machine ${id} not found`,
+    );
+  const appName = named ?? machine?.app ?? "";
   requireApp(appName);
-  const machine = requireMachine(appName, ctx.args[0]);
+  if (machine?.app !== appName)
+    throw new FlyError(`machine ${id} was not found in app '${appName}'`);
+  return machine;
+}
+
+function machineStatus(ctx: Ctx): number {
+  const machine = statusMachine(ctx);
   const config = machine.config;
   if (bool(ctx, "display-config")) {
-    printJson(config);
+    out(`${goJson(config, 2)}\n`);
     return 0;
   }
   const state = machineState(machine);
@@ -1607,7 +1810,7 @@ function machineStatus(ctx: Ctx): number {
     ["ID", machine.id],
     ["Version", machine.version],
     ["State", state],
-    ["Image", fullImageRef(machine.imageRef)],
+    ["Image", imageRefWithVersion(machine.imageRef)],
     ["Name", machine.name],
     ["Private IP", machine.privateIp],
     ["Region", machine.region],
@@ -1656,7 +1859,7 @@ function machineList(ctx: Ctx): number {
       m.name,
       machineState(m),
       m.region,
-      `${m.imageRef.repository}:${m.imageRef.tag}`,
+      imageRefWithVersion(m.imageRef),
       m.privateIp,
       m.config.mounts?.[0]?.volume ?? "",
       m.createdAt,
@@ -1697,7 +1900,7 @@ function status(ctx: Ctx): number {
     return 0;
   }
   const machines = all<MachineRecord>("machines").filter((m) => m.app === app.name);
-  const image = machines[0] ? `${machines[0].imageRef.repository}:${machines[0].imageRef.tag}` : "";
+  const image = machines[0] ? imageRefWithVersion(machines[0].imageRef) : "";
   verticalTable("App", [
     ["Name", json.Name],
     ["Owner", json.Organization.Slug],
@@ -1825,7 +2028,12 @@ const COMMANDS: ReadonlyArray<Command> = [
     path: ["volumes", "list"],
     aliases: ["ls"],
     short: "List the volumes associated with an app.",
-    flags: [APP, CONFIG, JSON_OUT, flag("all", "bool", "Show all volumes")],
+    flags: [
+      APP,
+      CONFIG,
+      JSON_OUT,
+      flag("all", "bool", "Show all volumes including those in destroyed states"),
+    ],
     args: [0, 0],
     mutating: false,
     session: true,
@@ -2212,7 +2420,9 @@ async function main(argv: ReadonlyArray<string>): Promise<number> {
   const problem = argsError(args.length, command.args);
   if (problem) throw new FlyError(problem);
   if (command.session && !signedIn(parsed.flags))
-    throw new FlyError("no access token available. Please login with 'flyctl auth login'");
+    throw new FlyError(
+      `no access token available. Please login with '${NodePath.join(import.meta.dirname, "fly")} auth login' (fake fly)`,
+    );
   return command.run({ args, flags: parsed.flags });
 }
 

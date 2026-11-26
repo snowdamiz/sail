@@ -13,13 +13,29 @@ export interface Mount {
   readonly initialSizeGb: number | undefined;
 }
 
+/** fly-go's `MachineServiceCheck` JSON, as flyctl builds it from one `[[http_service.checks]]`. */
+export interface ServiceCheck {
+  readonly type: "http";
+  readonly interval: string | undefined;
+  readonly timeout: string | undefined;
+  readonly grace_period: string | undefined;
+  readonly method: string | undefined;
+  readonly path: string | undefined;
+  readonly protocol: string | undefined;
+  readonly tls_skip_verify: boolean | undefined;
+  readonly tls_server_name: string | undefined;
+  readonly headers:
+    | ReadonlyArray<{ readonly name: string; readonly values: ReadonlyArray<string> }>
+    | undefined;
+}
+
 export interface HttpService {
   readonly internalPort: number;
   readonly forceHttps: boolean;
   readonly autostop: boolean | "suspend" | undefined;
   readonly autostart: boolean | undefined;
   readonly minMachinesRunning: number | undefined;
-  readonly checkPath: string | undefined;
+  readonly checks: ReadonlyArray<ServiceCheck>;
 }
 
 export interface StopConfig {
@@ -56,31 +72,49 @@ export const EMPTY_CONFIG: DeployConfig = {
 };
 
 const GO_DURATION = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
-const DURATION_UNIT_MS: Readonly<Record<string, number>> = {
-  ns: 1e-6,
-  us: 1e-3,
-  µs: 1e-3,
-  ms: 1,
-  s: 1000,
-  m: 60_000,
-  h: 3_600_000,
+const DURATION_UNIT_NS: Readonly<Record<string, number>> = {
+  ns: 1,
+  us: 1e3,
+  µs: 1e3,
+  ms: 1e6,
+  s: 1e9,
+  m: 6e10,
+  h: 3.6e12,
 };
 
-/** Go's `time.ParseDuration`, minus signs and the bare `0`, which nothing here passes. */
-export function durationMs(text: string): number | undefined {
+/** Go's `time.ParseDuration` in nanoseconds, minus signs and the bare `0`, which nothing here passes. */
+function durationNs(text: string): number | undefined {
   if (!GO_DURATION.test(text)) return undefined;
   let total = 0;
   for (const [, amount, , unit] of text.matchAll(/(\d+(\.\d+)?)(ns|us|µs|ms|s|m|h)/g))
-    total += Number(amount) * (DURATION_UNIT_MS[unit ?? ""] ?? 0);
-  return total;
+    total += Number(amount) * (DURATION_UNIT_NS[unit ?? ""] ?? 0);
+  return Math.round(total);
 }
 
-/** Go's `Duration.String` for whole seconds, as flyctl writes an integer `kill_timeout`. */
-function secondsAsGoDuration(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  return `${h ? `${h}h` : ""}${h || m ? `${m}m` : ""}${s}s`;
+export function durationMs(text: string): number | undefined {
+  const ns = durationNs(text);
+  return ns === undefined ? undefined : ns / 1e6;
+}
+
+/** Go's `Duration.String`, which is how fly-go writes every duration back out. */
+function goDuration(ns: number): string {
+  if (ns === 0) return "0s";
+  const sign = ns < 0 ? "-" : "";
+  let rest = Math.abs(ns);
+  const decimal = (value: number, digits: number) => {
+    const fraction = String(value % 10 ** digits)
+      .padStart(digits, "0")
+      .replace(/0+$/, "");
+    return `${Math.floor(value / 10 ** digits)}${fraction ? `.${fraction}` : ""}`;
+  };
+  if (rest < 1e3) return `${sign}${rest}ns`;
+  if (rest < 1e6) return `${sign}${decimal(rest, 3)}µs`;
+  if (rest < 1e9) return `${sign}${decimal(rest, 6)}ms`;
+  const h = Math.floor(rest / 3.6e12);
+  rest -= h * 3.6e12;
+  const m = Math.floor(rest / 6e10);
+  rest -= m * 6e10;
+  return `${sign}${h ? `${h}h` : ""}${h || m ? `${m}m` : ""}${decimal(rest, 9)}s`;
 }
 
 const GO_FLOAT = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
@@ -147,6 +181,11 @@ function configReader(file: string) {
     fail,
     invalid,
     table,
+    array: (value: RawValue | undefined, path: string, goType: string): ReadonlyArray<RawValue> => {
+      if (value === undefined) return [];
+      if (Array.isArray(value)) return value;
+      throw mismatch(path, goType, value);
+    },
     /** flyctl's `ensureArrayOfMap`: one table or an array of them. */
     tables: (value: RawValue | undefined, path: string): ReadonlyArray<Raw> =>
       value === undefined
@@ -217,11 +256,10 @@ function toDeployConfig(toml: Raw, file: string): DeployConfig {
       httpTable.min_machines_running,
       "HTTPService.http_service.min_machines_running",
     ),
-    checkPath: field
-      .tables(httpTable.checks, "http_service.checks")
-      .map(
-        (check) => field.string(check.path, "ServiceHTTPCheck.http_service.checks.path") ?? "/",
-      )[0],
+    // flyctl patches `[[services]]` checks but decodes these as they are, so one table fails.
+    checks: field
+      .array(httpTable.checks, "HTTPService.http_service.checks", "[]*appconfig.ServiceHTTPCheck")
+      .map((check) => serviceCheck(field.table(check, "HTTPService.http_service.checks"), field)),
   };
 
   const vm = field.tables(toml.vm, "vm")[0] ?? {};
@@ -268,6 +306,37 @@ function toDeployConfig(toml: Raw, file: string): DeployConfig {
   };
 }
 
+/** flyctl's `ServiceHTTPCheck.toMachineCheck`, with fly-go's `Duration` decoding each duration. */
+function serviceCheck(check: Raw, field: ReturnType<typeof configReader>): ServiceCheck {
+  const path = (name: string) => `ServiceHTTPCheck.http_service.checks.${name}`;
+  const duration = (name: string): string | undefined => {
+    const value = check[name];
+    if (value === undefined) return undefined;
+    // A number in the JSON flyctl decodes from counts nanoseconds.
+    if (typeof value === "number") return goDuration(Math.trunc(value));
+    const ns = typeof value === "string" ? durationNs(value) : undefined;
+    if (ns !== undefined) return goDuration(ns);
+    throw field.fail(
+      `http_service.checks.${name}: time: invalid duration ${JSON.stringify(String(value))}`,
+    );
+  };
+  const headers = Object.entries(field.table(check.headers, path("headers"))).map(
+    ([name, value]) => ({ name, values: [field.string(value, path("headers")) ?? ""] }),
+  );
+  return {
+    type: "http",
+    interval: duration("interval"),
+    timeout: duration("timeout"),
+    grace_period: duration("grace_period"),
+    method: field.string(check.method, path("method")),
+    path: field.string(check.path, path("path")),
+    protocol: field.string(check.protocol, path("protocol")),
+    tls_skip_verify: field.bool(check.tls_skip_verify, path("tls_skip_verify")),
+    tls_server_name: field.string(check.tls_server_name, path("tls_server_name")),
+    headers: headers.length > 0 ? headers : undefined,
+  };
+}
+
 /** fly-go's `MachineAutostop`: a bool, or `off`, `stop`, or `suspend`. */
 function autostop(
   value: RawValue | undefined,
@@ -287,7 +356,7 @@ function killTimeoutText(
 ): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value === "number" && Number.isInteger(value) && value >= 0)
-    return secondsAsGoDuration(value);
+    return goDuration(value * 1e9);
   if (typeof value === "string" && durationMs(value) !== undefined) return value;
   throw fail(`kill_timeout: time: invalid duration ${JSON.stringify(String(value))}`);
 }

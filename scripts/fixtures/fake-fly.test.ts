@@ -9,7 +9,7 @@ import * as NodePath from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { caddyDir, publicUrl, removeSite, rootCertPath } from "./lib/caddy.ts";
 import { docker, exists, hasDocker } from "./lib/docker.ts";
-import { homeId } from "./lib/state.ts";
+import { fixturesRoot, homeId } from "./lib/state.ts";
 
 // Key lists copied from flyctl v0.4.123 and fly-go v0.11.6 (`fly.App` has no JSON tags).
 const APP_KEYS = [
@@ -149,7 +149,13 @@ const STATUS_KEYS = [
 ];
 const ORGANIZATION_BASIC_KEYS = ["ID", "InternalNumericID", "Name", "Slug", "RawSlug", "PaidPlan"];
 const IMAGE_KEYS = ["MachineID", "Registry", "Repository", "Tag", "Version", "Digest", "Labels"];
-const LOG_KEYS = ["timestamp", "message", "level", "instance", "region"];
+// flyctl's `logs.LogEntry` in field order; `Meta` has no JSON tags but `status_code`.
+const LOG_KEYS = ["level", "instance", "message", "region", "timestamp", "meta"];
+const EMPTY_LOG_META = {
+  HTTP: { Request: { ID: "", Method: "", Version: "" }, Response: { status_code: 0 } },
+  Error: { Code: 0, Message: "" },
+  URL: { Full: "" },
+};
 
 const MUTATING: Readonly<Record<string, boolean>> = {
   "auth whoami": false,
@@ -216,17 +222,21 @@ describe.skipIf(!hasDocker())("fake fly", () => {
   const suffix = NodeCrypto.randomBytes(3).toString("hex");
   const app = `fake-fly-test-${suffix}`;
   const image = `sail-fake-fly-test:${suffix}`;
+  // Pulling from a closed local port fails at once, so a remote lookup of it never finds it.
+  const unpullable = `localhost:1/sail-fake-fly-test:${suffix}`;
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "fake-fly-test-"));
   const home = NodePath.join(root, "home");
   const appDir = NodePath.join(root, "app");
+  const fakeDir = NodePath.join(import.meta.dirname, "fake-fly");
   const env = {
     ...process.env,
     FAKE_FLY_HOME: home,
     FLY_API_TOKEN: "",
     FLY_ACCESS_TOKEN: "",
     FLY_APP: "",
+    FLY_REGION: "",
     FAKE_FLY_SNAPSHOT_SECS: "0",
-    PATH: `${NodePath.join(import.meta.dirname, "fake-fly")}${NodePath.delimiter}${process.env.PATH ?? ""}`,
+    PATH: `${fakeDir}${NodePath.delimiter}${process.env.PATH ?? ""}`,
   };
   let calls = 0;
   let url = "";
@@ -259,6 +269,9 @@ describe.skipIf(!hasDocker())("fake fly", () => {
   const otherHome = NodePath.join(root, "other-home");
   const flyElsewhere = (args: ReadonlyArray<string>) =>
     run(args, { FAKE_FLY_HOME: otherHome }, root);
+  const slashHome = NodePath.join(root, "slash-home");
+  const builtImages = (appName: string) =>
+    docker(["image", "ls", "--quiet", `registry.fly.io/${appName}`]).trim();
   const label = (kind: "container" | "volume", name: string) =>
     docker([
       kind,
@@ -278,13 +291,17 @@ describe.skipIf(!hasDocker())("fake fly", () => {
   const machines = () => json(["machine", "list", "-j"]) as Array<Record<string, unknown>>;
   const machineId = () => String(machines()[0]?.id);
   const followerSees = (count: number) =>
-    new Promise<void>((resolve) => {
+    new Promise<void>((resolve, reject) => {
       const check = () => {
         if (followerOutput.split("serving initial configuration").length - 1 < count) return false;
         resolve();
         return true;
       };
-      if (!check()) followerWaits.push(check);
+      if (check()) return;
+      const gone = () => reject(new Error(`fly logs exited before it showed start ${count}`));
+      if (!follower || follower.exitCode !== null) return gone();
+      followerWaits.push(check);
+      follower.once("exit", gone);
     });
 
   beforeAll(() => {
@@ -293,7 +310,7 @@ describe.skipIf(!hasDocker())("fake fly", () => {
     NodeFS.mkdirSync(appDir, { recursive: true });
     NodeFS.writeFileSync(
       NodePath.join(build, "Caddyfile"),
-      `:8080 {\n\trespond /unhealthy 503\n\trespond "proto={header.X-Forwarded-Proto} fly={header.Fly-Forwarded-Proto} port={header.X-Forwarded-Port} ssl={header.X-Forwarded-Ssl}"\n}\n`,
+      `:8080 {\n\t@unchecked {\n\t\tpath /checked\n\t\tnot header X-Check yes\n\t}\n\trespond @unchecked 503\n\trespond /unhealthy 503\n\trespond "proto={header.X-Forwarded-Proto} fly={header.Fly-Forwarded-Proto} port={header.X-Forwarded-Port} ssl={header.X-Forwarded-Ssl}"\n}\n`,
     );
     NodeFS.writeFileSync(
       NodePath.join(build, "start.sh"),
@@ -301,9 +318,10 @@ describe.skipIf(!hasDocker())("fake fly", () => {
     );
     NodeFS.writeFileSync(
       NodePath.join(build, "Dockerfile"),
-      'FROM caddy:2\nRUN adduser -D sail\nCOPY Caddyfile /etc/caddy/Caddyfile\nCOPY start.sh /start.sh\nCMD ["sh", "/start.sh"]\n',
+      'FROM caddy:2\nRUN adduser -D sail\nLABEL fly.version="1.2.3"\nCOPY Caddyfile /etc/caddy/Caddyfile\nCOPY start.sh /start.sh\nCMD ["sh", "/start.sh"]\n',
     );
     docker(["build", "--quiet", "--tag", image, build]);
+    docker(["tag", image, unpullable]);
     NodeFS.writeFileSync(
       NodePath.join(appDir, "fly.toml"),
       `app = "${app}"
@@ -321,6 +339,13 @@ primary_region = "iad" # comment
   [[http_service.checks]]
     method = "GET"
     path = "/"
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "60s"
+
+  [[http_service.checks]]
+    path = "/checked"
+    headers = { X-Check = "yes" }
 
 [[mounts]]
   source = "data"
@@ -336,12 +361,24 @@ primary_region = "iad" # comment
 
   afterAll(() => {
     follower?.kill("SIGTERM");
-    for (const name of [app, `${app}-c`, `${app}-d`, `${app}-f`]) {
+    for (const name of [app, `${app}-b`, `${app}-c`, `${app}-d`, `${app}-f`, `${app}-s`]) {
       fly(["apps", "destroy", name, "--yes"]);
       flyElsewhere(["apps", "destroy", name, "--yes"]);
+      run(["apps", "destroy", name, "--yes"], { FAKE_FLY_HOME: slashHome }, root);
       if (exists("container", `sail-fly-${name}`)) docker(["rm", "--force", `sail-fly-${name}`]);
       removeSite(`fly-${name}`);
     }
+    for (const owner of [home, slashHome]) {
+      const ids = docker([
+        "image",
+        "ls",
+        "--quiet",
+        "--filter",
+        `label=sail-fixture.home=${homeId(owner)}`,
+      ]).trim();
+      if (ids) docker(["image", "rm", "--force", ...new Set(ids.split("\n"))]);
+    }
+    if (exists("image", unpullable)) docker(["image", "rm", unpullable]);
     for (const [kind, prefix] of [
       ["volumes", "sail-fly-vol-"],
       ["snapshots", "sail-fly-snap-"],
@@ -362,15 +399,41 @@ primary_region = "iad" # comment
     expect(json(["auth", "whoami", "-j"])).toEqual({ email: "fake@localtest.me" });
     ok(["auth", "logout"]);
     const signedOut = fly(["apps", "list"]);
-    expect(signedOut.status).toBe(1);
-    expect(signedOut.stderr).toBe(
-      "Error: no access token available. Please login with 'flyctl auth login'\n",
-    );
-    expect(fly(["auth", "whoami"]).status).toBe(1);
-    expect(fly(["apps", "list", "-q"], { FLY_API_TOKEN: "token" }).status).toBe(0);
-    expect(fly(["-t", "token", "apps", "list", "-q"]).status).toBe(0);
+    const whoamiOut = fly(["auth", "whoami"]);
+    const withEnvToken = fly(["apps", "list", "-q"], { FLY_API_TOKEN: "token" });
+    const withFlagToken = fly(["-t", "token", "apps", "list", "-q"]);
     ok(["auth", "login"]);
+    expect(signedOut).toMatchObject({
+      status: 1,
+      stderr: `Error: no access token available. Please login with '${NodePath.join(fakeDir, "fly")} auth login' (fake fly)\n`,
+    });
+    expect(whoamiOut.status).toBe(1);
+    expect(withEnvToken.status).toBe(0);
+    expect(withFlagToken.status).toBe(0);
     expect(fly(["auth", "whoami"]).status).toBe(0);
+  });
+
+  it("answers as both fly and flyctl when first on PATH", () => {
+    const callLog = NodePath.join(home, "calls.jsonl");
+    for (const name of ["fly", "flyctl"]) {
+      const found = NodeChildProcess.spawnSync("sh", ["-c", `command -v ${name}`], {
+        env,
+        encoding: "utf8",
+      }).stdout.trim();
+      // Checked before running it, so a missing shim never reaches the real flyctl's account.
+      expect(NodePath.dirname(found), name).toBe(fakeDir);
+      const before = NodeFS.readFileSync(callLog, "utf8");
+      calls++;
+      const whoami = NodeChildProcess.spawnSync(found, ["auth", "whoami"], {
+        cwd: appDir,
+        env,
+        encoding: "utf8",
+        input: "",
+      });
+      expect(whoami, name).toMatchObject({ status: 0, stdout: "fake@localtest.me\n" });
+      const logged = NodeFS.readFileSync(callLog, "utf8").slice(before.length);
+      expect(JSON.parse(logged), name).toMatchObject({ argv: ["auth", "whoami"], exitCode: 0 });
+    }
   });
 
   it("fails unknown commands and flags as cobra does", () => {
@@ -476,6 +539,10 @@ primary_region = "iad" # comment
     expect(fly(["volumes", "create", "data", "-r", "iad", "-s", "0", "-y"]).status).toBe(1);
     expect(volumes().map((entry) => entry.id)).toEqual([(volume as { id: string }).id]);
     expect(label("volume", `sail-fly-vol-${(volume as { id: string }).id}`)).toBe(homeId(home));
+    expect(fly(["volumes", "list", "--all"])).toMatchObject({
+      status: 1,
+      stderr: expect.stringMatching(/^Error: fake fly .*destroyed volumes/),
+    });
   });
 
   it("reads flags before and between subcommand words", () => {
@@ -491,6 +558,7 @@ primary_region = "iad" # comment
   });
 
   it("refuses fly.toml files flyctl refuses, before touching Docker", () => {
+    const CHECK = "[http_service]\n  internal_port = 8080\n  [[http_service.checks]]\n";
     const configs: ReadonlyArray<readonly [string, string]> = [
       ["internal_port", '[http_service]\n  internal_port = "8080oops"\n'],
       ["duplicate", 'primary_region = "iad"\nprimary_region = "ord"\n'],
@@ -519,6 +587,12 @@ primary_region = "iad" # comment
       ],
       ["internal_port", "[http_service]\n  internal_port = 8080.5\n"],
       ["kill_timeout", 'kill_timeout = "5 parsecs"\n'],
+      ["interval", `${CHECK}    interval = "5 parsecs"\n`],
+      ["headers", `${CHECK}    headers = { X-Check = 1 }\n`],
+      [
+        "checks",
+        '[http_service]\n  internal_port = 8080\n  [http_service.checks]\n    path = "/"\n',
+      ],
     ];
     for (const [field, body] of configs) {
       const file = NodePath.join(root, `bad-${NodeCrypto.randomBytes(3).toString("hex")}.toml`);
@@ -534,6 +608,30 @@ primary_region = "iad" # comment
     expect(timeout).toMatchObject({
       status: 1,
       stderr: expect.stringContaining("invalid duration"),
+    });
+    expect(exists("container", `sail-fly-${app}`)).toBe(false);
+  });
+
+  it("refuses deploy flags flyctl refuses, before touching Docker", () => {
+    expect(fly(["deploy", "--image", image, "--strategy", "bogus"])).toMatchObject({
+      status: 1,
+      stderr: expect.stringContaining(
+        "unsupported deployment strategy 'bogus'; Apps v2 supports the following strategies: canary, rolling, immediate, bluegreen",
+      ),
+    });
+    expect(fly(["deploy", "--image", image, "--strategy", "canary"])).toMatchObject({
+      status: 1,
+      stderr: expect.stringContaining(
+        "canary deployment strategy is not supported when using mounted volumes",
+      ),
+    });
+    expect(fly(["deploy", "--image", unpullable, "--remote-only"])).toMatchObject({
+      status: 1,
+      stderr: expect.stringContaining(`could not find image "${unpullable}"`),
+    });
+    expect(fly(["deploy", "--image", image, "--remote-only", "--local-only"])).toMatchObject({
+      status: 1,
+      stderr: "Error: no docker daemon available\n",
     });
     expect(exists("container", `sail-fly-${app}`)).toBe(false);
   });
@@ -588,6 +686,12 @@ primary_region = "iad" # comment
     );
     expect(ssh(`echo "a b" '$HOME'`).stdout).toBe("a b $HOME\n");
     expect(ssh("sh -c 'exit 3'").status).toBe(3);
+    expect(fly(["ssh", "console", "-r", "iad", "-q", "-C", "id -un"]).stdout).toBe("root\n");
+    expect(fly(["ssh", "console", "--region", "nowhere", "-q", "-C", "id -un"])).toMatchObject({
+      status: 1,
+      stdout: "",
+      stderr: `Error: app ${app} has no VMs in region nowhere\n`,
+    });
   });
 
   it("redeploys onto the same machine and volume, and logs follow the new container", async () => {
@@ -602,7 +706,9 @@ primary_region = "iad" # comment
     const before = json(["machine", "list", "-j"]) as Array<{ version: string }>;
     const volume = volumes()[0]?.id;
 
-    ok(["deploy", "--image", image, "-e", "EXTRA=1"]);
+    expect(ok(["deploy", "--image", image, "-e", "EXTRA=1", "--strategy", "immediate"])).toContain(
+      `Updating existing machines in '${app}' with immediate strategy\n`,
+    );
     const [after] = machines() as Array<{
       id: string;
       version: string;
@@ -618,9 +724,37 @@ primary_region = "iad" # comment
 
     const lines = ok(["logs", "--no-tail"]).trimEnd().split("\n");
     expect(lines[0]).toMatch(new RegExp(`^\\S+Z app\\[${firstMachine}\\] iad \\[info\\] \\S`));
-    const entry = JSON.parse(ok(["logs", "-n", "-j"]).split("\n")[0] ?? "");
-    expect(keys(entry)).toEqual(sorted(LOG_KEYS));
-    expect(entry).toMatchObject({ instance: firstMachine, region: "iad", level: "info" });
+  });
+
+  it("prints logs as a stream of flyctl's LogEntry JSON", () => {
+    const entries = (text: string): Array<Record<string, unknown>> =>
+      text === ""
+        ? []
+        : text
+            .trimEnd()
+            .split(/\n(?=\{)/)
+            .map((value) => JSON.parse(value));
+    const raw = ok(["logs", "-n", "-j"]);
+    expect(raw).toMatch(/^\{\n {4}"level": "info",\n {4}"instance": /);
+    const [entry] = entries(raw);
+    expect(Object.keys(entry ?? {})).toEqual(LOG_KEYS);
+    expect(entry).toEqual({
+      level: "info",
+      instance: firstMachine,
+      message: expect.any(String),
+      region: "iad",
+      timestamp: expect.stringMatching(/Z$/),
+      meta: {
+        Instance: firstMachine,
+        Region: "iad",
+        Event: { Provider: "app" },
+        ...EMPTY_LOG_META,
+      },
+    });
+    const byMachine = ok(["logs", "-n", "-j", "--machine", firstMachine, "--region", "nowhere"]);
+    expect(entries(byMachine).length).toBe(entries(raw).length);
+    expect(fly(["logs", "-n", "-j", "--region", "nowhere"]).stdout).toBe("");
+    expect(fly(["logs", "-n", "-j"], { FLY_REGION: "nowhere" }).stdout).toBe("");
   });
 
   it("restores a snapshot to a new volume and a new machine", () => {
@@ -706,20 +840,42 @@ primary_region = "iad" # comment
     expect(ssh("ls /data").stdout.split("\n")).not.toContain("after");
   });
 
-  it("shows the image and machine status in flyctl's shapes", () => {
+  it("shows the image in flyctl's shape with its fly.version", () => {
     const id = machineId();
     const digest = docker(["image", "inspect", "--format", "{{.Id}}", image]).trim();
     const shown = json(["image", "show", "-j"]) as Array<Record<string, string>>;
     expect(shown).toHaveLength(1);
     expect(keys(shown[0])).toEqual(sorted(IMAGE_KEYS));
-    expect(shown[0]).toMatchObject({ MachineID: id, Digest: digest, Version: "N/A" });
-    expect(keys(json(["image", "show", id, "-j"]))).toEqual(sorted(IMAGE_KEYS));
+    expect(shown[0]).toMatchObject({ MachineID: id, Digest: digest, Version: "1.2.3" });
+    expect(JSON.parse(shown[0]?.Labels ?? "")).toMatchObject({ "fly.version": "1.2.3" });
+    expect(json(["image", "show", id, "-j"])).toMatchObject({ MachineID: id, Version: "1.2.3" });
+    expect(ok(["image", "show", id])).toMatch(/\bVersion\b.* 1\.2\.3\n/);
+    expect(ok(["machine", "status", id])).toMatch(/\bImage\b.* \(1\.2\.3\)\n/);
+  });
 
-    const status = ok(["machine", "status"]);
-    expect(status).toMatch(
+  it("shows machine status in flyctl's shape, finding the app from the machine", () => {
+    const id = machineId();
+    expect(fly(["machine", "status"])).toMatchObject({
+      status: 1,
+      stderr: "Error: a machine ID must be specified when not running interactively\n",
+    });
+    expect(fly(["machine", "status"], {}, root)).toMatchObject({
+      status: 1,
+      stderr: "Error: a machine ID or an app name is required\n",
+    });
+    expect(flyElsewhere(["machine", "status", id, "-d"])).toMatchObject({
+      status: 1,
+      stderr: expect.stringContaining("could not get machine from GraphQL to determine app name"),
+    });
+    expect(fly(["machine", "status", id], {}, root).stdout).toMatch(
       new RegExp(`^Machine ID: ${id}\nVersion: \\w+\nState: started\nHostStatus: ok\n\nVM\n`),
     );
-    const config = json(["machine", "status", "-d"]) as { env: Record<string, string> };
+    const fromId = fly(["machine", "status", id, "-d"], {}, root);
+    expect(fromId.stdout).toMatch(/^\{\n {2}"env": \{\n {4}"/);
+    const config = JSON.parse(fromId.stdout) as {
+      env: Record<string, string>;
+      services: Array<{ checks: unknown }>;
+    };
     expect(keys(config)).toEqual(sorted(MACHINE_CONFIG_KEYS));
     expect(config.env).not.toHaveProperty("SAIL_PUBLIC_URL");
     expect(config).toMatchObject({
@@ -727,6 +883,17 @@ primary_region = "iad" # comment
       guest: { memory_mb: 256, cpus: 1 },
       restart: { policy: "on-failure" },
     });
+    expect(config.services[0]?.checks).toEqual([
+      {
+        type: "http",
+        interval: "15s",
+        timeout: "2s",
+        grace_period: "1m0s",
+        method: "GET",
+        path: "/",
+      },
+      { type: "http", path: "/checked", headers: [{ name: "X-Check", values: ["yes"] }] },
+    ]);
   });
 
   it("never replaces or removes another home's container", () => {
@@ -763,7 +930,13 @@ primary_region = "iad" # comment
     const first = fly(["deploy", dir], {}, root);
     expect(first.status, first.stderr).toBe(0);
     expect(first.stderr).toContain("one machine");
-    expect(fly(["deploy", dir, "--ha=false"], {}, root).stderr).not.toContain("one machine");
+    expect(fly(["deploy", dir, "--ha=false", "--remote-only"], {}, root).stderr).not.toContain(
+      "one machine",
+    );
+    const [shown] = json(["image", "show", "-a", dirApp, "-j"]) as Array<{ Labels: string }>;
+    const labels = Object.keys(JSON.parse(shown?.Labels ?? ""));
+    expect(labels).toContain("fly.version");
+    expect(labels.filter((key) => key.startsWith("sail-fixture"))).toEqual([]);
     const host = `${dirApp}.localtest.me`;
     await expect(get(`${publicUrl(host, "http")}/`)).resolves.toMatchObject({
       status: 200,
@@ -777,6 +950,62 @@ primary_region = "iad" # comment
       "TERM\n",
     );
     ok(["apps", "destroy", dirApp, "--yes"]);
+  });
+
+  it("labels the images it builds, builds none for bad flags, and removes them with the app", () => {
+    const built = `${app}-b`;
+    const dir = NodePath.join(root, "built-app");
+    NodeFS.mkdirSync(dir, { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(dir, "Dockerfile"), `FROM ${image}\n`);
+    NodeFS.writeFileSync(
+      NodePath.join(dir, "fly.toml"),
+      `app = "${built}"\nprimary_region = "iad"\n\n[[mounts]]\n  source = "Bad-Name"\n  destination = "/data"\n`,
+    );
+    ok(["apps", "create", built]);
+    expect(fly(["deploy", dir, "--env", "BADPAIR"], {}, root)).toMatchObject({
+      status: 1,
+      stderr: expect.stringContaining("BADPAIR"),
+    });
+    expect(builtImages(built)).toBe("");
+    expect(fly(["deploy", dir], {}, root)).toMatchObject({
+      status: 1,
+      stderr: expect.stringContaining("failed creating volume"),
+    });
+    expect(builtImages(built)).not.toBe("");
+    const labelled = docker([
+      "image",
+      "ls",
+      "--quiet",
+      "--filter",
+      `label=sail-fixture.home=${homeId(home)}`,
+      "--filter",
+      `label=sail-fixture.fly-app=${built}`,
+    ]).trim();
+    expect(labelled).toBe(builtImages(built));
+    ok(["apps", "destroy", built, "--yes"]);
+    expect(builtImages(built)).toBe("");
+  });
+
+  it("treats a home written with a trailing slash as the same home", () => {
+    const slashed = `${app}-s`;
+    const site = NodePath.join(caddyDir(), "sites", `fly-${slashed}.caddy`);
+    const reservation = NodePath.join(fixturesRoot(), "names", "fly-app", slashed);
+    expect(run(["apps", "create", slashed], { FAKE_FLY_HOME: `${slashHome}/` }, root).status).toBe(
+      0,
+    );
+    const deployed = run(
+      ["deploy", "-a", slashed, "--image", image, "--ha=false"],
+      { FAKE_FLY_HOME: slashHome },
+      root,
+    );
+    expect(deployed.status, deployed.stderr).toBe(0);
+    expect(NodeFS.existsSync(site)).toBe(true);
+    expect(
+      run(["apps", "destroy", slashed, "--yes"], { FAKE_FLY_HOME: slashHome }, root).status,
+    ).toBe(0);
+    expect(exists("container", `sail-fly-${slashed}`)).toBe(false);
+    expect(NodeFS.existsSync(site)).toBe(false);
+    expect(NodeFS.existsSync(reservation)).toBe(false);
   });
 
   it("destroys the app with its container, volumes, snapshots, and site", async () => {
@@ -803,14 +1032,14 @@ primary_region = "iad" # comment
     expect(flyElsewhere(["apps", "destroy", app, "--yes"]).status).toBe(0);
   });
 
-  it("waits for http_service checks to pass before deploy returns", () => {
+  it("waits for every http_service check to pass before deploy returns", () => {
     const checked = `${app}-c`;
     NodeFS.writeFileSync(
       NodePath.join(appDir, "checks.toml"),
-      `app = "${checked}"\n\n[http_service]\n  internal_port = 8080\n\n  [[http_service.checks]]\n    path = "/unhealthy"\n`,
+      `app = "${checked}"\n\n[http_service]\n  internal_port = 8080\n\n  [[http_service.checks]]\n    path = "/"\n\n  [[http_service.checks]]\n    path = "/unhealthy"\n`,
     );
     ok(["apps", "create", checked]);
-    const failed = fly(["deploy", "-c", "checks.toml", "--image", image, "--wait-timeout", "2s"]);
+    const failed = fly(["deploy", "-c", "checks.toml", "--image", image, "--wait-timeout", "20s"]);
     expect(failed.status).toBe(1);
     expect(failed.stderr).toContain("timeout reached waiting for machine");
     ok(["apps", "destroy", checked, "--yes"]);
