@@ -17,7 +17,12 @@ type Presentation = { readonly connection: { readonly phase: string } } | undefi
 
 vi.mock("@t3tools/client-runtime/state/runtime", () => ({ runAtomCommand: vi.fn() }));
 vi.mock("./components/ui/toast", () => ({ toastManager: { add: vi.fn() } }));
-const locale = vi.hoisted(() => ({ ready: Promise.resolve(), active: "en" }));
+const locale = vi.hoisted(() => ({
+  settings: Promise.resolve(),
+  ready: Promise.resolve(),
+  active: "en",
+}));
+vi.mock("./hooks/useSettings", () => ({ ensureClientSettingsHydrated: () => locale.settings }));
 vi.mock("./i18n/runtime", () => ({ whenLocaleReady: () => locale.ready }));
 vi.mock(import("./i18n/messages"), async (original) => {
   const actual = await original();
@@ -150,21 +155,25 @@ describe("Codex sign-in delivery", () => {
     );
   });
 
-  it("shows the refusal in the user's language once it has loaded", async () => {
+  it("shows the refusal in the user's language once saved settings and it have loaded", async () => {
+    const hydrated = Promise.withResolvers<void>();
     const loaded = Promise.withResolvers<void>();
+    locale.settings = hydrated.promise;
     locale.ready = loaded.promise;
     openTab(delivery());
     startProviderAuthDelivery();
-    await Promise.resolve();
+    loaded.resolve();
+    for (let tick = 0; tick < 10; tick++) await Promise.resolve();
     expect(toastManager.add).not.toHaveBeenCalled();
 
     locale.active = "de";
-    loaded.resolve();
+    hydrated.resolve();
     await vi.waitFor(() =>
       expect(toastManager.add).toHaveBeenCalledWith(
         expect.objectContaining({ description: expect.stringMatching(/^de:/) }),
       ),
     );
+    locale.settings = Promise.resolve();
     locale.ready = Promise.resolve();
     locale.active = "en";
   });
@@ -244,7 +253,7 @@ describe("Codex sign-in delivery", () => {
     expect(vi.mocked(runAtomCommand).mock.calls).toEqual([completed()]);
   });
 
-  it("sends no code when its environment connects after the sign-in expired", () => {
+  it("sends no code when its environment connects after the sign-in expired", async () => {
     connect("connecting");
     openTab(page);
     rememberProviderAuthSignIn(signIn);
@@ -254,10 +263,14 @@ describe("Codex sign-in delivery", () => {
     vi.setSystemTime(Date.now() + 10 * 60_000);
     connect("connected");
     expect(runAtomCommand).not.toHaveBeenCalled();
-    expect(toastManager.add).toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+    await vi.waitFor(() =>
+      expect(toastManager.add).toHaveBeenCalledWith(
+        expect.objectContaining({ description: "en:Return to the provider and try again." }),
+      ),
+    );
   });
 
-  it("stops waiting for its environment when the sign-in expires", () => {
+  it("stops waiting for its environment when the sign-in expires", async () => {
     connect("connecting");
     openTab(page);
     rememberProviderAuthSignIn(signIn);
@@ -265,7 +278,9 @@ describe("Codex sign-in delivery", () => {
     startProviderAuthDelivery();
 
     vi.advanceTimersByTime(10 * 60_000);
-    expect(toastManager.add).toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+    await vi.waitFor(() =>
+      expect(toastManager.add).toHaveBeenCalledWith(expect.objectContaining({ type: "error" })),
+    );
     connect("connected");
     expect(runAtomCommand).not.toHaveBeenCalled();
   });

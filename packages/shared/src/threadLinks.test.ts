@@ -240,6 +240,22 @@ describe("thread links", () => {
     );
   });
 
+  it.each([
+    [
+      "a percent sign that starts no escape in its environment",
+      ref("env%", "t1"),
+      "<t3-thread://v3/env%25/t1>",
+    ],
+    [
+      "a percent sign that starts no escape",
+      ref("env-1", "100%/a%20b"),
+      "<t3-thread://v3/env-1/100%25%2Fa%2520b>",
+    ],
+  ])("writes a v3 link for a thread with %s", (_, thread, link) => {
+    expect(formatThreadLink(thread)).toBe(link);
+    expect(threadLinkRefs(link, local)).toEqual([thread]);
+  });
+
   it("never decodes an escaped id twice into another thread", () => {
     const link = formatThreadLink(ref("remote", "a>b`c %20 d"), "Old");
     const phantom = titlesIn({ remote: { "a>b`c   d": "Phantom" } });
