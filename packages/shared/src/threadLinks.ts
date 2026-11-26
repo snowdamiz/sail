@@ -141,7 +141,7 @@ export function threadLinkCandidates(
   return decodedId === null ? [written] : [written, { environmentId, threadId: decodedId }];
 }
 
-/** A v1 link its message's environment lacks opens a unique match elsewhere; a v2 link never does. */
+/** A v1 link its message's environment lacks opens a unique match elsewhere; a v2 or v3 link never does. */
 export function guessThreadLinkRef(
   link: ThreadLink,
   refs: ReadonlyArray<ScopedThreadRef>,
@@ -188,7 +188,7 @@ export function formatThreadLink(ref: ThreadLink, label?: string): string {
   return cleaned ? `[${cleaned}](${destination})` : `<${href}>`;
 }
 
-/** What a person copies out of T3 Code: a link into the web app at `origin`, else a v2 link. */
+/** What a person copies out of T3 Code: a link into the web app at `origin`, else a t3-thread link. */
 export function formatHostedThreadLink(
   ref: ScopedThreadRef,
   label: string,

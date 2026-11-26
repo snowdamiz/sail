@@ -21,7 +21,7 @@ export function unknownThreadLinkLabel(
 }
 
 /**
- * Writes each link with its thread's current title, a hosted link as a v2 link. A link `title`
+ * Writes each link with its thread's current title, a hosted link as a t3-thread link. A link `title`
  * cannot resolve becomes plain text, its written label or a neutral one, except a labeled v1
  * link, which may open elsewhere.
  */
