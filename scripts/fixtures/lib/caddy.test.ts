@@ -5,6 +5,7 @@ import * as NodeFS from "node:fs";
 import * as NodeHttps from "node:https";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeReadline from "node:readline";
 import * as NodeUtil from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
@@ -16,6 +17,8 @@ import {
   caddyDir,
   ensureCaddy,
   ensureRootCa,
+  ROOT_LABEL,
+  rootFingerprint,
   isOlderCaddyfile,
   publishSite,
   removeSite,
@@ -175,6 +178,50 @@ describe("fixture root CA", () => {
     expect(await nodeAccepts(ca, "IP:127.0.0.1", "")).toBe(false);
   });
 
+  it("replaces an older root once when several lanes upgrade it at the same moment", async () => {
+    const old = NodeFS.mkdtempSync(NodePath.join(scratch, "race-"));
+    makeVersionOneRoot(old);
+    const go = NodePath.join(old, "go");
+    const lanes = Array.from({ length: 4 }, () =>
+      NodeChildProcess.spawn(process.execPath, [
+        "--input-type=module",
+        "-e",
+        `import * as NodeFS from "node:fs";
+         import { ensureRootCa } from ${JSON.stringify(NodePath.join(import.meta.dirname, "caddy.ts"))};
+         process.stdout.write("ready\\n");
+         while (!NodeFS.existsSync(${JSON.stringify(go)})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
+         process.stdout.write(String(ensureRootCa(${JSON.stringify(old)})));`,
+      ]),
+    );
+    const outputs = lanes.map((lane) => {
+      let output = "";
+      lane.stdout.setEncoding("utf8");
+      lane.stdout.on("data", (chunk: string) => (output += chunk));
+      return new Promise<string>((resolve) => lane.once("close", () => resolve(output)));
+    });
+    await Promise.all(
+      lanes.map(
+        (lane) =>
+          new Promise((resolve) =>
+            NodeReadline.createInterface({ input: lane.stdout }).once("line", resolve),
+          ),
+      ),
+    );
+    NodeFS.writeFileSync(go, "");
+    const answers = (await Promise.all(outputs)).map((output) => output.replace("ready\n", ""));
+    expect(
+      answers.filter((answer) => answer === "true"),
+      answers.join(","),
+    ).toHaveLength(1);
+    const ca = NodePath.join(old, "ca");
+    const publicKey = (args: ReadonlyArray<string>) => openssl(args).stdout;
+    expect(publicKey(["x509", "-noout", "-pubkey", "-in", NodePath.join(ca, "root.crt")])).toBe(
+      publicKey(["pkey", "-pubout", "-in", NodePath.join(ca, "root.key")]),
+    );
+    expect(verifies(ca, "IP:127.0.0.1")).toBe(false);
+    expect(NodeFS.readdirSync(old).toSorted()).toEqual(["ca", "go"]);
+  });
+
   it("replaces a root an older revision made, and keeps a current or newer one", () => {
     const old = NodeFS.mkdtempSync(NodePath.join(scratch, "old-"));
     makeVersionOneRoot(old);
@@ -289,6 +336,30 @@ describe.skipIf(!hasDocker())("fixture Caddy", () => {
     expect(listing.split("\n")).not.toContain(`${bad}.caddy`);
     expect(NodeFS.existsSync(NodePath.join(caddyDir(), "sites", `${bad}.caddy`))).toBe(false);
     expect(await status(`https://${ids[0]}.localtest.me/`)).toBe("200");
+  });
+
+  it("runs the shared Caddy on the root on disk, with that root's own data volume", () => {
+    const root = rootFingerprint();
+    const state = JSON.parse(docker(["inspect", "--format", "{{json .}}", CADDY_CONTAINER])) as {
+      readonly Config: { readonly Labels: Readonly<Record<string, string>> };
+      readonly Mounts: ReadonlyArray<{ readonly Destination: string; readonly Name?: string }>;
+    };
+    expect(state.Config.Labels[ROOT_LABEL]).toBe(root);
+    expect(state.Mounts.find((mount) => mount.Destination === "/data")?.Name).toBe(
+      `${CADDY_CONTAINER}-data-${root}`,
+    );
+    const ca = JSON.parse(
+      docker([
+        "exec",
+        CADDY_CONTAINER,
+        "wget",
+        "-q",
+        "-O",
+        "-",
+        "http://127.0.0.1:2019/pki/ca/local",
+      ]),
+    ) as { readonly root_certificate: string };
+    expect(ca.root_certificate.trim()).toBe(NodeFS.readFileSync(rootCertPath(), "utf8").trim());
   });
 
   it("serves with a shared root that cannot sign an IP address", () => {
