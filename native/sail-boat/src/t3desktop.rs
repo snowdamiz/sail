@@ -245,7 +245,10 @@ impl T3Desktop {
             match self.call("projects.readFile", json!({ "cwd": project.path, "relativePath": path })).await {
                 Ok(read) if read["truncated"] == true => failed.push(format!("{path}: too large to copy")),
                 Ok(read) => files.push((path.to_owned(), read["contents"].as_str().unwrap_or_default().to_owned())),
-                Err(e) => failed.push(format!("{path}: {e:#}")),
+                Err(e) => {
+                    tracing::warn!("reading {path}: {e:#}");
+                    failed.push(path.to_owned());
+                }
             }
         }
         Ok((files, failed))

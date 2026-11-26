@@ -495,7 +495,11 @@ impl App {
             for id in projects {
                 if let Err(e) = app.add_project(&m, &id).await {
                     tracing::warn!("adding {id} to {}: {e:#}", m.id());
-                    app.shared.notify(format!("A project didn't reach {}", m.record().name), "Add it again from Boats.");
+                    let title = app.local_projects().await.ok().and_then(|ps| ps.into_iter().find(|p| p.id == id)).map(|p| p.title);
+                    app.shared.notify(
+                        format!("{} didn't reach {}", title.as_deref().unwrap_or("A project"), m.record().name),
+                        "Adding it again from Boats shows why.",
+                    );
                 }
             }
         });

@@ -431,8 +431,8 @@ impl MachineRuntime {
             Ok(()) => *self.wake_failure.lock().unwrap() = None,
             Err(e) => {
                 let msg = format!("{e:#}");
+                tracing::warn!("waking {}: {msg}", self.id());
                 if !was_failing {
-                    tracing::warn!("waking {}: {msg}", self.id());
                     self.shared.notify(format!("{} could not wake", self.record().name), "Boats shows why.");
                 }
                 *self.wake_failure.lock().unwrap() = Some((msg, Instant::now()));
@@ -615,7 +615,7 @@ impl MachineRuntime {
                         && command["type"] == "message.dispatch"
                     {
                         tracing::warn!("message to {} refused: {e}", self.id());
-                        self.shared.notify(format!("{}: a message was not sent", self.record().name), e);
+                        self.shared.notify(format!("{}: a message was not sent", self.record().name), "Send it again.");
                     }
                 }
             }

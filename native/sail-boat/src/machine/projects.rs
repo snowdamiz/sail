@@ -151,7 +151,8 @@ impl MachineRuntime {
             )
             .await;
             if let Err(e) = written {
-                failed.push(format!("{path}: {e:#}"));
+                tracing::warn!("writing {path} on {}: {e:#}", self.id());
+                failed.push(path);
             }
         }
         Ok(failed)

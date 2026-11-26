@@ -823,7 +823,7 @@ pub struct RunningDaemon {
     pub handshake: Handshake,
     pub daemon: Arc<Daemon>,
     tasks: Vec<JoinHandle<()>>,
-    _data_dir_lock: std::fs::File,
+    data_dir_lock: std::fs::File,
 }
 
 impl RunningDaemon {
@@ -837,6 +837,8 @@ impl RunningDaemon {
         for task in self.tasks {
             let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
         }
+        // Closing the file alone keeps the lock while a process forked meanwhile still shares it.
+        let _ = self.data_dir_lock.unlock();
     }
 }
 
@@ -889,7 +891,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon> {
         handshake,
         daemon,
         tasks: vec![control_task, mcp_task, init_task],
-        _data_dir_lock: data_dir_lock,
+        data_dir_lock,
     })
 }
 
@@ -964,12 +966,8 @@ mod tests {
         (start(config).await.unwrap(), dir)
     }
 
-    async fn daemon_with_machine() -> (Arc<App>, u16, PathBuf) {
-        let dir = test_dir();
-        daemon_with_machine_on(Boat::at(dir.join("no-boat")), dir).await
-    }
-
-    async fn daemon_with_machine_on(boat: Boat, dir: PathBuf) -> (Arc<App>, u16, PathBuf) {
+    /// Saves one machine, `dev` on sandbox `bx_dev`, in `dir`'s state file.
+    fn save_dev_machine(dir: &std::path::Path) {
         let local_port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
         let machine = crate::store::Machine {
             id: "bx_dev".into(),
@@ -992,10 +990,15 @@ mod tests {
             saved_stop: None,
         };
         let state = crate::store::State { machines: vec![machine], ..Default::default() };
-        crate::store::Store::new(&dir).save(&state).unwrap();
+        crate::store::Store::new(dir).save(&state).unwrap();
+    }
+
+    async fn daemon_with_machine() -> (Arc<App>, u16, PathBuf) {
+        let dir = test_dir();
+        save_dev_machine(&dir);
         let (tx, rx) = mpsc::unbounded_channel();
         let t3 = t3desktop::T3Desktop::at(dir.join("no-sail"));
-        let app = App::new(boat, t3, dir.clone(), tx).unwrap();
+        let app = App::new(Boat::at(dir.join("no-boat")), t3, dir.clone(), tx).unwrap();
         let daemon = Daemon::new(TOKEN.to_owned(), dir.clone(), 0);
         *daemon.app.lock().unwrap() = Some(app.clone());
         tokio::spawn(event_loop(daemon.clone(), app.clone(), rx));
@@ -1210,7 +1213,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// Every client of the server shows a notice, so Boat's own output stays in the log.
+    /// Every client of the server shows a notice, so a failed wake leaves Boat's output to the
+    /// machine's row on the Boats page.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_failed_wake_notice_leaves_out_what_boat_said() {
@@ -1224,33 +1228,28 @@ case "$1" in
 esac
 "#;
         let dir = test_dir();
-        std::fs::create_dir_all(&dir).unwrap();
+        save_dev_machine(&dir);
         let bin = dir.join("boat");
         std::fs::write(&bin, BOAT).unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let (app, port, dir) = daemon_with_machine_on(Boat::at(bin), dir).await;
-        let client = reqwest::Client::new();
-        let res = client.get(format!("http://127.0.0.1:{port}/api/events")).bearer_auth(TOKEN).send().await.unwrap();
-        let mut stream = res.bytes_stream();
-        let mut buf = String::new();
-        read_events_until(&mut stream, &mut buf, "event: state").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let app = App::new(Boat::at(bin), t3desktop::T3Desktop::at(dir.join("no-sail")), dir.clone(), tx).unwrap();
+        let machine = app.machine("dev").unwrap();
 
-        let reply = client
-            .post(format!("http://127.0.0.1:{port}/api/command/wake_machine"))
-            .bearer_auth(TOKEN)
-            .json(&json!({ "id": "dev" }))
-            .send()
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-        assert!(reply.contains("boat-output"), "the caller sees why: {reply}");
-        read_events_until(&mut stream, &mut buf, "dev could not wake").await;
-        let notice = buf.lines().skip_while(|l| *l != "event: notify").nth(1).unwrap_or_default();
-        assert!(!notice.contains("boat-output") && !notice.contains("https://"), "Boat's output went to every client: {notice}");
+        assert!(machine.ensure_awake().await.is_err(), "Boat refused the resume");
+        let body = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match rx.recv().await.expect("the app's events") {
+                    Event::Notify { title, body } if title == "dev could not wake" => break body,
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("a notice for the failed wake");
+        assert_eq!(body, "Boats shows why.");
+        assert!(machine.last_error().unwrap_or_default().contains("boat-output"), "the Boats page keeps the reason");
 
-        drop(stream);
         app.shutdown();
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1269,13 +1268,12 @@ esac
         assert!(format!("{refused:#}").contains("another sail-boatd is using"), "{refused:#}");
 
         first.shutdown().await;
-        // Under parallel tests the lock lets go a moment after the shutdown; a real restart waits too.
         let config = DaemonConfig {
             control_port: 0,
             mcp_port: 0,
             token: TOKEN.to_owned(),
             data_dir: dir.clone(),
-            lock_wait: Duration::from_secs(2),
+            lock_wait: Duration::ZERO,
         };
         let next = start(config).await.expect("the data dir is free once its daemon is gone");
         stop_test_daemon(next, dir).await;
