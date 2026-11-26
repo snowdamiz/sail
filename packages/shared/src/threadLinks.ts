@@ -160,8 +160,8 @@ export function guessThreadLinkRef(
   return null;
 }
 
-// `&` could start a character reference, which a Markdown renderer decodes.
-const WRITTEN_AS_IS = /^[\w\-.~:@!$'()*+,;=%/]+$/;
+// A Markdown renderer decodes a character reference (`&`) and escapes a `%` that starts no escape.
+const WRITTEN_AS_IS = /^(?:[\w\-.~:@!$'()*+,;=/]|%[0-9A-Fa-f]{2})+$/;
 
 function threadLinkHref({ environmentId, threadId }: ThreadLink): string {
   if (environmentId === null) {

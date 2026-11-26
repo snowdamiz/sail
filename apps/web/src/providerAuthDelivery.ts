@@ -11,6 +11,7 @@ import {
   subscribeLocalStorageKey,
   writeLocalStorageValue,
 } from "./hooks/useLocalStorage";
+import { ensureClientSettingsHydrated } from "./hooks/useSettings";
 import { m } from "./i18n/messages";
 import { whenLocaleReady } from "./i18n/runtime";
 import { appAtomRegistry } from "./rpc/atomRegistry";
@@ -51,7 +52,9 @@ export function rememberProviderAuthSignIn(signIn: SignInFlow): void {
 }
 
 export function forgetProviderAuthSignIn(signIn: SignInFlow): void {
-  writeSignIns(liveSignIns().filter((other) => !sameFlow(other, signIn)));
+  const live = liveSignIns();
+  const kept = live.filter((other) => !sameFlow(other, signIn));
+  if (kept.length !== live.length) writeSignIns(kept);
 }
 
 const findSignIn = (flow: SignInFlow) => liveSignIns().find((other) => sameFlow(other, flow));
@@ -62,22 +65,27 @@ export function useHasProviderAuthSignIn(flow: SignInFlow | null): boolean {
   return useSyncExternalStore(subscribeSignIns, () => flow !== null && !!findSignIn(flow));
 }
 
-function refuseDelivery() {
-  // Queued past the rest of startup, which starts i18n, so the toast is in the user's language.
-  void Promise.resolve()
+// A delivery runs before startup loads saved settings and starts i18n, so its toast waits for the
+// user's language.
+function showSignInError(description: string) {
+  void ensureClientSettingsHydrated()
+    .catch(() => undefined)
     .then(whenLocaleReady)
     .then(() =>
       toastManager.add({
         type: "error",
         title: m(msg("ChatGPT sign-in couldn't finish")),
-        description: m(
-          msg(
-            "This browser didn't start that sign-in. Sign in again in the browser that did, and paste the URL from the final localhost page.",
-          ),
-        ),
+        description: m(description),
       }),
     );
 }
+
+const refuseDelivery = () =>
+  showSignInError(
+    msg(
+      "This browser didn't start that sign-in. Sign in again in the browser that did, and paste the URL from the final localhost page.",
+    ),
+  );
 
 // Taken just before sending, so a Cancel or another tab's send while this one waits wins.
 function sendIfStillStarted(delivery: ProviderAuthDelivery) {
@@ -117,15 +125,9 @@ export function startProviderAuthDelivery(): void {
   const stopWaiting = (connected: boolean) => {
     clearTimeout(expiry);
     unsubscribe();
-    if (connected && Date.now() < signIn.expiresAt) {
-      sendIfStillStarted(delivery);
-      return;
-    }
-    toastManager.add({
-      type: "error",
-      title: m(msg("ChatGPT sign-in couldn't finish")),
-      description: m(msg("Reconnect to the environment and try again.")),
-    });
+    if (!connected) showSignInError(msg("Reconnect to the environment and try again."));
+    else if (Date.now() < signIn.expiresAt) sendIfStillStarted(delivery);
+    else showSignInError(msg("Return to the provider and try again."));
   };
   const expiry = setTimeout(() => stopWaiting(false), signIn.expiresAt - Date.now());
   const unsubscribe = appAtomRegistry.subscribe(presentationAtom, (presentation) => {
@@ -148,18 +150,8 @@ async function completeProviderAuth(delivery: ProviderAuthDelivery): Promise<voi
       },
       { reportFailure: false },
     );
-    if (result._tag === "Failure") {
-      toastManager.add({
-        type: "error",
-        title: m(msg("ChatGPT sign-in couldn't finish")),
-        description: m(msg("Return to the provider and try again.")),
-      });
-    }
+    if (result._tag === "Failure") showSignInError(msg("Return to the provider and try again."));
   } catch {
-    toastManager.add({
-      type: "error",
-      title: m(msg("ChatGPT sign-in couldn't finish")),
-      description: m(msg("Reconnect to the environment and try again.")),
-    });
+    showSignInError(msg("Reconnect to the environment and try again."));
   }
 }
