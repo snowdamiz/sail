@@ -1,4 +1,7 @@
 import { UNFINISHED_DRIVE_PATH } from "@t3tools/shared/markdownLinks";
+import { formatHostedThreadLink, replaceThreadLinks } from "@t3tools/shared/threadLinks";
+
+import { linkOrigin } from "./hostedPairing";
 
 const SKIPPED_TAGS = new Set(["BUTTON", "INPUT", "SCRIPT", "STYLE", "TEMPLATE"]);
 const SKIPPED_CLASS_NAMES = ["select-none", "sr-only"];
@@ -813,16 +816,33 @@ function cloneWithListMarkers(range: Range, container: Element): void {
   }
 }
 
+// A thread chip renders before the link origin can be known, as on a desktop whose server starts later.
+function linkThreadChips(container: Element, origin: string | undefined) {
+  for (const chip of container.querySelectorAll("[data-markdown-thread-link]")) {
+    const markdown = chip.getAttribute("data-markdown-copy") ?? "";
+    chip.setAttribute(
+      "data-markdown-copy",
+      replaceThreadLinks(markdown, ({ environmentId, threadId }, label) =>
+        environmentId === null
+          ? undefined
+          : formatHostedThreadLink({ environmentId, threadId }, label ?? "", origin),
+      ),
+    );
+  }
+}
+
 export function chatMarkdownClipboardPayload(
   selection: Selection,
 ): MarkdownClipboardPayload | null {
   const texts: string[] = [];
   const htmls: string[] = [];
+  const origin = linkOrigin();
   for (let index = 0; index < selection.rangeCount; index += 1) {
     const range = selection.getRangeAt(index);
     if (range.collapsed) continue;
     const container = document.createElement("div");
     cloneWithListMarkers(range, container);
+    linkThreadChips(container, origin);
     // The indentation typed at a line start only shows; pasted, it would turn lines into code.
     for (const indentation of container.querySelectorAll("[data-leading-whitespace]")) {
       indentation.remove();

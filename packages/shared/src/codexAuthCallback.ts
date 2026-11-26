@@ -23,7 +23,8 @@ export function cancelCodexAuthCallback(authorizationUrl: string) {
 export async function receiveCodexAuthCallback(
   authorizationUrl: string,
   openBrowser: (url: string) => Promise<boolean>,
-  destination?: (callbackUrl: string) => string,
+  // Asked when the code arrives; a refusal sends the code nowhere and ends this sign-in.
+  destination?: (callbackUrl: string) => string | Promise<string>,
   signal?: AbortSignal,
 ) {
   const request = codexAuthorizationRequest(authorizationUrl);
@@ -37,34 +38,48 @@ export async function receiveCodexAuthCallback(
   // Keep early open/bind failures from leaving an unobserved rejection behind.
   void callback.promise.catch(() => undefined);
   const server = NodeHttp.createServer((incoming, response) => {
+    let url: string;
     try {
       if (incoming.method !== "GET") throw new Error("method");
-      const url = codexCallbackUrl(
+      url = codexCallbackUrl(
         new URL(incoming.url ?? "/", request.redirectUri).toString(),
         request.redirectUri,
         request.state,
       ).toString();
-      const returnUrl = destination?.(url);
-      response.setHeader("cache-control", "no-store");
-      response.setHeader("referrer-policy", "no-referrer");
-      response.setHeader("x-content-type-options", "nosniff");
-      if (returnUrl) {
-        response.writeHead(303, { location: returnUrl }).end();
-      } else {
-        response.setHeader(
-          "content-security-policy",
-          "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
-        );
-        response
-          .writeHead(200, { "content-type": "text/html; charset=utf-8" })
-          .end(
-            '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>T3 Code</title><style>body{font-family:system-ui;display:grid;place-items:center;min-height:90vh;margin:0}main{max-width:360px;padding:32px}h1{font-size:24px}p{line-height:1.6;opacity:.7}</style></head><body><main><h1>Return to T3 Code</h1><p>Your sign-in response has been received. T3 Code is finishing the connection. You can close this tab.</p></main></body></html>',
-          );
-      }
-      callback.resolve(url);
     } catch {
       response.writeHead(400).end("This response does not belong to the active sign-in.");
+      return;
     }
+    response.setHeader("cache-control", "no-store");
+    response.setHeader("referrer-policy", "no-referrer");
+    response.setHeader("x-content-type-options", "nosniff");
+    if (!destination) {
+      response.setHeader(
+        "content-security-policy",
+        "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+      );
+      response
+        .writeHead(200, { "content-type": "text/html; charset=utf-8" })
+        .end(
+          '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>T3 Code</title><style>body{font-family:system-ui;display:grid;place-items:center;min-height:90vh;margin:0}main{max-width:360px;padding:32px}h1{font-size:24px}p{line-height:1.6;opacity:.7}</style></head><body><main><h1>Return to T3 Code</h1><p>Your sign-in response has been received. T3 Code is finishing the connection. You can close this tab.</p></main></body></html>',
+        );
+      callback.resolve(url);
+      return;
+    }
+    Promise.resolve(url)
+      .then(destination)
+      .then(
+        (returnUrl) => {
+          response.writeHead(303, { location: returnUrl }).end();
+          callback.resolve(url);
+        },
+        (error: unknown) => {
+          response
+            .writeHead(403, { "content-type": "text/plain; charset=utf-8" })
+            .end("This sign-in was not returned to T3 Code. Start it again from T3 Code.");
+          callback.reject(error);
+        },
+      );
   });
   const cancelled = () => callback.reject(new Error("Sign-in cancelled on this computer."));
   abort.signal.addEventListener("abort", cancelled, { once: true });

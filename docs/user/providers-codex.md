@@ -23,10 +23,13 @@ If remote sign-in cannot return automatically, paste the full URL from the final
 localhost page into the sign-in panel, even if that page could not load.
 
 In a browser on a computer with the desktop app, **Other ways to connect → Use T3
-desktop for automatic return** lets the desktop app catch the sign-in. It returns
-only to a page on this computer, an HTTPS address of an environment you added and
-kept enabled in the desktop app, or your build's hosted web app. Elsewhere it
-brings the desktop app forward and does nothing else, so paste the URL instead.
+desktop for automatic return** lets the desktop app catch the sign-in. It works
+only for an environment you added and kept enabled in the desktop app, and returns
+only to that environment's own HTTPS address, your build's hosted web app, or a
+page on this computer. Otherwise it sends nothing and brings an open desktop
+window forward, so paste the URL instead. If you disable or remove the
+environment before sign-in finishes, the final page says the sign-in was not
+returned.
 
 ## Use an existing Codex login
 

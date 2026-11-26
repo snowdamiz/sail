@@ -3,6 +3,7 @@ import type { ThreadContextRecord, ProjectId } from "@t3tools/contracts";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { MessagesSquareIcon } from "lucide-react";
 import { useGT } from "gt-react";
+import { formatThreadLink } from "@t3tools/shared/threadLinks";
 
 import { resolveThreadOpenRoute } from "~/lib/sideChatPane";
 import { buildThreadRouteParams } from "~/threadRoutes";
@@ -19,6 +20,8 @@ export function ThreadContextChip(props: {
   record: Pick<ThreadContextRecord, "environmentId" | "threadId" | "title">;
   projectId?: ProjectId | null;
   copyMarkdown?: string;
+  /** Copies as a thread link, written at the link origin in use when copying. */
+  copyAsLink?: boolean;
   unreadable?: boolean;
 }) {
   const gt = useGT();
@@ -64,7 +67,12 @@ export function ThreadContextChip(props: {
               />
             }
             aria-label={gt("Thread, {title}", { title })}
-            data-markdown-copy={props.copyMarkdown}
+            data-markdown-copy={
+              props.copyAsLink
+                ? formatThreadLink(props.record, props.record.title)
+                : props.copyMarkdown
+            }
+            data-markdown-thread-link={props.copyAsLink ? "" : undefined}
             className="no-underline"
           >
             {project ? (

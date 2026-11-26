@@ -72,9 +72,11 @@ export function composerPromptLink(input: {
   });
 }
 
-export async function copyPromptLink(link: string): Promise<void> {
+/** Builds the link when copying: the origin it links to can change after render. */
+export async function copyPromptLink(build: () => string | null): Promise<void> {
   try {
-    await writeTextToClipboard(link);
+    const link = build();
+    if (link !== null) await writeTextToClipboard(link);
   } catch (error) {
     toastManager.add(
       stackedThreadToast({

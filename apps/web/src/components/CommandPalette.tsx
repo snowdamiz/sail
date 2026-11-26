@@ -1478,7 +1478,8 @@ function OpenCommandPaletteDialog(props: {
       searchTerms: ["copy", "share", "prompt", "link"],
       title: gt("Copy prompt link"),
       icon: <LinkIcon className={ITEM_ICON_CLASS} />,
-      run: () => copyPromptLink(plainPromptLink),
+      run: () =>
+        copyPromptLink(() => composerPromptLink({ ...promptLinkInput, withContext: false })),
     });
     if (promptLinkRepositoryOf(promptLinkInput.project) !== null) {
       const contextLink = composerPromptLink({ ...promptLinkInput, withContext: true });
@@ -1489,7 +1490,8 @@ function OpenCommandPaletteDialog(props: {
           searchTerms: ["copy", "share", "prompt", "link", "repository", "model"],
           title: gt("Copy prompt link with repo and model"),
           icon: <LinkIcon className={ITEM_ICON_CLASS} />,
-          run: () => copyPromptLink(contextLink),
+          run: () =>
+            copyPromptLink(() => composerPromptLink({ ...promptLinkInput, withContext: true })),
         });
       }
     }
