@@ -240,6 +240,14 @@ describe("thread links", () => {
     );
   });
 
+  it("never writes two threads' ids as one v1 link", () => {
+    const source = "[Old](t3-thread://v1/work%20item)";
+    const spaced = relabelThreadLinks(source, local, titlesIn({ local: { "work item": "S" } }));
+    const literal = relabelThreadLinks(source, local, titlesIn({ local: { "work%20item": "L" } }));
+    expect(threadLinkRefs(spaced, local)).toEqual([ref("local", "work item")]);
+    expect(literal).toBe("[L](t3-thread://v1/work%20item)");
+  });
+
   it.each([
     [
       "a percent sign that starts no escape in its environment",

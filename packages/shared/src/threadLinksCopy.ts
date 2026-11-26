@@ -38,10 +38,9 @@ export function relabelThreadLinks(
       for (const ref of threadLinkCandidates(written, messageEnvironmentId)) {
         const current = title(ref, label);
         if (current === undefined) continue;
-        return formatThreadLink(
-          { environmentId: written.environmentId, threadId: ref.threadId },
-          current.trim() || label || ref.threadId,
-        );
+        return formatThreadLink(ref, current.trim() || label || ref.threadId, {
+          unscoped: written.environmentId === null,
+        });
       }
       if (label !== undefined && written.environmentId === null) return undefined;
       return label?.trim() || unknownThreadLinkLabel(written, messageEnvironmentId, resolve);

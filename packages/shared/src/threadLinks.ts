@@ -163,13 +163,10 @@ export function guessThreadLinkRef(
 // A Markdown renderer decodes a character reference (`&`) and escapes a `%` that starts no escape.
 const WRITTEN_AS_IS = /^(?:[\w\-.~:@!$'()*+,;=/]|%[0-9A-Fa-f]{2})+$/;
 
-function threadLinkHref({ environmentId, threadId }: ThreadLink): string {
-  if (environmentId === null) {
-    return `${V1_PREFIX}${WRITTEN_AS_IS.test(threadId) ? threadId : escapedSegment(threadId)}`;
-  }
-  return WRITTEN_AS_IS.test(threadId) &&
-    WRITTEN_AS_IS.test(environmentId) &&
-    !environmentId.includes("/")
+function threadLinkHref({ environmentId, threadId }: ScopedThreadRef, unscoped: boolean): string {
+  const threadIdAsIs = WRITTEN_AS_IS.test(threadId);
+  if (unscoped && threadIdAsIs) return `${V1_PREFIX}${threadId}`;
+  return threadIdAsIs && WRITTEN_AS_IS.test(environmentId) && !environmentId.includes("/")
     ? `${V2_PREFIX}${environmentId}/${threadId}`
     : `${V3_PREFIX}${escapedSegment(environmentId)}/${escapedSegment(threadId)}`;
 }
@@ -180,10 +177,18 @@ const linkLabel = (label: string | undefined) =>
     .replace(/\s+/g, " ")
     .trim();
 
-/** Without a label, an autolink: clients show the thread's current title. */
-export function formatThreadLink(ref: ThreadLink, label?: string): string {
+/**
+ * Without a label, an autolink: clients show the thread's current title. `unscoped` writes a v1 link
+ * only for an id v1 carries as written. A v1 reader tries the written id first, so an escaped one
+ * could name another thread.
+ */
+export function formatThreadLink(
+  ref: ScopedThreadRef,
+  label?: string,
+  { unscoped = false } = {},
+): string {
   const cleaned = linkLabel(label);
-  const href = threadLinkHref(ref);
+  const href = threadLinkHref(ref, unscoped);
   const destination = /[()]/.test(href) ? `<${href}>` : href;
   return cleaned ? `[${cleaned}](${destination})` : `<${href}>`;
 }
