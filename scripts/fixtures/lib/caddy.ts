@@ -301,6 +301,8 @@ function served(): Served | undefined {
   };
 }
 
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
 const isNoSuch = (error: unknown) => error instanceof DockerError && /no such/i.test(error.stderr);
 
 /** Another revision may have started Caddy from another directory; that one is left alone. */
@@ -436,7 +438,8 @@ function reconcile(dir: string, home: string): void {
       "--network",
       NETWORK,
       "--restart",
-      instance() ? "no" : "unless-stopped",
+      // Docker Desktop can show a root just replaced on the host as missing for a moment.
+      "unless-stopped",
       "--memory",
       "128m",
       "--publish",
@@ -475,7 +478,8 @@ function reloadsSettle(id: string): boolean {
       running = docker(["exec", id, "sh", "-c", count]);
     } catch (error) {
       // Nothing reloads inside a container that is not running.
-      if (error instanceof DockerError && /not running|no such/i.test(error.stderr)) return true;
+      if (error instanceof DockerError && /not running|is restarting|no such/i.test(error.stderr))
+        return true;
       throw error;
     }
     if (Number(running.trim()) === 0) return true;
@@ -498,7 +502,18 @@ function waitForAdmin(): void {
       ]);
       return;
     } catch (error) {
-      if (attempt >= 100) throw error;
+      if (attempt >= 100) {
+        const logs = NodeChildProcess.spawnSync(
+          "docker",
+          ["logs", "--tail", "5", caddyContainer()],
+          {
+            encoding: "utf8",
+          },
+        );
+        throw new Error(
+          `${caddyContainer()} never answered on its admin API: ${errorText(error)}\n${logs.stdout}${logs.stderr}`,
+        );
+      }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
     }
   }
