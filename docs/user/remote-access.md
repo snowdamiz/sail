@@ -246,11 +246,13 @@ t3 serve --host 0.0.0.0 --port 8080 --public-url https://demo.fly.dev --startup-
 it starts, so no token lands in logs that others can read. Run `t3 pair` in a
 shell on the server when you need a link.
 
-In a script, run `t3 auth pairing create --json --require-running`. The running
-server issues the token, and the command fails without issuing one when no
-server answers for that data directory. The `pairUrl` it prints uses the
-server's `--public-url`. If the server has none, pass `--base-url`, or the
-output has only the token.
+In a script, run `t3 auth pairing create --json --require-running` on the
+server's machine. It issues a token only while a server is running for that
+data directory, and fails without one otherwise, including when the server
+stops while the token is being issued. A server started by an older release
+that the command cannot check must be restarted first. The `pairUrl` it prints
+uses the server's `--public-url`. If the server has none, pass `--base-url`, or
+the output has only the token.
 
 A reverse proxy in front of the server can refuse large request headers before
 they reach it. Caddy 2.11, for example, answers 431 to headers larger than about

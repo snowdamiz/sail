@@ -1445,7 +1445,6 @@ export const make = Effect.gen(function* () {
           ? `${PEER_LINK_PAIRING_SUBJECT_PREFIX}${input.access}`
           : "one-time-token",
       ...(input?.label ? { label: input.label } : {}),
-      ...(input?.ttlMs ? { ttl: Duration.millis(input.ttlMs) } : {}),
       ...(input?.access && input.purpose !== "peer-link" ? { mcpApproval: input.access } : {}),
     }).pipe(
       Effect.map((issued) => ({

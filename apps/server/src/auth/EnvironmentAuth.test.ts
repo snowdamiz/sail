@@ -647,9 +647,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
         const reused = yield* Effect.flip(
           serverAuth.createBrowserSession(used.credential, requestMetadata),
         );
-        const expiring = yield* serverAuth.issuePairingCredential({
+        const expiring = yield* serverAuth.createPairingLink({
           scopes: ["orchestration:read"],
-          ttlMs: 60_000,
+          ttl: Duration.minutes(1),
         });
         yield* TestClock.adjust("2 minutes");
         const expired = yield* Effect.flip(

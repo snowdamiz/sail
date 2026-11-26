@@ -173,7 +173,17 @@ it.effect("sets the selected browser session cookies through the HTTP route", ()
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
-it.effect("tells a browser that a pairing link was already used", () =>
+/** Runs against the auth routes with a dev session cookie that may mint pairing codes. */
+const withDevSessionRoutes = (
+  run: (
+    request: (
+      path: string,
+      body: unknown,
+      headers?: Readonly<Record<string, string>>,
+    ) => Promise<Response>,
+    devCookie: string,
+  ) => Promise<void>,
+) =>
   Effect.gen(function* () {
     const random = yield* SecureRandom.SecureRandom;
     const unusedSecretStore = ServerSecretStore.ServerSecretStore.of({
@@ -190,36 +200,59 @@ it.effect("tells a browser that a pairing link was already used", () =>
       Effect.sync(() => HttpRouter.toWebHandler(layerRoutes, { disableLogger: true })),
       (environment) =>
         Effect.promise(async () => {
-          const exchange = (credential: string) =>
-            environment.handler(
-              postJson("/api/auth/browser-session", { credential }),
-              requestContext,
-            );
-          const dev = await exchange(DEV_TOKEN);
+          const request = (
+            path: string,
+            body: unknown,
+            headers?: Readonly<Record<string, string>>,
+          ) => environment.handler(postJson(path, body, headers), requestContext);
+          const dev = await request("/api/auth/browser-session", { credential: DEV_TOKEN });
           const devCookie = dev.headers
             .getSetCookie()
             .find((cookie) => cookie.startsWith("t3_dev_session_"))
             ?.split(";", 1)[0];
-          const minted = await environment.handler(
-            postJson("/api/auth/pairing-token", {}, { cookie: devCookie ?? "" }),
-            requestContext,
-          );
-          const { credential } = (await minted.json()) as { credential: string };
-          expect((await exchange(credential)).status).toBe(200);
-
-          const reused = await exchange(credential);
-          expect(reused.status).toBe(401);
-          expect(await reused.json()).toMatchObject({
-            reason: "invalid_credential",
-            pairingFailureReason: "used_or_expired",
-          });
-          const unknown = await exchange("ZZZZZZZZZZZZ");
-          expect(unknown.status).toBe(401);
-          expect(await unknown.json()).not.toHaveProperty("pairingFailureReason");
+          await run(request, devCookie ?? "");
         }),
       (environment) => Effect.promise(() => environment.dispose()),
     );
-  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
+
+it.effect("tells a browser that a pairing link was already used", () =>
+  withDevSessionRoutes(async (request, devCookie) => {
+    const exchange = (credential: string) => request("/api/auth/browser-session", { credential });
+    const minted = await request("/api/auth/pairing-token", {}, { cookie: devCookie });
+    const { credential } = (await minted.json()) as { credential: string };
+    expect((await exchange(credential)).status).toBe(200);
+
+    const reused = await exchange(credential);
+    expect(reused.status).toBe(401);
+    expect(await reused.json()).toMatchObject({
+      reason: "invalid_credential",
+      pairingFailureReason: "used_or_expired",
+    });
+    const unknown = await exchange("ZZZZZZZZZZZZ");
+    expect(unknown.status).toBe(401);
+    expect(await unknown.json()).not.toHaveProperty("pairingFailureReason");
+  }),
+);
+
+it.effect("gives every pairing code minted over HTTP the default lifetime", () =>
+  withDevSessionRoutes(async (request, devCookie) => {
+    const expiresAt = async (body: unknown) => {
+      const minted = await request("/api/auth/pairing-token", body, { cookie: devCookie });
+      expect(minted.status).toBe(200);
+      return Date.parse(((await minted.json()) as { expiresAt: string }).expiresAt);
+    };
+    const year = 365 * 24 * 60 * 60 * 1000;
+    const standard = await expiresAt({});
+
+    for (const body of [
+      { ttlMs: year },
+      { access: "full-access", ttlMs: year },
+      { access: "full-access", purpose: "peer-link", ttlMs: year },
+    ]) {
+      expect(Math.abs((await expiresAt(body)) - standard)).toBeLessThan(60_000);
+    }
+  }),
 );
 
 it.effect.each(["DPoP", "dpop"])("challenges a refused %s request with DPoP", (scheme) =>

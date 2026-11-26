@@ -5,6 +5,7 @@ import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Stream from "effect/Stream";
@@ -52,10 +53,12 @@ const runCli = (
   });
 
 const TEST_ENVIRONMENT_ID = "bin-cli-test-environment";
+const PUBLIC_URL = new URL("https://demo.fly.dev");
 
-interface MintRequest {
+interface ServerRequest {
+  readonly method: string | undefined;
+  readonly url: string | undefined;
   readonly authorization: string | undefined;
-  readonly payload: unknown;
 }
 
 const listen = (server: NodeHttp.Server) =>
@@ -84,6 +87,7 @@ const recordServer = (
     readonly port: number;
     readonly publicUrl?: URL;
     readonly ownerId?: string;
+    readonly pid?: number;
     readonly startedAt?: string;
   },
 ) =>
@@ -97,46 +101,30 @@ const recordServer = (
       state: {
         ...state,
         ...(input.ownerId === undefined ? {} : { ownerId: input.ownerId }),
+        ...(input.pid === undefined ? {} : { pid: input.pid }),
         ...(input.startedAt === undefined ? {} : { startedAt: input.startedAt }),
       },
     });
   });
 
 const withRunningServerHome = <A, E, R>(
-  publicUrl: URL | undefined,
   run: (
     home: string,
-    mintRequests: ReadonlyArray<MintRequest>,
+    requests: ReadonlyArray<ServerRequest>,
     port: number,
   ) => Effect.Effect<A, E, R>,
-  options?: { readonly dropMintReply?: boolean },
 ) =>
   Effect.gen(function* () {
     const home = yield* makeHome;
-    const mintRequests: Array<MintRequest> = [];
+    const requests: Array<ServerRequest> = [];
     const port = yield* listen(
-      NodeHttp.createServer(async (request, response) => {
+      NodeHttp.createServer((request, response) => {
+        requests.push({
+          method: request.method,
+          url: request.url,
+          authorization: request.headers.authorization,
+        });
         response.setHeader("content-type", "application/json");
-        if (request.method === "POST" && request.url === "/api/auth/pairing-token") {
-          let body = "";
-          for await (const chunk of request) body += chunk;
-          mintRequests.push({
-            authorization: request.headers.authorization,
-            payload: JSON.parse(body),
-          });
-          if (options?.dropMintReply) {
-            request.socket.destroy();
-            return;
-          }
-          response.end(
-            JSON.stringify({
-              id: "server-minted-link",
-              credential: "SERVERMINTED",
-              expiresAt: "2999-01-01T00:00:00.000Z",
-            }),
-          );
-          return;
-        }
         response.end(
           JSON.stringify({
             environmentId: TEST_ENVIRONMENT_ID,
@@ -153,9 +141,32 @@ const withRunningServerHome = <A, E, R>(
       `${home}/userdata/environment-id`,
       `${TEST_ENVIRONMENT_ID}\n`,
     );
-    yield* recordServer(home, { port, ...(publicUrl === undefined ? {} : { publicUrl }) });
-    return yield* run(home, mintRequests, port);
+    yield* recordServer(home, { port, publicUrl: PUBLIC_URL });
+    return yield* run(home, requests, port);
   });
+
+const migrateDatabase = (home: string) => runCli(["auth", "pairing", "list", "--json"], { home });
+
+const listPairingLinkIds = (home: string) =>
+  runCli(["auth", "pairing", "list", "--json"], { home }).pipe(
+    Effect.map(({ stdout, stderr, exitCode }) => {
+      assert.strictEqual(exitCode, 0, stderr);
+      return (JSON.parse(stdout) as ReadonlyArray<{ readonly id: string }>).map(({ id }) => id);
+    }),
+  );
+
+/** A home whose server holds the ownership lock and recorded itself, with every request to its origin counted. */
+const withOwnedServerHome = <A, E, R>(
+  run: (home: string, requests: ReadonlyArray<ServerRequest>) => Effect.Effect<A, E, R>,
+) =>
+  withRunningServerHome((home, requests, port) =>
+    Effect.gen(function* () {
+      yield* migrateDatabase(home);
+      yield* holdServerOwnershipLock(`${home}/userdata/server-runtime.json`);
+      yield* recordServer(home, { port, publicUrl: PUBLIC_URL, ownerId: "running-server" });
+      return yield* run(home, requests);
+    }),
+  );
 
 it.live("keeps migration warnings out of JSON thread output", () =>
   Effect.gen(function* () {
@@ -262,7 +273,7 @@ it.live("keeps migration warnings out of JSON thread output", () =>
 );
 
 it.live("pair finds the server through SAIL_HOME and links to its public URL", () =>
-  withRunningServerHome(new URL("https://demo.fly.dev"), (home) =>
+  withRunningServerHome((home) =>
     Effect.gen(function* () {
       const { stdout, stderr, exitCode } = yield* runCli(["pair"], { home });
       assert.strictEqual(exitCode, 0, stderr);
@@ -272,7 +283,7 @@ it.live("pair finds the server through SAIL_HOME and links to its public URL", (
 );
 
 it.live("pairing create links to the running server's public URL", () =>
-  withRunningServerHome(new URL("https://demo.fly.dev"), (home) =>
+  withRunningServerHome((home) =>
     Effect.gen(function* () {
       const { stdout, stderr, exitCode } = yield* runCli(["auth", "pairing", "create", "--json"], {
         home,
@@ -283,52 +294,69 @@ it.live("pairing create links to the running server's public URL", () =>
   ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.live("pairing create --require-running has the running server mint the link", () =>
-  withRunningServerHome(new URL("https://demo.fly.dev"), (home, mintRequests) =>
-    Effect.gen(function* () {
-      const { stdout, stderr, exitCode } = yield* runCli(
-        [
-          "auth",
-          "pairing",
-          "create",
-          "--json",
-          "--require-running",
-          "--scope",
-          "orchestration:read",
-          "--ttl",
-          "1h",
-        ],
-        { home },
-      );
-      assert.strictEqual(exitCode, 0, stderr);
-      const output = JSON.parse(stdout);
-      assert.strictEqual(output.pairUrl, "https://demo.fly.dev/pair#token=SERVERMINTED");
-      assert.deepStrictEqual(output.scopes, ["orchestration:read"]);
-      assert.strictEqual(mintRequests.length, 1);
-      assert.match(mintRequests[0]?.authorization ?? "", /^Bearer \S+/);
-      assert.deepStrictEqual(mintRequests[0]?.payload, {
-        scopes: ["orchestration:read"],
-        ttlMs: 3_600_000,
-      });
-      const listed = yield* runCli(["auth", "pairing", "list", "--json"], { home });
-      assert.deepStrictEqual(JSON.parse(listed.stdout), []);
-    }),
-  ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+const assertExpiresIn = (expiresAt: string, ttlMs: number) =>
+  DateTime.now.pipe(
+    Effect.map((now) =>
+      assert.isBelow(
+        Math.abs(Date.parse(expiresAt) - DateTime.toEpochMillis(now) - ttlMs),
+        60_000,
+        expiresAt,
+      ),
+    ),
+  );
+
+it.live(
+  "pairing create --require-running mints in this home while its server holds the lock, and sends the server nothing",
+  () =>
+    withOwnedServerHome((home, requests) =>
+      Effect.gen(function* () {
+        const create = (ttl: string) =>
+          runCli(
+            [
+              "auth",
+              "pairing",
+              "create",
+              "--json",
+              "--require-running",
+              "--scope",
+              "orchestration:read",
+              "--ttl",
+              ttl,
+            ],
+            { home },
+          );
+        const hour = yield* create("1h");
+        assert.strictEqual(hour.exitCode, 0, hour.stdout + hour.stderr);
+        const minted = JSON.parse(hour.stdout);
+        assert.match(minted.pairUrl, /^https:\/\/demo\.fly\.dev\/pair#token=\S+$/);
+        assert.deepStrictEqual(minted.scopes, ["orchestration:read"]);
+        yield* assertExpiresIn(minted.expiresAt, 60 * 60_000);
+        const year = yield* create("400d");
+        assert.strictEqual(year.exitCode, 0, year.stdout + year.stderr);
+        const longLived = JSON.parse(year.stdout);
+        yield* assertExpiresIn(longLived.expiresAt, 400 * 24 * 60 * 60_000);
+
+        const instant = yield* create("0s");
+        assert.notStrictEqual(instant.exitCode, 0);
+        assert.strictEqual(instant.stdout, "");
+        assert.match(instant.stderr, /--ttl must be longer than 0, so no pairing token was minted/);
+
+        assert.sameMembers(yield* listPairingLinkIds(home), [minted.id, longLived.id]);
+        assert.deepStrictEqual(requests, []);
+      }),
+    ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-const migrateDatabase = (home: string) => runCli(["auth", "pairing", "list", "--json"], { home });
-
-const expectNothingMinted = (home: string) =>
+const expectNothingMinted = (home: string, env?: Record<string, string>) =>
   Effect.gen(function* () {
     const refused = yield* runCli(["auth", "pairing", "create", "--json", "--require-running"], {
       home,
+      ...(env === undefined ? {} : { env }),
     });
     assert.notStrictEqual(refused.exitCode, 0, refused.stdout);
     assert.strictEqual(refused.stdout, "");
-    assert.match(refused.stderr, /so no pairing token was minted/);
-    const listed = yield* runCli(["auth", "pairing", "list", "--json"], { home });
-    assert.strictEqual(listed.exitCode, 0, listed.stderr);
-    assert.deepStrictEqual(JSON.parse(listed.stdout), []);
+    assert.match(refused.stderr, /no pairing token was minted/);
+    assert.deepStrictEqual(yield* listPairingLinkIds(home), []);
     return refused.stderr;
   });
 
@@ -340,91 +368,58 @@ it.live("pairing create --require-running mints nothing when no server runs", ()
 );
 
 it.live(
-  "pairing create --require-running mints nothing when the owning server stops answering",
+  "pairing create --require-running mints nothing once the recorded server lets go of the lock",
   () =>
-    Effect.gen(function* () {
-      const home = yield* makeHome;
-      yield* migrateDatabase(home);
-      yield* holdServerOwnershipLock(`${home}/userdata/server-runtime.json`);
-      yield* recordServer(home, { port: yield* closedPort, ownerId: "stopped-server" });
-      const stderr = yield* expectNothingMinted(home);
-      assert.match(stderr, /answered at http:\/\/127\.0\.0\.1:/);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-);
-
-it.live("pairing create --require-running sends no token to another environment on the port", () =>
-  withRunningServerHome(new URL("https://demo.fly.dev"), (home, mintRequests) =>
-    Effect.gen(function* () {
-      yield* (yield* FileSystem.FileSystem).writeFileString(
-        `${home}/userdata/environment-id`,
-        "another-environment\n",
-      );
-      const stderr = yield* expectNothingMinted(home);
-      assert.match(stderr, /answered at http:\/\/127\.0\.0\.1:/);
-      assert.deepStrictEqual(mintRequests, []);
-    }),
-  ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-);
-
-it.live(
-  "pairing create --require-running sends nothing for a pre-lock record older than its PID",
-  () =>
-    withRunningServerHome(new URL("https://demo.fly.dev"), (home, mintRequests, port) =>
+    withRunningServerHome((home, requests, port) =>
       Effect.gen(function* () {
-        yield* recordServer(home, { port, startedAt: "2020-01-01T00:00:00.000Z" });
+        yield* migrateDatabase(home);
+        yield* recordServer(home, { port, publicUrl: PUBLIC_URL, ownerId: "stopped-server" });
         const stderr = yield* expectNothingMinted(home);
         assert.match(stderr, /No running T3 Code server owns/);
-        assert.deepStrictEqual(mintRequests, []);
+        assert.deepStrictEqual(requests, []);
       }),
     ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.live("pairing create --require-running says a lost reply may have minted a token", () =>
-  withRunningServerHome(
-    new URL("https://demo.fly.dev"),
-    (home, mintRequests) =>
+it.live(
+  "pairing create --require-running refuses a record from a server without the ownership lock",
+  () =>
+    withRunningServerHome((home, requests, port) =>
       Effect.gen(function* () {
-        const lost = yield* runCli(["auth", "pairing", "create", "--json", "--require-running"], {
-          home,
-        });
-        assert.notStrictEqual(lost.exitCode, 0);
-        assert.strictEqual(lost.stdout, "");
-        assert.match(lost.stderr, /may have minted a pairing token that was never printed/);
-        assert.strictEqual(mintRequests.length, 1);
+        yield* migrateDatabase(home);
+        // PID 1 answers EPERM, an unreadable start time proves nothing, and without ps no start time is read.
+        for (const { pid, startedAt, env } of [
+          { pid: 1, startedAt: DateTime.formatIso(yield* DateTime.now) },
+          { pid: process.pid, startedAt: "not-a-valid-timestamp" },
+          {
+            pid: process.pid,
+            startedAt: "2020-01-01T00:00:00.000Z",
+            env: { PATH: "/nonexistent" },
+          },
+        ]) {
+          yield* recordServer(home, { port, publicUrl: PUBLIC_URL, pid, startedAt });
+          const stderr = yield* expectNothingMinted(home, env);
+          assert.match(stderr, /without the ownership lock/);
+        }
+        assert.deepStrictEqual(requests, []);
       }),
-    { dropMintReply: true },
-  ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-);
-
-it.live("pairing create --require-running follows no redirect to its environment", () =>
-  withRunningServerHome(new URL("https://demo.fly.dev"), (home, mintRequests) =>
-    Effect.gen(function* () {
-      const real = JSON.parse(
-        yield* (yield* FileSystem.FileSystem).readFileString(
-          `${home}/userdata/server-runtime.json`,
-        ),
-      ) as { readonly origin: string };
-      const port = yield* listen(
-        NodeHttp.createServer((request, response) => {
-          response.writeHead(307, { location: new URL(request.url ?? "/", real.origin).href });
-          response.end();
-        }),
-      );
-      yield* recordServer(home, { port });
-      yield* expectNothingMinted(home);
-      assert.deepStrictEqual(mintRequests, []);
-    }),
-  ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.live(
-  "pairing create --require-running mints nothing for a pre-lock record whose PID was reused",
+  "pairing create --require-running reports a server still updating its database on stderr",
   () =>
     Effect.gen(function* () {
       const home = yield* makeHome;
-      yield* recordServer(home, { port: yield* closedPort });
-      const stderr = yield* expectNothingMinted(home);
-      assert.match(stderr, /answered at http:\/\/127\.0\.0\.1:/);
+      yield* holdServerOwnershipLock(`${home}/userdata/server-runtime.json`);
+      yield* recordServer(home, { port: yield* closedPort, ownerId: "migrating-server" });
+      const refused = yield* runCli(["auth", "pairing", "create", "--json", "--require-running"], {
+        home,
+      });
+      assert.notStrictEqual(refused.exitCode, 0);
+      assert.strictEqual(refused.stdout, "");
+      assert.match(refused.stderr, /has not finished updating its database/);
+      assert.match(refused.stderr, /no pairing token was minted/);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 

@@ -13,7 +13,6 @@ import * as HttpApiClient from "effect/http-api/HttpApiClient";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
-import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerOwnership from "../serverOwnership.ts";
 import {
@@ -30,8 +29,6 @@ export class RunningServerUnreachableError extends Schema.TaggedError<RunningSer
   }
 }
 
-const isRunningServerUnreachable = Schema.is(RunningServerUnreachableError);
-
 export class RunningServerNoReplyError extends Schema.TaggedError<RunningServerNoReplyError>()(
   "RunningServerNoReplyError",
   { origin: Schema.String, cause: Schema.Defect() },
@@ -46,7 +43,6 @@ export type ServerClient = HttpApiClient.ForApi<typeof EnvironmentHttpApi>;
 // The scope revokes the session; the TTL bounds it if that never runs.
 const SESSION_TTL = Duration.minutes(2);
 const REQUEST_TIMEOUT = Duration.seconds(30);
-const PROBE_TIMEOUT = Duration.seconds(5);
 
 /** A client of the server at `origin`, signed in as a short-lived session for the scope. */
 export const serverClient = Effect.fn("RunningServer.serverClient")(function* (
@@ -88,58 +84,6 @@ const isUnanswered = (cause: unknown) =>
   Cause.isTimeoutError(cause) ||
   (HttpClientError.isHttpClientError(cause) && cause.response === undefined);
 
-const sendToServer = <A, E, R>(
-  origin: string,
-  scopes: ReadonlyArray<AuthEnvironmentScope>,
-  request: (client: ServerClient) => Effect.Effect<A, E, R>,
-) =>
-  serverClient(origin, scopes).pipe(
-    Effect.flatMap(request),
-    Effect.timeout(REQUEST_TIMEOUT),
-    Effect.scoped,
-    Effect.catchIf(neverConnected, (cause) =>
-      Effect.fail(new RunningServerUnreachableError({ origin, cause })),
-    ),
-    // Once connected, the server may have made the change; writing it again could repeat it.
-    Effect.catchIf(isUnanswered, (cause) =>
-      Effect.fail(new RunningServerNoReplyError({ origin, cause })),
-    ),
-  );
-
-const confirmHomeEnvironment = Effect.fn("RunningServer.confirmHomeEnvironment")(function* (
-  origin: string,
-) {
-  const expected = yield* (yield* ServerEnvironment.ServerEnvironmentIdentity).getEnvironmentId;
-  const descriptor = yield* HttpApiClient.make(EnvironmentHttpApi, { baseUrl: origin }).pipe(
-    Effect.flatMap((client) => client.metadata.descriptor()),
-    Effect.timeout(PROBE_TIMEOUT),
-    Effect.provide(FetchHttpClient.layer),
-    Effect.mapError((cause) => new RunningServerUnreachableError({ origin, cause })),
-  );
-  if (descriptor.environmentId !== expected) {
-    return yield* new RunningServerUnreachableError({
-      origin,
-      cause: `answered as environment ${descriptor.environmentId}, not ${expected}`,
-    });
-  }
-});
-
-export const requestServer = Effect.fn("RunningServer.requestServer")(function* <A, E, R>({
-  origin,
-  scopes,
-  request,
-}: {
-  readonly origin: string;
-  readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
-  readonly request: (client: ServerClient) => Effect.Effect<A, E, R>;
-}) {
-  // A redirect could answer for this environment from somewhere else.
-  return yield* confirmHomeEnvironment(origin).pipe(
-    Effect.andThen(sendToServer(origin, scopes, request)),
-    Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
-  );
-});
-
 /**
  * Makes a change through the running server, so the server applies it and its clients see it.
  * With no server, makes it locally while holding the ownership lock, so none starts midway.
@@ -168,10 +112,18 @@ export const changeState = Effect.fn("RunningServer.changeState")(function* <A, 
 
   const running = yield* readLiveServerRuntimeState(serverRuntimeStatePath);
   if (Option.isNone(running)) return yield* changeLocally(Effect.fail);
-  return yield* sendToServer(running.value.origin, scopes, viaServer).pipe(
+  const { origin } = running.value;
+  return yield* serverClient(origin, scopes).pipe(
+    Effect.flatMap(viaServer),
+    Effect.timeout(REQUEST_TIMEOUT),
+    Effect.scoped,
     // A refused connection reached no server, so the lock decides whether one still runs.
-    Effect.catchIf(isRunningServerUnreachable, (unreachable) =>
-      changeLocally(() => Effect.fail(unreachable)),
+    Effect.catchIf(neverConnected, (cause) =>
+      changeLocally(() => Effect.fail(new RunningServerUnreachableError({ origin, cause }))),
+    ),
+    // Once connected, the server may have made the change; writing it again could repeat it.
+    Effect.catchIf(isUnanswered, (cause) =>
+      Effect.fail(new RunningServerNoReplyError({ origin, cause })),
     ),
   );
 });

@@ -33,8 +33,7 @@ import {
   resolveCliAuthConfig,
 } from "./config.ts";
 import * as RunningServer from "./runningServer.ts";
-import * as ProcessRunner from "../processRunner.ts";
-import { legacyOwnerIsLive } from "../serverOwnership.ts";
+import { isServerOwnershipHeld } from "../serverOwnership.ts";
 
 const withEnvironmentAuth = Effect.fn("auth.withEnvironmentAuth")(function* <A, E, R>(
   config: ServerConfig.ServerConfig["Service"],
@@ -114,6 +113,24 @@ const tokenOnlyFlag = Flag.Boolean("token-only").pipe(
   Flag.withDefault(false),
 );
 
+const notMinted = (reason: string, retry: string) =>
+  new CliError.UserError({ cause: `${reason}, so no pairing token was minted. ${retry}` });
+
+/** Mints a link for the server that owns this home, revoking it if that server stopped first. */
+export const mintForRunningServer = Effect.fn("auth.mintForRunningServer")(function* (
+  input: Parameters<EnvironmentAuth.EnvironmentAuth["Service"]["createPairingLink"]>[0],
+) {
+  const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
+  const { baseDir, serverRuntimeStatePath } = yield* ServerConfig.ServerConfig;
+  const issued = yield* environmentAuth.createPairingLink(input);
+  // The OS releases the lock when its holder exits, even on SIGKILL.
+  if (isServerOwnershipHeld(serverRuntimeStatePath)) return issued;
+  yield* environmentAuth.revokePairingLink(issued.id);
+  return yield* new CliError.UserError({
+    cause: `The T3 Code server for ${baseDir} stopped before the pairing token was ready, so it was revoked. Start the server, then retry.`,
+  });
+});
+
 const pairingCreateCommand = Command.make("create", {
   ...authLocationFlags,
   scopes: authScopesFlag(AuthStandardClientScopes),
@@ -126,69 +143,53 @@ const pairingCreateCommand = Command.make("create", {
   Command.withDescription("Issue a new client pairing token."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
+      if (Option.exists(flags.ttl, (ttl) => !Duration.isPositive(ttl))) {
+        return yield* notMinted("--ttl must be longer than 0", "Pass a duration such as 5m or 1h.");
+      }
       const options = { quietLogs: flags.json };
       const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel, options);
       const running = yield* readRunningServer(config.serverRuntimeStatePath).pipe(
         Effect.provideService(References.MinimumLogLevel, flags.json ? "Error" : config.logLevel),
       );
-      const notMinted = (reason: string) =>
-        new CliError.UserError({
-          cause: `${reason}, so no pairing token was minted. Start the server, or wait until it is ready, then retry.`,
-        });
-      const label = Option.getOrElse(flags.label, () => "").trim();
-      const request = { scopes: flags.scopes, ...(label.length > 0 ? { label } : {}) };
-      if (
-        flags.requireRunning &&
-        (Option.isNone(running) ||
-          (running.value.ownerId === undefined &&
-            !(yield* legacyOwnerIsLive(running.value).pipe(Effect.provide(ProcessRunner.layer)))))
-      ) {
-        return yield* notMinted(`No running T3 Code server owns ${config.baseDir}`);
+      if (flags.requireRunning) {
+        if (Option.isNone(running)) {
+          return yield* notMinted(
+            `No running T3 Code server owns ${config.baseDir}`,
+            "Start the server, or wait until it is ready, then retry.",
+          );
+        }
+        // Only the ownership lock shows the server is still alive; servers older than it leave none.
+        if (running.value.ownerId === undefined) {
+          return yield* notMinted(
+            `The T3 Code server recorded for ${config.baseDir} was started by a release without the ownership lock`,
+            "Restart that server with this release, then retry.",
+          );
+        }
       }
+      const label = Option.getOrElse(flags.label, () => "").trim();
+      const request = {
+        scopes: flags.scopes,
+        subject: "one-time-token",
+        ...(label.length > 0 ? { label } : {}),
+        ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
+      };
       const issued = yield* withEnvironmentAuth(
         config,
         (environmentAuth) =>
-          Effect.gen(function* () {
-            if (!flags.requireRunning || Option.isNone(running)) {
-              return yield* environmentAuth.createPairingLink({
-                ...request,
-                subject: "one-time-token",
-                ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
-              });
-            }
-            const { origin } = running.value;
-            const credential = yield* RunningServer.requestServer({
-              origin,
-              scopes: [...new Set([AuthAccessWriteScope, ...flags.scopes])],
-              request: (client) =>
-                client.auth.pairingCredential({
-                  headers: {},
-                  payload: {
-                    ...request,
-                    ...(Option.isSome(flags.ttl)
-                      ? { ttlMs: Math.ceil(Duration.toMillis(flags.ttl.value)) }
-                      : {}),
-                  },
-                }),
-            }).pipe(
-              Effect.catchTags({
-                RunningServerUnreachableError: () =>
-                  Effect.fail(
-                    notMinted(
-                      `No ready T3 Code server for ${config.baseDir} answered at ${origin}`,
-                    ),
-                  ),
-                RunningServerNoReplyError: () =>
-                  Effect.fail(
-                    new CliError.UserError({
-                      cause: `The T3 Code server at ${origin} did not reply, so it may have minted a pairing token that was never printed. It expires on its own; to remove it now, find it with \`t3 auth pairing list\` and run \`t3 auth pairing revoke <id>\`.`,
-                    }),
-                  ),
-              }),
-            );
-            return { ...credential, scopes: flags.scopes };
-          }),
+          flags.requireRunning
+            ? mintForRunningServer(request)
+            : environmentAuth.createPairingLink(request),
         options,
+      ).pipe(
+        Effect.catchTags({
+          ServerOwnsDatabaseError: () =>
+            Effect.fail(
+              notMinted(
+                `Another T3 Code process owns ${config.baseDir} and has not finished updating its database, or runs a different release than this CLI`,
+                "Wait until the server is ready, or use the `t3` that matches it, then retry.",
+              ),
+            ),
+        }),
       );
       const baseUrl = Option.match(flags.baseUrl, {
         onSome: (url) => url.href,

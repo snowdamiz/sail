@@ -78,7 +78,7 @@ const isSqliteBusy = (cause: unknown) =>
     ("code" in cause && cause.code === "SQLITE_BUSY"));
 
 // Pre-lock servers publish only runtime state; require start-time proof of PID reuse before treating it as stale.
-export const legacyOwnerIsLive = Effect.fn("legacyOwnerIsLive")(function* (
+const legacyOwnerIsLive = Effect.fn("legacyOwnerIsLive")(function* (
   state: PersistedServerRuntimeState,
 ) {
   if (!isProcessAlive(state.pid)) return false;

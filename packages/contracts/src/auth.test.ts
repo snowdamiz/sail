@@ -3,7 +3,6 @@ import * as Schema from "effect/Schema";
 
 import { EnvironmentAuthInvalidError } from "./environmentHttp.ts";
 import {
-  AuthCreatePairingCredentialInput,
   AuthEnvironmentScopes,
   AuthEnvironmentScope,
   authScopeRequiredResponse,
@@ -149,12 +148,5 @@ describe("pairing link failures", () => {
     expect(decode({ ...rejection, pairingFailureReason: "revoked" })).not.toHaveProperty(
       "pairingFailureReason",
     );
-  });
-
-  it("bounds the lifetime a client may ask for", () => {
-    const decode = Schema.decodeUnknownExit(AuthCreatePairingCredentialInput);
-
-    expect(decode({ ttlMs: 60_000 })._tag).toBe("Success");
-    expect(decode({ ttlMs: Number.MAX_SAFE_INTEGER })._tag).toBe("Failure");
   });
 });
