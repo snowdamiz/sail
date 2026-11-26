@@ -126,6 +126,8 @@ jobs:
             Dockerfile .dockerignore deploy/docker \
             'scripts/stage-server-runtime*' scripts/smoke-docker-image.ts \
             scripts/lib/cli-external-packages.ts scripts/lib/resolve-catalog.ts patches \
+            scripts/build-desktop-artifact.ts scripts/apply-web-brand-assets.ts scripts/lib/brand-assets.ts \
+            apps/server/scripts/cli.ts \
             package.json apps/server/package.json pnpm-workspace.yaml \
             .github/workflows/ci.yml || status=$?
           case "$status" in
