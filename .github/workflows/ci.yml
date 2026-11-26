@@ -98,3 +98,57 @@ jobs:
         if: matrix.suite == 'web'
         working-directory: apps/web
         run: vp test run --project unit src/components/desktopUpdate.logic.test.ts src/components/boats/
+
+  server-image-changes:
+    name: Detect server image changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.filter.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      # A pull_request checkout is the merge commit, so its first parent is the base tip.
+      - id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != pull_request ] ||
+            git diff --name-only HEAD^1 HEAD |
+              grep -qE '^(Dockerfile|\.dockerignore|deploy/docker/|scripts/stage-server-runtime|scripts/smoke-docker-image\.ts)'; then
+            echo changed=true >> "$GITHUB_OUTPUT"
+          else
+            echo changed=false >> "$GITHUB_OUTPUT"
+          fi
+
+  server-image:
+    name: Server image build & smoke
+    needs: server-image-changes
+    if: needs.server-image-changes.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+      - name: Test the staged server runtime
+        run: vp test run scripts/stage-server-runtime.test.ts scripts/build-cli-archive.test.ts
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: sail-server:ci
+          cache-from: type=gha,scope=sail-server
+          cache-to: type=gha,scope=sail-server,mode=max
+      - name: Smoke the server image
+        run: node scripts/smoke-docker-image.ts --image sail-server:ci
