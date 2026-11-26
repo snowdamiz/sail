@@ -73,12 +73,13 @@ COPY <<'EOF' /etc/sail/env.sh
 export HOME=/data/home USER=sail LOGNAME=sail NPM_CONFIG_PREFIX=/opt/npm-global
 export PATH=/data/home/.local/bin:/opt/npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EOF
+# Root drops to sail before sail's environment applies, so no root process ever has sail's HOME.
 COPY --chmod=0755 <<'EOF' /usr/local/bin/as-sail
 #!/bin/sh
-. /etc/sail/env.sh
 if [ "$(/usr/bin/id -u)" = 0 ]; then
-  exec /usr/bin/setpriv --reuid=sail --regid=sail --init-groups "$@"
+  exec /usr/bin/setpriv --reuid=sail --regid=sail --init-groups /usr/local/bin/as-sail "$@"
 fi
+. /etc/sail/env.sh
 exec "$@"
 EOF
 COPY --chmod=0755 <<'EOF' /usr/local/bin/t3
