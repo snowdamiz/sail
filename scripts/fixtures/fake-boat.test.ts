@@ -1488,7 +1488,7 @@ fi`);
         ? lastJson<{ sandbox: SandboxJson }>(shown.stdout).sandbox.state
         : "";
     };
-    await expect.poll(stateOf, POLL).toBe("starting");
+    expect(await stateOf(), "from the moment new prints the id").toBe("starting");
     const listed = lastJson<{ sandboxes: Array<SandboxJson> }>(
       (await json(["list", "--all"])).stdout,
     );

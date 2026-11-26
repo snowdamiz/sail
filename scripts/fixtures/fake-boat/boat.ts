@@ -370,8 +370,11 @@ function live(id: string): Live | null {
   try {
     state = inspect<DockerState>(container(id), ".State");
   } catch (error) {
-    if (isNoSuch(error)) return null;
-    throw error;
+    if (!isNoSuch(error)) throw error;
+    // A create has its record before Docker has a container for it.
+    if (transition(id)?.state !== "starting") return null;
+    const never = new Date(0).toISOString();
+    return { state: "starting", running: false, startedAt: never, finishedAt: never };
   }
   return {
     state: transition(id)?.state ?? STATES[state.Status] ?? "stopped",
@@ -1100,12 +1103,13 @@ const TABLE: ReadonlyArray<Command> = [
         ttlSeconds: life.ttlSeconds,
         archiveAfter: deadline(life.ttlSeconds),
       };
-      print({ progress: "creating", id });
-      prepareMounts(id);
-      setDeadline(id, record.archiveAfter);
       writeJsonAtomic(sandboxFile(id), record);
-      const moving = secs > 0 ? claimTransition(id, "starting", secs) : undefined;
+      // Claimed before the id is printed, so a caller that asks about it at once hears `starting`.
+      const moving = claimTransition(id, "starting", secs);
+      print({ progress: "creating", id });
       try {
+        prepareMounts(id);
+        setDeadline(id, record.archiveAfter);
         runContainer(record, image);
         detach(WATCH_ARG, id);
         print({ progress: "booting", id });
