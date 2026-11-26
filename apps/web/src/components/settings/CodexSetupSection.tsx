@@ -31,7 +31,7 @@ import {
 import { T, useGT, useMessages } from "gt-react";
 
 import { ensureLocalApi } from "../../localApi";
-import { rememberProviderAuthSignIn } from "../../providerAuthDelivery";
+import { hasProviderAuthSignIn, rememberProviderAuthSignIn } from "../../providerAuthDelivery";
 import { managedInstanceLocks, useManagedPolicy } from "../../state/managedPolicy";
 import { ManagedControl } from "../ManagedPolicy";
 import { useEnvironmentHttpBaseUrl } from "../../state/environments";
@@ -692,6 +692,7 @@ function ManagedCodexSetup({
     needsManualCallback &&
     url &&
     auth?.flowId &&
+    hasProviderAuthSignIn({ environmentId, instanceId, flowId: auth.flowId }) &&
     providerAuthReturnUrl(returnUrl.toString(), [window.location.origin])
       ? codexAuthHandoffUrl(
           {

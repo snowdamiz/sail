@@ -83,7 +83,10 @@ function handoffLink(value: string, development: boolean) {
 }
 
 // Any app on this computer can register an app scheme, so a code goes only to a web page.
-function webReturnUrl(value: string, trustedOrigins: ReadonlyArray<string | undefined>) {
+export function codexAuthReturnUrl(
+  value: string,
+  trustedOrigins: ReadonlyArray<string | undefined>,
+) {
   const destination = providerAuthReturnUrl(value, trustedOrigins);
   return destination !== undefined && /^https?:/u.test(destination) ? destination : undefined;
 }
@@ -111,7 +114,7 @@ export function readCodexAuthHandoff(
       return undefined;
     const input = decodeHandoff(url.searchParams.get("request"));
     codexAuthorizationRequest(input.authorizationUrl);
-    if (!webReturnUrl(input.returnUrl, trustedOrigins)) return undefined;
+    if (!codexAuthReturnUrl(input.returnUrl, trustedOrigins)) return undefined;
     return input;
   } catch {
     return undefined;
@@ -126,7 +129,7 @@ export function codexAuthDeliveryUrl(
 ) {
   const request = codexAuthorizationRequest(input.authorizationUrl);
   codexCallbackUrl(callbackUrl, request.redirectUri, request.state);
-  const destination = webReturnUrl(input.returnUrl, trustedOrigins);
+  const destination = codexAuthReturnUrl(input.returnUrl, trustedOrigins);
   if (!destination) throw new Error("Invalid T3 Code return address.");
   const url = new URL(destination);
   const delivery = {
@@ -148,11 +151,11 @@ export function readCodexAuthDelivery(
     const url = new URL(value);
     if (!url.hash.startsWith("#codex-auth=") || url.hash.length > 32_768) return undefined;
     const input = decodeDelivery(decodeURIComponent(url.hash.slice("#codex-auth=".length)));
-    const destination = webReturnUrl(value, trustedOrigins);
+    const destination = codexAuthReturnUrl(value, trustedOrigins);
     if (!destination) return undefined;
     const returnUrl = new URL(destination);
     returnUrl.hash = input.returnHash;
-    const sanitized = webReturnUrl(returnUrl.toString(), trustedOrigins);
+    const sanitized = codexAuthReturnUrl(returnUrl.toString(), trustedOrigins);
     if (!sanitized) return undefined;
     return { ...input, returnUrl: sanitized };
   } catch {

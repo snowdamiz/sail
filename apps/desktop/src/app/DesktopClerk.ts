@@ -16,6 +16,7 @@ import {
 } from "@t3tools/client-runtime/platform";
 import {
   codexAuthDeliveryUrl,
+  codexAuthReturnUrl,
   isCodexAuthHandoffLink,
   readCodexAuthHandoff,
 } from "@t3tools/shared/codexAuthHandoff";
@@ -68,7 +69,7 @@ function acceptCodexAuthHandoff(
     targets.some(({ environmentId }) => environmentId === request.environmentId) &&
     !disabledEnvironmentIds.includes(request.environmentId);
   const trustedOrigins = [hostedAppUrl, ...serverPages(request.environmentId)];
-  return enabled && providerAuthReturnUrl(request.returnUrl, trustedOrigins)
+  return enabled && codexAuthReturnUrl(request.returnUrl, trustedOrigins)
     ? { request, trustedOrigins }
     : undefined;
 }

@@ -40,11 +40,20 @@ export function rememberProviderAuthSignIn(signIn: Omit<CodexSignIn, "expiresAt"
   );
 }
 
-function takeSignIn(delivery: ProviderAuthDelivery): CodexSignIn | undefined {
+const liveSignIns = () => {
   const now = Date.now();
-  const live = readLocalStorageValue(SIGN_INS_KEY, [], CodexSignIns).filter(
+  return readLocalStorageValue(SIGN_INS_KEY, [], CodexSignIns).filter(
     (signIn) => signIn.expiresAt > now,
   );
+};
+
+/** Whether a delivery for this sign-in would land here, so a handoff is worth offering. */
+export function hasProviderAuthSignIn(signIn: Omit<CodexSignIn, "expiresAt">): boolean {
+  return liveSignIns().some((other) => sameFlow(other, signIn));
+}
+
+function takeSignIn(delivery: ProviderAuthDelivery): CodexSignIn | undefined {
+  const live = liveSignIns();
   const signIn = live.find((candidate) => sameFlow(candidate, delivery));
   writeLocalStorageValue(
     SIGN_INS_KEY,
