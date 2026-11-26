@@ -125,7 +125,7 @@ jobs:
           git diff --quiet HEAD^1 HEAD -- \
             Dockerfile .dockerignore deploy/docker \
             'scripts/stage-server-runtime*' scripts/smoke-docker-image.ts \
-            scripts/lib/cli-external-packages.ts apps/server/package.json pnpm-workspace.yaml \
+            scripts/lib/cli-external-packages.ts package.json apps/server/package.json pnpm-workspace.yaml \
             .github/workflows/ci.yml || status=$?
           case "$status" in
             0) echo changed=false >> "$GITHUB_OUTPUT" ;;
