@@ -484,6 +484,7 @@ import {
   SourceControlSignInResult,
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
+import { BoatError, BoatEvent, BoatInvokeInput, BoatInvokeResult } from "./boat.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
@@ -584,6 +585,8 @@ export const WS_METHODS = {
   deviceShutdown: "device.shutdown",
   deviceDetail: "device.detail",
   deviceAction: "device.action",
+
+  boatsInvoke: "boats.invoke",
 
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
@@ -738,6 +741,7 @@ export const WS_METHODS = {
   subscribePreviewEvents: "subscribePreviewEvents",
   subscribeDiscoveredLocalServers: "subscribeDiscoveredLocalServers",
   subscribeDeviceState: "subscribeDeviceState",
+  subscribeBoats: "subscribeBoats",
   subscribeServerConfig: "subscribeServerConfig",
   subscribeServerLifecycle: "subscribeServerLifecycle",
   subscribeAuthAccess: "subscribeAuthAccess",
@@ -2115,6 +2119,19 @@ const WsSubscribeDeviceStateRpc = Rpc.make(WS_METHODS.subscribeDeviceState, {
   stream: true,
 });
 
+const WsBoatsInvokeRpc = Rpc.make(WS_METHODS.boatsInvoke, {
+  payload: BoatInvokeInput,
+  success: BoatInvokeResult,
+  error: Schema.Union([BoatError, EnvironmentAuthorizationError]),
+});
+
+const WsSubscribeBoatsRpc = Rpc.make(WS_METHODS.subscribeBoats, {
+  payload: Schema.Struct({}),
+  success: BoatEvent,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
 const WsOrchestrationV2DispatchCommandRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, {
   payload: OrchestrationV2RpcSchemas.dispatchCommand.input,
   success: OrchestrationV2RpcSchemas.dispatchCommand.output,
@@ -2708,6 +2725,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsDeviceDetailRpc,
   WsDeviceActionRpc,
   WsSubscribeDeviceStateRpc,
+  WsBoatsInvokeRpc,
+  WsSubscribeBoatsRpc,
   WsSubscribeServerConfigRpc,
   WsSubscribeServerLifecycleRpc,
   WsSubscribeAuthAccessRpc,
