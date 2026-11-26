@@ -437,8 +437,7 @@ const make = Effect.gen(function* () {
     }
   });
 
-  const invoke = Effect.fn("BoatSupervisor.invoke")(function* (input: BoatInvokeInput) {
-    const daemon = yield* Effect.flatten(kick);
+  const send = Effect.fn("BoatSupervisor.send")(function* (daemon: Daemon, input: BoatInvokeInput) {
     const response = yield* httpClient
       .execute(
         HttpClientRequest.post(`${daemon.baseUrl}/api/command/${input.command}`).pipe(
@@ -451,7 +450,7 @@ const make = Effect.gen(function* () {
           () => new BoatError({ message: `sail-boatd did not answer ${input.command}.` }),
         ),
       );
-    const reply = yield* response.json.pipe(
+    return yield* response.json.pipe(
       Effect.flatMap(decodeCommandReply),
       Effect.mapError(
         () =>
@@ -460,6 +459,13 @@ const make = Effect.gen(function* () {
           }),
       ),
     );
+  });
+
+  const invoke = Effect.fn("BoatSupervisor.invoke")(function* (input: BoatInvokeInput) {
+    const daemon = yield* Effect.flatten(kick);
+    // The daemon drops a command whose request closes, so a caller that disconnects mid
+    // create_machine would leave the create half done. The request belongs to the service.
+    const reply = yield* Fiber.join(yield* Effect.forkIn(send(daemon, input), serviceScope));
     if (!reply.ok) return yield* new BoatError({ message: reply.error });
     return {
       data: reply.data ?? null,

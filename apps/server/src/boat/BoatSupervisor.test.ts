@@ -43,7 +43,8 @@ type Report =
       readonly env: Record<(typeof DAEMON_ENV)[number], string | null>;
       readonly cli: CliRun;
     }
-  | { readonly event: "shutdown"; readonly pid: number };
+  | { readonly event: "shutdown"; readonly pid: number }
+  | { readonly event: "add_project"; readonly pid: number; readonly answered: boolean | null };
 
 /** Stands in for sail-boatd: the handshake, the command and SSE routes, and reports to the server. */
 const fakeDaemonSource = `#!${process.execPath}
@@ -62,7 +63,12 @@ const reply = (res, status, body) => {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
 };
+let heldReply = null;
 const commands = {
+  latest_thread: () => {
+    if (heldReply !== null) heldReply();
+    return [200, { ok: true, data: null }];
+  },
   get_state: () => [200, { ok: true, data: state }],
   sign_in_agent: () => [200, { ok: true, data: { started: true }, openUrl: "https://boat.example/device", userCode: "WXYZ-1234" }],
   create_machine: () => [409, { ok: false, error: "Sign in to Boat first." }],
@@ -90,6 +96,19 @@ const server = http.createServer((req, res) => {
       reply(res, 200, { ok: true, data: null });
       for (const stream of streams) stream.end();
       server.close(() => process.exit(0));
+      return;
+    }
+    if (name === "add_project") {
+      await report({ event: "add_project", answered: null });
+      res.on("close", () => {
+        if (!res.writableEnded) report({ event: "add_project", answered: false });
+      });
+      heldReply = () => {
+        heldReply = null;
+        if (res.destroyed) return;
+        reply(res, 200, { ok: true, data: null });
+        report({ event: "add_project", answered: true });
+      };
       return;
     }
     if (name === "sleep_machine") {
@@ -381,6 +400,31 @@ describe("BoatSupervisor", () => {
         assert.deepEqual(
           late.map((event) => event._tag),
           ["status", "state"],
+        );
+      }).pipe(Effect.provide(supervisor()));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("keeps a command running on sail-boatd after its caller goes away", () =>
+    Effect.gen(function* () {
+      const { reports, supervisor } = yield* setup;
+
+      yield* Effect.gen(function* () {
+        const boats = yield* BoatSupervisor.BoatSupervisor;
+        yield* boats.invoke({ command: "get_state" });
+        assert.equal((yield* Queue.take(reports)).event, "started");
+
+        const caller = yield* boats
+          .invoke({ command: "add_project", args: { id: "m1", projectId: "p1" } })
+          .pipe(Effect.forkScoped);
+        assert.deepInclude(yield* Queue.take(reports), { event: "add_project", answered: null });
+        yield* Fiber.interrupt(caller);
+
+        yield* boats.invoke({ command: "latest_thread", args: { id: "m1" } });
+        assert.deepInclude(
+          yield* Queue.take(reports),
+          { event: "add_project", answered: true },
+          "a client that disconnects mid create_machine must not cancel the create",
         );
       }).pipe(Effect.provide(supervisor()));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
