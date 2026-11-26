@@ -2,11 +2,11 @@
 set -eu
 
 # A fresh Fly volume mounts as an empty root-owned /data. Root names commands by path, because
-# sail can write to directories on PATH.
+# sail can write to directories on sail's PATH.
 if [ "$(/usr/bin/id -u)" = 0 ]; then
-  /usr/bin/install -d -o sail -g sail "$HOME" "$SAIL_HOME"
+  /usr/bin/install -d -o sail -g sail /data/home "$SAIL_HOME"
 else
-  /usr/bin/mkdir -p "$HOME" "$SAIL_HOME"
+  /usr/bin/mkdir -p /data/home "$SAIL_HOME"
 fi
 
 if [ -z "${SAIL_PUBLIC_URL:-}${T3CODE_PUBLIC_URL:-}" ]; then
@@ -18,5 +18,5 @@ if [ -z "${SAIL_PUBLIC_URL:-}${T3CODE_PUBLIC_URL:-}" ]; then
   export SAIL_PUBLIC_URL
 fi
 
-cd "$HOME"
+cd /data/home
 exec /usr/local/bin/t3 serve --host 0.0.0.0 --port 8080 "$@"

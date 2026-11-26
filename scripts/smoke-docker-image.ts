@@ -11,6 +11,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Random from "effect/Random";
+import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -30,11 +31,32 @@ const READY_LINE = "T3 Code server is ready.";
 const TOKEN_IN_LOGS = /pairing ?url:|token:|#token=/i;
 const NOT_RUNNING_YET = "No running T3 Code server owns";
 const PLANT_DIRS = ["/data/home/.local/bin", "/opt/npm-global/bin"];
-const PLANTED_COMMANDS = ["t3", "id", "install", "mkdir", "setpriv", "env", "node", "sh", "ps"];
+const PLANTED_COMMANDS = [
+  "t3",
+  "id",
+  "install",
+  "mkdir",
+  "setpriv",
+  "env",
+  "node",
+  "sh",
+  "ps",
+  "sail-smoke-probe",
+];
+const PRODUCTION_ICONS = [
+  "favicon.ico",
+  "favicon-16x16.png",
+  "favicon-32x32.png",
+  "apple-touch-icon.png",
+  "icon-192x192.png",
+  "icon-512x512.png",
+];
 const PLANTED_LOG = "/data/home/.sail-smoke-planted";
 const NATIVE_EXTERNALS_PROBE = `
-const fff = await import("@ff-labs/fff-node");
-if (!fff.binaryExists()) throw new Error("fff has no native library for this platform");
+const { FileFinder } = await import("@ff-labs/fff-node");
+const finder = FileFinder.create({ basePath: "/opt/sail/server" });
+if (!finder.ok) throw new Error("fff did not load: " + String(finder.error));
+finder.value.destroy();
 const pty = await import("node-pty");
 const child = (pty.spawn ?? pty.default.spawn)("/bin/echo", ["pty-ok"], {});
 let output = "";
@@ -65,8 +87,14 @@ const SessionState = Schema.Struct({ authenticated: Schema.Boolean });
 
 const fail = (step: string, detail: string) => new SmokeDockerImageError({ step, detail });
 
-export const redactTokens = (text: string) =>
-  text.replace(/(pairing ?url:\s*\S*?#token=|#token=|token[:=]\s*)[^\s&"']+/gi, "$1<redacted>");
+export const redactTokens = (text: string, secrets: ReadonlyArray<string> = []) =>
+  secrets.reduce(
+    (redacted, secret) => redacted.replaceAll(secret, "<redacted>"),
+    text.replace(
+      /(pairing ?url:\s*\S*?#token=|#token=|["']?(?:token|credential)["']?\s*[:=]\s*["']?)[^\s&"',}]+/gi,
+      "$1<redacted>",
+    ),
+  );
 
 const docker = Effect.fn("smoke-docker-image.docker")(function* (args: ReadonlyArray<string>) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -175,6 +203,7 @@ const pair = Effect.fn("smoke-docker-image.pair")(function* (
   container: string,
   origin: string,
   timeoutSeconds: number,
+  secrets: Ref.Ref<ReadonlyArray<string>>,
 ) {
   const client = yield* HttpClient.HttpClient;
   const issued = yield* within(
@@ -195,8 +224,9 @@ const pair = Effect.fn("smoke-docker-image.pair")(function* (
     (error) => error._tag === "SmokeDockerImageError" && error.detail.includes(NOT_RUNNING_YET),
   ).pipe(
     Effect.flatMap((out) => decodeIssuedPairing(out.stdout)),
-    Effect.mapError((error) => fail("t3 auth pairing create", redactTokens(error.message))),
+    Effect.mapError(() => fail("t3 auth pairing create", "printed no pairing JSON")),
   );
+  yield* Ref.set(secrets, [issued.credential]);
   const link = yield* Effect.try({
     try: () => new URL(issued.pairUrl),
     catch: () => fail("pairing link", "pairUrl is not a URL"),
@@ -233,21 +263,24 @@ const expectProductionIcons = Effect.fn("smoke-docker-image.expectProductionIcon
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const client = yield* HttpClient.HttpClient;
-  const repoRoot = yield* path.fromFileUrl(new URL("..", import.meta.url));
-  const developmentIcon = yield* fs.readFile(
-    path.join(repoRoot, "assets/dev/blueprint-web-favicon.ico"),
+  const publicDir = path.join(
+    yield* path.fromFileUrl(new URL("..", import.meta.url)),
+    "apps/web/public",
   );
-  const served = new Uint8Array(
-    yield* client.get(`${origin}/favicon.ico`).pipe(
-      Effect.flatMap(HttpClientResponse.filterStatusOk),
-      Effect.flatMap((response) => response.arrayBuffer),
-    ),
-  );
-  if (
-    served.length === developmentIcon.length &&
-    served.every((byte, index) => byte === developmentIcon[index])
-  ) {
-    return yield* fail("web client", "/favicon.ico is the development icon");
+  for (const icon of PRODUCTION_ICONS) {
+    const expected = yield* fs.readFile(path.join(publicDir, icon));
+    const served = new Uint8Array(
+      yield* client.get(`${origin}/${icon}`).pipe(
+        Effect.flatMap(HttpClientResponse.filterStatusOk),
+        Effect.flatMap((response) => response.arrayBuffer),
+      ),
+    );
+    if (
+      served.length !== expected.length ||
+      served.some((byte, index) => byte !== expected[index])
+    ) {
+      return yield* fail("web client", `/${icon} is not apps/web/public/${icon}`);
+    }
   }
 });
 
@@ -260,24 +293,31 @@ const expectRootIgnoresSailCommands = Effect.fn("smoke-docker-image.expectRootIg
           `mkdir -p ${dir} && printf '#!/bin/sh\\necho "$(/usr/bin/id -u) $0" >> ${PLANTED_LOG}\\nPATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin exec ${command} "$@"\\n' > ${dir}/${command} && chmod +x ${dir}/${command}`,
       ),
     ).join(" && ");
-    yield* docker(["exec", "--user", "sail", id, "/bin/sh", "-c", plant]);
+    const plantClaude = `printf '#!/bin/sh\\necho "$(/usr/bin/id -u) $0" >> ${PLANTED_LOG}\\n' > /data/home/.local/bin/claude && chmod +x /data/home/.local/bin/claude`;
+    yield* docker(["exec", "--user", "sail", id, "/bin/sh", "-c", `${plant} && ${plantClaude}`]);
     yield* docker(["restart", "-t", "30", id]);
     yield* waitForApp(id, timeoutSeconds);
     yield* expectServerRunsAsSail(id);
     yield* docker(["exec", id, "id", "-u"]);
     yield* docker(["exec", id, "t3", "--version"]);
     yield* docker(["exec", id, "sh", "-lc", "id -u"]);
-    const ranAsRoot = (yield* docker([
+    yield* docker(["exec", id, "/bin/sh", "-c", "sail-smoke-probe; claude --version"]);
+    const planted = (yield* docker([
       "exec",
       id,
       "/bin/sh",
       "-c",
       `/bin/cat ${PLANTED_LOG} || true`,
-    ])).stdout
-      .split("\n")
-      .filter((line) => line.startsWith("0 "));
+    ])).stdout.split("\n");
+    const ranAsRoot = planted.filter((line) => line.startsWith("0 "));
     if (ranAsRoot.length > 0) {
       return yield* fail("root commands", `root ran sail-writable ${ranAsRoot.join(", ")}`);
+    }
+    if (!planted.includes("1000 /data/home/.local/bin/claude")) {
+      return yield* fail(
+        "agent CLIs",
+        "root's claude did not run sail's ~/.local/bin/claude as sail",
+      );
     }
     for (const shell of [
       ["sh", "-lc"],
@@ -297,6 +337,7 @@ export const smokeDockerImage = Effect.fn("smokeDockerImage")(function* (input: 
   readonly timeoutSeconds: number;
 }) {
   const client = yield* HttpClient.HttpClient;
+  const secrets = yield* Ref.make<ReadonlyArray<string>>([]);
   const container = yield* startContainer(input);
   yield* Effect.gen(function* () {
     const origin = yield* waitForApp(container.id, input.timeoutSeconds);
@@ -310,7 +351,7 @@ export const smokeDockerImage = Effect.fn("smokeDockerImage")(function* (input: 
     yield* expectServerRunsAsSail(container.id);
     yield* expectProductionIcons(origin);
 
-    const credential = yield* pair(container.id, origin, input.timeoutSeconds);
+    const credential = yield* pair(container.id, origin, input.timeoutSeconds, secrets);
     yield* Console.log(
       "A pairing link from t3 auth pairing create redeemed to a signed-in session.",
     );
@@ -345,7 +386,7 @@ export const smokeDockerImage = Effect.fn("smokeDockerImage")(function* (input: 
       "--eval",
       NATIVE_EXTERNALS_PROBE,
     ]);
-    yield* Console.log("node-pty ran a command in a PTY, and fff found its native library.");
+    yield* Console.log("node-pty ran a command in a PTY, and fff loaded its native library.");
 
     yield* expectRootIgnoresSailCommands(container.id, input.timeoutSeconds);
     yield* Console.log(
@@ -353,10 +394,12 @@ export const smokeDockerImage = Effect.fn("smokeDockerImage")(function* (input: 
     );
   }).pipe(
     Effect.tapError(() =>
-      docker(["logs", "--tail", "200", container.id]).pipe(
-        Effect.flatMap((logs) => Console.error(redactTokens(`${logs.stdout}\n${logs.stderr}`))),
-        Effect.ignore,
-      ),
+      Effect.gen(function* () {
+        const logs = yield* docker(["logs", "--tail", "200", container.id]);
+        yield* Console.error(
+          redactTokens(`${logs.stdout}\n${logs.stderr}`, yield* Ref.get(secrets)),
+        );
+      }).pipe(Effect.ignore),
     ),
   );
   yield* Console.log(`Smoke passed for ${input.image}.`);

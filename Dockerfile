@@ -66,27 +66,39 @@ COPY --from=build /src/apps/server/dist /opt/sail/server
 COPY --from=build /src/apps/web/dist /opt/sail/server/client
 COPY --from=rust /out/t3-resource-monitor /opt/sail/server/resource-monitor/t3-resource-monitor
 COPY --chmod=0755 deploy/docker/entrypoint.sh /usr/local/bin/sail-entrypoint
-# fly ssh and docker exec start as root; t3 always runs as sail so its data stays sail's.
-# Code that runs as root names every command by path: sail can write to directories on PATH.
+# Sail's PATH and npm prefix point at directories sail can write, so only sail gets them: root
+# keeps the image's PATH and its passwd HOME, and code that runs as root names commands by path.
+COPY <<'EOF' /etc/sail/env.sh
+export HOME=/data/home USER=sail LOGNAME=sail NPM_CONFIG_PREFIX=/opt/npm-global
+export PATH=/data/home/.local/bin:/opt/npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EOF
+COPY --chmod=0755 <<'EOF' /usr/local/bin/as-sail
+#!/bin/sh
+. /etc/sail/env.sh
+if [ "$(/usr/bin/id -u)" = 0 ]; then
+  exec /usr/bin/setpriv --reuid=sail --regid=sail --init-groups "$@"
+fi
+exec "$@"
+EOF
 COPY --chmod=0755 <<'EOF' /usr/local/bin/t3
 #!/bin/sh
-if [ "$(/usr/bin/id -u)" = 0 ]; then
-  exec /usr/bin/setpriv --reuid=sail --regid=sail --init-groups \
-    /usr/bin/env HOME=/data/home USER=sail LOGNAME=sail \
-    /usr/local/bin/node /opt/sail/server/bin.mjs "$@"
-fi
-exec /usr/local/bin/node /opt/sail/server/bin.mjs "$@"
+exec /usr/local/bin/as-sail /usr/local/bin/node /opt/sail/server/bin.mjs "$@"
 EOF
+# The agent CLIs update themselves in sail's directories, so root reaches them only as sail.
+COPY --chmod=0755 <<'EOF' /usr/local/bin/claude
+#!/bin/sh
+name=${0##*/}
+for dir in /data/home/.local/bin /opt/npm-global/bin; do
+  [ -x "$dir/$name" ] && exec /usr/local/bin/as-sail "$dir/$name" "$@"
+done
+echo "$name is not installed for sail" >&2
+exit 127
+EOF
+RUN ln /usr/local/bin/claude /usr/local/bin/codex && ln /usr/local/bin/claude /usr/local/bin/opencode
 # /etc/profile resets PATH for login shells, such as the web terminal and fly ssh console.
-# Root shells move to /root so they never read or write sail's dotfiles.
-COPY <<'EOF' /etc/profile.d/sail-path.sh
-if [ "$(/usr/bin/id -u)" = 0 ]; then
-  HOME=/root
-else
-  PATH="$HOME/.local/bin:/opt/npm-global/bin:$PATH"
-fi
+COPY <<'EOF' /etc/profile.d/sail-env.sh
+[ "$(/usr/bin/id -u)" = 0 ] || . /etc/sail/env.sh
 EOF
-RUN printf '[ "$(/usr/bin/id -u)" = 0 ] && HOME=/root\n' >> /etc/bash.bashrc
 # A container has no logind and never sleeps, so keep-awake runs its hold without a lock.
 COPY --chmod=0755 <<'EOF' /usr/local/bin/systemd-inhibit
 #!/bin/sh
@@ -101,15 +113,12 @@ done
 exec "$@"
 EOF
 
-ENV HOME=/data/home \
-    SAIL_HOME=/data/sail \
+ENV SAIL_HOME=/data/sail \
     T3CODE_HOME=/data/sail \
     SAIL_STARTUP_PAIRING=off \
     SAIL_BOATD_PATH=/opt/sail/bin/sail-boatd \
-    NPM_CONFIG_PREFIX=/opt/npm-global \
     SHELL=/bin/bash \
-    LANG=C.UTF-8 \
-    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/data/home/.local/bin:/opt/npm-global/bin
+    LANG=C.UTF-8
 EXPOSE 8080
 VOLUME /data
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/sail-entrypoint"]
