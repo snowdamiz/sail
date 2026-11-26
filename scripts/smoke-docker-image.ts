@@ -733,10 +733,23 @@ const smokePreownedVolume = Effect.fn("smoke-docker-image.smokePreownedVolume")(
     );
 
     const target = "/data/.smoke-root-owned";
-    yield* docker(["exec", id, "/usr/bin/install", "-d", "-m", "0755", target]);
-    yield* docker(["exec", id, "/usr/bin/mv", preownedHome, `${preownedHome}.saved`]);
-    yield* docker(["exec", id, "/usr/bin/ln", "-s", target, preownedHome]);
-    yield* docker(["restart", "-t", "30", id]);
+    yield* docker(["stop", "-t", "30", id]);
+    yield* docker([
+      "run",
+      "--rm",
+      ...platformArgs,
+      "--volume",
+      `${volume}:/data`,
+      "--entrypoint",
+      "/bin/sh",
+      input.image,
+      "-ec",
+      '/usr/bin/install -d -m 0755 "$1"; /usr/bin/mv -T "$2" "$2.saved"; /usr/bin/ln -sT "$1" "$2"',
+      "sh",
+      target,
+      preownedHome,
+    ]);
+    yield* docker(["start", id]);
     const exit = (yield* docker(["wait", id]).pipe(
       Effect.timeout(`${input.timeoutSeconds} seconds`),
     )).stdout;
