@@ -850,7 +850,8 @@ function destroyApp(name: string): void {
   for (const container of [containerName(name), swapName(name, "green"), swapName(name, "blue")])
     destroyMachineContainer(container);
   removeBuiltImages(name, machine?.builtTag);
-  if (machine) remove("machines", machine.id);
+  for (const record of all<MachineRecord>("machines"))
+    if (record.app === name) remove("machines", record.id);
   for (const volume of volumes) {
     removeDockerVolume(volumeName(volume.id));
     remove("volumes", volume.id);
@@ -1382,22 +1383,25 @@ function validateStrategy(
  * failed or was killed partway can leave either machine under a swap name. A container's hostname
  * is its machine's id.
  */
-function settleContainers(app: string, recorded: MachineRecord | undefined): void {
+function settleContainers(
+  app: string,
+  recorded: MachineRecord | undefined,
+): MachineRecord | undefined {
   const live = containerName(app);
   const held = [live, swapName(app, "green"), swapName(app, "blue")].filter(
     (name) => ownership("container", name) === "mine",
   );
-  const kept =
-    recorded &&
-    held.find(
-      (name) =>
-        docker(["container", "inspect", "--format", "{{.Config.Hostname}}", name]).trim() ===
-        recorded.id,
-    );
+  const hostname = (name: string) =>
+    docker(["container", "inspect", "--format", "{{.Config.Hostname}}", name]).trim();
+  const records = all<MachineRecord>("machines").filter((machine) => machine.app === app);
+  // Killed after green took the app's name and was recorded, the machine under that name serves.
+  const liveId = held.includes(live) ? hostname(live) : undefined;
+  const chosen = records.find((machine) => machine.id === liveId) ?? recorded;
+  const kept = chosen && held.find((name) => hostname(name) === chosen.id);
   for (const name of held) if (name !== kept) destroyMachineContainer(name);
   if (kept !== undefined && kept !== live) docker(["rename", kept, live]);
-  for (const stale of all<MachineRecord>("machines"))
-    if (stale.app === app && stale.id !== recorded?.id) remove("machines", stale.id);
+  for (const stale of records) if (stale.id !== chosen?.id) remove("machines", stale.id);
+  return chosen;
 }
 
 interface DeploySteps {
@@ -1492,7 +1496,17 @@ function deploy(ctx: Ctx): number {
   out(`--> Verified app config\n`);
   const http = config.http;
   const probes = healthProbes(containerName(appName), http);
-  const previous = machineOf(appName);
+  const recorded = machineOf(appName);
+  // A bluegreen deploy killed partway converges before anything relies on which machine is live.
+  const previous = docker([
+    "ps",
+    "--all",
+    "--quiet",
+    "--filter",
+    `name=^${containerName(appName)}_`,
+  ]).trim()
+    ? settleContainers(appName, recorded)
+    : recorded;
   const blueGreen = previous !== undefined && strategy === "bluegreen";
   const unmodeled = [
     ...(config.mounts.length > 0 ? ["[[mounts]]"] : []),
@@ -1655,8 +1669,6 @@ function deploy(ctx: Ctx): number {
     } satisfies AppRecord);
 
   if (previous) out(`Updating existing machines in '${appName}' with ${strategy} strategy\n`);
-  if (docker(["ps", "--all", "--quiet", "--filter", `name=^${containerName(appName)}_`]).trim())
-    settleContainers(appName, previous);
   if (blueGreen) replaceBlueWithGreen(previous, machine, http, waitMs, { start, route, release });
   else {
     if (previous) stopMachineContainer(containerName(appName), previous.config.stop_config);

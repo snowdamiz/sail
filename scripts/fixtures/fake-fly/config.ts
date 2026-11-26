@@ -328,18 +328,20 @@ function toDeployConfig(toml: Raw, file: string): DeployConfig {
     deployStrategy: field.string(deploy.strategy, "Deploy.deploy.strategy"),
     ignoredCheckTables: [
       ...(hasEntries(toml.checks) ? ["[checks]" as const] : []),
-      ...(Array.isArray(toml.services) &&
-      toml.services.some(
-        (service: unknown) =>
-          typeof service === "object" &&
-          service !== null &&
-          ["checks", "tcp_checks", "http_checks"].some((key) => hasEntries((service as Raw)[key])),
+      ...(tables(toml.services).some((service) =>
+        ["checks", "tcp_checks", "http_checks"].some((key) => hasEntries(service[key])),
       )
         ? ["[[services]]" as const]
         : []),
     ],
   };
 }
+
+/** flyctl takes `[services]` as a one-entry `[[services]]`. */
+const tables = (value: unknown): ReadonlyArray<Raw> =>
+  (Array.isArray(value) ? value : [value]).filter(
+    (entry): entry is Raw => typeof entry === "object" && entry !== null,
+  );
 
 /** flyctl counts a table's checks, so one that holds none adds nothing to bluegreen's need. */
 const hasEntries = (value: unknown) =>

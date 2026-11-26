@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - Local stand-ins drive the Docker CLI directly.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off - Local stand-ins drive the Docker CLI directly.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
@@ -250,8 +250,11 @@ function recoverRetired(dir: string): void {
       .toSorted((a, b) => NodeFS.statSync(at(b)).mtimeMs - NodeFS.statSync(at(a)).mtimeMs)[0];
     if (newest) NodeFS.renameSync(at(newest), at("ca"));
   }
+  // A lane at an older revision rotates without this lock, so its staging is left a while.
+  const settled = Date.now() - 10 * 60_000;
   for (const name of leftovers)
-    if (NodeFS.existsSync(at(name))) NodeFS.rmSync(at(name), { recursive: true, force: true });
+    if (NodeFS.existsSync(at(name)) && NodeFS.statSync(at(name)).mtimeMs < settled)
+      NodeFS.rmSync(at(name), { recursive: true, force: true });
 }
 
 /** True when it made a new root, whatever other homes serve: only tests call it, on their own `dir`. */
@@ -345,7 +348,8 @@ export const isOlderCaddyfile = (text: string) =>
 
 const dataVolume = (root: string) => `${caddyContainer()}-data-${root}`;
 
-const HOME_LINE = /^# sail-fixture home (\S+)$/m;
+// One revision of this PR wrote both on one line, `# sail-fixture home <id> container <name>`.
+const HOME_LINE = /^# sail-fixture home (\S+)(?: container (\S+))?$/m;
 const CONTAINER_LINE = /^# sail-fixture container (\S+)$/m;
 
 /**
@@ -361,10 +365,13 @@ function othersServing(dir: string, home: string): ReadonlyArray<string> {
   return files.filter((file) => {
     const body = readSite(dir, `sites/${file}`);
     if (body === undefined) return false;
-    if (HOME_LINE.exec(body)?.[1] === home) return false;
+    const owner = HOME_LINE.exec(body);
+    if (owner?.[1] === home) return false;
     const upstream = /reverse_proxy\s+([^\s:{]+)/.exec(body)?.[1];
     const container =
-      CONTAINER_LINE.exec(body)?.[1] ?? (upstream?.startsWith("sail-") ? upstream : undefined);
+      CONTAINER_LINE.exec(body)?.[1] ??
+      owner?.[2] ??
+      (upstream?.startsWith("sail-") ? upstream : undefined);
     if (container === undefined) return true;
     // A fake fly machine is renamed to `<container>_blue` or `_green` while traffic moves.
     return [...containers].some((name) => name === container || name.startsWith(`${container}_`));
@@ -424,10 +431,15 @@ function reconcile(dir: string, home: string): void {
     }
     return;
   }
-  if (seen?.running && others.length > 0)
+  if (seen?.running && others.length > 0) {
+    const why =
+      ca && ca.version < 2 && seen.root === ca.fingerprint
+        ? "runs on a version 1 root, which can vouch for IP addresses"
+        : `runs on root ${seen.root ?? "unknown"} and the root on disk is ${ca?.fingerprint ?? "missing"}`;
     throw new Error(
-      `${caddyContainer()} runs on root ${seen.root ?? "unknown"} and the root on disk is ${ca?.fingerprint ?? "missing"}, but other homes still serve ${others.join(", ")} through it. Replacing it would cut them off; remove those sites or their containers, then try again.`,
+      `${caddyContainer()} ${why}, but other homes still serve ${others.join(", ")} through it. Replacing it would cut them off; remove those sites or their containers, then try again.`,
     );
+  }
   // The old container goes before the root changes, so a failure here leaves the two matching.
   if (seen) {
     try {
@@ -551,6 +563,15 @@ function createWhole(file: string, body: string): void {
   }
 }
 
+/** The host port Caddy publishes 443 on, or nothing while its container is being replaced. */
+function publishedPort(): string | undefined {
+  try {
+    return docker(["port", caddyContainer(), "443/tcp"]).trim().split("\n")[0]?.split(":").pop();
+  } catch {
+    return undefined;
+  }
+}
+
 export function publicUrl(host: string, scheme: "https" | "http" = "https"): string {
   const published = docker(["port", caddyContainer(), scheme === "https" ? "443/tcp" : "80/tcp"])
     .trim()
@@ -605,12 +626,15 @@ export function publishSite(site: Site): string {
     waitForCertificate(site.host, url);
   } catch (error) {
     // The caller rolls back to what served before, so the route it had comes back too.
-    withCaddyLock(dir, () =>
-      changeAndReload(
-        file,
-        before === undefined ? { kind: "delete" } : { kind: "put", body: before },
-      ),
-    );
+    withCaddyLock(dir, () => {
+      if (served()?.running)
+        changeAndReload(
+          file,
+          before === undefined ? { kind: "delete" } : { kind: "put", body: before },
+        );
+      else if (before === undefined) NodeFS.rmSync(NodePath.join(dir, file), { force: true });
+      else NodeFS.writeFileSync(NodePath.join(dir, file), before);
+    });
     throw error;
   }
   return url;
@@ -641,9 +665,7 @@ socket.on("error", (error) => { process.stderr.write(error.message); process.exi
 function waitForCertificate(host: string, url: string): void {
   let port = new URL(url).port || "443";
   let last = "";
-  for (let attempt = 0; attempt < 120; attempt++) {
-    // Another lane may replace a test's own Caddy meanwhile, on ports Docker picks again.
-    if (attempt > 0 && instance()) port = new URL(publicUrl(host)).port || "443";
+  for (const give = Date.now() + 60_000; Date.now() < give;) {
     const probe = NodeChildProcess.spawnSync(
       process.execPath,
       ["-e", HANDSHAKE, port, host, rootCertPath()],
@@ -652,6 +674,8 @@ function waitForCertificate(host: string, url: string): void {
     if (probe.status === 0) return;
     last = probe.stderr || probe.error?.message || `exit ${probe.status}`;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+    // Another lane may replace a test's own Caddy meanwhile, on ports Docker picks again.
+    if (instance()) port = publishedPort() ?? port;
   }
   throw new Error(`${caddyContainer()} never served a verified certificate for ${host}: ${last}`);
 }
