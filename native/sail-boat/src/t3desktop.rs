@@ -63,7 +63,7 @@ pub fn thread_link(environment_id: &str, thread_id: &str) -> String {
 
 pub fn activate() -> Result<()> {
     if cfg!(target_os = "macos") {
-        let status = std::process::Command::new("open").args(["-b", &app_bundle_id()]).status()?;
+        let status = std::process::Command::new("open").args(["-b", &app_bundle_id()]).stdin(std::process::Stdio::null()).status()?;
         if !status.success() {
             bail!("could not open Sail");
         }

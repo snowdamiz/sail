@@ -7,8 +7,9 @@ use tokio::process::Command;
 
 /// A command for `program`, run without a console window.
 pub fn command(program: impl AsRef<OsStr>) -> Command {
-    #[allow(unused_mut)]
     let mut cmd = Command::new(program);
+    // The server holds the daemon's stdin open as its liveness signal; a child reading it would wait.
+    cmd.stdin(std::process::Stdio::null());
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     cmd

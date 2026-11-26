@@ -849,15 +849,15 @@ fn human_secs(s: u64) -> String {
 
 pub fn open_url(url: &str) -> Result<()> {
     let status = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(url).status()?
+        std::process::Command::new("open").arg(url).stdin(std::process::Stdio::null()).status()?
     } else if cfg!(target_os = "linux") {
-        match std::process::Command::new("gio").args(["open", url]).status() {
+        match std::process::Command::new("gio").args(["open", url]).stdin(std::process::Stdio::null()).status() {
             Ok(s) if s.success() => s,
-            _ => std::process::Command::new("xdg-open").arg(url).status()?,
+            _ => std::process::Command::new("xdg-open").arg(url).stdin(std::process::Stdio::null()).status()?,
         }
     } else {
         // No shell: `cmd /C start` would run anything after a `&` in the URL.
-        std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).status()?
+        std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).stdin(std::process::Stdio::null()).status()?
     };
     if !status.success() {
         bail!("could not open the link on this computer");

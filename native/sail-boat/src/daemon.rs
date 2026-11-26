@@ -86,6 +86,7 @@ pub struct McpStatus {
 struct SetupState {
     setup: Setup,
     busy: bool,
+    sign_in_attempt: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -100,6 +101,8 @@ pub struct Account {
 pub struct UiState {
     pub setup: Setup,
     pub setup_busy: bool,
+    /// The Boat sign-in waiting now; its page and code went only to the client that started it.
+    pub sign_in_attempt: Option<u64>,
     pub account: Option<Account>,
     pub machines: Vec<MachineView>,
     pub costs: Costs,
@@ -110,6 +113,7 @@ pub struct UiState {
     pub version: &'static str,
 }
 
+/// Sent to every client, so a link or code a command produces goes only in its `Reply`.
 #[derive(Clone, Debug)]
 enum StreamEvent {
     State(String),
@@ -147,21 +151,36 @@ impl Reply {
 }
 
 #[derive(Default)]
-struct PendingSignIn(tokio::sync::Mutex<Option<SignIn>>);
+struct PendingSignIn(tokio::sync::Mutex<SignIns>);
+
+#[derive(Default)]
+struct SignIns {
+    last_attempt: u64,
+    pending: Option<(u64, SignIn)>,
+}
 
 impl PendingSignIn {
-    async fn get_or_start<F: Future<Output = Result<SignIn>>>(&self, start: impl FnOnce() -> F) -> Result<SignIn> {
-        let mut pending = self.0.lock().await;
-        if let Some(sign_in) = pending.as_ref() {
-            return Ok(sign_in.clone());
+    async fn get_or_start<F: Future<Output = Result<SignIn>>>(
+        &self,
+        start: impl FnOnce(u64) -> F,
+    ) -> Result<(u64, SignIn)> {
+        let mut sign_ins = self.0.lock().await;
+        if let Some(pending) = sign_ins.pending.as_ref() {
+            return Ok(pending.clone());
         }
-        let sign_in = start().await?;
-        *pending = Some(sign_in.clone());
-        Ok(sign_in)
+        sign_ins.last_attempt += 1;
+        let attempt = sign_ins.last_attempt;
+        let sign_in = start(attempt).await?;
+        sign_ins.pending = Some((attempt, sign_in.clone()));
+        Ok((attempt, sign_in))
     }
 
-    async fn finish(&self) {
-        *self.0.lock().await = None;
+    /// Ends the pending sign-in and runs `wrap_up` before any new one can start, so a click in
+    /// between neither gets the ended page nor has its own busy state cleared by this one.
+    async fn finish(&self, wrap_up: impl Future<Output = ()>) {
+        let mut sign_ins = self.0.lock().await;
+        sign_ins.pending = None;
+        wrap_up.await;
     }
 }
 
@@ -249,6 +268,7 @@ impl Daemon {
         UiState {
             setup: setup.setup,
             setup_busy: setup.busy,
+            sign_in_attempt: setup.sign_in_attempt,
             account: self.account.lock().unwrap().clone(),
             machines: app.as_ref().map(|a| a.views()).unwrap_or_default(),
             costs: app.as_ref().map(|a| a.costs()).unwrap_or_default(),
@@ -557,13 +577,21 @@ impl Daemon {
             "installBoat" => {
                 self.set_busy(true);
                 let result = install_boat().await;
+                if result.is_ok() {
+                    self.recheck_setup().await;
+                }
                 self.set_busy(false);
                 result.map_err(err)?;
+                return Ok(Reply::default());
             }
             "signInBoat" => {
                 let boat = Boat::locate().ok_or_else(|| CmdErr::Internal("Boat CLI not found".to_owned()))?;
-                let sign_in = self.sign_in_boat(boat).await.map_err(err)?;
-                return Ok(Reply { open_url: Some(sign_in.url), user_code: sign_in.code, ..Reply::default() });
+                let (attempt, sign_in) = self.sign_in_boat(boat).await.map_err(err)?;
+                return Ok(Reply {
+                    data: json!({ "attempt": attempt }),
+                    open_url: Some(sign_in.url),
+                    user_code: sign_in.code,
+                });
             }
             "installT3" => {}
             "recheck" => {}
@@ -582,21 +610,30 @@ impl Daemon {
         }
     }
 
-    async fn sign_in_boat(self: &Arc<Self>, boat: Boat) -> Result<SignIn> {
+    async fn sign_in_boat(self: &Arc<Self>, boat: Boat) -> Result<(u64, SignIn)> {
         self.sign_in
-            .get_or_start(|| async {
+            .get_or_start(|attempt| async move {
                 self.set_busy(true);
                 let sign_in = boat.start_sign_in().await.inspect_err(|_| self.set_busy(false))?;
+                self.setup.lock().unwrap().sign_in_attempt = Some(attempt);
+                self.emit_state();
                 let daemon = self.clone();
                 let wait = tokio::spawn(async move {
-                    if let Err(e) = boat.finish_sign_in().await {
-                        // Boat's output can carry the sign-in code, and notices reach every client.
-                        tracing::warn!("Boat sign-in did not finish: {e:#}");
-                        daemon.emit_notify("Boat sign-in did not finish", "Sign in to Boat again.");
-                    }
-                    daemon.recheck_setup().await;
-                    daemon.sign_in.finish().await;
-                    daemon.set_busy(false);
+                    let finished = boat.finish_sign_in().await;
+                    daemon
+                        .sign_in
+                        .finish(async {
+                            daemon.setup.lock().unwrap().sign_in_attempt = None;
+                            daemon.recheck_setup().await;
+                            daemon.set_busy(false);
+                            // Boat's output can carry the sign-in code, and the daemon's log and
+                            // notices reach clients.
+                            if finished.is_err() {
+                                tracing::warn!("Boat sign-in did not finish");
+                                daemon.emit_notify("Boat sign-in did not finish", "Sign in to Boat again.");
+                            }
+                        })
+                        .await;
                 });
                 let mut tasks = self.background_tasks.lock().unwrap();
                 tasks.retain(|task| !task.is_finished());
@@ -872,7 +909,14 @@ pub fn closed(mut input: impl std::io::Read + Send + 'static) -> tokio::sync::on
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
         let mut buf = [0u8; 256];
-        while matches!(input.read(&mut buf), Ok(n) if n > 0) {}
+        loop {
+            match input.read(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
         let _ = tx.send(());
     });
     rx
@@ -1036,6 +1080,7 @@ mod tests {
         assert!(body["setup"].is_string());
         assert!(body["setupBusy"].is_boolean());
         assert!(body.get("signInCode").is_none(), "the sign-in code goes only to the client that started it");
+        assert!(body["signInAttempt"].is_null());
         assert!(body["machines"].is_array());
         assert!(body["costs"].is_object());
         assert!(body["settings"].is_object());
@@ -1169,7 +1214,7 @@ mod tests {
         let starts = AtomicUsize::new(0);
         let start = |ok: bool| {
             let starts = &starts;
-            move || async move {
+            move |_attempt| async move {
                 let n = starts.fetch_add(1, Ordering::SeqCst) + 1;
                 tokio::task::yield_now().await;
                 anyhow::ensure!(ok, "boat onboard failed");
@@ -1178,18 +1223,58 @@ mod tests {
         };
 
         let (a, b) = tokio::join!(pending.get_or_start(start(true)), pending.get_or_start(start(true)));
-        let (a, b) = (a.unwrap(), b.unwrap());
+        let ((a_attempt, a), (b_attempt, b)) = (a.unwrap(), b.unwrap());
         assert_eq!(starts.load(Ordering::SeqCst), 1, "overlapping clicks start one sign-in");
         assert_eq!((a.url.as_str(), a.code.as_deref()), ("https://boat.test/device?n=1", Some("CODE-1")));
-        assert_eq!((&b.url, &b.code), (&a.url, &a.code));
-        let again = pending.get_or_start(start(true)).await.unwrap();
-        assert_eq!((&again.url, &again.code), (&a.url, &a.code), "a later click gets the pending page");
+        assert_eq!((b_attempt, &b.url, &b.code), (a_attempt, &a.url, &a.code));
+        let (again_attempt, again) = pending.get_or_start(start(true)).await.unwrap();
+        assert_eq!(
+            (again_attempt, &again.url, &again.code),
+            (a_attempt, &a.url, &a.code),
+            "a later click gets the pending page"
+        );
         assert_eq!(starts.load(Ordering::SeqCst), 1);
 
-        pending.finish().await;
+        pending.finish(async {}).await;
         assert!(pending.get_or_start(start(false)).await.is_err());
-        let next = pending.get_or_start(start(true)).await.unwrap();
+        let (next_attempt, next) = pending.get_or_start(start(true)).await.unwrap();
         assert_eq!(next.url, "https://boat.test/device?n=3", "a finished or failed sign-in is started anew");
+        assert_ne!(next_attempt, a_attempt, "a new sign-in is a new attempt");
+    }
+
+    #[tokio::test]
+    async fn a_click_during_the_wrap_up_waits_and_starts_a_new_sign_in() {
+        let sign_in = |n: u8| SignIn { url: format!("https://boat.test/device?n={n}"), code: Some(format!("CODE-{n}")) };
+        let pending = Arc::new(PendingSignIn::default());
+        pending.get_or_start(|_| async { Ok(sign_in(1)) }).await.unwrap();
+
+        let (in_wrap_up, wrapping) = tokio::sync::oneshot::channel::<()>();
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let ending = tokio::spawn({
+            let pending = pending.clone();
+            async move {
+                pending
+                    .finish(async move {
+                        in_wrap_up.send(()).unwrap();
+                        released.await.unwrap();
+                    })
+                    .await;
+            }
+        });
+        wrapping.await.unwrap();
+
+        let mut click = tokio::spawn({
+            let pending = pending.clone();
+            async move { pending.get_or_start(|_| async { Ok(sign_in(2)) }).await }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut click).await.is_err(),
+            "a click while the ended sign-in wraps up waits for it"
+        );
+        release.send(()).unwrap();
+        ending.await.unwrap();
+        let (_, next) = click.await.unwrap().unwrap();
+        assert_eq!(next.code.as_deref(), Some("CODE-2"), "the click starts a new sign-in, never the ended one");
     }
 
     #[tokio::test]
