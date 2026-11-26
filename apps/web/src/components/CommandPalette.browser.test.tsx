@@ -432,7 +432,6 @@ describe("CommandPalette prompt links", () => {
       openCommandPalette({ query: title });
       const action = page.getByRole("option", { name: title, exact: true });
       await expect.element(action).toBeVisible();
-      // Highlighting re-renders the palette, so the origin changes after it and before the click.
       await action.hover();
       links.origin = "https://after.example.test";
       await action.click();

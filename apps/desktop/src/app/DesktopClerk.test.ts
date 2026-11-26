@@ -55,7 +55,6 @@ const ignoreWebLinks = DesktopWebLinks.DesktopWebLinks.of({
 
 interface SavedServer {
   readonly environmentId: string;
-  /** Absent for an environment reached through a relay, which has no page of its own. */
   readonly httpBaseUrl?: string;
   readonly learned?: boolean;
 }
@@ -64,7 +63,6 @@ interface SavedCatalog {
   disabledEnvironmentIds: ReadonlyArray<string>;
 }
 
-// Read on every get, so a test can change what is saved while a sign-in is open.
 const catalogStore = (catalog: SavedCatalog) =>
   DesktopConnectionCatalogStore.DesktopConnectionCatalogStore.of({
     get: Effect.sync(() =>
@@ -621,6 +619,13 @@ it.effect.each<HandoffCase & { readonly case: string; readonly returns: boolean 
   {
     case: "a page on this computer",
     saved: [relayed],
+    page: localPage,
+    environmentId: "relayed",
+    returns: true,
+  },
+  {
+    case: "a saved server's page on this computer, for another saved environment",
+    saved: [{ environmentId: "tunnel", httpBaseUrl: "http://127.0.0.1:3773/" }, relayed],
     page: localPage,
     environmentId: "relayed",
     returns: true,
