@@ -178,6 +178,7 @@ describe("Codex sign-in delivery", () => {
     vi.setSystemTime(Date.now() + 10 * 60_000);
     connect("connected");
     expect(runAtomCommand).not.toHaveBeenCalled();
+    expect(toastManager.add).toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
   });
 
   it("stops waiting for its environment when the sign-in expires", () => {

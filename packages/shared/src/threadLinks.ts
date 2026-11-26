@@ -7,8 +7,9 @@ import { webOrigin } from "./url.ts";
 export const THREAD_LINK_PROTOCOL = "t3-thread";
 const V1_PREFIX = `${THREAD_LINK_PROTOCOL}://v1/`;
 const V2_PREFIX = `${THREAD_LINK_PROTOCOL}://v2/`;
+const V3_PREFIX = `${THREAD_LINK_PROTOCOL}://v3/`;
 const HOSTED_SEGMENT = "[A-Za-z0-9_%-]+";
-const THREAD_HREF = String.raw`t3-thread:\/\/v[12]\/`;
+const THREAD_HREF = String.raw`t3-thread:\/\/v[123]\/`;
 // A label stops at any bracket, so a run of unclosed brackets is scanned once, not once per bracket.
 const LABEL = String.raw`[^[\]\n]*`;
 const NOT_INSIDE_A_LONGER_URL = {
@@ -87,8 +88,8 @@ function percentDecoded(value: string): string | null {
   }
 }
 
-function parseHostedThreadLink(href: string, hostedPrefix: string): ThreadLink | null {
-  const match = HOSTED_PATH.exec(href.slice(hostedPrefix.length));
+function parseEscapedThreadLink(href: string, prefix: string): ThreadLink | null {
+  const match = HOSTED_PATH.exec(href.slice(prefix.length));
   if (!match) return null;
   const environmentId = Option.getOrNull(decodeEnvironmentId(percentDecoded(match[1]!)));
   const threadId = Option.getOrNull(decodeThreadId(percentDecoded(match[2]!)));
@@ -96,15 +97,15 @@ function parseHostedThreadLink(href: string, hostedPrefix: string): ThreadLink |
 }
 
 /**
- * The thread id as written, since thread ids can hold percent escapes of their own; candidates also
- * try it decoded. A hosted link escapes both ids and a t3-thread link its environment id, so those
- * are decoded.
+ * A v1 or v2 link's ids as written, since thread ids can hold percent escapes of their own;
+ * candidates also try a thread id decoded. A v3 or hosted link escapes both ids, so they are decoded.
  */
 export function parseThreadLinkHref(href: string, hostedOrigin?: string): ThreadLink | null {
   const hostedPrefix = hostedThreadPrefix(hostedOrigin);
   if (hostedPrefix !== undefined && href.startsWith(hostedPrefix)) {
-    return parseHostedThreadLink(href, hostedPrefix);
+    return parseEscapedThreadLink(href, hostedPrefix);
   }
+  if (href.startsWith(V3_PREFIX)) return parseEscapedThreadLink(href, V3_PREFIX);
   if (href.startsWith(V1_PREFIX)) {
     const threadId = Option.getOrNull(decodeThreadId(href.slice(V1_PREFIX.length)));
     return threadId === null ? null : { environmentId: null, threadId };
@@ -113,7 +114,7 @@ export function parseThreadLinkHref(href: string, hostedOrigin?: string): Thread
   const path = href.slice(V2_PREFIX.length);
   const slash = path.indexOf("/");
   if (slash < 0) return null;
-  const environmentId = Option.getOrNull(decodeEnvironmentId(percentDecoded(path.slice(0, slash))));
+  const environmentId = Option.getOrNull(decodeEnvironmentId(path.slice(0, slash)));
   const threadId = Option.getOrNull(decodeThreadId(path.slice(slash + 1)));
   return environmentId === null || threadId === null ? null : { environmentId, threadId };
 }
@@ -155,14 +156,18 @@ export function guessThreadLinkRef(
   return null;
 }
 
-const linkSafeThreadId = (threadId: string) =>
-  /^[\w\-.~:@!$&'()*+,;=%/]+$/.test(threadId) ? threadId : escapedSegment(threadId);
+// `&` could start a character reference, which a Markdown renderer decodes.
+const WRITTEN_AS_IS = /^[\w\-.~:@!$'()*+,;=%/]+$/;
 
-function threadLinkHref(link: ThreadLink): string {
-  const threadId = linkSafeThreadId(link.threadId);
-  return link.environmentId === null
-    ? `${V1_PREFIX}${threadId}`
-    : `${V2_PREFIX}${escapedSegment(link.environmentId)}/${threadId}`;
+function threadLinkHref({ environmentId, threadId }: ThreadLink): string {
+  if (environmentId === null) {
+    return `${V1_PREFIX}${WRITTEN_AS_IS.test(threadId) ? threadId : escapedSegment(threadId)}`;
+  }
+  return WRITTEN_AS_IS.test(threadId) &&
+    WRITTEN_AS_IS.test(environmentId) &&
+    !environmentId.includes("/")
+    ? `${V2_PREFIX}${environmentId}/${threadId}`
+    : `${V3_PREFIX}${escapedSegment(environmentId)}/${escapedSegment(threadId)}`;
 }
 
 const linkLabel = (label: string | undefined) =>

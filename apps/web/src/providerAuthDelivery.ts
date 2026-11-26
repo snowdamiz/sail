@@ -87,19 +87,22 @@ export function startProviderAuthDelivery(): void {
     void completeProviderAuth(delivery);
     return;
   }
-  const expiry = setTimeout(() => {
+  const stopWaiting = (send: boolean) => {
+    clearTimeout(expiry);
     unsubscribe();
+    if (send) {
+      void completeProviderAuth(delivery);
+      return;
+    }
     toastManager.add({
       type: "error",
       title: m(msg("ChatGPT sign-in couldn't finish")),
       description: m(msg("Reconnect to the environment and try again.")),
     });
-  }, signIn.expiresAt - Date.now());
+  };
+  const expiry = setTimeout(() => stopWaiting(false), signIn.expiresAt - Date.now());
   const unsubscribe = appAtomRegistry.subscribe(presentationAtom, (presentation) => {
-    if (presentation?.connection.phase !== "connected") return;
-    clearTimeout(expiry);
-    unsubscribe();
-    void completeProviderAuth(delivery);
+    if (presentation?.connection.phase === "connected") stopWaiting(Date.now() < signIn.expiresAt);
   });
 }
 
