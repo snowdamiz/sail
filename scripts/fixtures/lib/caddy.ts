@@ -8,12 +8,11 @@ import {
   DockerError,
   dockerSucceeds,
   ensureNetwork,
-  exists,
   FIXTURE_LABEL,
   inspect,
   NETWORK,
 } from "./docker.ts";
-import { fixturesRoot } from "./state.ts";
+import { fixturesRoot, lockHolder, releaseLock, takeLock } from "./state.ts";
 
 export const CADDY_CONTAINER = "sail-fixtures-caddy";
 const CADDY_IMAGE = "caddy:2";
@@ -110,40 +109,25 @@ function caVersion(ca: string): number {
   }
 }
 
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
+/** Every fixture runs on Node, so a holder's pid reused by anything else counts as dead. */
+function isFixtureProcess(pid: number): boolean {
+  const ps = NodeChildProcess.spawnSync("ps", ["-o", "command=", "-p", String(pid)], {
+    encoding: "utf8",
+  });
+  return ps.status === 0 && /\bnode\b/.test(ps.stdout);
 }
 
-/** One process at a time replaces the root. A holder that died leaves only its pid behind. */
+/** One process at a time replaces the root or the container serving it, for up to 5 minutes. */
 function withRootLock<T>(dir: string, run: () => T): T {
-  const lock = NodePath.join(dir, "ca.lock");
-  for (let attempt = 0; ; attempt++) {
-    try {
-      NodeFS.writeFileSync(lock, String(process.pid), { flag: "wx" });
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
-    let holder: number;
-    try {
-      holder = Number(NodeFS.readFileSync(lock, "utf8"));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-      throw error;
-    }
-    if (holder > 0 && !isAlive(holder)) NodeFS.rmSync(lock, { force: true });
-    else if (attempt >= 1200) throw new Error(`${lock} is still held by process ${holder}`);
-    else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  const lock = NodePath.join(dir, "root.lock.json");
+  for (let attempt = 0; !takeLock(lock, isFixtureProcess); attempt++) {
+    if (attempt >= 6000) throw new Error(`${lock} is still held by process ${lockHolder(lock)}`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
   }
   try {
     return run();
   } finally {
-    NodeFS.rmSync(lock, { force: true });
+    releaseLock(lock);
   }
 }
 
@@ -184,32 +168,38 @@ function makeRoot(dir: string): string {
   return staging;
 }
 
+/** The caller holds the root lock. True when it made a new root. */
+function rotateRoot(dir: string): boolean {
+  const ca = NodePath.join(dir, "ca");
+  if (caVersion(ca) >= CA_VERSION) return false;
+  const staging = makeRoot(dir);
+  const retired = `${staging}-retired`;
+  try {
+    NodeFS.renameSync(ca, retired);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      NodeFS.rmSync(staging, { recursive: true, force: true });
+      throw error;
+    }
+  }
+  try {
+    NodeFS.renameSync(staging, ca);
+    return true;
+  } catch {
+    NodeFS.rmSync(staging, { recursive: true, force: true });
+    return false;
+  } finally {
+    NodeFS.rmSync(retired, { recursive: true, force: true });
+  }
+}
+
 /**
  * True when it made a new root. A lane at an older revision makes one only when `ca/root.crt` is
  * missing, so the old root moves aside only once the new one is ready, and goes once it is in.
  */
 export function ensureRootCa(dir: string): boolean {
-  const ca = NodePath.join(dir, "ca");
-  if (caVersion(ca) >= CA_VERSION) return false;
-  return withRootLock(dir, () => {
-    if (caVersion(ca) >= CA_VERSION) return false;
-    const staging = makeRoot(dir);
-    const retired = `${staging}-retired`;
-    try {
-      NodeFS.renameSync(ca, retired);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    try {
-      NodeFS.renameSync(staging, ca);
-      return true;
-    } catch {
-      NodeFS.rmSync(staging, { recursive: true, force: true });
-      return false;
-    } finally {
-      NodeFS.rmSync(retired, { recursive: true, force: true });
-    }
-  });
+  if (caVersion(NodePath.join(dir, "ca")) >= CA_VERSION) return false;
+  return withRootLock(dir, () => rotateRoot(dir));
 }
 
 /** Names the root on disk, which the running Caddy must have started with. */
@@ -221,6 +211,7 @@ export function rootFingerprint(dir = caddyDir()): string {
 export const ROOT_LABEL = `${FIXTURE_LABEL}.root`;
 
 interface Served {
+  readonly id: string;
   readonly config: string | undefined;
   readonly data: string | undefined;
   readonly root: string | undefined;
@@ -230,6 +221,7 @@ interface Served {
 /** What the shared Caddy container runs with, or nothing when there is none. */
 function served(): Served | undefined {
   let state: {
+    readonly Id: string;
     readonly Mounts: ReadonlyArray<{
       readonly Source: string;
       readonly Destination: string;
@@ -247,6 +239,7 @@ function served(): Served | undefined {
   const at = (destination: string) =>
     state.Mounts.find((mount) => mount.Destination === destination);
   return {
+    id: state.Id,
     config: at(CONFIG_DIR)?.Source,
     data: at("/data")?.Name,
     root: state.Config.Labels?.[ROOT_LABEL],
@@ -262,10 +255,14 @@ function refuseAnotherDirectory(running: Served, dir: string): void {
   );
 }
 
-function samePath(a: string, b: string): boolean {
-  if (a === b) return true;
+/** Docker Desktop sometimes reports a host bind mount by its VM path, under `/host_mnt`. */
+const hostPath = (path: string) => path.replace(/^\/host_mnt(?=\/)/, "");
+
+function samePath(served: string, dir: string): boolean {
+  const host = hostPath(served);
+  if (host === dir) return true;
   try {
-    return NodeFS.realpathSync(a) === NodeFS.realpathSync(b);
+    return NodeFS.realpathSync(host) === NodeFS.realpathSync(dir);
   } catch {
     return false;
   }
@@ -274,6 +271,8 @@ function samePath(a: string, b: string): boolean {
 /** True when `text` is a Caddyfile older than this checkout's, which `ensureCaddy` upgrades. */
 export const isOlderCaddyfile = (text: string) =>
   Number(VERSION_LINE.exec(text)?.[1] ?? 0) < CADDYFILE_VERSION;
+
+const dataVolume = (root: string) => `${CADDY_CONTAINER}-data-${root}`;
 
 /**
  * Starts the shared Caddy on the root that is on disk. A container started on another root, by an
@@ -284,58 +283,17 @@ export function ensureCaddy(): void {
   ensureNetwork();
   const dir = caddyDir();
   NodeFS.mkdirSync(NodePath.join(dir, "sites"), { recursive: true });
-  const before = served();
-  if (before) refuseAnotherDirectory(before, dir);
   // A bind mount of a missing file would become a directory.
   NodeFS.appendFileSync(authLogPath(), "");
-  ensureRootCa(dir);
-  const root = rootFingerprint(dir);
-  if (before && before.root !== root) {
-    dockerSucceeds(["rm", "--force", CADDY_CONTAINER]);
-    if (before.data) dockerSucceeds(["volume", "rm", before.data]);
-  }
   const caddyfile = NodePath.join(dir, "Caddyfile");
   createWhole(caddyfile, CADDYFILE);
-  const now = served();
-  if (!now) {
-    try {
-      docker([
-        "run",
-        "--detach",
-        "--name",
-        CADDY_CONTAINER,
-        "--label",
-        `${FIXTURE_LABEL}=caddy`,
-        "--label",
-        `${ROOT_LABEL}=${root}`,
-        "--network",
-        NETWORK,
-        "--restart",
-        "unless-stopped",
-        "--memory",
-        "128m",
-        "--publish",
-        `127.0.0.1:${port("SAIL_FIXTURES_HTTPS_PORT", 443)}:443`,
-        "--publish",
-        `127.0.0.1:${port("SAIL_FIXTURES_HTTP_PORT", 80)}:80`,
-        "--volume",
-        `${dir}:${CONFIG_DIR}`,
-        "--volume",
-        `${CADDY_CONTAINER}-data-${root}:/data`,
-        CADDY_IMAGE,
-        "caddy",
-        "run",
-        "--config",
-        `${CONFIG_DIR}/Caddyfile`,
-        "--adapter",
-        "caddyfile",
-      ]);
-    } catch (error) {
-      if (!exists("container", CADDY_CONTAINER)) throw error;
-    }
-  } else if (!now.running) {
-    docker(["start", CADDY_CONTAINER]);
-  }
+  const seen = served();
+  if (seen) refuseAnotherDirectory(seen, dir);
+  const settled =
+    seen?.running &&
+    caVersion(NodePath.join(dir, "ca")) >= CA_VERSION &&
+    seen.root === rootFingerprint(dir);
+  if (!settled) withRootLock(dir, () => startOnRoot(dir));
   waitForAdmin();
   if (isOlderCaddyfile(NodeFS.readFileSync(caddyfile, "utf8")))
     changeAndReload("Caddyfile", {
@@ -343,6 +301,59 @@ export function ensureCaddy(): void {
       body: CADDYFILE,
       version: CADDYFILE_VERSION,
     });
+}
+
+/** The caller holds the root lock, so what it inspects here is still true when it acts on it. */
+function startOnRoot(dir: string): void {
+  rotateRoot(dir);
+  const root = rootFingerprint(dir);
+  const current = served();
+  if (current) refuseAnotherDirectory(current, dir);
+  if (current && current.root === root) {
+    if (!current.running) docker(["start", current.id]);
+    return;
+  }
+  if (current) {
+    dockerSucceeds(["rm", "--force", current.id]);
+    if (current.data && current.data !== dataVolume(root))
+      dockerSucceeds(["volume", "rm", current.data]);
+  }
+  try {
+    docker([
+      "run",
+      "--detach",
+      "--name",
+      CADDY_CONTAINER,
+      "--label",
+      `${FIXTURE_LABEL}=caddy`,
+      "--label",
+      `${ROOT_LABEL}=${root}`,
+      "--network",
+      NETWORK,
+      "--restart",
+      "unless-stopped",
+      "--memory",
+      "128m",
+      "--publish",
+      `127.0.0.1:${port("SAIL_FIXTURES_HTTPS_PORT", 443)}:443`,
+      "--publish",
+      `127.0.0.1:${port("SAIL_FIXTURES_HTTP_PORT", 80)}:80`,
+      "--volume",
+      `${dir}:${CONFIG_DIR}`,
+      "--volume",
+      `${dataVolume(root)}:/data`,
+      CADDY_IMAGE,
+      "caddy",
+      "run",
+      "--config",
+      `${CONFIG_DIR}/Caddyfile`,
+      "--adapter",
+      "caddyfile",
+    ]);
+  } catch (error) {
+    // A lane at an older revision took the name meanwhile; the next call replaces its container.
+    if (!served()) throw error;
+  }
 }
 
 function waitForAdmin(): void {

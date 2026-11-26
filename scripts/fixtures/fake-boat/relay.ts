@@ -7,7 +7,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { CADDY_CONTAINER, caddyDir } from "../lib/caddy.ts";
-import { docker, exists, inspect, NETWORK } from "../lib/docker.ts";
+import { docker, DockerError, NETWORK } from "../lib/docker.ts";
 import { standInHome } from "../lib/state.ts";
 
 const BOAT = NodePath.join(import.meta.dirname, "boat");
@@ -174,6 +174,24 @@ have=$(grep -F ' ${HOSTS_MARKER}' /etc/hosts || true)
 kept=$(grep -vF ' ${HOSTS_MARKER}' /etc/hosts || true)
 { printf '%s\\n' "$kept"; [ -z "$want" ] || printf '%s\\n' "$want"; } > /etc/hosts`;
 
+/** Caddy's address on the fixtures network, or nothing while no Caddy runs. */
+function caddyAddress(): string {
+  try {
+    return docker(
+      [
+        "inspect",
+        "--format",
+        `{{(index .NetworkSettings.Networks "${NETWORK}").IPAddress}}`,
+        CADDY_CONTAINER,
+      ],
+      { timeoutMs: 30_000 },
+    ).trim();
+  } catch (error) {
+    if (error instanceof DockerError && /no such/i.test(error.stderr)) return "";
+    throw error;
+  }
+}
+
 /** What each container's /etc/hosts last got, by container and start time, since Docker resets it at start. */
 const synced = new Map<string, string>();
 
@@ -183,19 +201,15 @@ const synced = new Map<string, string>();
  * requests from interleaving the rewrite.
  */
 function syncHosts(container: string): void {
-  const [networks = "{}", started = ""] = docker([
-    "inspect",
-    "--format",
-    "{{json .NetworkSettings.Networks}}\n{{.State.StartedAt}}",
-    container,
-  ])
+  const [networks = "{}", started = ""] = docker(
+    ["inspect", "--format", "{{json .NetworkSettings.Networks}}\n{{.State.StartedAt}}", container],
+    { timeoutMs: 30_000 },
+  )
     .trim()
     .split("\n");
   if (!(NETWORK in (JSON.parse(networks) as Record<string, unknown>)))
     throw new RequestError(`${container} is not on the ${NETWORK} network`);
-  const caddyIp = exists("container", CADDY_CONTAINER)
-    ? inspect<string>(CADDY_CONTAINER, `(index .NetworkSettings.Networks "${NETWORK}").IPAddress`)
-    : "";
+  const caddyIp = caddyAddress();
   const want = (
     caddyIp
       ? publishedHosts(NodePath.join(caddyDir(), "sites"), HOME).map(

@@ -300,7 +300,8 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
   it("runs none of the fake's own background entry points for a caller", async () => {
     for (const argv of [
       ["--finish-transition", "bx-000000000000"],
-      ["--json", "--drain-outbox"],
+      ["--json", "--outbox-worker"],
+      ["--watch-outbox", "bx-000000000000"],
     ]) {
       const ran = await post({ container, argv, env: {} }, bound);
       expect(ran.status, argv.join(" ")).toBe(400);

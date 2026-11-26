@@ -1063,11 +1063,16 @@ primary_region = "iad" # comment
     ]).trim();
     expect(labelled).toBe(builtImages(built));
     const otherTag = `sail-fake-fly-test-other:${suffix}`;
+    const alias = `registry.fly.io/${built}:deployment-backup`;
     docker(["tag", labelled, otherTag]);
+    docker(["tag", labelled, alias]);
     ok(["apps", "destroy", built, "--yes"]);
-    expect(builtImages(built)).toBe("");
+    expect(
+      docker(["image", "ls", "--format", "{{.Tag}}", `registry.fly.io/${built}`]).trim(),
+      "of the app's repository only the alias someone added is left",
+    ).toBe("deployment-backup");
     expect(exists("image", otherTag), "a tag someone else added survives").toBe(true);
-    docker(["image", "rm", otherTag]);
+    docker(["image", "rm", otherTag, alias]);
   });
 
   it("reads [deploy] strategy from fly.toml, which --strategy overrides", () => {

@@ -216,6 +216,9 @@ function randomFrom(alphabet: string, length: number): string {
   return Array.from({ length }, () => alphabet[NodeCrypto.randomInt(alphabet.length)]).join("");
 }
 
+/** The tag `deploy` gives a build: `deployment-` and a ULID, so an alias someone added is kept. */
+const BUILD_TAG = /:deployment-[0-9A-HJKMNP-TV-Z]{26}$/;
+
 function ulid(): string {
   let time = Date.now();
   let prefix = "";
@@ -743,7 +746,7 @@ function removeBuiltImages(app: string, recordedTag: string | undefined): void {
     "{{.Repository}}:{{.Tag}}",
   ])
     .split("\n")
-    .filter((tag) => tag.startsWith(`registry.fly.io/${app}:deployment-`));
+    .filter((tag) => tag.startsWith(`registry.fly.io/${app}:`) && BUILD_TAG.test(tag));
   for (const tag of new Set([...tags, recordedTag])) removeBuiltTag(tag);
 }
 
