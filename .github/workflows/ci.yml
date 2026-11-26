@@ -130,11 +130,15 @@ jobs:
             scripts/lib/tagged-source-version.ts scripts/lib/public-config.ts scripts/lib/build-target-arch.ts \
             scripts/lib/desktop-external-packages.ts scripts/lib/cli-executable-imports.ts scripts/lib/linux-arm64-sea.ts \
             scripts/lib/cached-tests.ts scripts/lib/third-party-licenses.ts infra/task-cache/src/remoteCache.ts \
+            third-party-licenses.config.json third-party-licenses/spdx \
             apps/server/scripts/cli.ts apps/server/scripts/cliErrors.ts \
+            apps/server/src/testUtils/weightedShardSequencer.ts apps/server/src/testUtils/shardWeights.json \
             vite.config.ts apps/server/vite.config.ts apps/web/vite.config.ts apps/web/vite apps/web/src/branding.logic.ts \
             'assets/dev/blueprint-web-*' 'assets/prod/t3-black-web-*' 'assets/nightly/nightly-web-*' \
             package.json scripts/package.json apps/server/package.json apps/web/package.json apps/desktop/package.json \
             apps/desktop/gnome-extension/bundle.json pnpm-workspace.yaml .pnpmfile.cjs patches \
+            native/resource-monitor/Cargo.toml native/resource-monitor/Cargo.lock \
+            native/sail-boat/Cargo.toml native/sail-boat/Cargo.lock \
             .github/workflows/ci.yml || status=$?
           case "$status" in
             0) echo changed=false >> "$GITHUB_OUTPUT" ;;

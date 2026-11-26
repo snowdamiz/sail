@@ -148,7 +148,7 @@ export const expectCleanBuildContext = Effect.fn("smoke-docker-image.expectClean
     const excluded = ["", "apps/web/", "apps/server/"].flatMap((prefix) =>
       LOCAL_CONTEXT_FILES.map((file) => prefix + file),
     );
-    const included = ["package.json", "apps/web/.env.example"];
+    const included = ["package.json", ".env.example", "apps/web/.env.example"];
     for (const file of [...excluded, ...included]) {
       const target = path.join(context, file);
       yield* fs.makeDirectory(path.dirname(target), { recursive: true });
@@ -329,6 +329,21 @@ const expectNoNewPrivs = Effect.fn("smoke-docker-image.expectNoNewPrivs")(functi
   ])).stdout;
   if (!/^NoNewPrivs:\s+1$/.test(status)) {
     return yield* fail("privilege drop", "as-sail did not set no-new-privs");
+  }
+  const pids = (yield* docker(["exec", id, "/bin/ps", "-o", "pid=", "--ppid", "1"])).stdout
+    .split(/\s+/)
+    .filter((pid) => pid !== "");
+  for (const pid of pids) {
+    const serverStatus = (yield* docker([
+      "exec",
+      id,
+      "/usr/bin/grep",
+      "^NoNewPrivs:",
+      `/proc/${pid}/status`,
+    ])).stdout;
+    if (!/^NoNewPrivs:\s+1$/.test(serverStatus)) {
+      return yield* fail("privilege drop", `server PID ${pid} did not inherit no-new-privs`);
+    }
   }
 });
 
@@ -598,9 +613,9 @@ const smokeFreshVolume = Effect.fn("smoke-docker-image.smokeFreshVolume")(functi
       "/data",
     ]);
     yield* docker(["restart", "-t", "30", container.id]);
-    yield* waitForApp(container.id, input.timeoutSeconds);
+    const restartedOrigin = yield* waitForApp(container.id, input.timeoutSeconds);
     yield* expectDataOwnership(container.id, "/data/sail");
-    yield* expectSignedInSession(origin, cookie);
+    yield* expectSignedInSession(restartedOrigin, cookie);
     yield* Console.log(
       "An existing volume with a root-owned mount retained its signed-in session after restart.",
     );
