@@ -34,8 +34,11 @@ export interface Outbox {
   readonly start: () => void;
   /** The worker's own loop; it exits once the queue is empty. */
   readonly work: () => void;
-  /** Saves the matching requests, or waits for the worker saving them, within `budgetMs`. */
-  readonly settle: (match: Match, budgetMs: number) => Promise<void>;
+  /**
+   * Saves the matching requests, or waits for the worker saving them, within `budgetMs`. False
+   * when the budget ran out with one still queued or saving.
+   */
+  readonly settle: (match: Match, budgetMs: number) => Promise<boolean>;
   readonly failures: (match?: Match) => ReadonlyArray<SnapshotFailure>;
 }
 
@@ -229,11 +232,12 @@ export function outbox({ home, entry, save }: OutboxOptions): Outbox {
     while (queued().length > 0) if (!drainHolding()) return;
   };
 
-  const settle = async (match: Match, budgetMs: number): Promise<void> => {
+  const settle = async (match: Match, budgetMs: number): Promise<boolean> => {
     const give = Date.now() + budgetMs;
     for (;;) {
       if (queued(match).length > 0) drainHolding(match);
-      if ((queued(match).length === 0 && !saving(match)) || Date.now() >= give) return;
+      if (queued(match).length === 0 && !saving(match)) return true;
+      if (Date.now() >= give) return false;
       await sleep(250);
     }
   };

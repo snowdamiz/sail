@@ -8,8 +8,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import {
   CADDY_CONTAINER,
+  CADDYFILE,
+  CADDYFILE_VERSION,
   caddyDir,
   ensureCaddy,
+  isOlderCaddyfile,
   publishSite,
   removeSite,
   rootCertPath,
@@ -53,6 +56,33 @@ const status = async (url: string) =>
       url,
     ])
   ).stdout;
+
+describe("fixture Caddyfile version", () => {
+  const stamped = (version: number) =>
+    CADDYFILE.replace(
+      /^# sail-fixtures Caddyfile v\d+\n/,
+      `# sail-fixtures Caddyfile v${version}\n`,
+    );
+
+  it("never replaces a Caddyfile a newer checkout wrote", () => {
+    expect(isOlderCaddyfile(stamped(CADDYFILE_VERSION + 1))).toBe(false);
+    expect(isOlderCaddyfile(stamped(999_999))).toBe(false);
+    expect(isOlderCaddyfile(CADDYFILE)).toBe(false);
+    expect(isOlderCaddyfile(stamped(CADDYFILE_VERSION - 1))).toBe(true);
+    expect(isOlderCaddyfile("{\n}\n")).toBe(true);
+  });
+
+  it("bumps the version with every change to the Caddyfile's text", () => {
+    const sha256 = NodeCrypto.createHash("sha256").update(CADDYFILE).digest("hex");
+    expect(
+      { version: CADDYFILE_VERSION, sha256 },
+      "changed the Caddyfile? bump CADDYFILE_VERSION, then pin the new hash here",
+    ).toEqual({
+      version: 1,
+      sha256: "2c5ea0ff0916ab982970fe5a092e4bf1babdb1643db0f32160eff5c56b9fa247",
+    });
+  });
+});
 
 describe.skipIf(!hasDocker())("fixture Caddy", () => {
   beforeAll(() => {
@@ -124,23 +154,6 @@ describe.skipIf(!hasDocker())("fixture Caddy", () => {
     expect(listing.split("\n")).not.toContain(`${bad}.caddy`);
     expect(NodeFS.existsSync(NodePath.join(caddyDir(), "sites", `${bad}.caddy`))).toBe(false);
     expect(await status(`https://${ids[0]}.localtest.me/`)).toBe("200");
-  });
-
-  it("never replaces a Caddyfile a newer checkout wrote", () => {
-    const file = NodePath.join(caddyDir(), "Caddyfile");
-    const current = NodeFS.readFileSync(file, "utf8");
-    const newer = `# sail-fixtures Caddyfile v999999\n${current.replace(/^# sail-fixtures Caddyfile v\d+\n/, "")}`;
-    const swap = (body: string) => {
-      NodeFS.writeFileSync(`${file}.${run}.tmp`, body);
-      NodeFS.renameSync(`${file}.${run}.tmp`, file);
-    };
-    swap(newer);
-    try {
-      ensureCaddy();
-      expect(NodeFS.readFileSync(file, "utf8")).toBe(newer);
-    } finally {
-      swap(current);
-    }
   });
 
   it("refuses the hosts the fixtures reserve", () => {

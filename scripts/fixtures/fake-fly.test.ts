@@ -508,6 +508,11 @@ primary_region = "iad" # comment
       ["memory", '[[vm]]\n  memory = "1.2.3gb"\n'],
       ["memory", '[[vm]]\n  memory = "256gi"\n'],
       ["memory", '[[vm]]\n  memory = "-256"\n'],
+      ["memory", '[[vm]]\n  memory = "1e309gb"\n'],
+      [
+        "initial_size",
+        '[[mounts]]\n  source = "data"\n  destination = "/data"\n  initial_size = "1e309gb"\n',
+      ],
       [
         "initial_size",
         '[[mounts]]\n  source = "data"\n  destination = "/data"\n  initial_size = "10gi"\n',
@@ -630,6 +635,17 @@ primary_region = "iad" # comment
       /\.json$/,
       "",
     );
+    const homeVolumes = () =>
+      docker(["volume", "ls", "-q", "--filter", `label=sail-fixture.home=${homeId(home)}`]);
+    const volumesBefore = homeVolumes();
+    for (const delay of ["99999999999999999", "604801"]) {
+      expect(
+        fly(["volumes", "snapshots", "create", original], { FAKE_FLY_SNAPSHOT_SECS: delay }),
+        delay,
+      ).toMatchObject({ status: 1, stderr: expect.stringContaining("FAKE_FLY_SNAPSHOT_SECS") });
+    }
+    expect(homeVolumes()).toBe(volumesBefore);
+    expect(NodeFS.readdirSync(NodePath.join(home, "snapshots"))).toEqual([`${pendingId}.json`]);
     const listing = fly(["volumes", "snapshots", "list", original, "-j"]);
     expect(JSON.parse(listing.stdout)).toMatchObject([
       { id: "", status: "pending", size: 0, digest: "" },

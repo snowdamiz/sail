@@ -140,7 +140,7 @@ if (slot?.kind === "download" && result.exitCode === 0 && result.file !== undefi
   const remote = argv[from] ?? "";
   const isDir = NodeFS.existsSync(local) && NodeFS.statSync(local).isDirectory();
   NodeFS.writeFileSync(
-    isDir ? NodePath.join(local, NodePath.basename(remote.replace(REMOTE_PATH, ""))) : local,
+    isDir ? NodePath.join(local, NodePath.basename(remote.slice(remote.indexOf(":") + 1))) : local,
     Buffer.from(result.file, "base64"),
   );
 }

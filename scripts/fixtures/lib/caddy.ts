@@ -47,10 +47,10 @@ const AUTH_SITE = `${AUTH_HOST} {
  * Lanes at different revisions share this file, so it carries a version: bump it with every
  * change, and keep each version a superset of the last. A lane never replaces a newer one.
  */
-const CADDYFILE_VERSION = 1;
+export const CADDYFILE_VERSION = 1;
 const VERSION_LINE = /^# sail-fixtures Caddyfile v(\d+)\n/;
 
-const CADDYFILE = `# sail-fixtures Caddyfile v${CADDYFILE_VERSION}
+export const CADDYFILE = `# sail-fixtures Caddyfile v${CADDYFILE_VERSION}
 {
 	admin localhost:2019
 	local_certs
@@ -147,7 +147,9 @@ function samePath(a: string, b: string): boolean {
   }
 }
 
-const caddyfileVersion = (text: string) => Number(VERSION_LINE.exec(text)?.[1] ?? 0);
+/** True when `text` is a Caddyfile older than this checkout's, which `ensureCaddy` upgrades. */
+export const isOlderCaddyfile = (text: string) =>
+  Number(VERSION_LINE.exec(text)?.[1] ?? 0) < CADDYFILE_VERSION;
 
 export function ensureCaddy(): void {
   ensureNetwork();
@@ -201,7 +203,7 @@ export function ensureCaddy(): void {
     docker(["start", CADDY_CONTAINER]);
   }
   waitForAdmin();
-  if (caddyfileVersion(NodeFS.readFileSync(caddyfile, "utf8")) < CADDYFILE_VERSION)
+  if (isOlderCaddyfile(NodeFS.readFileSync(caddyfile, "utf8")))
     changeAndReload("Caddyfile", {
       kind: "upgrade",
       body: CADDYFILE,

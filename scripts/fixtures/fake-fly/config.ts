@@ -102,11 +102,14 @@ function humanBytes(text: string, base: 1000 | 1024): number | undefined {
   return Math.trunc(Number(number) * base ** power);
 }
 
-/** flyctl's `helpers.ParseSize`: a bare integer is already in `unit`, else a human size. */
+/**
+ * flyctl's `helpers.ParseSize`: a bare integer is already in `unit`, else a human size. Go's
+ * `strconv` refuses a number out of range, which JavaScript reads as `Infinity`.
+ */
 function parseSize(text: string, base: 1000 | 1024, unit: number): number | undefined {
-  if (/^[+-]?\d+$/.test(text)) return Number(text);
-  const bytes = humanBytes(text, base);
-  return bytes === undefined ? undefined : Math.floor(bytes / unit);
+  const size = /^[+-]?\d+$/.test(text) ? Number(text) : humanBytes(text, base);
+  if (size === undefined || !Number.isFinite(size)) return undefined;
+  return /^[+-]?\d+$/.test(text) ? size : Math.floor(size / unit);
 }
 
 const STOP_SIGNALS = new Set([

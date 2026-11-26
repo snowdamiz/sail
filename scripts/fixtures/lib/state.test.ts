@@ -7,7 +7,7 @@ import * as NodePath from "node:path";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 
 import { caddyDir } from "./caddy.ts";
-import { fixturesRoot, logCall, nameOwner, readJson, releaseName } from "./state.ts";
+import { fixturesRoot, nameOwner, readJson, releaseName } from "./state.ts";
 
 const scratch = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "fixture-state-test-"));
 const lib = (file: string) => JSON.stringify(NodePath.join(import.meta.dirname, file));
@@ -57,23 +57,5 @@ describe("fixture state", () => {
       seen = readJson(file);
     writer.kill();
     expect(seen?.filler.length).toBe(64 * 1024 * 1024);
-  });
-
-  it("masks a secret flag's value however it is written", () => {
-    const home = NodePath.join(scratch, "calls");
-    const argv = ["-tglued", "-t", "spaced", "-t=equals", "--access-token=long", "-a", "app"];
-    logCall(home, { argv, mutating: false, exitCode: 0 }, ["-t", "--access-token"]);
-    const logged = JSON.parse(NodeFS.readFileSync(NodePath.join(home, "calls.jsonl"), "utf8")) as {
-      readonly argv: ReadonlyArray<string>;
-    };
-    expect(logged.argv).toEqual([
-      "-t<redacted>",
-      "-t",
-      "<redacted>",
-      "-t=<redacted>",
-      "--access-token=<redacted>",
-      "-a",
-      "app",
-    ]);
   });
 });

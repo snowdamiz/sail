@@ -255,7 +255,7 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
     expect(await calls()).toBe(before);
   });
 
-  it("runs the relay's own home and image, whatever FAKE_ variables a caller sends", async () => {
+  it("runs the relay's own home, whatever FAKE_ variables a caller sends", async () => {
     const decoy = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "fake-boat-relay-decoy-"));
     try {
       const before = await calls();
@@ -263,7 +263,7 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
         {
           container,
           argv: ["--json", "status"],
-          env: { FAKE_BOAT_HOME: decoy, FAKE_BOAT_IMAGE: "sail-relay-test-not-an-image" },
+          env: { FAKE_BOAT_HOME: decoy },
         },
         token,
       );
@@ -299,6 +299,13 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
     );
     await ok(["scp", `${sandbox}:/home/user/up.txt`, "/tmp/down.txt"]);
     expect((await inside(["cat", "/tmp/down.txt"])).stdout).toBe(body);
+    await inside(["mkdir", "/tmp/back"]);
+    await ok(["scp", `${sandbox}:up.txt`, "/tmp/back"]);
+    await ok(["exec", sandbox, "--", "cp", "up.txt", "u"]);
+    await ok(["scp", `${sandbox}:u`, "/tmp/back/"]);
+    expect((await inside(["sh", "-c", "cd /tmp/back && ls && cat up.txt u"])).stdout).toBe(
+      `u\nup.txt\n${body}${body}`,
+    );
 
     const missing = await boat(["scp", "/tmp/nope.txt", `${sandbox}:/home/user/`]);
     expect(missing.status).toBe(1);

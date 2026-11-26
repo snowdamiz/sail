@@ -39,7 +39,7 @@ import {
   waitForApproval,
 } from "./sandbox/auth.ts";
 import { type CommandSpec, type Invocation, parse, UsageError } from "./sandbox/cli.ts";
-import { outbox, type SnapshotFailure, WORKER_ARG } from "./outbox-worker.ts";
+import { type Match, outbox, type SnapshotFailure, WORKER_ARG } from "./outbox-worker.ts";
 import {
   AUTH_LOG,
   AUTH_ORIGIN_FILE,
@@ -539,14 +539,29 @@ function reportFailures(failures: ReadonlyArray<SnapshotFailure>): void {
   }
 }
 
-/** After any save a sandbox asked for under `name`, which the real Boat finished before replying. */
+function settleBudgetMs(defaultMs: number): number {
+  const raw = process.env.FAKE_BOAT_SETTLE_SECS;
+  if (raw === undefined || raw === "") return defaultMs;
+  return integer(raw, "FAKE_BOAT_SETTLE_SECS", 0, 3600) * 1000;
+}
+
+/** Waits out the saves a sandbox asked for that `match` covers, which the real Boat finished before replying. */
+async function settled(match: Match, defaultBudgetMs: number): Promise<void> {
+  if (!(await OUTBOX.settle(match, settleBudgetMs(defaultBudgetMs)))) {
+    throw new BoatError(
+      "snapshot_in_progress",
+      "A snapshot the sandbox asked for is still saving. Try again shortly.",
+    );
+  }
+  reportFailures(OUTBOX.failures(match));
+}
+
 async function settledSnapshot(
   name: string | undefined,
   budgetMs = 100_000,
 ): Promise<SnapshotRecord> {
   const valid = snapshotName(name);
-  await OUTBOX.settle({ name: valid }, budgetMs);
-  reportFailures(OUTBOX.failures({ name: valid }));
+  await settled({ name: valid }, budgetMs);
   return snapshotRecord(valid);
 }
 
@@ -579,6 +594,29 @@ function run(
   });
 }
 
+const REFUSED_PAUSED =
+  /^Error response from daemon: container \S+ is paused, unpause the container before exec\s*$/i;
+
+/** Short enough that a retried call still ends inside Sail Boat's own timeout for it. */
+const PAUSE_RETRY_MS = 20_000;
+
+/**
+ * A commit can pause the sandbox between `requireRunning` and the `docker exec`, and Docker then
+ * refuses before the guest runs anything, so the exec is retried until the pause ends.
+ */
+async function execUnpaused(
+  args: ReadonlyArray<string>,
+  options: { readonly input?: Buffer; readonly killAfterMs?: number } = {},
+): Promise<Ran> {
+  const give = Date.now() + PAUSE_RETRY_MS;
+  for (;;) {
+    const ran = await run(args, options);
+    if (ran.status === 0 || !REFUSED_PAUSED.test(ran.stderr.toString()) || Date.now() >= give)
+      return ran;
+    await sleep(200);
+  }
+}
+
 function remotePath(path: string): string {
   return path.startsWith("/") ? path : `/home/user/${path}`;
 }
@@ -589,7 +627,7 @@ async function upload(local: string, id: string, remote: string): Promise<void> 
   if (!stat.isFile()) throw new BoatError("invalid_arguments", `${local} is not a file`);
   const script = 'd=$1; [ -d "$d" ] && d="$d/$2"; cat > "$d" && chmod "$3" "$d"';
   const mode = (stat.mode & 0o777).toString(8);
-  const copied = await run(
+  const copied = await execUnpaused(
     [
       "exec",
       "-i",
@@ -613,7 +651,15 @@ async function upload(local: string, id: string, remote: string): Promise<void> 
 
 async function download(id: string, remote: string, local: string): Promise<void> {
   requireRunning(sandboxRecord(id));
-  const copied = await run(["exec", "-u", "user", container(id), "cat", "--", remotePath(remote)]);
+  const copied = await execUnpaused([
+    "exec",
+    "-u",
+    "user",
+    container(id),
+    "cat",
+    "--",
+    remotePath(remote),
+  ]);
   if (copied.status !== 0) throw new BoatError("scp_failed", copied.stderr.toString().trim());
   const isDir = NodeFS.existsSync(local) && NodeFS.statSync(local).isDirectory();
   NodeFS.writeFileSync(
@@ -835,6 +881,7 @@ const TABLE: ReadonlyArray<Command> = [
     signedIn: true,
     run: async (invocation) => {
       const record = sandboxRecord(invocation.args.sandbox);
+      await settled({ sandboxId: record.id }, 20_000);
       requireLive(record);
       docker(["stop", "--time", "30", container(record.id)], { timeoutMs: 60_000 });
       print({});
@@ -920,8 +967,7 @@ const TABLE: ReadonlyArray<Command> = [
         throw new BoatError("confirmation_required", "Pass --yes to delete without a prompt");
       }
       const { id } = sandboxRecord(invocation.args.sandbox);
-      await OUTBOX.settle({ sandboxId: id }, 100_000);
-      reportFailures(OUTBOX.failures({ sandboxId: id }));
+      await settled({ sandboxId: id }, 100_000);
       removeSandbox(id);
       print({});
       return 0;
@@ -936,6 +982,7 @@ const TABLE: ReadonlyArray<Command> = [
     run: async (invocation) => {
       const name = snapshotName(invocation.args.name);
       const record = sandboxRecord(invocation.args.sandbox);
+      await settled({ name }, 100_000);
       requireLive(record);
       commitSnapshot(record.id, name);
       print({});
@@ -966,14 +1013,13 @@ const TABLE: ReadonlyArray<Command> = [
     prints: "json",
     signedIn: true,
     run: async () => {
-      await OUTBOX.settle({}, 15_000);
+      await settled({}, 15_000);
       const named = snapshotRecords().map(({ name, sandboxId, createdAt }) => ({
         name,
         sandboxId,
         createdAt,
       }));
       print({ named });
-      reportFailures(OUTBOX.failures());
       return 0;
     },
   },
@@ -995,12 +1041,10 @@ const TABLE: ReadonlyArray<Command> = [
         throw new BoatError("invalid_arguments", "exec needs a command after --");
       }
       const env = Object.entries(process.env).flatMap(([key, value]) =>
-        key.startsWith("FAKE_AUTH_") && key !== "FAKE_AUTH_ORIGIN" && value !== undefined
-          ? ["-e", `${key}=${value}`]
-          : [],
+        key.startsWith("FAKE_AUTH_") && value !== undefined ? ["-e", `${key}=${value}`] : [],
       );
       const started = Date.now();
-      const ran = await run(
+      const ran = await execUnpaused(
         [
           "exec",
           "-u",
@@ -1064,8 +1108,17 @@ const TABLE: ReadonlyArray<Command> = [
         throw new BoatError("invalid_arguments", "FAKE_BOAT_HOST_SCHEME must be https or http");
       }
       if (invocation.flags.has("localhost")) {
-        const unit = `fake-boat-host@${port}.service`;
-        docker(["exec", container(record.id), "systemctl", "enable", "--now", unit]);
+        const args = [
+          "exec",
+          container(record.id),
+          "systemctl",
+          "enable",
+          "--now",
+          `fake-boat-host@${port}.service`,
+        ];
+        const enabled = await execUnpaused(args);
+        if (enabled.status !== 0)
+          throw new DockerError(args, enabled.status, enabled.stderr.toString());
       }
       NodeFS.mkdirSync(at("hosts", record.id), { recursive: true });
       NodeFS.writeFileSync(at("hosts", record.id, String(port)), "");
@@ -1161,7 +1214,6 @@ async function main(argv: ReadonlyArray<string>): Promise<{ code: number; mutati
         "The fake boat prints only JSON: pass --json before any --",
       );
     }
-    OUTBOX.start();
     if (!command.signedIn) return { code: await command.run(invocation), mutating };
     const signedIn = account();
     if (!signedIn) throw new BoatError("not_signed_in", "Not signed in. Run boat onboard.");

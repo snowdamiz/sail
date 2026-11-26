@@ -100,28 +100,12 @@ export interface CallRecord {
   readonly exitCode: number;
 }
 
-/**
- * One JSON line per invocation in `<home>/calls.jsonl`, with `secretFlags` values masked: after
- * the flag, after `=`, or glued to a one-letter flag (`-tVALUE`). A caller that knows its other
- * flags masks bundles such as `-jtVALUE` before it calls this.
- */
-export function logCall(
-  home: string,
-  record: CallRecord,
-  secretFlags: ReadonlyArray<string> = [],
-): void {
-  const argv = record.argv.map((arg, index) => {
-    const previous = record.argv[index - 1];
-    if (previous !== undefined && secretFlags.includes(previous)) return "<redacted>";
-    const flag = secretFlags.find((name) => arg.startsWith(name) && arg !== name);
-    if (flag === undefined) return arg;
-    if (arg.startsWith(`${flag}=`)) return `${flag}=<redacted>`;
-    return /^-[^-]$/.test(flag) ? `${flag}<redacted>` : arg;
-  });
+/** One JSON line per invocation in `<home>/calls.jsonl`. A caller masks secrets in `argv` first. */
+export function logCall(home: string, record: CallRecord): void {
   NodeFS.mkdirSync(home, { recursive: true });
   NodeFS.appendFileSync(
     NodePath.join(home, "calls.jsonl"),
-    `${JSON.stringify({ time: new Date().toISOString(), argv, cwd: process.cwd(), mutating: record.mutating, exitCode: record.exitCode })}\n`,
+    `${JSON.stringify({ time: new Date().toISOString(), argv: record.argv, cwd: process.cwd(), mutating: record.mutating, exitCode: record.exitCode })}\n`,
     { mode: 0o600 },
   );
 }

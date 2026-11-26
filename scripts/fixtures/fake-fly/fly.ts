@@ -468,10 +468,14 @@ function volumeJson(volume: VolumeRecord) {
   };
 }
 
+const MAX_SNAPSHOT_SECS = 7 * 24 * 3600;
+
 function snapshotSeconds(): number {
   const text = process.env.FAKE_FLY_SNAPSHOT_SECS ?? "3";
-  if (!/^\d+(\.\d+)?$/.test(text))
-    throw new FlyError(`FAKE_FLY_SNAPSHOT_SECS must be a number of seconds, got "${text}"`);
+  if (!/^\d+(\.\d+)?$/.test(text) || Number(text) > MAX_SNAPSHOT_SECS)
+    throw new FlyError(
+      `FAKE_FLY_SNAPSHOT_SECS must be a number of seconds up to ${MAX_SNAPSHOT_SECS}, got "${text}"`,
+    );
   return Number(text);
 }
 

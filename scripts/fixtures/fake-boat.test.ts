@@ -14,6 +14,7 @@ import { docker, dockerSucceeds, hasDocker } from "./lib/docker.ts";
 import { homeId } from "./lib/state.ts";
 import { breakStaleLock, takeLock } from "./fake-boat/outbox-worker.ts";
 import { waitForApproval } from "./fake-boat/sandbox/auth.ts";
+import { requestFile } from "./fake-boat/sandbox/outbox.ts";
 
 const FAKE_DIR = NodePath.join(import.meta.dirname, "fake-boat");
 const RECORDED = NodePath.join(FAKE_DIR, "recorded");
@@ -466,6 +467,60 @@ describe("fake boat records and output", () => {
     const late = await run("boat", ["exec", "bx-000000000000", "--", "echo", "--json"], env);
     expect(lastJson<Failure>(late.stderr).code).toBe("json_required");
   });
+
+  it("fails a command that needs a save still running instead of answering without it", async () => {
+    const home = await NodeFSP.mkdtemp(NodePath.join(state, "saving-"));
+    const id = "bx-000000000001";
+    const name = "still-saving";
+    await using worker = fakeBoatProcess();
+    await NodeFSP.mkdir(NodePath.join(home, "sandboxes"));
+    await NodeFSP.mkdir(NodePath.join(home, "outbox", id), { recursive: true });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    await NodeFSP.writeFile(
+      NodePath.join(home, "account.json"),
+      JSON.stringify({ identifier: "saving@example.com", plan: "paid", signedInAt: createdAt }),
+    );
+    await NodeFSP.writeFile(
+      NodePath.join(home, "sandboxes", `${id}.json`),
+      JSON.stringify({ id, name, type: "small", createdAt, ttlSeconds: null, archiveAfter: null }),
+    );
+    await NodeFSP.writeFile(
+      NodePath.join(
+        home,
+        "outbox",
+        id,
+        requestFile({ stage: "claimed", base: name, pid: worker.pid }),
+      ),
+      JSON.stringify({ sandboxId: id, name, requestedAt: createdAt }),
+    );
+    const env = {
+      ...strippedEnv(),
+      FAKE_BOAT_HOME: home,
+      FAKE_BOAT_SETTLE_SECS: "1",
+      PATH: BOAT_PATH,
+    };
+    const commands = [
+      ["snapshots"],
+      ["snapshot", "rm", name],
+      ["snapshot", id, name],
+      ["new", "--name", "late", "--type", "small", "--from", name, "--no-auto-stop"],
+      ["stop", id],
+      ["delete", id, "--yes"],
+    ];
+    for (const args of commands) {
+      const ran = await run("boat", ["--json", ...args], env);
+      expect({ status: ran.status, stdout: ran.stdout }, args.join(" ")).toEqual({
+        status: 1,
+        stdout: "",
+      });
+      expect(lastJson<Failure>(ran.stderr).code, args.join(" ")).toBe("snapshot_in_progress");
+    }
+    const garbled = await run("boat", ["--json", "snapshots"], {
+      ...env,
+      FAKE_BOAT_SETTLE_SECS: "soon",
+    });
+    expect(lastJson<Failure>(garbled.stderr).error).toContain("FAKE_BOAT_SETTLE_SECS");
+  });
 });
 
 describe.skipIf(!hasDocker())("fake boat", () => {
@@ -774,6 +829,10 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     expect((await exec("printenv FAKE_AUTH_PROBE", { FAKE_AUTH_PROBE: "through" })).stdout).toBe(
       "through\n",
     );
+    const forwarded = await json(["exec", sandbox, "--", "printenv", "FAKE_AUTH_ORIGIN"], {
+      FAKE_AUTH_ORIGIN: OTHER_ORIGIN,
+    });
+    expect(lastJson<ExecJson>(forwarded.stdout).stdout).toBe(`${OTHER_ORIGIN}\n`);
     const expireAtOnce = { FAKE_AUTH_CODE_TTL_SECS: "0" };
     const deviceLink = async () =>
       (await exec("env -u FAKE_AUTH_ORIGIN codex login --device-auth", expireAtOnce)).stdout;
@@ -865,6 +924,52 @@ describe.skipIf(!hasDocker())("fake boat", () => {
       await expect.poll(() => pipesInside(WEB_PORT), POLL).toBe(0);
       open.destroy();
     }
+  });
+
+  it("waits out a pause that starts after the pause check, for exec, scp, and host", async () => {
+    const name = `sail-boat-${sandbox}`;
+    const real = NodeChildProcess.execFileSync("sh", ["-c", "command -v docker"], {
+      encoding: "utf8",
+    }).trim();
+    /** Pauses the sandbox right before the first `docker exec`, as a commit starting then does. */
+    const pausedAtExec = async (args: ReadonlyArray<string>) => {
+      const dir = await NodeFSP.mkdtemp(NodePath.join(home, "pausing-docker-"));
+      const refused = NodePath.join(dir, "refused");
+      await NodeFSP.writeFile(
+        NodePath.join(dir, "docker"),
+        `#!/bin/sh
+if [ "$1" = exec ] && [ ! -e '${refused}' ]; then
+  '${real}' pause ${name} >/dev/null || exit 1
+  '${real}' "$@"; status=$?
+  : > '${refused}'
+  exit $status
+fi
+exec '${real}' "$@"
+`,
+        { mode: 0o755 },
+      );
+      const ran = json(args, { PATH: `${dir}${NodePath.delimiter}${BOAT_PATH}` });
+      try {
+        await expect.poll(() => NodeFS.existsSync(refused), POLL).toBe(true);
+      } finally {
+        dockerSucceeds(["unpause", name]);
+      }
+      const done = await ran;
+      expect(done.status, `${args.join(" ")}: ${done.stderr}`).toBe(0);
+      return done;
+    };
+    const ran = await pausedAtExec(["exec", sandbox, "--", "echo", "after the pause"]);
+    expect(lastJson<ExecJson>(ran.stdout)).toMatchObject({
+      exitCode: 0,
+      stdout: "after the pause\n",
+    });
+    const local = NodePath.join(home, "notes.txt");
+    await pausedAtExec(["scp", local, `${sandbox}:/tmp/paused.txt`]);
+    const back = NodePath.join(home, "paused-back.txt");
+    await pausedAtExec(["scp", `${sandbox}:/tmp/paused.txt`, back]);
+    expect(await NodeFSP.readFile(back, "utf8")).toBe("kept across stops\n");
+    await pausedAtExec(["host", sandbox, String(WEB_PORT), "--public", "--localhost"]);
+    expect((await curl(["--cacert", rootCertPath(), hostedUrl])).stdout).toBe(WEB_BODY);
   });
 
   it("saves and lists named snapshots, from here and from inside", async () => {
