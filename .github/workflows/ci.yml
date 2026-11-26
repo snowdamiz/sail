@@ -87,13 +87,14 @@ jobs:
         run: vp test run scripts/build-desktop-artifact.test.ts scripts/build-desktop-installers.test.ts scripts/merge-update-manifests.test.ts
       - name: Run desktop unit tests
         if: matrix.suite == 'desktop'
-        run: vp test run apps/desktop/src/updates/MacArchiveUpdater.test.ts apps/desktop/src/app/DesktopAppIdentity.test.ts apps/desktop/src/app/DesktopLinuxUrlHandler.test.ts apps/desktop/src/app/DesktopPreReadyPlatform.test.ts apps/desktop/src/boat/
-      - name: Run server telemetry & update unit tests
+        run: vp test run apps/desktop/src/updates/MacArchiveUpdater.test.ts apps/desktop/src/app/DesktopAppIdentity.test.ts apps/desktop/src/app/DesktopLinuxUrlHandler.test.ts apps/desktop/src/app/DesktopPreReadyPlatform.test.ts
+      - name: Run server telemetry & Boats unit tests
         if: matrix.suite == 'server'
-        run: vp test run apps/server/src/telemetry/AnalyticsService.test.ts
+        run: vp test run apps/server/src/telemetry/AnalyticsService.test.ts apps/server/src/boat/
       - name: Run shared package tests
         if: matrix.suite == 'shared'
         run: vp run --filter @t3tools/shared test
       - name: Run web unit tests
         if: matrix.suite == 'web'
-        run: vp test run apps/web/src/components/desktopUpdate.logic.test.ts apps/web/src/components/boats/
+        working-directory: apps/web
+        run: vp test run --project unit src/components/desktopUpdate.logic.test.ts src/components/boats/
