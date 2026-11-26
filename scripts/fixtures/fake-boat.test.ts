@@ -10,11 +10,14 @@ import * as NodePath from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import { AUTH_HOST, caddyDir, publicUrl, removeSite, rootCertPath } from "./lib/caddy.ts";
-import { docker, dockerSucceeds, hasDocker } from "./lib/docker.ts";
+import { docker, dockerSucceeds, hasDocker, DOCKER_TEST_TIMEOUT_MS } from "./lib/docker.ts";
 import { homeId } from "./lib/state.ts";
 import { breakStaleLock, takeLock } from "./fake-boat/outbox-worker.ts";
 import { waitForApproval } from "./fake-boat/sandbox/auth.ts";
 import { requestFile } from "./fake-boat/sandbox/outbox.ts";
+
+// oxlint-disable-next-line t3code/no-test-timeout-or-unreasoned-skip -- Docker work on the VM every lane shares, not a hidden wait.
+vi.setConfig({ testTimeout: DOCKER_TEST_TIMEOUT_MS, hookTimeout: DOCKER_TEST_TIMEOUT_MS });
 
 const FAKE_DIR = NodePath.join(import.meta.dirname, "fake-boat");
 const RECORDED = NodePath.join(FAKE_DIR, "recorded");

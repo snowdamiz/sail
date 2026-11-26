@@ -6,10 +6,13 @@ import * as NodeHttp from "node:http";
 import * as NodeHttps from "node:https";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { caddyDir, publicUrl, removeSite, rootCertPath } from "./lib/caddy.ts";
-import { docker, exists, hasDocker } from "./lib/docker.ts";
+import { docker, exists, hasDocker, DOCKER_TEST_TIMEOUT_MS } from "./lib/docker.ts";
 import { fixturesRoot, homeId } from "./lib/state.ts";
+
+// oxlint-disable-next-line t3code/no-test-timeout-or-unreasoned-skip -- Docker work on the VM every lane shares, not a hidden wait.
+vi.setConfig({ testTimeout: DOCKER_TEST_TIMEOUT_MS, hookTimeout: DOCKER_TEST_TIMEOUT_MS });
 
 // Key lists copied from flyctl v0.4.123 and fly-go v0.11.6 (`fly.App` has no JSON tags).
 const APP_KEYS = [

@@ -6,7 +6,7 @@ import * as NodeHttps from "node:https";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   CA_VERSION,
@@ -21,7 +21,10 @@ import {
   removeSite,
   rootCertPath,
 } from "./caddy.ts";
-import { docker, FIXTURE_LABEL, hasDocker, NETWORK } from "./docker.ts";
+import { docker, FIXTURE_LABEL, hasDocker, NETWORK, DOCKER_TEST_TIMEOUT_MS } from "./docker.ts";
+
+// oxlint-disable-next-line t3code/no-test-timeout-or-unreasoned-skip -- Docker work on the VM every lane shares, not a hidden wait.
+vi.setConfig({ testTimeout: DOCKER_TEST_TIMEOUT_MS, hookTimeout: DOCKER_TEST_TIMEOUT_MS });
 
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 const run = NodeCrypto.randomBytes(3).toString("hex");

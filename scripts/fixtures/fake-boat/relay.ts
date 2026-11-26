@@ -181,7 +181,7 @@ function syncHosts(container: string): void {
     : [];
   docker(["exec", "-i", "-u", "0", container, "sh", "-c", SYNC_HOSTS], {
     input: lines.join("\n"),
-    timeoutMs: 30_000,
+    timeoutMs: 120_000,
   });
 }
 

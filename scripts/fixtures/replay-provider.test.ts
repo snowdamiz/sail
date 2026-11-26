@@ -4,10 +4,19 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeReadline from "node:readline";
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
-import { docker, dockerSucceeds, FIXTURE_LABEL, hasDocker } from "./lib/docker.ts";
+import {
+  docker,
+  dockerSucceeds,
+  FIXTURE_LABEL,
+  hasDocker,
+  DOCKER_TEST_TIMEOUT_MS,
+} from "./lib/docker.ts";
 import { PLAIN_JS_APPLY_PROGRAM } from "./replay-provider.ts";
+
+// oxlint-disable-next-line t3code/no-test-timeout-or-unreasoned-skip -- Docker work on the VM every lane shares, not a hidden wait.
+vi.setConfig({ testTimeout: DOCKER_TEST_TIMEOUT_MS, hookTimeout: DOCKER_TEST_TIMEOUT_MS });
 
 const SCRIPT = NodePath.join(import.meta.dirname, "replay-provider.ts");
 const NODE_IMAGE = "node:26.13.1-bookworm-slim";
