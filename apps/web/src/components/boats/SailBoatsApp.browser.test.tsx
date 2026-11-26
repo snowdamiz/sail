@@ -413,6 +413,24 @@ it("opens the newer thread even when the machine stays working", async () => {
   expect(count("latest_thread")).toBe(1);
 });
 
+it("explains when there is no thread to open on a paired machine", async () => {
+  setup({
+    state: uiState({
+      machines: [machine({ name: "dory", environmentId: DORY_ENVIRONMENT })],
+    }),
+    machineEnvironment: DORY_ENVIRONMENT,
+  });
+  state.replies.latest_thread = { data: null };
+  await using screen = await mount();
+  await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+
+  const open = screen.getByRole("button", { name: "Open last thread in Sail" });
+  await userEvent.click(open);
+  await expect.element(screen.getByText("No thread available to open.")).toBeVisible();
+  await expect.element(open).toBeEnabled();
+  expect(state.invoked.map((input) => input.command)).not.toContain("open_machine");
+});
+
 it("offers Add to Sail to an on-host client that has not paired this machine", async () => {
   const working = machine({
     id: "m-2",

@@ -51,13 +51,14 @@ const BOAT_DAEMON_PROTOCOL_VERSION = 1;
 
 const Handshake = Schema.Struct({
   ready: Schema.Literal(true),
-  protocolVersion: Schema.optional(Schema.Unknown),
+  protocolVersion: Schema.Literal(BOAT_DAEMON_PROTOCOL_VERSION),
   port: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65_535 })),
   token: Schema.NonEmptyString,
 });
 type Handshake = typeof Handshake.Type;
 const StartupLine = Schema.Union([
   Handshake,
+  Schema.Struct({ ready: Schema.Literal(true), protocolVersion: Schema.optional(Schema.Unknown) }),
   Schema.Struct({ ready: Schema.Literal(false), error: Schema.String }),
 ]);
 const decodeStartupLine = Schema.decodeUnknownOption(Schema.fromJsonString(StartupLine));
@@ -395,18 +396,25 @@ const make = Effect.gen(function* () {
       Stream.runForEach((line) =>
         Option.match(decodeStartupLine(line), {
           onNone: () => Effect.void,
-          onSome: (report) =>
-            report.ready
-              ? Deferred.succeed(startup, report)
-              : // sail-boatd prints the error to stderr too, after this line, and then exits.
-                drained(exited).pipe(
-                  Effect.andThen(
-                    Deferred.fail(
-                      startup,
-                      new BoatError({ message: `sail-boatd could not start: ${report.error}` }),
-                    ),
-                  ),
+          onSome: (report) => {
+            if (report.ready) {
+              if ("port" in report) return Deferred.succeed(startup, report);
+              const message =
+                report.protocolVersion === BOAT_DAEMON_PROTOCOL_VERSION
+                  ? "sail-boatd reported an invalid startup address or token."
+                  : `sail-boatd uses an incompatible protocol. Install a matching sail-boatd (protocol version ${BOAT_DAEMON_PROTOCOL_VERSION}) and retry.`;
+              return Deferred.fail(startup, new BoatError({ message }));
+            }
+            // sail-boatd prints the error to stderr too, after this line, and then exits.
+            return drained(exited).pipe(
+              Effect.andThen(
+                Deferred.fail(
+                  startup,
+                  new BoatError({ message: `sail-boatd could not start: ${report.error}` }),
                 ),
+              ),
+            );
+          },
         }),
       ),
       Effect.ignore,
@@ -436,12 +444,6 @@ const make = Effect.gen(function* () {
           ),
       }),
     );
-    if (greeting.protocolVersion !== BOAT_DAEMON_PROTOCOL_VERSION) {
-      return yield* new BoatError({
-        message: `sail-boatd uses an incompatible protocol. Install a matching sail-boatd (protocol version ${BOAT_DAEMON_PROTOCOL_VERSION}) and retry.`,
-      });
-    }
-
     const daemon: Daemon = { baseUrl: `http://127.0.0.1:${greeting.port}`, token: greeting.token };
     // Runs before the spawner's own release, which sends SIGTERM and then SIGKILL.
     yield* Effect.addFinalizer((exit) =>

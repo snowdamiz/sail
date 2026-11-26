@@ -65,6 +65,7 @@ type Report =
 const fakeDaemonSource = (
   protocolVersion: number | null,
   requestMarkerPath: string,
+  reportsTcpAddress: boolean,
 ) => `#!${process.execPath}
 const fs = require("node:fs");
 const http = require("node:http");
@@ -153,7 +154,8 @@ server.listen(0, "127.0.0.1", async () => {
   const stdinIsPipe = stdin.isFIFO() || stdin.isSocket();
   await report({ event: "started", env, cli, stdinIsPipe });
   console.log("sail-boatd starting");
-  console.log(JSON.stringify({ ready: true, protocolVersion: ${protocolVersion ?? "undefined"}, port: server.address().port, token, mcpPort: 0 }));
+  const address = ${reportsTcpAddress ? "{ port: server.address().port, token, mcpPort: 0 }" : "{}"};
+  console.log(JSON.stringify({ ready: true, protocolVersion: ${protocolVersion ?? "undefined"}, ...address }));
   console.error("waking m1: boat resume failed: ${BOAT_OUTPUT}");
 });
 `;
@@ -193,7 +195,10 @@ const reportListener = Effect.gen(function* () {
   return { reports, port };
 });
 
-const setupWithProtocolVersion = Effect.fnUntraced(function* (protocolVersion: number | null) {
+const setupWithProtocolVersion = Effect.fnUntraced(function* (
+  protocolVersion: number | null,
+  reportsTcpAddress = true,
+) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-boat-supervisor-" });
@@ -203,7 +208,7 @@ const setupWithProtocolVersion = Effect.fnUntraced(function* (protocolVersion: n
   const requestMarkerPath = path.join(fixturesDir, "received-request");
   yield* fileSystem.writeFileString(
     daemonPath,
-    fakeDaemonSource(protocolVersion, requestMarkerPath),
+    fakeDaemonSource(protocolVersion, requestMarkerPath, reportsTcpAddress),
   );
   yield* fileSystem.chmod(daemonPath, 0o755);
   yield* fileSystem.writeFileString(serverEntry, fakeServerEntrySource);
@@ -287,11 +292,18 @@ const isAlive = (pid: number) => {
 };
 
 describe("BoatSupervisor", () => {
-  it.live.each([null, 2])(
-    "refuses sail-boatd with protocol version %s before publishing Boats state",
-    (version) =>
+  it.live.each([
+    { protocol: "no version", version: null, reportsTcpAddress: true },
+    { protocol: "a future version", version: 2, reportsTcpAddress: true },
+    { protocol: "a changed ready payload", version: 2, reportsTcpAddress: false },
+  ])(
+    "refuses sail-boatd with $protocol before publishing Boats state",
+    ({ version, reportsTcpAddress }) =>
       Effect.gen(function* () {
-        const { reports, requestMarkerPath, supervisor } = yield* setupWithProtocolVersion(version);
+        const { reports, requestMarkerPath, supervisor } = yield* setupWithProtocolVersion(
+          version,
+          reportsTcpAddress,
+        );
         const fileSystem = yield* FileSystem.FileSystem;
 
         yield* Effect.gen(function* () {
