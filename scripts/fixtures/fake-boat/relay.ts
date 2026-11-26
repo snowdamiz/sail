@@ -8,8 +8,11 @@ import * as NodePath from "node:path";
 
 import { CADDY_CONTAINER, caddyDir } from "../lib/caddy.ts";
 import { docker, exists, inspect, NETWORK } from "../lib/docker.ts";
+import { standInHome } from "../lib/state.ts";
 
 const BOAT = NodePath.join(import.meta.dirname, "boat");
+/** The fake `boat` this relay runs keeps its records here; callers cannot move it. */
+const HOME = standInHome("boat", "FAKE_BOAT_HOME");
 const CLIENT = NodePath.join(import.meta.dirname, "relay-client.ts");
 const HOSTS_MARKER = "# fake-boat-relay";
 
@@ -75,6 +78,7 @@ function parseFile(value: unknown): Upload | Download | undefined {
     typeof name !== "string" ||
     name !== NodePath.basename(name) ||
     name === "" ||
+    name === "." ||
     name === ".." ||
     typeof mode !== "number" ||
     typeof base64 !== "string"
@@ -133,11 +137,18 @@ function readIfPresent(file: string): string {
   }
 }
 
-/** Hosts from the fake `boat`'s Caddy site files, which the caller's own DNS sends to itself. */
-export function publishedHosts(sites: string): ReadonlyArray<string> {
-  const files = NodeFS.existsSync(sites) ? NodeFS.readdirSync(sites) : [];
-  const hosts = files
-    .filter((file) => file.startsWith("boat-") && file.endsWith(".caddy"))
+const listDir = (dir: string) => (NodeFS.existsSync(dir) ? NodeFS.readdirSync(dir) : []);
+
+/**
+ * Hosts the fake `boat` in `home` published, read from their Caddy site files, which the caller's
+ * own DNS sends to itself. `home/hosts/<sandbox>/<port>` is how the fake records each one.
+ */
+export function publishedHosts(sites: string, home: string): ReadonlyArray<string> {
+  const hosted = NodePath.join(home, "hosts");
+  const hosts = listDir(hosted)
+    .flatMap((sandbox) =>
+      listDir(NodePath.join(hosted, sandbox)).map((port) => `boat-${sandbox}-${port}.caddy`),
+    )
     .flatMap((file) => {
       const address = readIfPresent(NodePath.join(sites, file)).split("{")[0] ?? "";
       return address.split(",").map((part) => part.trim().replace(/^[a-z]+:\/\//, ""));
@@ -164,7 +175,7 @@ function syncHosts(container: string): void {
     ? inspect<string>(CADDY_CONTAINER, `(index .NetworkSettings.Networks "${NETWORK}").IPAddress`)
     : "";
   const lines = caddyIp
-    ? publishedHosts(NodePath.join(caddyDir(), "sites")).map(
+    ? publishedHosts(NodePath.join(caddyDir(), "sites"), HOME).map(
         (host) => `${caddyIp}\t${host} ${HOSTS_MARKER}`,
       )
     : [];
@@ -239,11 +250,25 @@ async function relay(request: RelayRequest, abort: AbortSignal): Promise<RelayRe
   }
 }
 
-const bearer = (token: string) => Buffer.from(`Bearer ${token}`);
+/** What `install` gives one container, so a request it sends can name no other container. */
+const containerToken = (token: string, container: string) =>
+  NodeCrypto.createHmac("sha256", token).update(container).digest("hex");
 
-function authorized(incoming: NodeHttp.IncomingMessage, token: string): boolean {
+/** The container a request names, read before anything else so it decides which token counts. */
+function namedContainer(body: string): string | undefined {
+  try {
+    const value: unknown = JSON.parse(body);
+    return isRecord(value) && typeof value.container === "string" ? value.container : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function authorized(incoming: NodeHttp.IncomingMessage, token: string, body: string): boolean {
+  const container = namedContainer(body);
+  if (container === undefined) return false;
   const sent = Buffer.from(incoming.headers.authorization ?? "");
-  const expected = bearer(token);
+  const expected = Buffer.from(`Bearer ${containerToken(token, container)}`);
   return sent.length === expected.length && NodeCrypto.timingSafeEqual(sent, expected);
 }
 
@@ -265,8 +290,12 @@ function serve(flags: Flags): Promise<never> {
         outgoing
           .writeHead(status, { "content-type": "application/json" })
           .end(JSON.stringify(body));
-      if (!authorized(incoming, token)) {
-        answer(401, failure("unauthorized", "send the token relay.ts serve printed"));
+      const body = Buffer.concat(chunks).toString();
+      if (!authorized(incoming, token, body)) {
+        answer(
+          401,
+          failure("unauthorized", "send the token relay.ts install wrote for this container"),
+        );
         return;
       }
       if (incoming.method !== "POST" || incoming.url !== "/run") {
@@ -275,7 +304,7 @@ function serve(flags: Flags): Promise<never> {
       }
       let request: RelayRequest;
       try {
-        request = parseRequest(Buffer.concat(chunks).toString());
+        request = parseRequest(body);
       } catch (error) {
         const code = error instanceof RequestError ? error.code : "bad_request";
         answer(400, failure(code, error instanceof Error ? error.message : String(error)));
@@ -323,7 +352,8 @@ function install(flags: Flags): void {
       body,
     );
   const origin = parsed.href.replace(/\/$/, "");
-  write("relay.json", "600", `${JSON.stringify({ relay: origin, container, token }, null, 2)}\n`);
+  const config = { relay: origin, container, token: containerToken(token, container) };
+  write("relay.json", "600", `${JSON.stringify(config, null, 2)}\n`);
   write("relay-client.ts", "644", NodeFS.readFileSync(CLIENT, "utf8"));
   write("boat", "755", `#!/bin/sh\nexec ${node} "$(dirname "$0")/relay-client.ts" "$@"\n`);
   console.log(`boat-relay: installed ${shell('printf %s "$HOME"')}/.ascii/bin/boat`);

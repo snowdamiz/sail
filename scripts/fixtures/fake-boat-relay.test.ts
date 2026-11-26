@@ -74,31 +74,44 @@ interface RelayResponse {
 }
 
 describe("fake boat relay hosts", () => {
-  it("lists the fake boat's published hosts, skipping a site file removed while it reads", async () => {
-    const sites = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "fake-boat-relay-sites-"));
+  it("lists only its own home's published hosts, skipping a site file removed while it reads", async () => {
+    const scratch = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "fake-boat-relay-sites-"));
+    const sites = NodePath.join(scratch, "sites");
+    const home = NodePath.join(scratch, "home");
+    const site = (id: string) =>
+      `http://${id}-80.localtest.me, https://${id}-80.localtest.me {\n}\n`;
     try {
+      for (const id of ["bx-000000000001", "bx-000000000002"])
+        await NodeFSP.mkdir(NodePath.join(home, "hosts", id, "80"), { recursive: true });
+      await NodeFSP.mkdir(sites);
       await NodeFSP.writeFile(
         NodePath.join(sites, "boat-bx-000000000001-80.caddy"),
-        "http://bx-000000000001-80.localtest.me, https://bx-000000000001-80.localtest.me {\n}\n",
+        site("bx-000000000001"),
+      );
+      await NodeFSP.writeFile(
+        NodePath.join(sites, "boat-bx-000000000003-80.caddy"),
+        site("bx-000000000003"),
       );
       await NodeFSP.writeFile(NodePath.join(sites, "fly-demo.caddy"), "demo.localtest.me {\n}\n");
       await NodeFSP.symlink(
         NodePath.join(sites, "removed"),
         NodePath.join(sites, "boat-bx-000000000002-80.caddy"),
       );
-      expect(publishedHosts(sites)).toEqual(["bx-000000000001-80.localtest.me"]);
+      expect(publishedHosts(sites, home)).toEqual(["bx-000000000001-80.localtest.me"]);
     } finally {
-      await NodeFSP.rm(sites, { recursive: true, force: true });
+      await NodeFSP.rm(scratch, { recursive: true, force: true });
     }
   });
 });
 
 describe.skipIf(!hasDocker())("fake boat relay", () => {
   const container = `sail-relay-test-${NodeCrypto.randomBytes(3).toString("hex")}`;
+  const stranger = `${container}-stranger`;
   let home: string;
   let relayUrl: string;
   let hostRelayUrl: string;
   let token: string;
+  let bound = "";
   let relay: NodeChildProcess.ChildProcess | undefined;
   let sandbox = "";
   let hostname = "";
@@ -143,8 +156,8 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
       return "";
     }
   };
-  const relayedHosts = async () =>
-    (await inside(["cat", "/etc/hosts"])).stdout
+  const relayedHosts = async (into = container) =>
+    (await run("docker", ["exec", into, "cat", "/etc/hosts"])).stdout
       .split("\n")
       .filter((line) => line.endsWith(MARKER));
   const fetchInside = async (url: string) =>
@@ -184,26 +197,31 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
     token = made;
     relayUrl = `http://${address.seen}:${port}`;
     hostRelayUrl = `http://${address.bind}:${port}`;
-    docker([
-      "run",
-      "--detach",
-      "--name",
-      container,
-      "--network",
-      NETWORK,
-      "--label",
-      `${FIXTURE_LABEL}=relay-test`,
-      "--memory",
-      "256m",
-      NODE_IMAGE,
-      "sleep",
-      "infinity",
-    ]);
+    for (const [name, memory] of [
+      [container, "256m"],
+      [stranger, "64m"],
+    ] as const)
+      docker([
+        "run",
+        "--detach",
+        "--name",
+        name,
+        "--network",
+        NETWORK,
+        "--label",
+        `${FIXTURE_LABEL}=relay-test`,
+        "--memory",
+        memory,
+        NODE_IMAGE,
+        "sleep",
+        "infinity",
+      ]);
   });
 
   afterAll(async () => {
     relay?.kill();
     dockerSucceeds(["rm", "--force", container]);
+    dockerSucceeds(["rm", "--force", stranger]);
     if (sandbox) {
       dockerSucceeds(["rm", "--force", "--volumes", `sail-boat-${sandbox}`]);
       removeSite(`boat-${sandbox}-${WEB_PORT}`);
@@ -240,18 +258,29 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
       `${dir}/relay-client.ts node 644`,
       `${dir}/relay.json node 600`,
     ]);
-    expect(JSON.parse((await inside(["cat", `${dir}/relay.json`])).stdout)).toEqual({
-      relay: relayUrl,
-      container,
+    const config = JSON.parse((await inside(["cat", `${dir}/relay.json`])).stdout) as {
+      readonly token: string;
+    };
+    bound = config.token;
+    expect(config).toEqual({ relay: relayUrl, container, token: expect.any(String) });
+    expect(config.token, "the container gets its own token, never the one serve printed").not.toBe(
       token,
-    });
+    );
   });
 
-  it("runs nothing for a caller without the token serve printed", async () => {
+  it("runs nothing for a caller without its container's token", async () => {
     const before = await calls();
     const request = { container, argv: ["--json", "status"], env: {} };
     expect((await post(request)).status).toBe(401);
     expect((await post(request, "0".repeat(64))).status).toBe(401);
+    expect(await calls()).toBe(before);
+  });
+
+  it("runs nothing for, and never edits, a container it did not install into", async () => {
+    const before = await calls();
+    const request = { container: stranger, argv: ["--json", "status"], env: {} };
+    expect((await post(request, bound)).status).toBe(401);
+    expect(await relayedHosts(stranger)).toEqual([]);
     expect(await calls()).toBe(before);
   });
 
@@ -265,7 +294,7 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
           argv: ["--json", "status"],
           env: { FAKE_BOAT_HOME: decoy },
         },
-        token,
+        bound,
       );
       expect(ran.result.exitCode, ran.result.stderr).toBe(0);
       expect(await NodeFSP.readdir(decoy)).toEqual([]);
@@ -327,7 +356,7 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
     await NodeFSP.writeFile(secret, "on the computer only\n");
     const up = await post(
       { container, argv: ["--json", "scp", secret, `${sandbox}:/tmp/leak.txt`], env: {} },
-      token,
+      bound,
     );
     expect(up.result.exitCode).toBe(1);
     expect(lastJson<{ code: string }>(up.result.stderr).code).toBe("invalid_arguments");
@@ -336,11 +365,23 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
     const target = NodePath.join(home, "written.txt");
     const down = await post(
       { container, argv: ["--json", "scp", `${sandbox}:/home/user/up.txt`, target], env: {} },
-      token,
+      bound,
     );
     expect(down.result.exitCode).toBe(1);
     expect(lastJson<{ code: string }>(down.result.stderr).code).toBe("invalid_arguments");
     expect(NodeFS.existsSync(target)).toBe(false);
+
+    const dot = await post(
+      {
+        container,
+        argv: ["--json", "scp", "up.txt", `${sandbox}:/tmp/`],
+        env: {},
+        file: { kind: "upload", name: ".", mode: 0o644, base64: "" },
+      },
+      bound,
+    );
+    expect(dot.status).toBe(400);
+    expect(lastJson<{ code: string }>(dot.result.stderr).code).toBe("bad_request");
   });
 
   it("hosts a sandbox port that the caller reaches by name over plain http", async () => {
