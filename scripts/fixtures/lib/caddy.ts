@@ -405,31 +405,21 @@ function ready(dir: string, home: string): void {
  */
 function reconcile(dir: string, home: string, retry = true): void {
   recoverRetired(dir);
-  let seen = served();
+  const seen = served();
   if (seen) refuseAnotherDirectory(seen, dir);
   const ca = readCa(dir);
   if (seen?.running && ca && ca.version >= CA_VERSION && seen.root === ca.fingerprint) return;
   const upgrade = !ca || ca.version < CA_VERSION;
   const replacing = !seen || upgrade || seen.root !== ca?.fingerprint;
-  if (seen && !seen.running && replacing) {
-    const stoppedId = seen.id;
-    docker(["start", stoppedId]);
-    waitForAdmin();
-    seen = served();
-    if (!seen?.running || seen.id !== stoppedId)
-      throw new Error(
-        `${caddyContainer()} changed while starting for replacement; refusing to remove it`,
-      );
-    refuseAnotherDirectory(seen, dir);
-  }
   let legacyLock: LegacyReloadLock | undefined;
   let rotate: boolean;
   try {
     let others = othersServing(dir, home);
-    if (others.length === 0 && seen?.running && replacing) {
-      others = reloadsSettle(seen.id)
-        ? othersServing(dir, home)
-        : [`a reload inside ${caddyContainer()}`];
+    if (others.length === 0 && seen && replacing) {
+      others =
+        !seen.running || reloadsSettle(seen.id)
+          ? othersServing(dir, home)
+          : [`a reload inside ${caddyContainer()}`];
       if (others.length === 0) {
         if (!seen.data)
           throw new Error(`${caddyContainer()} has no fixture data volume; refusing to replace it`);
@@ -454,7 +444,7 @@ function reconcile(dir: string, home: string, retry = true): void {
       }
       return;
     }
-    if (seen?.running && others.length > 0) {
+    if (seen && others.length > 0) {
       const why =
         ca && ca.version < 2 && seen.root === ca.fingerprint
           ? "runs on a version 1 root, which can vouch for IP addresses"
@@ -464,7 +454,7 @@ function reconcile(dir: string, home: string, retry = true): void {
       );
     }
     if (seen) {
-      if (seen.running && !legacyLock?.isHeld())
+      if (!legacyLock?.isHeld())
         throw new Error(`${caddyContainer()} lost its legacy reload lock; refusing to remove it`);
       try {
         docker(["rm", "--force", seen.id]);

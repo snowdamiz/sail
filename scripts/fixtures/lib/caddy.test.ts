@@ -799,8 +799,6 @@ const call = cp.spawnSync;
 let checked = false;
 cp.spawnSync = (command, args, ...rest) => {
   if (command === "docker" && args[0] === "rm" && args.includes(${JSON.stringify(before)})) {
-    const state = call("docker", ["inspect", "--format", "{{.State.Running}}", ${JSON.stringify(before)}], {encoding: "utf8"});
-    assert.equal(state.stdout.trim(), "true");
     const restarted = call("docker", ["restart", ${JSON.stringify(before)}], {encoding: "utf8"});
     assert.equal(restarted.status, 0, restarted.stderr);
     const lock = call("docker", ["exec", ${JSON.stringify(before)}, "flock", "-n", "/data/reload.lock", "true"], {encoding: "utf8"});
@@ -816,7 +814,7 @@ assert.ok(checked);`);
     expect(running().Id).not.toBe(before);
   });
 
-  it("rechecks a Caddy that stops between the preflight census and lock acquisition", async () => {
+  it("replaces a Caddy that stops during the preflight census", async () => {
     await ensureFor("a");
     const before = running().Id;
     const stale = NodePath.join(dir, "sites", `${site("stopped")}.caddy`);
@@ -836,6 +834,49 @@ cp.spawnSync = (command, args, ...rest) => {
   if (command === "docker" && args[0] === "ps" && args.includes("{{.Names}}") && ++scans === 2) {
     const stopped = call("docker", ["stop", ${JSON.stringify(before)}]);
     assert.equal(stopped.status, 0);
+  }
+  return call(command, args, ...rest);
+};
+syncBuiltinESMExports();
+ensureCaddy("b");
+assert.ok(scans >= 3);`);
+      expect(running().Id).not.toBe(before);
+    } finally {
+      NodeFS.rmSync(stale, { force: true });
+    }
+  });
+
+  it("rebuilds the CA if an already stopped Caddy has lost its root key", async () => {
+    await ensureFor("a");
+    const before = running().Id;
+    docker(["stop", before]);
+    NodeFS.rmSync(NodePath.join(dir, "ca", "root.key"));
+    await ensureFor("b");
+    expect(running().Id).not.toBe(before);
+    expect(NodeFS.existsSync(NodePath.join(dir, "ca", "root.key"))).toBe(true);
+    expect(running().Config.Labels[ROOT_LABEL]).toBe(fingerprint());
+  });
+
+  it("reconciles again if the old container disappears before lock acquisition", async () => {
+    await ensureFor("a");
+    const before = running().Id;
+    const stale = NodePath.join(dir, "sites", `${site("removed")}.caddy`);
+    NodeFS.writeFileSync(
+      stale,
+      `${site("removed")}.localtest.me {\n tls internal\n reverse_proxy sail-gone-${run}:8080\n}\n`,
+    );
+    NodeFS.writeFileSync(NodePath.join(dir, "ca", "version"), "2\n");
+    try {
+      await inInstance(`import assert from "node:assert/strict";
+import cp from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { ensureCaddy } from ${CADDY_TS};
+const call = cp.spawnSync;
+let scans = 0;
+cp.spawnSync = (command, args, ...rest) => {
+  if (command === "docker" && args[0] === "ps" && args.includes("{{.Names}}") && ++scans === 2) {
+    const removed = call("docker", ["rm", "--force", ${JSON.stringify(before)}]);
+    assert.equal(removed.status, 0);
   }
   return call(command, args, ...rest);
 };

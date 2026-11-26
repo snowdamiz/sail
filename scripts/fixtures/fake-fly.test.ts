@@ -1534,6 +1534,14 @@ syncBuiltinESMExports();`,
     const blue = swapped.live().serving;
     const live = `sail-fly-${swapped.name}`;
     docker(["rm", "--force", "--volumes", live]);
+    const refusedRoute = dockerShim("refuse-route-without-blue", [
+      'case "$*" in *"/data/reload.lock"*) echo "injected route failure" >&2; exit 1;; esac',
+    ]);
+    const promotionFailed = fly(swapped.args(), refusedRoute, root);
+    expect(promotionFailed.status).toBe(1);
+    expect(promotionFailed.stderr).toContain("injected route failure");
+    expect(promotionFailed.stderr).toContain("failed to mark green machines as ready");
+    expect(swapped.live()).toMatchObject({ machines: [blue], containers: 0 });
     swapped.configure("/unhealthy", 9090);
     const failed = fly(swapped.args("bluegreen", ["--wait-timeout", "2s"]), {}, root);
     expect(failed.stderr).toContain("could not get all green machines to be healthy");

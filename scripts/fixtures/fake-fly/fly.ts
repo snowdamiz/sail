@@ -1434,6 +1434,7 @@ function routeMachine(machine: MachineRecord, upstream = machineHost(machine)): 
 function settleContainers(
   app: string,
   recorded: MachineRecord | undefined,
+  discardId?: string,
 ): MachineRecord | undefined {
   const live = containerName(app);
   const held = [live, swapName(app, "green"), swapName(app, "blue")].filter(
@@ -1445,7 +1446,7 @@ function settleContainers(
   const liveId = held.includes(live) ? hostname(live) : undefined;
   const chosen = records.find((machine) => machine.id === liveId) ?? recorded;
   const kept = chosen && held.find((name) => hostname(name) === chosen.id);
-  if (!kept && held.includes(live))
+  if (!kept && held.includes(live) && liveId !== discardId)
     throw new FlyError(
       `cannot settle app ${app}: an unrecorded machine is live; refusing to replace it`,
     );
@@ -1510,7 +1511,7 @@ function replaceBlueWithGreen(
   const greenName = swapName(blue.app, "green");
   const blueName = swapName(blue.app, "blue");
   const rollBack = (promoting: boolean) => {
-    if (promoting) settleContainers(blue.app, blue);
+    if (promoting) settleContainers(blue.app, blue, green.id);
     else destroyMachineContainer(greenName);
     err(`\nRolling back failed deployment\n  Deleted machine ${green.id} [app]\n`);
   };
