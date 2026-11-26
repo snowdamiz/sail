@@ -84,7 +84,7 @@ jobs:
         if: matrix.suite == 'root'
         env:
           TMPDIR: /tmp
-        run: vp test run scripts/build-desktop-artifact.test.ts scripts/build-desktop-installers.test.ts scripts/merge-update-manifests.test.ts
+        run: vp test run scripts/build-desktop-artifact.test.ts scripts/build-desktop-installers.test.ts scripts/merge-update-manifests.test.ts scripts/stage-server-runtime.test.ts scripts/build-cli-archive.test.ts
       - name: Run desktop unit tests
         if: matrix.suite == 'desktop'
         run: vp test run apps/desktop/src/updates/MacArchiveUpdater.test.ts apps/desktop/src/app/DesktopAppIdentity.test.ts apps/desktop/src/app/DesktopLinuxUrlHandler.test.ts apps/desktop/src/app/DesktopPreReadyPlatform.test.ts
@@ -112,17 +112,26 @@ jobs:
           persist-credentials: false
           fetch-depth: 2
       # A pull_request checkout is the merge commit, so its first parent is the base tip.
+      # git diff --quiet exits 1 on changes; any other failure fails the job instead of skipping.
       - id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [ "$EVENT_NAME" != pull_request ] ||
-            git diff --name-only HEAD^1 HEAD |
-              grep -qE '^(Dockerfile|\.dockerignore|deploy/docker/|scripts/stage-server-runtime|scripts/smoke-docker-image\.ts)'; then
+          if [ "$EVENT_NAME" != pull_request ]; then
             echo changed=true >> "$GITHUB_OUTPUT"
-          else
-            echo changed=false >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          status=0
+          git diff --quiet HEAD^1 HEAD -- \
+            Dockerfile .dockerignore deploy/docker \
+            'scripts/stage-server-runtime*' scripts/smoke-docker-image.ts \
+            scripts/lib/cli-external-packages.ts apps/server/package.json pnpm-workspace.yaml \
+            .github/workflows/ci.yml || status=$?
+          case "$status" in
+            0) echo changed=false >> "$GITHUB_OUTPUT" ;;
+            1) echo changed=true >> "$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
 
   server-image:
     name: Server image build & smoke
@@ -139,8 +148,6 @@ jobs:
           node-version-file: package.json
           cache: true
           run-install: true
-      - name: Test the staged server runtime
-        run: vp test run scripts/stage-server-runtime.test.ts scripts/build-cli-archive.test.ts
       - uses: docker/setup-buildx-action@v3
       - name: Build the server image
         uses: docker/build-push-action@v6
@@ -149,6 +156,7 @@ jobs:
           load: true
           tags: sail-server:ci
           cache-from: type=gha,scope=sail-server
-          cache-to: type=gha,scope=sail-server,mode=max
+          # Main writes the final image's layers; build stages and PR caches would crowd the repo cache.
+          cache-to: ${{ github.event_name == 'push' && 'type=gha,scope=sail-server,mode=min' || '' }}
       - name: Smoke the server image
         run: node scripts/smoke-docker-image.ts --image sail-server:ci
