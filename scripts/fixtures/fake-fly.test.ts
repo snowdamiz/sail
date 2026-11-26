@@ -638,7 +638,12 @@ primary_region = "iad" # comment
 
   it("deploys behind Caddy with Fly Proxy's headers", async () => {
     const [volume] = volumes();
-    const deployed = ok(["deploy", "--image", image, "--ha=false", "--strategy", "immediate"]);
+    const first = fly(["deploy", "--image", image, "--ha=false", "--strategy", "immediate"]);
+    expect(first).toMatchObject({ status: 0 });
+    expect(first.stderr, "real flyctl needs --local-only for a local image").toContain(
+      "--local-only",
+    );
+    const deployed = first.stdout;
     url = publicUrl(`${app}.localtest.me`);
     expect(deployed.trimEnd().split("\n").at(-1)).toBe(`Visit your newly deployed app at ${url}/`);
     const [machine] = machines();
@@ -706,7 +711,19 @@ primary_region = "iad" # comment
     const before = json(["machine", "list", "-j"]) as Array<{ version: string }>;
     const volume = volumes()[0]?.id;
 
-    expect(ok(["deploy", "--image", image, "-e", "EXTRA=1", "--strategy", "immediate"])).toContain(
+    const redeployed = fly([
+      "deploy",
+      "--image",
+      image,
+      "--local-only",
+      "-e",
+      "EXTRA=1",
+      "--strategy",
+      "immediate",
+    ]);
+    expect(redeployed).toMatchObject({ status: 0 });
+    expect(redeployed.stderr).not.toContain("--local-only");
+    expect(redeployed.stdout).toContain(
       `Updating existing machines in '${app}' with immediate strategy\n`,
     );
     const [after] = machines() as Array<{

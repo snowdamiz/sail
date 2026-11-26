@@ -1156,6 +1156,11 @@ function resolveImage(ctx: Ctx, appName: string, loaded: LoadedConfig): Resolved
   // flyctl's local resolver skips itself when --remote-only leaves it no local daemon.
   const local = bool(ctx, "remote-only") ? undefined : findLocally(requested);
   if (local) {
+    // flyctl prefers its remote builder outside CI (imgsrc/docker.go:184), which cannot see this image.
+    if (!bool(ctx, "local-only"))
+      err(
+        `fake fly: found ${requested} in the local Docker daemon, which real flyctl searches outside CI only with --local-only\n`,
+      );
     out(`image found: ${local.id}\n`);
     return {
       run: local.id,
