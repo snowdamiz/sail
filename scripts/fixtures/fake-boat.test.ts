@@ -378,7 +378,7 @@ function fakeBoatProcess() {
     pid: child.pid ?? 0,
     [Symbol.asyncDispose]: async () => {
       child.kill();
-      await NodeEvents.once(child, "exit");
+      await NodeEvents.EventEmitter.once(child, "exit");
     },
   };
 }
@@ -796,7 +796,7 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     const name = `sail-boat-${sandbox}`;
     docker(["pause", name]);
     const unpause = NodeChildProcess.spawn("sh", ["-c", `sleep 1; docker unpause ${name}`]);
-    const unpaused = NodeEvents.once(unpause, "exit");
+    const unpaused = NodeEvents.EventEmitter.once(unpause, "exit");
     try {
       const ran = await json(["exec", sandbox, "--", "echo", "after the pause"]);
       expect(lastJson<ExecJson>(ran.stdout)).toMatchObject({
