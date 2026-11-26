@@ -30,11 +30,13 @@ COPY --exclude=deploy --exclude=native/sail-boat --exclude=native/resource-monit
 RUN test "v$(node -p 'require("./package.json").engines.node')" = "$(node --version)"
 RUN --mount=type=cache,id=sail-pnpm-store,target=/root/.local/share/pnpm/store,sharing=locked \
     vp install
-# The server's own build task swaps development icons into its copy of the client.
+# The server build copies development icons into its client; brand it as desktop releases do.
 ARG APP_VERSION=
-RUN APP_VERSION=$APP_VERSION vp run --filter @t3tools/web build \
-    && APP_VERSION=$APP_VERSION vp run --filter t3 build:bundle \
-    && find apps/server/dist apps/web/dist -name '*.map' -delete
+RUN APP_VERSION=$APP_VERSION vp run --filter t3 build \
+    && node scripts/apply-web-brand-assets.ts \
+      "$(case "$APP_VERSION" in *-nightly.*|*-preview.*) echo nightly ;; *) echo production ;; esac)" \
+      apps/server/dist/client \
+    && find apps/server/dist -name '*.map' -delete
 ARG TARGETARCH
 RUN --mount=type=cache,id=sail-pnpm-store,target=/root/.local/share/pnpm/store,sharing=locked \
     node scripts/stage-server-runtime.ts --platform linux \
@@ -63,7 +65,6 @@ RUN npm install --global --prefix /opt/npm-global \
 COPY --from=rust /out/sail-boatd /opt/sail/bin/sail-boatd
 COPY --from=build /stage/node_modules /opt/sail/node_modules
 COPY --from=build /src/apps/server/dist /opt/sail/server
-COPY --from=build /src/apps/web/dist /opt/sail/server/client
 COPY --from=rust /out/t3-resource-monitor /opt/sail/server/resource-monitor/t3-resource-monitor
 COPY --chmod=0755 deploy/docker/entrypoint.sh /usr/local/bin/sail-entrypoint
 # Sail's PATH and npm prefix point at directories sail can write, so only sail gets them: root

@@ -25,6 +25,8 @@ import {
 } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { resolveWebIconOverrides } from "./lib/brand-assets.ts";
+
 /** The entrypoint's fallback when a run sets neither SAIL_PUBLIC_URL nor FLY_APP_NAME. */
 const DEFAULT_PUBLIC_URL = "http://localhost:8080";
 const READY_LINE = "T3 Code server is ready.";
@@ -42,14 +44,6 @@ const PLANTED_COMMANDS = [
   "sh",
   "ps",
   "sail-smoke-probe",
-];
-const PRODUCTION_ICONS = [
-  "favicon.ico",
-  "favicon-16x16.png",
-  "favicon-32x32.png",
-  "apple-touch-icon.png",
-  "icon-192x192.png",
-  "icon-512x512.png",
 ];
 const PLANTED_LOG = "/data/home/.sail-smoke-planted";
 const NATIVE_EXTERNALS_PROBE = `
@@ -257,30 +251,38 @@ const pair = Effect.fn("smoke-docker-image.pair")(function* (
   return issued.credential;
 });
 
-const expectProductionIcons = Effect.fn("smoke-docker-image.expectProductionIcons")(function* (
+const expectReleaseIcons = Effect.fn("smoke-docker-image.expectReleaseIcons")(function* (
   origin: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const client = yield* HttpClient.HttpClient;
-  const publicDir = path.join(
-    yield* path.fromFileUrl(new URL("..", import.meta.url)),
-    "apps/web/public",
-  );
-  for (const icon of PRODUCTION_ICONS) {
-    const expected = yield* fs.readFile(path.join(publicDir, icon));
-    const served = new Uint8Array(
-      yield* client.get(`${origin}/${icon}`).pipe(
-        Effect.flatMap(HttpClientResponse.filterStatusOk),
-        Effect.flatMap((response) => response.arrayBuffer),
-      ),
-    );
-    if (
-      served.length !== expected.length ||
-      served.some((byte, index) => byte !== expected[index])
-    ) {
-      return yield* fail("web client", `/${icon} is not apps/web/public/${icon}`);
+  const repoRoot = yield* path.fromFileUrl(new URL("..", import.meta.url));
+  const matches = Effect.fn("smoke-docker-image.matchesBrand")(function* (
+    brand: "production" | "nightly",
+  ) {
+    for (const icon of resolveWebIconOverrides(brand, origin)) {
+      const expected = yield* fs.readFile(path.join(repoRoot, icon.sourceRelativePath));
+      const served = new Uint8Array(
+        yield* client.get(icon.targetRelativePath).pipe(
+          Effect.flatMap(HttpClientResponse.filterStatusOk),
+          Effect.flatMap((response) => response.arrayBuffer),
+        ),
+      );
+      if (
+        served.length !== expected.length ||
+        served.some((byte, index) => byte !== expected[index])
+      ) {
+        return false;
+      }
     }
+    return true;
+  });
+  if (!(yield* matches("production")) && !(yield* matches("nightly"))) {
+    return yield* fail(
+      "web client",
+      "the icons match neither the production nor the nightly brand",
+    );
   }
 });
 
@@ -301,7 +303,13 @@ const expectRootIgnoresSailCommands = Effect.fn("smoke-docker-image.expectRootIg
     yield* docker(["exec", id, "id", "-u"]);
     yield* docker(["exec", id, "t3", "--version"]);
     yield* docker(["exec", id, "sh", "-lc", "id -u"]);
-    yield* docker(["exec", id, "/bin/sh", "-c", "sail-smoke-probe; claude --version"]);
+    yield* docker([
+      "exec",
+      id,
+      "/bin/sh",
+      "-c",
+      "sail-smoke-probe; claude --version; codex --version; opencode --version",
+    ]);
     const planted = (yield* docker([
       "exec",
       id,
@@ -312,6 +320,22 @@ const expectRootIgnoresSailCommands = Effect.fn("smoke-docker-image.expectRootIg
     const ranAsRoot = planted.filter((line) => line.startsWith("0 "));
     if (ranAsRoot.length > 0) {
       return yield* fail("root commands", `root ran sail-writable ${ranAsRoot.join(", ")}`);
+    }
+    const notSails = (yield* docker([
+      "exec",
+      id,
+      "/usr/bin/find",
+      "/data/home",
+      "-xdev",
+      "!",
+      "-user",
+      "sail",
+    ])).stdout;
+    if (notSails !== "") {
+      return yield* fail(
+        "root commands",
+        `left files sail does not own: ${notSails.replace(/\n/g, ", ")}`,
+      );
     }
     if (!planted.includes("1000 /data/home/.local/bin/claude")) {
       return yield* fail(
@@ -349,7 +373,7 @@ export const smokeDockerImage = Effect.fn("smokeDockerImage")(function* (input: 
       .pipe(Effect.flatMap(HttpClientResponse.schemaBodyJson(EnvironmentDescriptor)));
     yield* Console.log(`Environment: ${descriptor.platform.os} ${descriptor.platform.arch}.`);
     yield* expectServerRunsAsSail(container.id);
-    yield* expectProductionIcons(origin);
+    yield* expectReleaseIcons(origin);
 
     const credential = yield* pair(container.id, origin, input.timeoutSeconds, secrets);
     yield* Console.log(
