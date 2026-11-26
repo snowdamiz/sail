@@ -230,15 +230,28 @@ function rotateRoot(dir: string, from: Ca | undefined): void {
   NodeFS.rmSync(retired, { recursive: true, force: true });
 }
 
-/** A process killed between `rotateRoot`'s two renames left its old root aside; it goes back. */
+/**
+ * A process killed in `rotateRoot` can leave its old root aside, or a staging copy of a key, in the
+ * directory Caddy mounts. A missing root comes back from the newest one set aside; the rest go.
+ */
 function recoverRetired(dir: string): void {
-  if (NodeFS.existsSync(NodePath.join(dir, "ca"))) return;
-  const retired = NodeFS.readdirSync(dir).find(
-    (name) =>
-      /^ca-.+-retired$/.test(name) &&
-      ["root.crt", "root.key"].every((file) => NodeFS.existsSync(NodePath.join(dir, name, file))),
-  );
-  if (retired) NodeFS.renameSync(NodePath.join(dir, retired), NodePath.join(dir, "ca"));
+  const leftovers = NodeFS.readdirSync(dir).filter((name) => /^ca-./.test(name));
+  if (leftovers.length === 0) return;
+  const at = (name: string) => NodePath.join(dir, name);
+  if (!NodeFS.existsSync(at("ca"))) {
+    const newest = leftovers
+      .filter(
+        (name) =>
+          name.endsWith("-retired") &&
+          ["root.crt", "root.key"].every((file) =>
+            NodeFS.existsSync(NodePath.join(at(name), file)),
+          ),
+      )
+      .toSorted((a, b) => NodeFS.statSync(at(b)).mtimeMs - NodeFS.statSync(at(a)).mtimeMs)[0];
+    if (newest) NodeFS.renameSync(at(newest), at("ca"));
+  }
+  for (const name of leftovers)
+    if (NodeFS.existsSync(at(name))) NodeFS.rmSync(at(name), { recursive: true, force: true });
 }
 
 /** True when it made a new root, whatever other homes serve: only tests call it, on their own `dir`. */
@@ -332,7 +345,8 @@ export const isOlderCaddyfile = (text: string) =>
 
 const dataVolume = (root: string) => `${caddyContainer()}-data-${root}`;
 
-const HOME_LINE = /^# sail-fixture home (\S+)(?: container (\S+))?$/m;
+const HOME_LINE = /^# sail-fixture home (\S+)$/m;
+const CONTAINER_LINE = /^# sail-fixture container (\S+)$/m;
 
 /**
  * Sites another home publishes that something may still be using. Only a site whose container is
@@ -345,18 +359,15 @@ function othersServing(dir: string, home: string): ReadonlyArray<string> {
   if (files.length === 0) return [];
   const containers = new Set(docker(["ps", "--all", "--format", "{{.Names}}"]).split("\n"));
   return files.filter((file) => {
-    let body: string;
-    try {
-      body = NodeFS.readFileSync(NodePath.join(sites, file), "utf8");
-    } catch (error) {
-      if (isMissing(error)) return false;
-      throw error;
-    }
-    const line = HOME_LINE.exec(body);
-    if (line?.[1] === home) return false;
+    const body = readSite(dir, `sites/${file}`);
+    if (body === undefined) return false;
+    if (HOME_LINE.exec(body)?.[1] === home) return false;
     const upstream = /reverse_proxy\s+([^\s:{]+)/.exec(body)?.[1];
-    const container = line?.[2] ?? (upstream?.startsWith("sail-") ? upstream : undefined);
-    return !(container && !containers.has(container));
+    const container =
+      CONTAINER_LINE.exec(body)?.[1] ?? (upstream?.startsWith("sail-") ? upstream : undefined);
+    if (container === undefined) return true;
+    // A fake fly machine is renamed to `<container>_blue` or `_green` while traffic moves.
+    return [...containers].some((name) => name === container || name.startsWith(`${container}_`));
   });
 }
 
@@ -397,13 +408,15 @@ function reconcile(dir: string, home: string): void {
   if (seen?.running && ca && ca.version >= CA_VERSION && seen.root === ca.fingerprint) return;
   const upgrade = !ca || ca.version < CA_VERSION;
   const replacing = !seen || upgrade || seen.root !== ca?.fingerprint;
-  const others = [
-    ...othersServing(dir, home),
-    ...(seen?.running && replacing && !reloadsSettle(seen.id)
-      ? [`a reload inside ${caddyContainer()}`]
-      : []),
-  ];
-  const rotate = !ca || (upgrade && others.length === 0);
+  let others = othersServing(dir, home);
+  if (others.length === 0 && seen?.running && replacing) {
+    // An older lane's reload holds no host lock; once it is done, a site it put in place counts.
+    others = reloadsSettle(seen.id)
+      ? othersServing(dir, home)
+      : [`a reload inside ${caddyContainer()}`];
+  }
+  // Version 1 can vouch for an IP address, so it goes even while others serve through it.
+  const rotate = !ca || ca.version < 2 || (upgrade && others.length === 0);
   if (seen && ca && !rotate && seen.root === ca.fingerprint) {
     if (!seen.running) {
       docker(["start", seen.id]);
@@ -440,8 +453,9 @@ function reconcile(dir: string, home: string): void {
       "--network",
       NETWORK,
       "--restart",
-      // Docker Desktop can show a root just replaced on the host as missing for a moment.
-      "unless-stopped",
+      // Docker Desktop can show a root just replaced on the host as missing for a moment. A test's
+      // own Caddy never comes back on its own after Docker restarts.
+      instance() ? "on-failure:5" : "unless-stopped",
       "--memory",
       "128m",
       "--publish",
@@ -463,7 +477,9 @@ function reconcile(dir: string, home: string): void {
   } catch (error) {
     // A lane at an older revision may have started the very same Caddy meanwhile.
     const now = served();
-    if (!(now?.root === root && now.config !== undefined && samePath(now.config, dir))) throw error;
+    const same = now?.running && now.root === root && now.config && samePath(now.config, dir);
+    if (!(same && error instanceof DockerError && /already in use/i.test(error.stderr)))
+      throw error;
   }
   waitForAdmin();
 }
@@ -514,6 +530,7 @@ function waitForAdmin(): void {
         );
         throw new Error(
           `${caddyContainer()} never answered on its admin API: ${errorText(error)}\n${logs.stdout}${logs.stderr}`,
+          { cause: error },
         );
       }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
@@ -562,10 +579,12 @@ function siteFile(id: string): string {
   return `sites/${id}.caddy`;
 }
 
+const SITE_HOST = new RegExp(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?\\.${DOMAIN.replace(".", "\\.")}$`);
+
 export function publishSite(site: Site): string {
   if (isReservedHost(site.host)) throw new Error(`${site.host} is reserved for the fixtures`);
   // Caddy issues for any address, so this keeps it to the names the root is meant to sign.
-  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?\.localtest\.me$/.test(site.host))
+  if (!SITE_HOST.test(site.host))
     throw new Error(
       `${site.host} is not a name under ${DOMAIN}, the only names the fixtures serve`,
     );
@@ -573,38 +592,68 @@ export function publishSite(site: Site): string {
   const headers = Object.entries(site.headers ?? {})
     .map(([name, value]) => `\t\theader_up ${name} "${value}"\n`)
     .join("");
-  const body = `${address} {\n\ttls internal\n\treverse_proxy ${site.upstream} {\n${headers}\t}\n}\n# sail-fixture home ${site.home} container ${site.container}\n`;
+  const body = `${address} {\n\ttls internal\n\treverse_proxy ${site.upstream} {\n${headers}\t}\n}\n# sail-fixture home ${site.home}\n# sail-fixture container ${site.container}\n`;
   const dir = prepare();
-  const url = withCaddyLock(dir, () => {
+  const file = siteFile(site.id);
+  const { url, before } = withCaddyLock(dir, () => {
     ready(dir, site.home);
-    changeAndReload(siteFile(site.id), { kind: "put", body });
-    return publicUrl(site.host);
+    const shown = { url: publicUrl(site.host), before: readSite(dir, file) };
+    changeAndReload(file, { kind: "put", body });
+    return shown;
   });
-  waitForCertificate(site.host, url);
+  try {
+    waitForCertificate(site.host, url);
+  } catch (error) {
+    // The caller rolls back to what served before, so the route it had comes back too.
+    withCaddyLock(dir, () =>
+      changeAndReload(
+        file,
+        before === undefined ? { kind: "delete" } : { kind: "put", body: before },
+      ),
+    );
+    throw error;
+  }
   return url;
 }
 
+function readSite(dir: string, file: string): string | undefined {
+  try {
+    return NodeFS.readFileSync(NodePath.join(dir, file), "utf8");
+  } catch (error) {
+    if (isMissing(error)) return undefined;
+    throw error;
+  }
+}
+
+/** Exits 0 once a TLS handshake for `host` verifies against `ca`; the upstream never answers it. */
+const HANDSHAKE = `const [port, host, ca] = process.argv.slice(1);
+const socket = require("node:tls").connect(
+  { host: "127.0.0.1", port: Number(port), servername: host, ca: require("node:fs").readFileSync(ca) },
+  () => { socket.destroy(); process.exit(0); },
+);
+socket.setTimeout(5000, () => { process.stderr.write("timed out"); process.exit(1); });
+socket.on("error", (error) => { process.stderr.write(error.message); process.exit(1); });`;
+
 /**
  * Caddy obtains a new site's certificate after its reload returns, slowly at load 90, while a Fly
- * app's URL verifies once `fly deploy` returns. Any HTTP answer over verified TLS will do.
+ * app's URL verifies once `fly deploy` returns. Waits about a minute for a verified handshake.
  */
 function waitForCertificate(host: string, url: string): void {
-  const port = new URL(url).port || "443";
-  const curl = [
-    "--silent",
-    "--output",
-    "/dev/null",
-    "--max-time",
-    "10",
-    "--cacert",
-    rootCertPath(),
-  ].concat(["--resolve", `${host}:${port}:127.0.0.1`, `https://${host}:${port}/`]);
-  for (let attempt = 0; ; attempt++) {
-    if (NodeChildProcess.spawnSync("curl", curl).status === 0) return;
-    if (attempt >= 300)
-      throw new Error(`${caddyContainer()} never served a certificate for ${host}`);
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+  let port = new URL(url).port || "443";
+  let last = "";
+  for (let attempt = 0; attempt < 120; attempt++) {
+    // Another lane may replace a test's own Caddy meanwhile, on ports Docker picks again.
+    if (attempt > 0 && instance()) port = new URL(publicUrl(host)).port || "443";
+    const probe = NodeChildProcess.spawnSync(
+      process.execPath,
+      ["-e", HANDSHAKE, port, host, rootCertPath()],
+      { encoding: "utf8", timeout: 10_000 },
+    );
+    if (probe.status === 0) return;
+    last = probe.stderr || probe.error?.message || `exit ${probe.status}`;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
   }
+  throw new Error(`${caddyContainer()} never served a verified certificate for ${host}: ${last}`);
 }
 
 export function removeSite(id: string): void {

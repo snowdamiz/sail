@@ -79,6 +79,13 @@ function removeInstance(container: string, dir: string): void {
   NodeFS.rmSync(dir, { recursive: true, force: true });
 }
 
+/** An older lane's reload: holds the lock inside the container, until told, once a replacer looks. */
+const HOLD_UNTIL_PROBED = `echo held
+i=0
+until ps -o args | grep -q '^grep -c ^flock' || [ "$i" -ge 20000 ]; do i=$((i + 1)); done
+echo probed
+read -r go`;
+
 const status = async (url: string) =>
   (
     await execFile("curl", [
@@ -698,6 +705,58 @@ describe.skipIf(!hasDocker())("a Caddy that two homes share", () => {
     expect(NodeFS.readFileSync(NodePath.join(dir, "ca", "version"), "utf8")).toBe(
       `${CA_VERSION}\n`,
     );
+  });
+
+  it("counts a site live while its container runs under a swap name, and idle once it is gone", async () => {
+    await ensureFor("a");
+    const before = running().Id;
+    const swapped = `${backend}-fly`;
+    docker(
+      ["run", "--detach", "--name", `${swapped}_blue`, "--label", `${FIXTURE_LABEL}=caddy-test`]
+        .concat(["--network", NETWORK, "--memory", "64m", "caddy:2", "caddy", "respond"])
+        .concat(["--listen", ":8080", "--body", "blue"]),
+    );
+    try {
+      await inInstance(
+        `import { publishSite } from ${CADDY_TS};
+         publishSite({ id: ${JSON.stringify(site("f"))}, home: "f", container: ${JSON.stringify(swapped)}, host: ${JSON.stringify(`${site("f")}.localtest.me`)}, upstream: "deadbeef0123.vm.app.internal:8080" });`,
+      ).catch(() => undefined);
+      NodeFS.writeFileSync(NodePath.join(dir, "ca", "version"), "2\n");
+      await ensureFor("b");
+      expect(running().Id, "home f still serves through it").toBe(before);
+    } finally {
+      docker(["rm", "--force", `${swapped}_blue`]);
+    }
+    await ensureFor("b");
+    expect(running().Id, "nobody serves through it now").not.toBe(before);
+    await removeFor("f");
+  });
+
+  it("waits for a reload that holds only the lock inside the container", async () => {
+    await ensureFor("a");
+    const before = running().Id;
+    const holder = NodeChildProcess.spawn("docker", [
+      "exec",
+      "--interactive",
+      container,
+      "flock",
+      "/data/reload.lock",
+      "sh",
+      "-c",
+      HOLD_UNTIL_PROBED,
+    ]);
+    const lines = NodeReadline.createInterface({ input: holder.stdout })[Symbol.asyncIterator]();
+    expect((await lines.next()).value).toBe("held");
+    NodeFS.writeFileSync(NodePath.join(dir, "ca", "version"), "2\n");
+    const replacing = ensureFor("b");
+    expect((await lines.next()).value, "home b looks for reloads before it replaces Caddy").toBe(
+      "probed",
+    );
+    expect(running().Id, "and waits while one runs").toBe(before);
+    holder.stdin.end("go\n");
+    expect((await NodeEvents.EventEmitter.once(holder, "exit"))[0], "never cut off").toBe(0);
+    await replacing;
+    expect(running().Id).not.toBe(before);
   });
 
   it("replaces the Caddy only once a reload in flight lets go of the host lock", async () => {

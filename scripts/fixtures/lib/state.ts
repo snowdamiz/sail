@@ -120,7 +120,7 @@ const sqliteCode = (error: unknown) => (error as { readonly errcode?: number }).
  * with its process however that process ends, and no file ever names a holder that could be stale.
  */
 export function takeLock(path: string, waitMs = PROBE_WAIT_MS): (() => void) | undefined {
-  const key = NodePath.resolve(path);
+  const key = canonicalPath(path);
   // A second connection from this process would wait out `waitMs` on itself.
   if (held.has(key)) throw new Error(`${path} is already held by this process`);
   NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });

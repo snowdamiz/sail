@@ -349,8 +349,11 @@ function machineState(machine: MachineRecord): "started" | "stopped" {
   return state && (state.Running || state.Restarting) ? "started" : "stopped";
 }
 
+/** The newest, since a bluegreen deploy killed between recording green and dropping blue left both. */
 const machineOf = (app: string): MachineRecord | undefined =>
-  all<MachineRecord>("machines").find((machine) => machine.app === app);
+  all<MachineRecord>("machines")
+    .filter((machine) => machine.app === app)
+    .at(-1);
 
 const attachedMachine = (volumeId: string): MachineRecord | undefined =>
   all<MachineRecord>("machines").find((machine) =>
@@ -835,12 +838,14 @@ function destroyApp(name: string): void {
   // Dropping the records of something this home cannot remove would orphan it.
   const foreign = [
     ...(machine ? [["container", containerName(name)] as const] : []),
+    ["container", swapName(name, "green")] as const,
+    ["container", swapName(name, "blue")] as const,
     ...volumes.map((v) => ["volume", volumeName(v.id)] as const),
     ...snapshots.map((s) => ["volume", snapshotName(s.id)] as const),
   ].filter(([kind, resource]) => ownership(kind, resource) === "foreign");
   if (foreign.length > 0)
     throw new FlyError(
-      `app ${name}'s ${foreign.map(([kind, resource]) => `${kind} ${resource}`).join(", ")} belong to another fake fly home; refusing to destroy it`,
+      `app ${name}'s ${foreign.map(([kind, resource]) => `${kind} ${resource}`).join(", ")} belong to another fake fly home; refusing to destroy it. If that home is this directory under another spelling, destroy the app with that spelling of FAKE_FLY_HOME; otherwise remove them with docker rm --force or docker volume rm.`,
     );
   for (const container of [containerName(name), swapName(name, "green"), swapName(name, "blue")])
     destroyMachineContainer(container);
@@ -969,6 +974,7 @@ function volumesDestroy(ctx: Ctx): number {
       throw new FlyError(
         `failed destroying volume: volume ${volume.id} is attached to machine ${machine.id}`,
       );
+    refuseForeign("volume", volumeName(volume.id));
   }
   if (!bool(ctx, "yes")) {
     err("Deleting a volume is not reversible.\n");
@@ -1390,6 +1396,8 @@ function settleContainers(app: string, recorded: MachineRecord | undefined): voi
     );
   for (const name of held) if (name !== kept) destroyMachineContainer(name);
   if (kept !== undefined && kept !== live) docker(["rename", kept, live]);
+  for (const stale of all<MachineRecord>("machines"))
+    if (stale.app === app && stale.id !== recorded?.id) remove("machines", stale.id);
 }
 
 interface DeploySteps {
@@ -2096,6 +2104,7 @@ function machineDestroy(ctx: Ctx): number {
     const state = machineState(machine);
     if (state === "started" && !bool(ctx, "force"))
       throw new FlyError(`machine ${id} currently started, either stop first or use --force flag`);
+    refuseForeign("container", containerName(machine.app));
     out(`machine ${id} was found and is currently in ${state} state, attempting to destroy...\n`);
     destroyMachineContainer(containerName(machine.app));
     removeBuiltTag(machine.builtTag);
