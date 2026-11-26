@@ -32,8 +32,8 @@ import { T, useGT, useMessages } from "gt-react";
 import { ensureLocalApi } from "../../localApi";
 import {
   forgetProviderAuthSignIn,
-  hasProviderAuthSignIn,
   rememberProviderAuthSignIn,
+  useHasProviderAuthSignIn,
 } from "../../providerAuthDelivery";
 import { managedInstanceLocks, useManagedPolicy } from "../../state/managedPolicy";
 import { ManagedControl } from "../ManagedPolicy";
@@ -336,6 +336,9 @@ function ManagedCodexSetup({
   if (returnUrl.pathname === "/settings/providers")
     returnUrl.searchParams.set("instanceId", instanceId);
   const needsManualCallback = remoteWeb;
+  const startedHere = useHasProviderAuthSignIn(
+    auth?.flowId ? { environmentId, instanceId, flowId: auth.flowId } : null,
+  );
   const callbackHelpId = useId();
   const [callbackHelpOpen, setCallbackHelpOpen] = useState(false);
   const [callbackDraft, setCallbackDraft] = useState({ flowId: "", value: "" });
@@ -696,7 +699,7 @@ function ManagedCodexSetup({
     needsManualCallback &&
     url &&
     auth?.flowId &&
-    hasProviderAuthSignIn({ environmentId, instanceId, flowId: auth.flowId }) &&
+    startedHere &&
     codexAuthReturnUrl(returnUrl.toString(), [window.location.origin])
       ? codexAuthHandoffUrl(
           {

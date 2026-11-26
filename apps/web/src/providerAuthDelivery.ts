@@ -3,9 +3,14 @@ import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 import { readCodexAuthDelivery } from "@t3tools/shared/codexAuthHandoff";
 import * as Schema from "effect/Schema";
 import { msg } from "gt-react";
+import { useSyncExternalStore } from "react";
 
 import { toastManager } from "./components/ui/toast";
-import { readLocalStorageValue, writeLocalStorageValue } from "./hooks/useLocalStorage";
+import {
+  readLocalStorageValue,
+  subscribeLocalStorageKey,
+  writeLocalStorageValue,
+} from "./hooks/useLocalStorage";
 import { m } from "./i18n/messages";
 import { whenLocaleReady } from "./i18n/runtime";
 import { appAtomRegistry } from "./rpc/atomRegistry";
@@ -49,15 +54,40 @@ export function forgetProviderAuthSignIn(signIn: SignInFlow): void {
   writeSignIns(liveSignIns().filter((other) => !sameFlow(other, signIn)));
 }
 
+const findSignIn = (flow: SignInFlow) => liveSignIns().find((other) => sameFlow(other, flow));
+const subscribeSignIns = (onChange: () => void) => subscribeLocalStorageKey(SIGN_INS_KEY, onChange);
+
 /** Whether a delivery for this sign-in would land here, so a handoff is worth offering. */
-export function hasProviderAuthSignIn(signIn: SignInFlow): boolean {
-  return liveSignIns().some((other) => sameFlow(other, signIn));
+export function useHasProviderAuthSignIn(flow: SignInFlow | null): boolean {
+  return useSyncExternalStore(subscribeSignIns, () => flow !== null && !!findSignIn(flow));
 }
 
-function takeSignIn(delivery: ProviderAuthDelivery): CodexSignIn | undefined {
-  const signIn = liveSignIns().find((candidate) => sameFlow(candidate, delivery));
-  if (signIn) forgetProviderAuthSignIn(signIn);
-  return signIn;
+function refuseDelivery() {
+  // Queued past the rest of startup, which starts i18n, so the toast is in the user's language.
+  void Promise.resolve()
+    .then(whenLocaleReady)
+    .then(() =>
+      toastManager.add({
+        type: "error",
+        title: m(msg("ChatGPT sign-in couldn't finish")),
+        description: m(
+          msg(
+            "This browser didn't start that sign-in. Sign in again in the browser that did, and paste the URL from the final localhost page.",
+          ),
+        ),
+      }),
+    );
+}
+
+// Taken just before sending, so a Cancel or another tab's send while this one waits wins.
+function sendIfStillStarted(delivery: ProviderAuthDelivery) {
+  const signIn = findSignIn(delivery);
+  if (!signIn) {
+    refuseDelivery();
+    return;
+  }
+  forgetProviderAuthSignIn(signIn);
+  void completeProviderAuth(delivery);
 }
 
 /**
@@ -73,35 +103,22 @@ export function startProviderAuthDelivery(): void {
     delivery?.returnUrl ?? `${window.location.pathname}${window.location.search}`,
   );
   if (!delivery) return;
-  const signIn = takeSignIn(delivery);
+  const signIn = findSignIn(delivery);
   if (!signIn) {
-    // Queued past the rest of startup, which starts i18n, so the toast is in the user's language.
-    void Promise.resolve()
-      .then(whenLocaleReady)
-      .then(() =>
-        toastManager.add({
-          type: "error",
-          title: m(msg("ChatGPT sign-in couldn't finish")),
-          description: m(
-            msg(
-              "This browser didn't start that sign-in. Sign in again in the browser that did, and paste the URL from the final localhost page.",
-            ),
-          ),
-        }),
-      );
+    refuseDelivery();
     return;
   }
 
   const presentationAtom = environmentPresentations.presentationAtom(delivery.environmentId);
   if (appAtomRegistry.get(presentationAtom)?.connection.phase === "connected") {
-    void completeProviderAuth(delivery);
+    sendIfStillStarted(delivery);
     return;
   }
-  const stopWaiting = (send: boolean) => {
+  const stopWaiting = (connected: boolean) => {
     clearTimeout(expiry);
     unsubscribe();
-    if (send) {
-      void completeProviderAuth(delivery);
+    if (connected && Date.now() < signIn.expiresAt) {
+      sendIfStillStarted(delivery);
       return;
     }
     toastManager.add({
@@ -112,7 +129,7 @@ export function startProviderAuthDelivery(): void {
   };
   const expiry = setTimeout(() => stopWaiting(false), signIn.expiresAt - Date.now());
   const unsubscribe = appAtomRegistry.subscribe(presentationAtom, (presentation) => {
-    if (presentation?.connection.phase === "connected") stopWaiting(Date.now() < signIn.expiresAt);
+    if (presentation?.connection.phase === "connected") stopWaiting(true);
   });
 }
 
