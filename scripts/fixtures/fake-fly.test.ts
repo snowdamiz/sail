@@ -154,6 +154,7 @@ const ORGANIZATION_BASIC_KEYS = ["ID", "InternalNumericID", "Name", "Slug", "Raw
 const IMAGE_KEYS = ["MachineID", "Registry", "Repository", "Tag", "Version", "Digest", "Labels"];
 // flyctl's `logs.LogEntry` in field order; `Meta` has no JSON tags but `status_code`.
 const LOG_KEYS = ["level", "instance", "message", "region", "timestamp", "meta"];
+const TIMESTAMP = String.raw`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z`;
 const EMPTY_LOG_META = {
   HTTP: { Request: { ID: "", Method: "", Version: "" }, Response: { status_code: 0 } },
   Error: { Code: 0, Message: "" },
@@ -197,6 +198,13 @@ interface Run {
   readonly status: number | null;
   readonly stdout: string;
   readonly stderr: string;
+}
+
+interface Follower {
+  readonly child: NodeChildProcess.ChildProcess;
+  readonly output: () => string;
+  /** Resolves once the follower has shown the app's `count`th start. */
+  readonly sees: (count: number) => Promise<void>;
 }
 
 interface Response {
@@ -246,9 +254,7 @@ describe.skipIf(!hasDocker())("fake fly", () => {
   let calls = 0;
   let url = "";
   let firstMachine = "";
-  let follower: NodeChildProcess.ChildProcess | undefined;
-  let followerOutput = "";
-  let followerWaits: Array<() => boolean> = [];
+  let followers: Array<Follower> = [];
 
   const run = (
     args: ReadonlyArray<string>,
@@ -295,19 +301,40 @@ describe.skipIf(!hasDocker())("fake fly", () => {
   const volumes = () => json(["volumes", "list", "-j"]) as Array<Record<string, unknown>>;
   const machines = () => json(["machine", "list", "-j"]) as Array<Record<string, unknown>>;
   const machineId = () => String(machines()[0]?.id);
-  const followerSees = (count: number) =>
-    new Promise<void>((resolve, reject) => {
-      const check = () => {
-        if (followerOutput.split("serving initial configuration").length - 1 < count) return false;
-        resolve();
-        return true;
-      };
-      if (check()) return;
-      const gone = () => reject(new Error(`fly logs exited before it showed start ${count}`));
-      if (!follower || follower.exitCode !== null) return gone();
-      followerWaits.push(check);
-      follower.once("exit", gone);
+  const follow = (
+    args: ReadonlyArray<string>,
+    extraEnv: Readonly<Record<string, string>>,
+  ): Follower => {
+    const child = NodeChildProcess.spawn("fly", args, {
+      cwd: appDir,
+      env: { ...env, ...extraEnv },
     });
+    calls++;
+    let output = "";
+    let waits: Array<() => boolean> = [];
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      output += chunk;
+      waits = waits.filter((check) => !check());
+    });
+    const sees = (count: number) =>
+      new Promise<void>((resolve, reject) => {
+        const check = () => {
+          if (output.split("serving initial configuration").length - 1 < count) return false;
+          resolve();
+          return true;
+        };
+        if (check()) return;
+        const gone = () =>
+          reject(new Error(`fly ${args.join(" ")} exited before it showed start ${count}`));
+        if (child.exitCode !== null) return gone();
+        waits.push(check);
+        child.once("exit", gone);
+      });
+    const follower = { child, output: () => output, sees };
+    followers.push(follower);
+    return follower;
+  };
 
   beforeAll(() => {
     const build = NodePath.join(root, "image");
@@ -366,13 +393,14 @@ primary_region = "iad" # comment
   });
 
   afterAll(() => {
-    follower?.kill("SIGTERM");
+    for (const { child } of followers) child.kill("SIGTERM");
     for (const name of [
       app,
       `${app}-b`,
       `${app}-c`,
       `${app}-d`,
       `${app}-f`,
+      `${app}-g`,
       `${app}-l`,
       `${app}-s`,
       `${app}-t`,
@@ -685,15 +713,7 @@ primary_region = "iad" # comment
 
   it("deploys behind Caddy with Fly Proxy's headers", async () => {
     const [volume] = volumes();
-    const first = fly([
-      "deploy",
-      "--image",
-      image,
-      "--local-only",
-      "--ha=false",
-      "--strategy",
-      "immediate",
-    ]);
+    const first = fly(["deploy", "--image", image, "--local-only", "--ha=false"]);
     expect(first).toMatchObject({ status: 0 });
     const deployed = first.stdout;
     url = publicUrl(`${app}.localtest.me`);
@@ -751,28 +771,37 @@ primary_region = "iad" # comment
     });
   });
 
-  it("redeploys onto the same machine and volume, and logs follow the new container", async () => {
-    follower = NodeChildProcess.spawn("fly", ["logs"], { cwd: appDir, env });
-    calls++;
-    follower.stdout?.setEncoding("utf8");
-    follower.stdout?.on("data", (chunk: string) => {
-      followerOutput += chunk;
-      followerWaits = followerWaits.filter((check) => !check());
-    });
-    await followerSees(1);
-    const before = json(["machine", "list", "-j"]) as Array<{ version: string }>;
+  it("redeploys onto the same machine and volume, and logs follow the new container with only its lines", async () => {
+    const slowDocker = NodePath.join(root, "slow-docker");
+    NodeFS.mkdirSync(slowDocker);
+    // Docker on a loaded VM: a stopped container lingers before its removal, so a follower can
+    // ask for its logs just as it goes.
+    NodeFS.writeFileSync(
+      NodePath.join(slowDocker, "docker"),
+      [
+        "#!/bin/sh",
+        "PATH=${PATH#*:}",
+        "for target; do :; done",
+        "case $1 in",
+        "rm) sleep 2 ;;",
+        `logs) for _ in $(seq 100); do [ "$(docker inspect --format '{{.State.Running}}' "$target" 2>/dev/null)" = false ] || break; sleep 0.1; done ;;`,
+        "esac",
+        'exec docker "$@"',
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const racy = { PATH: `${slowDocker}${NodePath.delimiter}${env.PATH}` };
+    const plainLogs = follow(["logs"], racy);
+    const jsonLogs = follow(["logs", "--json"], racy);
+    await Promise.all([plainLogs.sees(1), jsonLogs.sees(1)]);
+    const before = machines() as Array<{ version: string }>;
     const volume = volumes()[0]?.id;
 
-    const redeployed = fly([
-      "deploy",
-      "--image",
-      image,
-      "--local-only",
-      "-e",
-      "EXTRA=1",
-      "--strategy",
-      "immediate",
-    ]);
+    const redeployed = fly(
+      ["deploy", "--image", image, "--local-only", "-e", "EXTRA=1", "--strategy", "immediate"],
+      racy,
+    );
     expect(redeployed).toMatchObject({ status: 0 });
     expect(redeployed.stdout).toContain(
       `Updating existing machines in '${app}' with immediate strategy\n`,
@@ -788,10 +817,18 @@ primary_region = "iad" # comment
     expect(after?.config.mounts[0]?.volume).toBe(volume);
     expect(ssh("printenv EXTRA").stdout).toBe("1\n");
     expect(ssh("cat /data/signals").stdout).toBe("INT\n");
-    await followerSees(2);
+    await Promise.all([plainLogs.sees(2), jsonLogs.sees(2)]);
+    const plainLine = new RegExp(`^${TIMESTAMP} app\\[${firstMachine}\\] iad \\[info\\] `);
+    const lines = plainLogs.output().split("\n").slice(0, -1);
+    const times = [...jsonLogs.output().matchAll(/^ {4}"timestamp": "(.*)",$/gm)].map(([, t]) => t);
+    expect(times.length).toBeGreaterThan(1);
+    expect({
+      plain: lines.filter((line) => !plainLine.test(line)),
+      json: times.filter((time) => !new RegExp(`^${TIMESTAMP}$`).test(time ?? "")),
+    }).toEqual({ plain: [], json: [] });
 
-    const lines = ok(["logs", "--no-tail"]).trimEnd().split("\n");
-    expect(lines[0]).toMatch(new RegExp(`^\\S+Z app\\[${firstMachine}\\] iad \\[info\\] \\S`));
+    const noTail = ok(["logs", "--no-tail"]).trimEnd().split("\n");
+    expect(noTail[0]).toMatch(new RegExp(`^\\S+Z app\\[${firstMachine}\\] iad \\[info\\] \\S`));
   });
 
   it("prints logs as a stream of flyctl's LogEntry JSON", () => {
@@ -1106,13 +1143,90 @@ primary_region = "iad" # comment
     });
     expect(exists("container", `sail-fly-${strategic}`)).toBe(false);
     expect(deployWith("bluegreen")).toMatchObject({ status: 0 });
-    expect(deployWith("bluegreen").stdout).toContain(
-      `Updating existing machines in '${strategic}' with bluegreen strategy\n`,
-    );
+    const [launched] = json(["machine", "list", "-j", "-a", strategic]) as Array<{ id: string }>;
+    expect(deployWith("bluegreen")).toMatchObject({
+      status: 1,
+      stdout: expect.stringContaining(
+        `Updating existing machines in '${strategic}' with bluegreen strategy\n`,
+      ),
+      stderr: `\nVerifying if app can be safely deployed \n\n[WARN] Machine ${launched?.id} [app] doesn't have healthchecks setup. We won't check its health.\n\nYou need to define at least 1 check in order to use blue-green deployments. Refer to https://fly.io/docs/reference/configuration/#services-tcp_checks\nError: app not in valid state for bluegreen deployments\n`,
+    });
+    expect(json(["machine", "list", "-j", "-a", strategic])).toMatchObject([
+      { id: launched?.id, state: "started" },
+    ]);
     expect(deployWith("bluegreen", "", ["--strategy", "immediate"]).stdout).toContain(
       `Updating existing machines in '${strategic}' with immediate strategy\n`,
     );
     ok(["apps", "destroy", strategic, "--yes"]);
+  });
+
+  it("replaces the machine with a new one in a bluegreen deploy, and keeps it when the new one fails", async () => {
+    const swapped = `${app}-g`;
+    const dir = NodePath.join(root, "bluegreen-app");
+    NodeFS.mkdirSync(dir, { recursive: true });
+    const deployChecking = (path: string, flags: ReadonlyArray<string> = []) => {
+      NodeFS.writeFileSync(
+        NodePath.join(dir, "fly.toml"),
+        `app = "${swapped}"\n\n[http_service]\n  internal_port = 8080\n\n  [[http_service.checks]]\n    path = "${path}"\n`,
+      );
+      return fly(
+        [
+          "deploy",
+          dir,
+          "--image",
+          image,
+          "--local-only",
+          "--ha=false",
+          "--strategy",
+          "bluegreen",
+          ...flags,
+        ],
+        {},
+        root,
+      );
+    };
+    const live = () => ({
+      machines: (json(["machine", "list", "-j", "-a", swapped]) as Array<{ id: string }>).map(
+        (machine) => machine.id,
+      ),
+      serving: fly([
+        "ssh",
+        "console",
+        "-a",
+        swapped,
+        "-q",
+        "-C",
+        "printenv FLY_MACHINE_ID",
+      ]).stdout.trim(),
+      containers: docker([
+        "ps",
+        "--all",
+        "--quiet",
+        "--filter",
+        `label=sail-fixture.fly-app=${swapped}`,
+      ])
+        .trim()
+        .split("\n").length,
+    });
+    ok(["apps", "create", swapped]);
+    expect(deployChecking("/")).toMatchObject({ status: 0 });
+    const blue = live().serving;
+
+    expect(deployChecking("/")).toMatchObject({ status: 0 });
+    const green = live().serving;
+    expect(green).not.toBe(blue);
+    expect(live()).toEqual({ machines: [green], serving: green, containers: 1 });
+    await expect(get(`${publicUrl(`${swapped}.localtest.me`)}/`)).resolves.toMatchObject({
+      status: 200,
+    });
+
+    const failed = deployChecking("/unhealthy", ["--wait-timeout", "2s"]);
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toMatch(
+      /\nRolling back failed deployment\n {2}Deleted machine [0-9a-f]{14} \[app\]\nError: wait timeout\ncould not get all green machines to be healthy\n$/,
+    );
+    expect(live()).toEqual({ machines: [green], serving: green, containers: 1 });
+    ok(["apps", "destroy", swapped, "--yes"]);
   });
 
   it("treats a home written with a trailing slash as the same home", () => {
@@ -1186,19 +1300,20 @@ primary_region = "iad" # comment
       status: 1,
       stderr: expect.stringContaining("yes flag must be specified when not running interactively"),
     });
-    const running = follower;
-    const exited = new Promise((resolve) => running?.once("exit", resolve));
+    const exited = Promise.all(
+      followers.map(({ child }) => new Promise((resolve) => child.once("exit", resolve))),
+    );
     expect(ok(["apps", "destroy", app, "--yes"])).toBe(`Destroyed app ${app}\n`);
     expect(exists("container", `sail-fly-${app}`)).toBe(false);
     for (const name of owned) expect(exists("volume", name), name).toBe(false);
     expect(NodeFS.existsSync(NodePath.join(caddyDir(), "sites", `fly-${app}.caddy`))).toBe(false);
-    await expect(exited).resolves.toBe(0);
-    follower = undefined;
+    await expect(exited).resolves.toEqual([0, 0]);
+    followers = [];
     expect(flyElsewhere(["apps", "create", app]).status).toBe(0);
     expect(flyElsewhere(["apps", "destroy", app, "--yes"]).status).toBe(0);
   });
 
-  it("waits for every http_service check to pass before deploy returns", () => {
+  it("waits for every http_service check to pass before deploy returns, except with immediate", () => {
     const checked = `${app}-c`;
     NodeFS.writeFileSync(
       NodePath.join(appDir, "checks.toml"),
@@ -1217,6 +1332,20 @@ primary_region = "iad" # comment
     ]);
     expect(failed.status).toBe(1);
     expect(failed.stderr).toContain("timeout reached waiting for machine");
+    const immediate = fly([
+      "deploy",
+      "-c",
+      "checks.toml",
+      "--image",
+      image,
+      "--local-only",
+      "--strategy",
+      "immediate",
+      "--wait-timeout",
+      "20s",
+    ]);
+    expect(immediate).toMatchObject({ status: 0 });
+    expect(immediate.stdout).not.toContain("to become healthy");
     ok(["apps", "destroy", checked, "--yes"]);
   });
 

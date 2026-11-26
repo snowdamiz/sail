@@ -240,6 +240,8 @@ const now = () => new Date().toISOString();
 const flapsTime = (iso: string) => iso.replace(/\.\d+Z$/, "Z");
 
 const containerName = (app: string) => `sail-fly-${app}`;
+/** A bluegreen deploy's machines while they swap; app names have no `_`, so no app's name collides. */
+const swapName = (app: string, color: "green" | "blue") => `${containerName(app)}_${color}`;
 const volumeName = (id: string) => `sail-fly-vol-${id}`;
 const snapshotName = (id: string) => `sail-fly-snap-${id}`;
 const siteId = (app: string) => `fly-${app}`;
@@ -333,10 +335,10 @@ interface ContainerState {
   readonly ExitCode: number;
 }
 
-function containerState(app: string): ContainerState | undefined {
+function containerState(name: string): ContainerState | undefined {
   try {
     const parsed: unknown = JSON.parse(
-      docker(["container", "inspect", "--format", "{{json .State}}", containerName(app)]),
+      docker(["container", "inspect", "--format", "{{json .State}}", name]),
     );
     if (typeof parsed !== "object" || parsed === null || !("Status" in parsed)) return undefined;
     return parsed as ContainerState;
@@ -346,7 +348,7 @@ function containerState(app: string): ContainerState | undefined {
 }
 
 function machineState(machine: MachineRecord): "started" | "stopped" {
-  const state = containerState(machine.app);
+  const state = containerState(containerName(machine.app));
   return state && (state.Running || state.Restarting) ? "started" : "stopped";
 }
 
@@ -711,26 +713,18 @@ function newVolume(
   return volume;
 }
 
-function destroyMachineContainer(app: string): void {
-  if (ownership("container", containerName(app)) === "mine")
-    docker(["rm", "--force", "--volumes", containerName(app)]);
+function destroyMachineContainer(name: string): void {
+  if (ownership("container", name) === "mine") docker(["rm", "--force", "--volumes", name]);
 }
 
 const DEFAULT_STOP = { signal: "SIGINT", timeout: "5s" } as const;
 
 /** How Fly stops a machine before it replaces it: `kill_signal`, then `kill_timeout` to exit. */
-function stopMachineContainer(app: string, stop: StopConfig | undefined): void {
-  if (ownership("container", containerName(app)) !== "mine") return;
+function stopMachineContainer(name: string, stop: StopConfig | undefined): void {
+  if (ownership("container", name) !== "mine") return;
   const seconds = Math.ceil((durationMs(stop?.timeout ?? DEFAULT_STOP.timeout) ?? 5000) / 1000);
   docker(
-    [
-      "stop",
-      "--signal",
-      stop?.signal ?? DEFAULT_STOP.signal,
-      "--timeout",
-      String(seconds),
-      containerName(app),
-    ],
+    ["stop", "--signal", stop?.signal ?? DEFAULT_STOP.signal, "--timeout", String(seconds), name],
     { timeoutMs: (seconds + 30) * 1000 },
   );
 }
@@ -837,7 +831,8 @@ function destroyApp(name: string): void {
   if (!nameIsMine(name))
     throw new FlyError(`app ${name} belongs to another fake fly home; refusing to destroy it`);
   const machine = machineOf(name);
-  destroyMachineContainer(name);
+  for (const container of [containerName(name), swapName(name, "green"), swapName(name, "blue")])
+    destroyMachineContainer(container);
   removeBuiltImages(name, machine?.builtTag);
   if (machine) remove("machines", machine.id);
   for (const volume of all<VolumeRecord>("volumes").filter((v) => v.app === name)) {
@@ -985,7 +980,7 @@ function snapshotsCreate(ctx: Ctx): number {
   let paused = false;
   let sizeBytes: number;
   try {
-    if (machine && containerState(machine.app)?.Running === true) {
+    if (machine && containerState(containerName(machine.app))?.Running === true) {
       docker(["pause", containerName(machine.app)]);
       paused = true;
     }
@@ -1245,8 +1240,8 @@ interface Probe {
 }
 
 /** The requests Fly Proxy makes for each check, refused up front when this fake cannot make them. */
-function healthProbes(appName: string, http: HttpService | undefined): ReadonlyArray<Probe> {
-  const base = `http://${containerName(appName)}:${http?.internalPort ?? 8080}`;
+function healthProbes(container: string, http: HttpService | undefined): ReadonlyArray<Probe> {
+  const base = `http://${container}:${http?.internalPort ?? 8080}`;
   if (!http || http.checks.length === 0)
     return [{ url: `${base}/`, wget: ["-T", "2", `${base}/`], anyAnswer: true }];
   return http.checks.map((check) => {
@@ -1291,7 +1286,7 @@ const HEALTH_POLL_MS = 200;
 
 /** As flyctl does, waits until every check passes in the same round. */
 function waitForHealthy(
-  appName: string,
+  container: string,
   machine: MachineRecord,
   probes: ReadonlyArray<Probe>,
   ms: number,
@@ -1300,13 +1295,11 @@ function waitForHealthy(
   for (;;) {
     const failing = probes.find((probe) => !probePasses(probe));
     if (!failing) return;
-    const state = containerState(appName);
+    const state = containerState(container);
     if (state && !state.Running && !state.Restarting && state.Status === "exited") {
-      const logs = NodeChildProcess.spawnSync(
-        "docker",
-        ["logs", "--tail", "20", containerName(appName)],
-        { encoding: "utf8" },
-      );
+      const logs = NodeChildProcess.spawnSync("docker", ["logs", "--tail", "20", container], {
+        encoding: "utf8",
+      });
       err(`${logs.stdout}${logs.stderr}`);
       throw new FlyError(`Smoke checks for ${machine.id} failed: the app appears to be crashing`);
     }
@@ -1367,6 +1360,54 @@ function validateStrategy(
   throw new FlyError("App configuration is not valid");
 }
 
+/**
+ * flyctl's `blueGreen.Deploy` for this fake's one machine: green starts beside blue and takes
+ * blue's container name, and with it the Caddy route, once its checks pass.
+ */
+function replaceBlueWithGreen(
+  blue: MachineRecord,
+  green: MachineRecord,
+  http: HttpService | undefined,
+  waitMs: number,
+  start: (container: string) => void,
+): void {
+  err("\nVerifying if app can be safely deployed \n");
+  if (!http || http.checks.length === 0) {
+    err(
+      `\n[WARN] Machine ${blue.id} [app] doesn't have healthchecks setup. We won't check its health.`,
+    );
+    err(
+      "\n\nYou need to define at least 1 check in order to use blue-green deployments. Refer to https://fly.io/docs/reference/configuration/#services-tcp_checks\n",
+    );
+    throw new FlyError("app not in valid state for bluegreen deployments");
+  }
+  const live = containerName(blue.app);
+  const greenName = swapName(blue.app, "green");
+  const blueName = swapName(blue.app, "blue");
+  for (const leftover of [greenName, blueName]) destroyMachineContainer(leftover);
+  err("\nCreating green machines\n");
+  start(greenName);
+  err(`  Created machine ${green.id} [app]\n\nWaiting for all green machines to be healthy\n`);
+  try {
+    waitForHealthy(greenName, green, healthProbes(greenName, http), waitMs);
+  } catch (error) {
+    destroyMachineContainer(greenName);
+    err(`\nRolling back failed deployment\n  Deleted machine ${green.id} [app]\n`);
+    throw error instanceof FlyError
+      ? new FlyError("wait timeout\ncould not get all green machines to be healthy")
+      : error;
+  }
+  write("machines", green.id, green);
+  remove("machines", blue.id);
+  if (ownership("container", live) === "mine") docker(["rename", live, blueName]);
+  docker(["rename", greenName, live]);
+  err("\nStopping all blue machines\n");
+  stopMachineContainer(blueName, blue.config.stop_config);
+  err("\nDestroying all blue machines\n");
+  destroyMachineContainer(blueName);
+  err("\nDeployment Complete\n");
+}
+
 function deploy(ctx: Ctx): number {
   const workingDirectory = ctx.args[0] === undefined ? undefined : NodePath.resolve(ctx.args[0]);
   const loaded = loadConfig(ctx, workingDirectory);
@@ -1391,13 +1432,17 @@ function deploy(ctx: Ctx): number {
   validateStrategy(strategy, config, loaded.file, err);
   out(`--> Verified app config\n`);
   const http = config.http;
-  const probes = healthProbes(appName, http);
+  const probes = healthProbes(containerName(appName), http);
+  const previous = machineOf(appName);
+  const blueGreen = previous !== undefined && strategy === "bluegreen";
+  if (blueGreen && config.mounts.length > 0)
+    throw new FlyError("fake fly does not model bluegreen deploys of an app with [[mounts]]");
   if (ctx.flags.get("ha") !== false)
     err("fake fly: runs one machine per app; real Fly adds a standby machine unless --ha=false\n");
   const image = resolveImage(ctx, appName, loaded);
-  const previous = machineOf(appName);
+  const kept = blueGreen ? undefined : previous;
   const region = str(ctx, "primary-region") ?? config.primaryRegion ?? previous?.region ?? "iad";
-  const machineId = previous?.id ?? hex(7);
+  const machineId = kept?.id ?? hex(7);
   const version = ulid();
   const releaseVersion = app.releaseVersion + 1;
   const memory = config.memoryMb ?? 2048;
@@ -1473,10 +1518,10 @@ function deploy(ctx: Ctx): number {
   const machine: MachineRecord = {
     id: machineId,
     app: appName,
-    name: previous?.name ?? friendlyName(),
+    name: kept?.name ?? friendlyName(),
     region,
-    privateIp: previous?.privateIp ?? `fdaa:0:${hex(2)}:a7b:${hex(2)}:${hex(2)}:${hex(2)}:2`,
-    createdAt: previous?.createdAt ?? timestamp,
+    privateIp: kept?.privateIp ?? `fdaa:0:${hex(2)}:a7b:${hex(2)}:${hex(2)}:${hex(2)}:2`,
+    createdAt: kept?.createdAt ?? timestamp,
     updatedAt: timestamp,
     version,
     imageRef: image.ref,
@@ -1494,36 +1539,40 @@ function deploy(ctx: Ctx): number {
     ...localPublicUrl(env, url),
   };
 
-  if (previous) {
-    out(`Updating existing machines in '${appName}' with ${strategy} strategy\n`);
-    stopMachineContainer(appName, previous.config.stop_config);
+  const start = (container: string) =>
+    docker([
+      "run",
+      "--detach",
+      "--name",
+      container,
+      "--hostname",
+      machineId,
+      "--network",
+      NETWORK,
+      "--label",
+      `${FIXTURE_LABEL}=fly-machine`,
+      "--label",
+      `${APP_LABEL}=${appName}`,
+      "--label",
+      `${HOME_LABEL}=${HOME_ID}`,
+      "--restart",
+      "on-failure",
+      "--memory",
+      `${memory}m`,
+      ...Object.entries(runtimeEnv).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
+      ...(mount && volume ? ["--volume", `${volumeName(volume.id)}:${mount.destination}`] : []),
+      image.run,
+    ]);
+
+  if (previous) out(`Updating existing machines in '${appName}' with ${strategy} strategy\n`);
+  if (blueGreen) replaceBlueWithGreen(previous, machine, http, waitMs, start);
+  else {
+    if (previous) stopMachineContainer(containerName(appName), previous.config.stop_config);
+    destroyMachineContainer(containerName(appName));
+    write("machines", machine.id, machine);
+    start(containerName(appName));
   }
-  destroyMachineContainer(appName);
-  write("machines", machine.id, machine);
   if (previous?.builtTag && previous.builtTag !== image.builtTag) removeBuiltTag(previous.builtTag);
-  docker([
-    "run",
-    "--detach",
-    "--name",
-    containerName(appName),
-    "--hostname",
-    machineId,
-    "--network",
-    NETWORK,
-    "--label",
-    `${FIXTURE_LABEL}=fly-machine`,
-    "--label",
-    `${APP_LABEL}=${appName}`,
-    "--label",
-    `${HOME_LABEL}=${HOME_ID}`,
-    "--restart",
-    "on-failure",
-    "--memory",
-    `${memory}m`,
-    ...Object.entries(runtimeEnv).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
-    ...(mount && volume ? ["--volume", `${volumeName(volume.id)}:${mount.destination}`] : []),
-    image.run,
-  ]);
   write("apps", appName, {
     ...app,
     releaseVersion,
@@ -1543,11 +1592,16 @@ function deploy(ctx: Ctx): number {
       "Fly-Client-IP": "{remote_host}",
     },
   });
-  out(`Machine ${machineId} [app] ${previous ? "update" : "launch"} started\n`);
-  if (!bool(ctx, "detach")) {
-    out(`Waiting for ${machineId} to become healthy (started)\n`);
-    waitForHealthy(appName, machine, probes, waitMs);
-    out(`Machine ${machineId} [app] ${previous ? "update" : "launch"} succeeded\n`);
+  if (!blueGreen) {
+    out(`Machine ${machineId} [app] ${previous ? "update" : "launch"} started\n`);
+    if (!bool(ctx, "detach")) {
+      // flyctl's `immediate` skips smoke and health checks (machines_deploymachinesapp.go:712-718, 1211-1214).
+      if (strategy !== "immediate") {
+        out(`Waiting for ${machineId} to become healthy (started)\n`);
+        waitForHealthy(containerName(appName), machine, probes, waitMs);
+      }
+      out(`Machine ${machineId} [app] ${previous ? "update" : "launch"} succeeded\n`);
+    }
   }
   out(`\nVisit your newly deployed app at ${url}/\n`);
   return 0;
@@ -1653,6 +1707,12 @@ const sortableTime = (ts: string) =>
     (_, fraction: string | undefined) => `${(fraction ?? ".").padEnd(10, "0")}Z`,
   );
 
+/**
+ * `docker logs` writes the app's stderr to its own stderr, beside Docker's errors, such as one for a
+ * container a redeploy just removed; only the app's lines carry a timestamp.
+ */
+const LOG_LINE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z) (.*)$/;
+
 function streamLogs(
   args: ReadonlyArray<string>,
   onLine: (timestamp: string, message: string) => void,
@@ -1673,8 +1733,8 @@ function streamLogs(
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
       for (const line of lines) {
-        const space = line.indexOf(" ");
-        if (space > 0) onLine(line.slice(0, space), line.slice(space + 1));
+        const [, timestamp, message] = LOG_LINE.exec(line) ?? [];
+        if (timestamp !== undefined) onLine(timestamp, message ?? "");
       }
     });
     child.on("close", () => {
@@ -1969,7 +2029,7 @@ function machineDestroy(ctx: Ctx): number {
     if (state === "started" && !bool(ctx, "force"))
       throw new FlyError(`machine ${id} currently started, either stop first or use --force flag`);
     out(`machine ${id} was found and is currently in ${state} state, attempting to destroy...\n`);
-    destroyMachineContainer(machine.app);
+    destroyMachineContainer(containerName(machine.app));
     removeBuiltTag(machine.builtTag);
     remove("machines", id);
     out(`${id} has been destroyed\n`);
