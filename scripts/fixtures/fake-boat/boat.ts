@@ -252,7 +252,7 @@ function diskTtlSeconds(): number {
   return Number(raw);
 }
 
-/** Above 0, a stop returns at once, and a stop or resume reports its state for at least this long. */
+/** Above 0, a stop returns at once, and a create, stop, or resume reports its state for at least this long. */
 function transitionSecs(): number {
   const raw = process.env.FAKE_BOAT_TRANSITION_SECS;
   if (raw === undefined || raw === "") return 0;

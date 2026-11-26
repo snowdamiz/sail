@@ -71,6 +71,14 @@ done
 echo waiting
 read -r go`;
 
+/** A test's own Caddy, with its data volumes and its directory. */
+function removeInstance(container: string, dir: string): void {
+  docker(["rm", "--force", container]);
+  const volumes = docker(["volume", "ls", "-q", "--filter", `name=^${container}-data-`]).trim();
+  if (volumes) docker(["volume", "rm", "--force", ...volumes.split("\n")]);
+  NodeFS.rmSync(dir, { recursive: true, force: true });
+}
+
 const status = async (url: string) =>
   (
     await execFile("curl", [
@@ -147,9 +155,16 @@ async function nodeAccepts(ca: string, san: string, host: string): Promise<boole
 }
 
 const CURL = NodeFS.existsSync("/usr/bin/curl") ? "/usr/bin/curl" : "curl";
+const libreSsl = () =>
+  /LibreSSL/.test(NodeChildProcess.spawnSync(CURL, ["--version"], { encoding: "utf8" }).stdout);
 
 /** The system curl, on LibreSSL on macOS, which reads a name constraint differently from OpenSSL. */
-async function curlAccepts(ca: string, san: string, host: string): Promise<boolean> {
+async function curlAccepts(
+  ca: string,
+  san: string,
+  host: string,
+  trust = NodePath.join(ca, "root.crt"),
+): Promise<boolean> {
   const leaf = issue(ca, san);
   const server = NodeHttps.createServer(
     { key: NodeFS.readFileSync(leaf.key), cert: NodeFS.readFileSync(leaf.cert) },
@@ -158,7 +173,7 @@ async function curlAccepts(ca: string, san: string, host: string): Promise<boole
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as { readonly port: number };
   try {
-    const args = ["-s", "--cacert", NodePath.join(ca, "root.crt")].concat([
+    const args = ["-s", "--cacert", trust].concat([
       "--resolve",
       `${host}:${port}:127.0.0.1`,
       `https://${host}:${port}/`,
@@ -239,9 +254,7 @@ describe("fixture root CA", () => {
     makeOldRoot(old, 2);
     const oldCa = NodePath.join(old, "ca");
     expect(verifies(oldCa, "DNS:evil-localtest.me"), "OpenSSL refused it already").toBe(false);
-    if (
-      /LibreSSL/.test(NodeChildProcess.spawnSync(CURL, ["--version"], { encoding: "utf8" }).stdout)
-    )
+    if (libreSsl())
       expect(await curlAccepts(oldCa, "DNS:evil-localtest.me", "evil-localtest.me")).toBe(true);
     const kept = NodePath.join(old, "kept-v2.crt");
     NodeFS.copyFileSync(NodePath.join(oldCa, "root.crt"), kept);
@@ -252,6 +265,20 @@ describe("fixture root CA", () => {
       openssl(["verify", "-CAfile", kept, signed.cert]).status,
       "a lane that kept the version 2 root still verifies what the new root signs",
     ).toBe(0);
+    if (libreSsl())
+      expect(
+        await curlAccepts(oldCa, "DNS:evil-localtest.me", "evil-localtest.me", kept),
+        "and that copy still lets LibreSSL accept the suffix, until it is deleted",
+      ).toBe(true);
+  });
+
+  it("puts back a root that a rotation killed between its renames left aside", () => {
+    const dir = NodeFS.mkdtempSync(NodePath.join(scratch, "killed-"));
+    expect(ensureRootCa(dir)).toBe(true);
+    const before = rootFingerprint(dir);
+    NodeFS.renameSync(NodePath.join(dir, "ca"), NodePath.join(dir, "ca-x1y2z3-retired"));
+    expect(ensureRootCa(dir), "recovered, so there is nothing to make").toBe(false);
+    expect(rootFingerprint(dir)).toBe(before);
   });
 
   it("makes a root when the version is there but the root or its key is not", () => {
@@ -265,9 +292,9 @@ describe("fixture root CA", () => {
     }
   });
 
-  it("keeps the old root when the new one cannot take its place", async () => {
+  it("keeps the old root when a new key's root cannot take its place", async () => {
     const old = NodeFS.mkdtempSync(NodePath.join(scratch, "promote-"));
-    makeOldRoot(old, 2);
+    makeOldRoot(old, 1);
     const before = NodeFS.readFileSync(NodePath.join(old, "ca", "root.crt"), "utf8");
     const failed = await inChild(
       `import fs from "node:fs";
@@ -411,6 +438,7 @@ describe.skipIf(!hasDocker())("fixture Caddy", () => {
   afterAll(() => {
     for (const id of ids) removeSite(id);
     docker(["rm", "--force", upstream]);
+    if (process.env.SAIL_FIXTURES_CADDY_INSTANCE) removeInstance(caddyContainer(), caddyDir());
   });
 
   it("serves every site that processes publish at the same time", async () => {
@@ -489,12 +517,24 @@ describe.skipIf(!hasDocker())("fixture Caddy", () => {
         upstream: "x:1",
       }),
     ).toThrow(/reserved/);
+    for (const host of ["evil-localtest.me", "localtest.me.example.com", "a.b.localtest.me"])
+      expect(() =>
+        publishSite({ id: `caddy-test-${run}-outside`, home: HOME, host, upstream: "x:1" }),
+      ).toThrow(/not a name under localtest.me/);
+    expect(
+      NodeFS.existsSync(NodePath.join(caddyDir(), "sites", `caddy-test-${run}-outside.caddy`)),
+    ).toBe(false);
   });
 });
 
 describe.skipIf(!hasDocker())("a Caddy that two homes share", () => {
   const instance = `test-${run}`;
-  const env = { ...process.env, SAIL_FIXTURES_CADDY_INSTANCE: instance };
+  const {
+    SAIL_FIXTURES_HTTPS_PORT: _https,
+    SAIL_FIXTURES_HTTP_PORT: _http,
+    ...inherited
+  } = process.env;
+  const env: NodeJS.ProcessEnv = { ...inherited, SAIL_FIXTURES_CADDY_INSTANCE: instance };
   const container = `${CADDY_CONTAINER}-${instance}`;
   const dir = NodePath.join(fixturesRoot(), `caddy-${instance}`);
   const backend = `sail-caddy-two-${run}`;
@@ -552,10 +592,8 @@ describe.skipIf(!hasDocker())("a Caddy that two homes share", () => {
   });
 
   afterAll(() => {
-    docker(["rm", "--force", backend, container]);
-    const volumes = docker(["volume", "ls", "-q", "--filter", `name=^${container}-data-`]).trim();
-    if (volumes) docker(["volume", "rm", "--force", ...volumes.split("\n")]);
-    NodeFS.rmSync(dir, { recursive: true, force: true });
+    docker(["rm", "--force", backend]);
+    removeInstance(container, dir);
   });
 
   it("keeps the root other homes trust, and refuses to replace a Caddy they serve through", async () => {
@@ -603,6 +641,56 @@ describe.skipIf(!hasDocker())("a Caddy that two homes share", () => {
     await servesWith(keepRoot("root-b"), "b");
     expect(await statusWith(rootA, "b"), "a lane that read the version 2 root").toBe("200");
     await removeFor("b");
+  });
+
+  it("leaves the root as it was when the old Caddy cannot be removed", async () => {
+    await ensureFor("a");
+    const before = running().Id;
+    const root = fingerprint();
+    NodeFS.writeFileSync(NodePath.join(dir, "ca", "version"), "2\n");
+    const shim = NodePath.join(scratch, `rm-fails-${run}`);
+    NodeFS.mkdirSync(shim, { recursive: true });
+    const realDocker = NodeChildProcess.execFileSync("sh", ["-c", "command -v docker"], {
+      encoding: "utf8",
+    }).trim();
+    NodeFS.writeFileSync(
+      NodePath.join(shim, "docker"),
+      `#!/bin/sh\n[ "$1" = rm ] && { echo "Error response from daemon: removal is stuck" >&2; exit 1; }\nexec ${JSON.stringify(realDocker)} "$@"\n`,
+      { mode: 0o755 },
+    );
+    const failed = await execFile(
+      process.execPath,
+      ["--input-type=module", "-e", `import { ensureCaddy } from ${CADDY_TS}; ensureCaddy("b");`],
+      { env: { ...env, PATH: `${shim}${NodePath.delimiter}${env.PATH ?? ""}` } },
+    ).then(
+      () => "",
+      (error: { readonly stderr: string }) => error.stderr,
+    );
+    expect(failed).toContain("removal is stuck");
+    expect(fingerprint(), "the root on disk is still the one Caddy runs on").toBe(root);
+    expect(running().Id).toBe(before);
+    await ensureFor("b");
+    expect(running().Id, "replaced once removal works").not.toBe(before);
+  });
+
+  it("replaces a Caddy an older revision started without a root label", async () => {
+    await ensureFor("a");
+    docker(["rm", "--force", container]);
+    docker(
+      ["run", "--detach", "--name", container, "--label", `${FIXTURE_LABEL}=caddy`]
+        .concat(["--network", NETWORK, "--memory", "64m", "--volume", `${dir}:/etc/caddy`])
+        .concat(["caddy:2", "caddy", "run", "--config", "/etc/caddy/Caddyfile"])
+        .concat(["--adapter", "caddyfile"]),
+    );
+    const unlabeled = running().Id;
+    NodeFS.writeFileSync(NodePath.join(dir, "ca", "version"), "2\n");
+    await ensureFor("b");
+    const now = running();
+    expect(now.Id).not.toBe(unlabeled);
+    expect(now.Config.Labels[ROOT_LABEL]).toBe(fingerprint());
+    expect(NodeFS.readFileSync(NodePath.join(dir, "ca", "version"), "utf8")).toBe(
+      `${CA_VERSION}\n`,
+    );
   });
 
   it("replaces the Caddy only once a reload in flight lets go of the host lock", async () => {

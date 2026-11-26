@@ -113,7 +113,9 @@ function port(name: string, fallback: number): string {
 
 /**
  * Bump with every change to how the root is made. A lane at an older revision keeps whatever
- * root it finds, so a newer root is never replaced by an older one.
+ * root it finds, so a newer root is never replaced by an older one. Version 3 is version 2 re-issued
+ * on the same key, so a copy of the version 2 root still verifies, and under LibreSSL still lets
+ * that key vouch for names that merely end in `localtest.me`, until whoever kept it deletes it.
  */
 export const CA_VERSION = 3;
 
@@ -124,15 +126,23 @@ export const CA_VERSION = 3;
  */
 const NAME_CONSTRAINTS = `critical,permitted;DNS:.${DOMAIN},excluded;IP:0.0.0.0/0.0.0.0,excluded;IP:::/::`;
 
-/** 0 unless the root, its key, and its version are all there. */
-function caVersion(ca: string): number {
+interface Ca {
+  readonly version: number;
+  readonly fingerprint: string;
+}
+
+/** The root on disk, or nothing unless its key is there too. Version 1 wrote no version file. */
+function readCa(dir: string): Ca | undefined {
+  const ca = NodePath.join(dir, "ca");
   if (!["root.crt", "root.key"].every((file) => NodeFS.existsSync(NodePath.join(ca, file))))
-    return 0;
+    return undefined;
+  let version = 1;
   try {
-    return Number(NodeFS.readFileSync(NodePath.join(ca, "version"), "utf8").trim()) || 0;
-  } catch {
-    return 0;
+    version = Number(NodeFS.readFileSync(NodePath.join(ca, "version"), "utf8").trim()) || 1;
+  } catch (error) {
+    if (!isMissing(error)) throw error;
   }
+  return { version, fingerprint: fingerprint(dir) };
 }
 
 /**
@@ -184,10 +194,21 @@ function makeRoot(dir: string, key: string | undefined): string {
 
 const isMissing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
 
-/** The caller holds the Caddy lock. The old root goes only once the new one is in its place. */
-function rotateRoot(dir: string): void {
+/**
+ * The caller holds the Caddy lock. Version 2's only flaw is its DNS constraint, so it is re-issued
+ * on its key one file at a time, and a reader never finds the root missing; a crash part way just
+ * re-issues it again. Anything else gets a new key in a new directory.
+ */
+function rotateRoot(dir: string, from: Ca | undefined): void {
   const ca = NodePath.join(dir, "ca");
-  const staging = makeRoot(dir, caVersion(ca) > 0 ? NodePath.join(ca, "root.key") : undefined);
+  if (from?.version === 2) {
+    const staging = makeRoot(dir, NodePath.join(ca, "root.key"));
+    NodeFS.renameSync(NodePath.join(staging, "root.crt"), NodePath.join(ca, "root.crt"));
+    NodeFS.renameSync(NodePath.join(staging, "version"), NodePath.join(ca, "version"));
+    NodeFS.rmSync(staging, { recursive: true, force: true });
+    return;
+  }
+  const staging = makeRoot(dir, undefined);
   const retired = `${staging}-retired`;
   let hadRoot = true;
   try {
@@ -209,11 +230,24 @@ function rotateRoot(dir: string): void {
   NodeFS.rmSync(retired, { recursive: true, force: true });
 }
 
+/** A process killed between `rotateRoot`'s two renames left its old root aside; it goes back. */
+function recoverRetired(dir: string): void {
+  if (NodeFS.existsSync(NodePath.join(dir, "ca"))) return;
+  const retired = NodeFS.readdirSync(dir).find(
+    (name) =>
+      /^ca-.+-retired$/.test(name) &&
+      ["root.crt", "root.key"].every((file) => NodeFS.existsSync(NodePath.join(dir, name, file))),
+  );
+  if (retired) NodeFS.renameSync(NodePath.join(dir, retired), NodePath.join(dir, "ca"));
+}
+
 /** True when it made a new root, whatever other homes serve: only tests call it, on their own `dir`. */
 export function ensureRootCa(dir: string): boolean {
   return withCaddyLock(dir, () => {
-    if (caVersion(NodePath.join(dir, "ca")) >= CA_VERSION) return false;
-    rotateRoot(dir);
+    recoverRetired(dir);
+    const ca = readCa(dir);
+    if (ca && ca.version >= CA_VERSION) return false;
+    rotateRoot(dir, ca);
     return true;
   });
 }
@@ -352,15 +386,21 @@ function ready(dir: string, home: string): void {
  * volume, since the certificates the old root issued are kept there. The caller holds the lock.
  */
 function reconcile(dir: string, home: string): void {
+  recoverRetired(dir);
   const seen = served();
   if (seen) refuseAnotherDirectory(seen, dir);
-  const ca = NodePath.join(dir, "ca");
-  if (seen?.running && caVersion(ca) >= CA_VERSION && seen.root === fingerprint(dir)) return;
-  const others = othersServing(dir, home);
-  const version = caVersion(ca);
-  const rotate = version === 0 || (version < CA_VERSION && others.length === 0);
-  const kept = rotate ? undefined : fingerprint(dir);
-  if (seen && seen.root === kept) {
+  const ca = readCa(dir);
+  if (seen?.running && ca && ca.version >= CA_VERSION && seen.root === ca.fingerprint) return;
+  const upgrade = !ca || ca.version < CA_VERSION;
+  const replacing = !seen || upgrade || seen.root !== ca?.fingerprint;
+  const others = [
+    ...othersServing(dir, home),
+    ...(seen?.running && replacing && !reloadsSettle(seen.id)
+      ? [`a reload inside ${caddyContainer()}`]
+      : []),
+  ];
+  const rotate = !ca || (upgrade && others.length === 0);
+  if (seen && ca && !rotate && seen.root === ca.fingerprint) {
     if (!seen.running) {
       docker(["start", seen.id]);
       waitForAdmin();
@@ -369,50 +409,79 @@ function reconcile(dir: string, home: string): void {
   }
   if (seen?.running && others.length > 0)
     throw new Error(
-      `${caddyContainer()} runs on root ${seen.root ?? "unknown"}, which is not the root on disk, and other homes still serve ${others.join(", ")} through it. Replacing it would cut them off; remove those sites or their containers, then try again.`,
+      `${caddyContainer()} runs on root ${seen.root ?? "unknown"} and the root on disk is ${ca?.fingerprint ?? "missing"}, but other homes still serve ${others.join(", ")} through it. Replacing it would cut them off; remove those sites or their containers, then try again.`,
     );
-  if (rotate) rotateRoot(dir);
-  const root = fingerprint(dir);
+  // The old container goes before the root changes, so a failure here leaves the two matching.
   if (seen) {
     try {
       docker(["rm", "--force", seen.id]);
     } catch (error) {
       if (!isNoSuch(error)) throw error;
     }
-    if (seen.data && seen.data !== dataVolume(root)) dockerSucceeds(["volume", "rm", seen.data]);
   }
-  docker([
-    "run",
-    "--detach",
-    "--name",
-    caddyContainer(),
-    "--label",
-    `${FIXTURE_LABEL}=caddy`,
-    "--label",
-    `${ROOT_LABEL}=${root}`,
-    "--network",
-    NETWORK,
-    "--restart",
-    "unless-stopped",
-    "--memory",
-    "128m",
-    "--publish",
-    `127.0.0.1:${port("SAIL_FIXTURES_HTTPS_PORT", 443)}:443`,
-    "--publish",
-    `127.0.0.1:${port("SAIL_FIXTURES_HTTP_PORT", 80)}:80`,
-    "--volume",
-    `${dir}:${CONFIG_DIR}`,
-    "--volume",
-    `${dataVolume(root)}:/data`,
-    CADDY_IMAGE,
-    "caddy",
-    "run",
-    "--config",
-    `${CONFIG_DIR}/Caddyfile`,
-    "--adapter",
-    "caddyfile",
-  ]);
+  if (rotate) rotateRoot(dir, ca);
+  const root = fingerprint(dir);
+  if (seen?.data && seen.data !== dataVolume(root)) dockerSucceeds(["volume", "rm", seen.data]);
+  const name = caddyContainer();
+  try {
+    docker([
+      "run",
+      "--detach",
+      "--name",
+      name,
+      "--label",
+      `${FIXTURE_LABEL}=${instance() ? "caddy-instance" : "caddy"}`,
+      "--label",
+      `${ROOT_LABEL}=${root}`,
+      "--network",
+      NETWORK,
+      "--restart",
+      instance() ? "no" : "unless-stopped",
+      "--memory",
+      "128m",
+      "--publish",
+      `127.0.0.1:${port("SAIL_FIXTURES_HTTPS_PORT", 443)}:443`,
+      "--publish",
+      `127.0.0.1:${port("SAIL_FIXTURES_HTTP_PORT", 80)}:80`,
+      "--volume",
+      `${dir}:${CONFIG_DIR}`,
+      "--volume",
+      `${dataVolume(root)}:/data`,
+      CADDY_IMAGE,
+      "caddy",
+      "run",
+      "--config",
+      `${CONFIG_DIR}/Caddyfile`,
+      "--adapter",
+      "caddyfile",
+    ]);
+  } catch (error) {
+    // A lane at an older revision may have started the very same Caddy meanwhile.
+    const now = served();
+    if (!(now?.root === root && now.config !== undefined && samePath(now.config, dir))) throw error;
+  }
   waitForAdmin();
+}
+
+/**
+ * Lanes at older revisions reload under only the lock inside the container, so a replacement
+ * first waits, for up to 30 seconds, until no such reload runs or waits there.
+ */
+function reloadsSettle(id: string): boolean {
+  const count = "ps -o args | grep -c '^flock /data/reload.lock' || true";
+  for (let attempt = 0; attempt < 150; attempt++) {
+    let running: string;
+    try {
+      running = docker(["exec", id, "sh", "-c", count]);
+    } catch (error) {
+      // Nothing reloads inside a container that is not running.
+      if (error instanceof DockerError && /not running|no such/i.test(error.stderr)) return true;
+      throw error;
+    }
+    if (Number(running.trim()) === 0) return true;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+  }
+  return false;
 }
 
 function waitForAdmin(): void {
@@ -476,17 +545,47 @@ function siteFile(id: string): string {
 
 export function publishSite(site: Site): string {
   if (isReservedHost(site.host)) throw new Error(`${site.host} is reserved for the fixtures`);
+  // Caddy issues for any address, so this keeps it to the names the root is meant to sign.
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?\.localtest\.me$/.test(site.host))
+    throw new Error(
+      `${site.host} is not a name under ${DOMAIN}, the only names the fixtures serve`,
+    );
   const address = site.plainHttp ? `http://${site.host}, https://${site.host}` : site.host;
   const headers = Object.entries(site.headers ?? {})
     .map(([name, value]) => `\t\theader_up ${name} "${value}"\n`)
     .join("");
   const body = `${address} {\n\ttls internal\n\treverse_proxy ${site.upstream} {\n${headers}\t}\n}\n# sail-fixture home ${site.home}\n`;
   const dir = prepare();
-  withCaddyLock(dir, () => {
+  const url = withCaddyLock(dir, () => {
     ready(dir, site.home);
     changeAndReload(siteFile(site.id), { kind: "put", body });
+    return publicUrl(site.host);
   });
-  return publicUrl(site.host);
+  waitForCertificate(site.host, url);
+  return url;
+}
+
+/**
+ * Caddy obtains a new site's certificate after its reload returns, slowly at load 90, while a Fly
+ * app's URL verifies once `fly deploy` returns. Any HTTP answer over verified TLS will do.
+ */
+function waitForCertificate(host: string, url: string): void {
+  const port = new URL(url).port || "443";
+  const curl = [
+    "--silent",
+    "--output",
+    "/dev/null",
+    "--max-time",
+    "10",
+    "--cacert",
+    rootCertPath(),
+  ].concat(["--resolve", `${host}:${port}:127.0.0.1`, `https://${host}:${port}/`]);
+  for (let attempt = 0; ; attempt++) {
+    if (NodeChildProcess.spawnSync("curl", curl).status === 0) return;
+    if (attempt >= 300)
+      throw new Error(`${caddyContainer()} never served a certificate for ${host}`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+  }
 }
 
 export function removeSite(id: string): void {

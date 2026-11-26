@@ -47,8 +47,18 @@ export function canonicalPath(path: string): string {
  * separate worktrees never share an account, a sandbox list, or a call log.
  */
 export function standInHome(kind: "fly" | "boat", envName: string): string {
-  const chosen = process.env[envName];
-  return canonicalPath(chosen || NodePath.join(stateRoot(), kind, shortHash(CHECKOUT)));
+  return canonicalPath(spelledHome(kind, envName));
+}
+
+const spelledHome = (kind: "fly" | "boat", envName: string) =>
+  NodePath.resolve(process.env[envName] || NodePath.join(stateRoot(), kind, shortHash(CHECKOUT)));
+
+/**
+ * Every id this home's Docker resources may carry: revisions before ids were canonical hashed the
+ * home as spelled, so what they made under this spelling is still this home's.
+ */
+export function homeIds(kind: "fly" | "boat", envName: string): ReadonlySet<string> {
+  return new Set([homeId(standInHome(kind, envName)), shortHash(spelledHome(kind, envName))]);
 }
 
 /** Labels and names every Docker resource a home creates, so cleanup can find only its own. */
@@ -94,11 +104,13 @@ export function createJsonExclusive(path: string, value: unknown): boolean {
 }
 
 const LOCK_WAIT_MS = 5 * 60_000;
+/** Two processes taking a free lock at once can both fail without the busy handler's retries. */
+const PROBE_WAIT_MS = 200;
 const SQLITE_BUSY = 5;
 const SQLITE_NOTADB = 26;
 
 /** Collecting a connection would close it, so a held lock stays reachable until its release. */
-const held = new Set<NodeSqlite.DatabaseSync>();
+const held = new Map<string, NodeSqlite.DatabaseSync>();
 
 const sqliteCode = (error: unknown) => (error as { readonly errcode?: number }).errcode;
 
@@ -107,15 +119,19 @@ const sqliteCode = (error: unknown) => (error as { readonly errcode?: number }).
  * held it for all of `waitMs`. The kernel owns the lock (SQLite's fcntl lock on the file), so it ends
  * with its process however that process ends, and no file ever names a holder that could be stale.
  */
-export function takeLock(path: string, waitMs = 0): (() => void) | undefined {
+export function takeLock(path: string, waitMs = PROBE_WAIT_MS): (() => void) | undefined {
+  const key = NodePath.resolve(path);
+  // A second connection from this process would wait out `waitMs` on itself.
+  if (held.has(key)) throw new Error(`${path} is already held by this process`);
   NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
   for (let attempt = 0; ; attempt++) {
     const db = new NodeSqlite.DatabaseSync(path, { timeout: waitMs });
     try {
       db.exec("BEGIN EXCLUSIVE");
-      held.add(db);
+      held.set(key, db);
       return () => {
-        held.delete(db);
+        if (held.get(key) !== db) return;
+        held.delete(key);
         db.close();
       };
     } catch (error) {
@@ -187,6 +203,11 @@ export function reserveName(namespace: string, name: string, home: string): bool
 
 export function nameOwner(namespace: string, name: string): string | undefined {
   return readJson<{ readonly owner: string }>(reservationPath(namespace, name))?.owner;
+}
+
+export function heldElsewhere(namespace: string, name: string, home: string): boolean {
+  const owner = nameOwner(namespace, name);
+  return owner !== undefined && !isHome(owner, home);
 }
 
 export function releaseName(namespace: string, name: string, home: string): void {

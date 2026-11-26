@@ -490,7 +490,7 @@ describe("fake boat records and output", () => {
     const home = await NodeFSP.mkdtemp(NodePath.join(state, "saving-"));
     const id = "bx-000000000001";
     const name = "still-saving";
-    await using worker = fakeBoatProcess();
+    await using reused = fakeBoatProcess();
     await NodeFSP.mkdir(NodePath.join(home, "sandboxes"));
     await NodeFSP.mkdir(NodePath.join(home, "snapshots"));
     await NodeFSP.mkdir(NodePath.join(home, "outbox", id), { recursive: true });
@@ -512,7 +512,7 @@ describe("fake boat records and output", () => {
         home,
         "outbox",
         id,
-        requestFile({ stage: "claimed", base: name, pid: worker.pid }),
+        requestFile({ stage: "claimed", base: name, pid: reused.pid }),
       ),
       JSON.stringify({ sandboxId: id, name, requestedAt: createdAt }),
     );
@@ -530,19 +530,27 @@ describe("fake boat records and output", () => {
       ["stop", id],
       ["delete", id, "--yes"],
     ];
-    for (const args of commands) {
-      const ran = await run("boat", ["--json", ...args], env);
-      expect({ status: ran.status, stdout: ran.stdout }, args.join(" ")).toEqual({
-        status: 1,
-        stdout: "",
+    {
+      await using _worker = await workerLockHolder(home);
+      for (const args of commands) {
+        const ran = await run("boat", ["--json", ...args], env);
+        expect({ status: ran.status, stdout: ran.stdout }, args.join(" ")).toEqual({
+          status: 1,
+          stdout: "",
+        });
+        expect(lastJson<Failure>(ran.stderr).code, args.join(" ")).toBe("snapshot_in_progress");
+      }
+      const garbled = await run("boat", ["--json", "snapshot", "rm", name], {
+        ...env,
+        FAKE_BOAT_SETTLE_SECS: "soon",
       });
-      expect(lastJson<Failure>(ran.stderr).code, args.join(" ")).toBe("snapshot_in_progress");
+      expect(lastJson<Failure>(garbled.stderr).error).toContain("FAKE_BOAT_SETTLE_SECS");
     }
-    const garbled = await run("boat", ["--json", "snapshot", "rm", name], {
-      ...env,
-      FAKE_BOAT_SETTLE_SECS: "soon",
-    });
-    expect(lastJson<Failure>(garbled.stderr).error).toContain("FAKE_BOAT_SETTLE_SECS");
+    // The claim's pid now runs another fake boat, but nobody holds the worker lock.
+    const after = await run("boat", ["--json", "snapshot", "rm", name], env);
+    expect(after.stderr, "a dead worker's claim holds nothing").not.toContain(
+      "snapshot_in_progress",
+    );
   });
 
   it("finishes only a stop it began, for a sandbox id, without touching anything else", async () => {

@@ -14,11 +14,11 @@ import {
 } from "../lib/caddy.ts";
 import { docker, DockerError, exists, FIXTURE_LABEL, NETWORK } from "../lib/docker.ts";
 import {
-  canonicalPath,
   createJsonExclusive,
+  heldElsewhere,
   homeId,
+  homeIds,
   logCall,
-  nameOwner,
   readJson,
   releaseName,
   reserveName,
@@ -120,6 +120,7 @@ function printJson(value: unknown): void {
 
 const HOME = standInHome("fly", "FAKE_FLY_HOME");
 const HOME_ID = homeId(HOME);
+const HOME_IDS = homeIds("fly", "FAKE_FLY_HOME");
 const HOME_LABEL = `${FIXTURE_LABEL}.home`;
 const APP_LABEL = `${FIXTURE_LABEL}.fly-app`;
 const APP_NAMES = "fly-app";
@@ -260,7 +261,7 @@ function ownership(kind: "container" | "volume", name: string): Ownership {
       `{{index ${labels} "${HOME_LABEL}"}}`,
       name,
     ]);
-    return owner.trim() === HOME_ID ? "mine" : "foreign";
+    return HOME_IDS.has(owner.trim()) ? "mine" : "foreign";
   } catch (error) {
     if (error instanceof DockerError && /no such/i.test(error.stderr)) return "absent";
     throw error;
@@ -270,12 +271,6 @@ function ownership(kind: "container" | "volume", name: string): Ownership {
 function refuseForeign(kind: "container" | "volume", name: string): void {
   if (ownership(kind, name) === "foreign")
     throw new FlyError(`${kind} ${name} belongs to another fake fly home; refusing to touch it`);
-}
-
-/** Reservations made before homes were canonical hold another spelling of the same path. */
-function nameIsMine(app: string): boolean {
-  const owner = nameOwner(APP_NAMES, app);
-  return owner === undefined || canonicalPath(owner) === HOME;
 }
 
 interface LoadedConfig {
@@ -734,17 +729,19 @@ function stopMachineContainer(name: string, stop: StopConfig | undefined): void 
  * builds' own tags, so a tag someone else put on the image keeps it.
  */
 function removeBuiltImages(app: string, recordedTag: string | undefined): void {
-  const tags = docker([
-    "image",
-    "ls",
-    "--filter",
-    `label=${HOME_LABEL}=${HOME_ID}`,
-    "--filter",
-    `label=${APP_LABEL}=${app}`,
-    "--format",
-    "{{.Repository}}:{{.Tag}}",
-  ])
-    .split("\n")
+  const tags = [...HOME_IDS]
+    .flatMap((id) =>
+      docker([
+        "image",
+        "ls",
+        "--filter",
+        `label=${HOME_LABEL}=${id}`,
+        "--filter",
+        `label=${APP_LABEL}=${app}`,
+        "--format",
+        "{{.Repository}}:{{.Tag}}",
+      ]).split("\n"),
+    )
     .filter((tag) => tag.startsWith(`registry.fly.io/${app}:`) && BUILD_TAG.test(tag));
   for (const tag of new Set([...tags, recordedTag])) removeBuiltTag(tag);
 }
@@ -828,18 +825,30 @@ function appsList(ctx: Ctx): number {
 }
 
 function destroyApp(name: string): void {
-  if (!nameIsMine(name))
+  if (heldElsewhere(APP_NAMES, name, HOME))
     throw new FlyError(`app ${name} belongs to another fake fly home; refusing to destroy it`);
   const machine = machineOf(name);
+  const volumes = all<VolumeRecord>("volumes").filter((v) => v.app === name);
+  const snapshots = all<SnapshotRecord>("snapshots").filter((s) => s.app === name);
+  // Dropping the records of something this home cannot remove would orphan it.
+  const foreign = [
+    ...(machine ? [["container", containerName(name)] as const] : []),
+    ...volumes.map((v) => ["volume", volumeName(v.id)] as const),
+    ...snapshots.map((s) => ["volume", snapshotName(s.id)] as const),
+  ].filter(([kind, resource]) => ownership(kind, resource) === "foreign");
+  if (foreign.length > 0)
+    throw new FlyError(
+      `app ${name}'s ${foreign.map(([kind, resource]) => `${kind} ${resource}`).join(", ")} belong to another fake fly home; refusing to destroy it`,
+    );
   for (const container of [containerName(name), swapName(name, "green"), swapName(name, "blue")])
     destroyMachineContainer(container);
   removeBuiltImages(name, machine?.builtTag);
   if (machine) remove("machines", machine.id);
-  for (const volume of all<VolumeRecord>("volumes").filter((v) => v.app === name)) {
+  for (const volume of volumes) {
     removeDockerVolume(volumeName(volume.id));
     remove("volumes", volume.id);
   }
-  for (const snapshot of all<SnapshotRecord>("snapshots").filter((s) => s.app === name)) {
+  for (const snapshot of snapshots) {
     removeDockerVolume(snapshotName(snapshot.id));
     remove("snapshots", snapshot.id);
   }

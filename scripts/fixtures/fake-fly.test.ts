@@ -405,6 +405,7 @@ primary_region = "iad" # comment
       `${app}-s`,
       `${app}-t`,
       `${app}-y`,
+      `${app}-z`,
     ]) {
       fly(["apps", "destroy", name, "--yes"]);
       flyElsewhere(["apps", "destroy", name, "--yes"]);
@@ -1253,6 +1254,7 @@ primary_region = "iad" # comment
 
   it("treats a home spelled through a symlink and by its real path as one home", () => {
     const linked = `${app}-y`;
+    const volumeId = `vol_legacy${suffix}`;
     const link = `${root}-link`;
     NodeFS.symlinkSync(root, link);
     try {
@@ -1278,6 +1280,42 @@ primary_region = "iad" # comment
       NodeFS.rmSync(record);
       expect(exists("container", `sail-fly-${linked}`)).toBe(true);
 
+      // A volume a revision before canonical ids labeled with the hash of the spelled home.
+      const legacy = `${app}-z`;
+      const legacyId = NodeCrypto.createHash("sha256").update(spelled).digest("hex").slice(0, 12);
+      expect(run(["apps", "create", legacy], { FAKE_FLY_HOME: spelled }, root).status).toBe(0);
+      docker([
+        "volume",
+        "create",
+        "--label",
+        `sail-fixture.home=${legacyId}`,
+        `sail-fly-vol-${volumeId}`,
+      ]);
+      const volumeRecord = NodePath.join(real, "volumes", `${volumeId}.json`);
+      NodeFS.mkdirSync(NodePath.dirname(volumeRecord), { recursive: true });
+      NodeFS.writeFileSync(
+        volumeRecord,
+        JSON.stringify({
+          id: volumeId,
+          app: legacy,
+          name: "data",
+          sizeGb: 1,
+          region: "iad",
+          zone: "a1b2",
+          createdAt: "2026-01-01T00:00:00Z",
+        }),
+      );
+      const elsewhere = run(["apps", "destroy", legacy, "--yes"], { FAKE_FLY_HOME: real }, root);
+      expect(elsewhere.status, "the other spelling never made that volume").toBe(1);
+      expect(elsewhere.stderr).toContain(`volume sail-fly-vol-${volumeId}`);
+      expect(NodeFS.existsSync(volumeRecord), "and its record stays").toBe(true);
+      const own = run(["apps", "destroy", legacy, "--yes"], { FAKE_FLY_HOME: spelled }, root);
+      expect(own.status, own.stderr).toBe(0);
+      expect(
+        exists("volume", `sail-fly-vol-${volumeId}`),
+        "the spelling that made it removes it",
+      ).toBe(false);
+
       const destroyed = run(["apps", "destroy", linked, "--yes"], { FAKE_FLY_HOME: real }, root);
       expect(destroyed.status, destroyed.stderr).toBe(0);
       expect(exists("container", `sail-fly-${linked}`)).toBe(false);
@@ -1285,6 +1323,8 @@ primary_region = "iad" # comment
       expect(NodeFS.existsSync(reservation)).toBe(false);
     } finally {
       NodeFS.rmSync(link);
+      if (exists("volume", `sail-fly-vol-${volumeId}`))
+        docker(["volume", "rm", "--force", `sail-fly-vol-${volumeId}`]);
     }
   });
 

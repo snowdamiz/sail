@@ -60,14 +60,6 @@ function hasCode(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
 }
 
-/** Alive only while that pid still runs this fake: a dead process's pid can be reused by anything. */
-export function isAlive(pid: number): boolean {
-  const ps = NodeChildProcess.spawnSync("ps", ["-o", "command=", "-p", String(pid)], {
-    encoding: "utf8",
-  });
-  return ps.status === 0 && ps.stdout.includes(NodePath.join("fake-boat", "boat.ts"));
-}
-
 function entries(dir: string): ReadonlyArray<string> {
   try {
     return NodeFS.readdirSync(dir);
@@ -94,14 +86,12 @@ export function outbox({ home, entry, save }: OutboxOptions): Outbox {
       }),
     );
 
-  /** Requests nobody is saving: new, or held by a worker that died. */
-  const queued = (match: Match = {}): ReadonlyArray<QueuedRequest> =>
-    requests(match).filter(
-      ({ file }) => file.stage === "pending" || (file.stage === "claimed" && !isAlive(file.pid)),
-    );
-
-  const saving = (match: Match) =>
-    requests(match).some(({ file }) => file.stage === "claimed" && isAlive(file.pid));
+  /**
+   * Requests not yet saved. A worker claims only while it holds the lock, so whoever holds it next
+   * may take over any claim it finds: that claim's worker died.
+   */
+  const unsaved = (match: Match = {}): ReadonlyArray<QueuedRequest> =>
+    requests(match).filter(({ file }) => file.stage === "pending" || file.stage === "claimed");
 
   const claim = (request: QueuedRequest): string | undefined => {
     const claimed = NodePath.join(
@@ -144,7 +134,7 @@ export function outbox({ home, entry, save }: OutboxOptions): Outbox {
   };
 
   const drain = (match: Match = {}): void => {
-    for (let waiting = queued(match); waiting.length > 0; waiting = queued(match)) {
+    for (let waiting = unsaved(match); waiting.length > 0; waiting = unsaved(match)) {
       for (const request of waiting) {
         const claimed = claim(request);
         if (claimed) fulfil(request, claimed);
@@ -153,7 +143,7 @@ export function outbox({ home, entry, save }: OutboxOptions): Outbox {
   };
 
   const start = (): void => {
-    if (queued().length === 0) return;
+    if (unsaved().length === 0) return;
     const release = takeLock(lock);
     if (!release) return;
     release();
@@ -187,14 +177,14 @@ export function outbox({ home, entry, save }: OutboxOptions): Outbox {
   };
 
   const work = (match: Match = {}): void => {
-    while (queued(match).length > 0) if (!drainHolding(match)) return;
+    while (unsaved(match).length > 0) if (!drainHolding(match)) return;
   };
 
   const settle = async (match: Match, budgetMs: number): Promise<boolean> => {
     const give = Date.now() + budgetMs;
     for (;;) {
-      if (queued(match).length > 0) drainHolding(match);
-      if (queued(match).length === 0 && !saving(match)) return true;
+      if (unsaved(match).length > 0) drainHolding(match);
+      if (unsaved(match).length === 0) return true;
       if (Date.now() >= give) return false;
       await sleep(250);
     }

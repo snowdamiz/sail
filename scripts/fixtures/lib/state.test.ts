@@ -20,6 +20,7 @@ import {
   reserveName,
   takeLock,
   thisProcess,
+  withLock,
 } from "./state.ts";
 
 const scratch = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "fixture-state-test-"));
@@ -161,23 +162,41 @@ describe("fixture locks", () => {
     const release = takeLock(lock);
     expect(release).toBeTypeOf("function");
     release?.();
-    expect(takeLock(lock), "and it locks again").toBeTypeOf("function");
+    const again = takeLock(lock);
+    expect(again, "and it locks again").toBeTypeOf("function");
+    again?.();
+  });
+
+  it("refuses at once to take a lock this process already holds, and releases once", () => {
+    const lock = lockPath("nested");
+    expect(() => withLock(lock, () => withLock(lock, () => "inside"))).toThrow(
+      /already held by this process/,
+    );
+    const release = takeLock(lock);
+    release?.();
+    expect(() => release?.(), "a second release does nothing").not.toThrow();
+    const again = takeLock(lock);
+    expect(again).toBeTypeOf("function");
+    again?.();
   });
 
   it("never lets two processes in at once, while holders die inside it", async () => {
     const lock = lockPath("contended");
     const marker = NodePath.join(scratch, "inside.json");
     const overlaps = NodePath.join(scratch, "overlaps.log");
+    const entries = NodePath.join(scratch, "entries.log");
+    const diesAt = (index: number) => (index % 2 === 0 ? 10 + index : -1);
     const worker = (index: number) =>
       spawnScript(
         `import * as NodeFS from "node:fs";
          import { isRunning, readJson, thisProcess, withLock } from ${lib("state.ts")};
-         const DIES_AT = ${index % 2 === 0 ? 10 + index : -1};
+         const DIES_AT = ${diesAt(index)};
          for (let round = 0; round < 40; round++) {
            withLock(${JSON.stringify(lock)}, () => {
              const inside = readJson(${JSON.stringify(marker)});
              if (isRunning(inside)) NodeFS.appendFileSync(${JSON.stringify(overlaps)}, JSON.stringify(inside) + "\\n");
              NodeFS.writeFileSync(${JSON.stringify(marker)}, JSON.stringify(thisProcess()));
+             NodeFS.appendFileSync(${JSON.stringify(entries)}, "${index}\\n");
              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
              if (round === DIES_AT) {
                NodeFS.rmSync(${JSON.stringify(marker)});
@@ -189,14 +208,26 @@ describe("fixture locks", () => {
       );
     const workers = Array.from({ length: 8 }, (_, index) => worker(index));
     const ended = await Promise.all(
-      workers.map(
-        async (child) => (await NodeEvents.EventEmitter.once(child, "exit"))[1] as string | null,
-      ),
+      workers.map(async (child) => {
+        let stderr = "";
+        child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+        const [code, signal] = await NodeEvents.EventEmitter.once(child, "exit");
+        return { code, signal, stderr };
+      }),
     );
     expect(NodeFS.existsSync(overlaps) ? NodeFS.readFileSync(overlaps, "utf8") : "").toBe("");
     expect(ended, "half die holding the lock, half run to the end").toEqual(
-      workers.map((_, index) => (index % 2 === 0 ? "SIGKILL" : null)),
+      workers.map((_, index) =>
+        diesAt(index) >= 0
+          ? { code: null, signal: "SIGKILL", stderr: "" }
+          : { code: 0, signal: null, stderr: "" },
+      ),
     );
+    const entered = NodeFS.readFileSync(entries, "utf8").trim().split("\n");
+    expect(
+      workers.map((_, index) => entered.filter((line) => line === String(index)).length),
+      "every round of every worker got in",
+    ).toEqual(workers.map((_, index) => (diesAt(index) >= 0 ? diesAt(index) + 1 : 40)));
   });
 });
 
