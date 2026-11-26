@@ -220,10 +220,10 @@ describe("thread links", () => {
     ["an angle bracket, a backtick, and its own escape", ref("remote", "a>b`c %20 d")],
     ["a Markdown character reference", ref("remote", "qa&amp;final")],
     ["a slash and a space in its environment", ref("env/1 a", "t1")],
-  ])("reads back the thread with %s first from a link it writes", (_, thread) => {
+  ])("reads back exactly the thread with %s from a link it writes", (_, thread) => {
     const title = titlesIn({ [thread.environmentId]: { [thread.threadId]: "Current" } });
     for (const link of [formatThreadLink(thread, "Old"), formatThreadLink(thread)]) {
-      expect(threadLinkRefs(link, local)[0]).toEqual(thread);
+      expect(threadLinkRefs(link, local)).toEqual([thread]);
       expect(relabelThreadLinks(link, local, title)).toBe(formatThreadLink(thread, "Current"));
     }
   });
@@ -238,6 +238,19 @@ describe("thread links", () => {
     expect(relabelThreadLinks(formatThreadLink(literal, "Old"), local, title)).toBe(
       formatThreadLink(literal, "Literal"),
     );
+  });
+
+  it("never decodes an escaped id twice into another thread", () => {
+    const link = formatThreadLink(ref("remote", "a>b`c %20 d"), "Old");
+    const phantom = titlesIn({ remote: { "a>b`c   d": "Phantom" } });
+    expect(relabelThreadLinks(link, local, phantom)).toBe("Old");
+    expect(
+      threadLinkRefs(
+        `${link} https://sail.example.test/threads/remote/t%2520x`,
+        local,
+        "https://sail.example.test",
+      ),
+    ).toEqual([ref("remote", "a>b`c %20 d"), ref("remote", "t%20x")]);
   });
 
   it("reads a v2 environment id as written, percent signs included", () => {
@@ -261,11 +274,11 @@ describe("hosted thread links", () => {
     const thread = ref("env.1", "thread:delegated/mcp%3A1.");
     const link = hostedThreadLink(thread, `${web}/`);
     expect(link).toBe(`${web}/threads/env%2E1/thread%3Adelegated%2Fmcp%253A1%2E`);
-    expect(parseThreadLinkHref(link, web)).toEqual(thread);
+    expect(parseThreadLinkHref(link, web)).toMatchObject(thread);
   });
 
   it("reads only a bare thread path in the web app it is given", () => {
-    expect(parseThreadLinkHref(`${web}/threads/env-1/thread-1`, `${web}/`)).toEqual(
+    expect(parseThreadLinkHref(`${web}/threads/env-1/thread-1`, `${web}/`)).toMatchObject(
       ref("env-1", "thread-1"),
     );
     expect(parseThreadLinkHref(`${web}/threads/env-1/thread-1?prompt=go`, web)).toBeNull();

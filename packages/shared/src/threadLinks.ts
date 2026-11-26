@@ -64,6 +64,8 @@ const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 export interface ThreadLink {
   readonly environmentId: EnvironmentId | null;
   readonly threadId: ThreadId;
+  /** The link escaped its ids, so the thread id is not decoded again. */
+  readonly exact?: true;
 }
 
 // Escapes even URL-safe punctuation, so a sentence's closing period never reads as part of an id.
@@ -93,7 +95,9 @@ function parseEscapedThreadLink(href: string, prefix: string): ThreadLink | null
   if (!match) return null;
   const environmentId = Option.getOrNull(decodeEnvironmentId(percentDecoded(match[1]!)));
   const threadId = Option.getOrNull(decodeThreadId(percentDecoded(match[2]!)));
-  return environmentId === null || threadId === null ? null : { environmentId, threadId };
+  return environmentId === null || threadId === null
+    ? null
+    : { environmentId, threadId, exact: true };
 }
 
 /**
@@ -132,7 +136,7 @@ export function threadLinkCandidates(
   messageEnvironmentId: EnvironmentId,
 ): ReadonlyArray<ScopedThreadRef> {
   const environmentId = link.environmentId ?? messageEnvironmentId;
-  const decodedId = percentDecodedThreadLinkId(link.threadId);
+  const decodedId = link.exact ? null : percentDecodedThreadLinkId(link.threadId);
   const written = { environmentId, threadId: link.threadId };
   return decodedId === null ? [written] : [written, { environmentId, threadId: decodedId }];
 }
