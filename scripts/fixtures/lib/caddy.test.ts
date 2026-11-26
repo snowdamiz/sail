@@ -523,15 +523,15 @@ describe.skipIf(!hasDocker())("a Caddy that two homes share", () => {
     const port = docker(["port", container, "443/tcp"]).trim().split("\n")[0]?.split(":").pop();
     const host = `${site(home)}.localtest.me`;
     const args = ["-s", "-o", "/dev/null", "-w", "%{http_code}", "--cacert", root];
-    return (
-      await execFile("curl", [
-        ...args,
-        "--resolve",
-        `${host}:${port}:127.0.0.1`,
-        `https://${host}:${port}/`,
-      ])
-    ).stdout;
+    const target = [`${host}:${port}:127.0.0.1`, `https://${host}:${port}/`];
+    return execFile("curl", [...args, "--resolve", ...target]).then(
+      ({ stdout }) => stdout,
+      () => "unreachable",
+    );
   };
+  /** Caddy issues a new site's certificate after the reload returns, slowly at load 90. */
+  const servesWith = (root: string, home: string) =>
+    expect.poll(() => statusWith(root, home), { timeout: 120_000, interval: 250 }).toBe("200");
   const keepRoot = (name: string) => {
     const kept = NodePath.join(scratch, `${name}.crt`);
     NodeFS.copyFileSync(NodePath.join(dir, "ca", "root.crt"), kept);
@@ -572,7 +572,7 @@ describe.skipIf(!hasDocker())("a Caddy that two homes share", () => {
       fingerprint(),
     );
     expect(NodeFS.readFileSync(NodePath.join(dir, "ca", "version"), "utf8")).toBe("2\n");
-    expect(await statusWith(rootA, "a")).toBe("200");
+    await servesWith(rootA, "a");
 
     await ensureFor("b");
     expect(running().Id, "home b waits for the newer root too").toBe(first.Id);
@@ -600,7 +600,7 @@ describe.skipIf(!hasDocker())("a Caddy that two homes share", () => {
       `${CA_VERSION}\n`,
     );
     await publishFor("b");
-    expect(await statusWith(keepRoot("root-b"), "b")).toBe("200");
+    await servesWith(keepRoot("root-b"), "b");
     expect(await statusWith(rootA, "b"), "a lane that read the version 2 root").toBe("200");
     await removeFor("b");
   });
