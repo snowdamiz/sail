@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useBoatAccess } from "../access";
 import type { UiState } from "../types";
 import { cleanName, hourly, NAME_RE, suggestName } from "../machine";
 import { Icon } from "./Icons";
@@ -13,6 +14,7 @@ interface Props {
 }
 
 export function NewMachine({ state, onNameChange, onCreate, onBack }: Props) {
+  const access = useBoatAccess();
   const taken = state.machines.map((m) => m.name);
   const [name, setName] = useState(() => suggestName(taken));
   // Boat's own default: room for builds and tests without the large price.
@@ -138,7 +140,11 @@ export function NewMachine({ state, onNameChange, onCreate, onBack }: Props) {
         </fieldset>
       </div>
       <div className="view-foot">
-        <button type="submit" className="btn btn-solid btn-lg" disabled={!!problem || !size}>
+        <button
+          type="submit"
+          className="btn btn-solid btn-lg"
+          disabled={!!problem || !size || !access.can("create_machine")}
+        >
           Launch machine
         </button>
         <p className="foot-note">
@@ -146,7 +152,7 @@ export function NewMachine({ state, onNameChange, onCreate, onBack }: Props) {
           {picked.length
             ? `, then ${picked.length} ${picked.length === 1 ? "project" : "projects"}`
             : ""}
-          . Sail will ask to add it.
+          .{access.onHost ? " Sail will ask to add it." : ""}
         </p>
       </div>
     </form>

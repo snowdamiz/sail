@@ -35,7 +35,7 @@ export interface MachineProject {
   status: string | null; // set while t3boat adds it: clone progress as T3 Code words it
 }
 
-/** A T3 Code project on this computer that can go to a machine (it has a git remote). */
+/** A T3 Code project on this server that can go to a machine (it has a git remote). */
 export interface LocalProject {
   id: string;
   title: string;
@@ -65,8 +65,6 @@ export type McpClient = "claudeCode" | "codex";
 export interface UiState {
   setup: Setup;
   setupBusy: boolean;
-  /** while a Boat sign-in waits: the code its page may ask for */
-  signInCode: string | null;
   account: { identifier: string | null; plan: string | null } | null;
   machines: MachineView[];
   costs: { today: number; month: number; startsToday: number; startsLimit: number };
@@ -109,7 +107,6 @@ export interface Commands {
   add_mcp: [{ client: McpClient }, void];
   update_settings: [{ settings: Settings }, void];
   setup_action: [{ action: SetupAction }, void];
-  quit_app: [undefined, void];
 }
 
 export type CommandName = keyof Commands;

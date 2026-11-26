@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { errorText } from "./api";
+import { classifyBoatLink, errorText } from "./reply";
 import {
   cleanName,
   duration,
@@ -64,5 +64,21 @@ describe("Sail Boats helpers", () => {
     expect(cleanName("My Boat_01!")).toBe("my-boat-01");
     expect(suggestName(["skiff"])).toBe("dinghy");
     expect(duration(7500)).toBe("2h 5m");
+  });
+
+  it("sends a reply's link to pairing, an app route, or the browser", () => {
+    const pairingUrl = "http://localhost:47732/pair#token=abc";
+    const pairLink = `sail-dev://pair?pairingUrl=${encodeURIComponent(pairingUrl)}`;
+    expect(classifyBoatLink(pairLink, true)).toEqual({ kind: "pairing", pairingUrl });
+    expect(classifyBoatLink(pairLink, false)).toEqual({ kind: "ignored" });
+    expect(classifyBoatLink("sail://threads/env-1/thread-1", false)).toEqual({
+      kind: "app",
+      href: "/env-1/thread-1",
+    });
+    const signIn = "https://auth.localtest.me/boat/device?code=ABCD";
+    expect(classifyBoatLink(signIn, false)).toEqual({ kind: "browser", url: signIn });
+    expect(classifyBoatLink("http://localhost:47732/", true)).toEqual({ kind: "ignored" });
+    expect(classifyBoatLink("sail://", true)).toEqual({ kind: "ignored" });
+    expect(classifyBoatLink(undefined, true)).toEqual({ kind: "ignored" });
   });
 });

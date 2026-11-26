@@ -1,6 +1,13 @@
+import { useBoatAccess } from "../access";
 import type { Setup, SetupAction } from "../types";
 import { Icon } from "./Icons";
 import { Dots } from "./common";
+
+/** A Boat sign-in this tab started: the page to finish it on, and the code that page may ask for. */
+export interface SignInPrompt {
+  url: string;
+  userCode: string | null;
+}
 
 const STEPS: {
   id: Exclude<Setup, "starting" | "ready">;
@@ -12,7 +19,7 @@ const STEPS: {
   {
     id: "installBoat",
     title: "Install the Boat CLI",
-    body: "Sail uses the Boat CLI to run cloud machines on your Boat account.",
+    body: "Sail uses the Boat CLI on this server to run cloud machines on your Boat account.",
     button: "Install Boat CLI",
     busy: "Installing",
   },
@@ -28,14 +35,17 @@ const STEPS: {
 export function SetupView({
   setup,
   busy,
-  signInCode,
+  signIn,
   onAction,
 }: {
   setup: Setup;
   busy: boolean;
-  signInCode: string | null;
+  /** shown only in the tab that started the sign-in, while it waits */
+  signIn: SignInPrompt | null;
   onAction: (a: SetupAction) => void;
 }) {
+  const canAct = useBoatAccess().can("setup_action");
+  const locked = busy || !canAct;
   if (setup === "starting" || setup === "ready") {
     return (
       <div className="view center">
@@ -73,7 +83,7 @@ export function SetupView({
                     <button
                       type="button"
                       className="btn btn-solid btn-lg"
-                      disabled={busy}
+                      disabled={locked}
                       aria-busy={busy}
                       onClick={() => onAction(s.id)}
                     >
@@ -86,9 +96,23 @@ export function SetupView({
                       )}
                     </button>
                   ) : null}
-                  {status === "current" && busy && signInCode ? (
+                  {status === "current" && signIn ? (
                     <span className="step-body">
-                      If Boat asks for a code, enter <code className="step-code">{signInCode}</code>
+                      Finish on{" "}
+                      <a
+                        className="btn btn-link"
+                        href={signIn.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        Boat's sign-in page
+                      </a>
+                      {signIn.userCode ? (
+                        <>
+                          . If it asks for a code, enter{" "}
+                          <code className="step-code">{signIn.userCode}</code>
+                        </>
+                      ) : null}
                     </span>
                   ) : null}
                 </div>
@@ -98,8 +122,8 @@ export function SetupView({
         </ol>
         {setup === "installT3" ? (
           <p className="lede" style={{ marginTop: 12 }}>
-            Sail's bundled CLI launcher was not found (for example in unpackaged dev mode). Launch
-            the packaged Sail desktop app or set <code>SAIL_DESKTOP_CLI</code>, then click Recheck.
+            This server's <code>t3</code> launcher was not found (for example in unpackaged dev
+            mode). Set <code>SAIL_DESKTOP_CLI</code> where this server runs, then check again.
           </p>
         ) : null}
       </div>
@@ -107,7 +131,7 @@ export function SetupView({
         <button
           type="button"
           className="btn btn-link"
-          disabled={busy}
+          disabled={locked}
           onClick={() => onAction("recheck")}
         >
           Done it already? Check again
