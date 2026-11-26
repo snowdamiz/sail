@@ -28,7 +28,8 @@ const CHECKOUT = NodePath.resolve(import.meta.dirname, "../../..");
  * separate worktrees never share an account, a sandbox list, or a call log.
  */
 export function standInHome(kind: "fly" | "boat", envName: string): string {
-  return process.env[envName] ?? NodePath.join(stateRoot(), kind, shortHash(CHECKOUT));
+  const chosen = process.env[envName];
+  return chosen ? NodePath.resolve(chosen) : NodePath.join(stateRoot(), kind, shortHash(CHECKOUT));
 }
 
 /** Labels and names every Docker resource a home creates, so cleanup can find only its own. */
