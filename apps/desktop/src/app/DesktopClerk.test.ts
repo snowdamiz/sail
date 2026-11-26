@@ -637,6 +637,27 @@ it.effect.each<HandoffCase & { readonly case: string; readonly returns: boolean 
     environmentId: "relayed",
     returns: false,
   },
+  {
+    case: "a page on this computer at another port",
+    saved: [relayed],
+    page: "http://localhost:49999/settings/providers?instanceId=work",
+    environmentId: "relayed",
+    returns: true,
+  },
+  {
+    case: "the unspecified address",
+    saved: [server],
+    page: "http://0.0.0.0:49999/welcome#agents:server",
+    environmentId: "server",
+    returns: false,
+  },
+  ...["sail-dev", "sail", "t3code-dev", "t3code"].map((scheme) => ({
+    case: `a ${scheme}:// app page`,
+    saved: [server],
+    page: `${scheme}://app/settings/providers?instanceId=work`,
+    environmentId: "server",
+    returns: false,
+  })),
 ])("returns web sign-in to $case: $returns", (input) =>
   Effect.gen(function* () {
     const { request, outcome } = yield* runHandoff(input);

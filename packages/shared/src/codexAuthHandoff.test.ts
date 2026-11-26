@@ -79,6 +79,17 @@ describe("Codex desktop handoff", () => {
     expect(() => codexAuthDeliveryUrl(hosted, callbackUrl)).toThrow();
     expect(readCodexAuthDelivery(delivery)).toBeUndefined();
   });
+  it.each(["sail", "sail-dev", "t3code", "t3code-dev"])(
+    "never sends a code to a %s:// app page, which another app may own",
+    (scheme) => {
+      const appPage = `${scheme}://app/settings/providers?instanceId=work-codex`;
+      const app = { ...input, returnUrl: appPage };
+      expect(readCodexAuthHandoff(codexAuthHandoffUrl(app), false)).toBeUndefined();
+      expect(() => codexAuthDeliveryUrl(app, callbackUrl)).toThrow();
+      const delivery = new URL(codexAuthDeliveryUrl(input, callbackUrl));
+      expect(readCodexAuthDelivery(`${appPage}${delivery.hash}`)).toBeUndefined();
+    },
+  );
   it("rejects duplicated authorization parameters and non-loopback callback addresses", () => {
     expect(() =>
       codexAuthorizationRequest(

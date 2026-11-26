@@ -205,6 +205,26 @@ describe("thread links", () => {
     );
   });
 
+  it("escapes an id a link cannot carry as written", () => {
+    expect(formatThreadLink(ref("remote", "work item"), "Work item")).toBe(
+      "[Work item](t3-thread://v2/remote/work%20item)",
+    );
+    expect(formatThreadLink(ref("env/1 a", "t1"))).toBe("<t3-thread://v2/env%2F1%20a/t1>");
+  });
+
+  it.each([
+    ["a space", ref("remote", "work item")],
+    ["an angle bracket, a backtick, and its own escape", ref("remote", "a>b`c %20 d")],
+    ["a slash and a space in its environment", ref("env/1 a", "t1")],
+    ["a percent sign in its environment", ref("env%41", "t1")],
+  ])("reads back a link it writes for a thread with %s", (_, thread) => {
+    const title = titlesIn({ [thread.environmentId]: { [thread.threadId]: "Current" } });
+    for (const link of [formatThreadLink(thread, "Old"), formatThreadLink(thread)]) {
+      expect(threadLinkRefs(link, local)).toContainEqual(thread);
+      expect(relabelThreadLinks(link, local, title)).toBe(formatThreadLink(thread, "Current"));
+    }
+  });
+
   it("formats a label that would otherwise break the Markdown link", () => {
     expect(formatThreadLink(ref("e", "t1"), "Fix [ci] \\ build")).toBe(
       "[Fix ci build](t3-thread://v2/e/t1)",
@@ -260,6 +280,10 @@ describe("hosted thread links", () => {
       expect(formatHostedThreadLink(ref("e", "t1"), "Fix", origin)).toBe(
         "[Fix](t3-thread://v2/e/t1)",
       );
+      const spaced = ref("remote", "work item");
+      expect(
+        threadLinkRefs(formatHostedThreadLink(spaced, "Work item", origin), local),
+      ).toContainEqual(spaced);
     }
   });
 

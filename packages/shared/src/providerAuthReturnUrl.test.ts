@@ -27,6 +27,19 @@ describe("provider auth return destinations", () => {
     }
   });
 
+  it.each([
+    "http://localhost:1/settings",
+    "http://127.0.0.1:49999/welcome",
+    "http://[::1]:3773/settings/providers",
+  ])("returns to %s, a page on this computer at any port", (page) => {
+    expect(providerAuthReturnUrl(page)).toBe(page);
+  });
+
+  it("never returns to the unspecified address, which is no page", () => {
+    expect(providerAuthReturnUrl("http://0.0.0.0:49999/welcome")).toBeUndefined();
+    expect(providerAuthReturnUrl("https://0.0.0.0/settings/providers")).toBeUndefined();
+  });
+
   it("returns to https://sail.example.test only when the caller trusts it", () => {
     const page = "https://sail.example.test/settings/providers?instanceId=work&code=secret";
     expect(providerAuthReturnUrl(page, ["https://sail.example.test"])).toBe(

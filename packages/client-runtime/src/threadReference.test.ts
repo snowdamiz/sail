@@ -122,6 +122,27 @@ describe("resolveThreadReferenceCopyTarget", () => {
     }
   });
 
+  it.each(["work item", "a>b`c"])(
+    "copies a t3-thread link that pastes back as thread %j without its chip data",
+    (threadId) => {
+      const threadRef = {
+        environmentId: EnvironmentId.make("remote"),
+        threadId: ThreadId.make(threadId),
+      };
+      const target = resolveThreadReferenceCopyTarget({
+        threadRef,
+        title: "Work item",
+        linkOrigin: undefined,
+      });
+      const pasted = threadLinkContextReferences(target!.value, [], (ref) =>
+        ref.threadId === threadId ? "Work item" : undefined,
+      );
+      expect(pasted.records).toEqual([
+        expect.objectContaining({ kind: "thread", ...threadRef, title: "Work item" }),
+      ]);
+    },
+  );
+
   it("links through the web app it is given", () => {
     expect(
       resolveThreadReferenceCopyTarget({ ...thread, linkOrigin: "https://hosted.example.test" })
