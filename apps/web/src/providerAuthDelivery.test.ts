@@ -5,7 +5,11 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { toastManager } from "./components/ui/toast";
-import { rememberProviderAuthSignIn, startProviderAuthDelivery } from "./providerAuthDelivery";
+import {
+  forgetProviderAuthSignIn,
+  rememberProviderAuthSignIn,
+  startProviderAuthDelivery,
+} from "./providerAuthDelivery";
 import { appAtomRegistry } from "./rpc/atomRegistry";
 import { environmentPresentations } from "./state/presentation";
 
@@ -13,6 +17,8 @@ type Presentation = { readonly connection: { readonly phase: string } } | undefi
 
 vi.mock("@t3tools/client-runtime/state/runtime", () => ({ runAtomCommand: vi.fn() }));
 vi.mock("./components/ui/toast", () => ({ toastManager: { add: vi.fn() } }));
+const locale = vi.hoisted(() => ({ ready: Promise.resolve() }));
+vi.mock("./i18n/runtime", () => ({ whenLocaleReady: () => locale.ready }));
 vi.mock("./state/server", () => ({
   serverEnvironment: { completeProviderAuth: "completeProviderAuth" },
 }));
@@ -111,16 +117,18 @@ describe("Codex sign-in delivery", () => {
     expect(toastManager.add).not.toHaveBeenCalled();
   });
 
-  it("sends no code a relay-only environment asked for without this browser", () => {
+  it("sends no code a relay-only environment asked for without this browser", async () => {
     const tab = openTab(delivery());
     startProviderAuthDelivery();
 
     expect(tab.href).toBe(page);
     expect(runAtomCommand).not.toHaveBeenCalled();
-    expect(toastManager.add).toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+    await vi.waitFor(() =>
+      expect(toastManager.add).toHaveBeenCalledWith(expect.objectContaining({ type: "error" })),
+    );
   });
 
-  it("sends no code to an environment for a sign-in this browser did not start", () => {
+  it("sends no code to an environment for a sign-in this browser did not start", async () => {
     openTab(page);
     rememberProviderAuthSignIn({ ...signIn, flowId: "another-flow" });
     rememberProviderAuthSignIn({ ...signIn, environmentId: EnvironmentId.make("other") });
@@ -130,7 +138,33 @@ describe("Codex sign-in delivery", () => {
 
     expect(tab.href).toBe(page);
     expect(runAtomCommand).not.toHaveBeenCalled();
-    expect(toastManager.add).toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+    await vi.waitFor(() =>
+      expect(toastManager.add).toHaveBeenCalledWith(expect.objectContaining({ type: "error" })),
+    );
+  });
+
+  it("shows the refusal in the user's language once it has loaded", async () => {
+    const loaded = Promise.withResolvers<void>();
+    locale.ready = loaded.promise;
+    openTab(delivery());
+    startProviderAuthDelivery();
+    await Promise.resolve();
+    expect(toastManager.add).not.toHaveBeenCalled();
+
+    loaded.resolve();
+    await vi.waitFor(() => expect(toastManager.add).toHaveBeenCalled());
+    locale.ready = Promise.resolve();
+  });
+
+  it("sends no code for a sign-in this browser cancelled", async () => {
+    openTab(page);
+    rememberProviderAuthSignIn(signIn);
+    forgetProviderAuthSignIn(signIn);
+    openTab(delivery());
+    startProviderAuthDelivery();
+
+    expect(runAtomCommand).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(toastManager.add).toHaveBeenCalled());
   });
 
   it("sends a code once, so another tab cannot replay the same sign-in", () => {
@@ -144,7 +178,7 @@ describe("Codex sign-in delivery", () => {
     expect(vi.mocked(runAtomCommand).mock.calls).toEqual([completed()]);
   });
 
-  it("sends no code once the sign-in this browser started has expired", () => {
+  it("sends no code once the sign-in this browser started has expired", async () => {
     openTab(page);
     rememberProviderAuthSignIn(signIn);
     vi.advanceTimersByTime(10 * 60_000);
@@ -152,7 +186,9 @@ describe("Codex sign-in delivery", () => {
     startProviderAuthDelivery();
 
     expect(runAtomCommand).not.toHaveBeenCalled();
-    expect(toastManager.add).toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+    await vi.waitFor(() =>
+      expect(toastManager.add).toHaveBeenCalledWith(expect.objectContaining({ type: "error" })),
+    );
   });
 
   it("sends the code when its environment connects before the sign-in expires", () => {

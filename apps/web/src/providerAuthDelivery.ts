@@ -7,6 +7,7 @@ import { msg } from "gt-react";
 import { toastManager } from "./components/ui/toast";
 import { readLocalStorageValue, writeLocalStorageValue } from "./hooks/useLocalStorage";
 import { m } from "./i18n/messages";
+import { whenLocaleReady } from "./i18n/runtime";
 import { appAtomRegistry } from "./rpc/atomRegistry";
 import { environmentPresentations } from "./state/presentation";
 import { serverEnvironment } from "./state/server";
@@ -24,21 +25,9 @@ const CodexSignIn = Schema.Struct({
 type CodexSignIn = typeof CodexSignIn.Type;
 const CodexSignIns = Schema.Array(CodexSignIn);
 
-const sameFlow = (a: Omit<CodexSignIn, "expiresAt">, b: Omit<CodexSignIn, "expiresAt">) =>
+type SignInFlow = Omit<CodexSignIn, "expiresAt">;
+const sameFlow = (a: SignInFlow, b: SignInFlow) =>
   a.environmentId === b.environmentId && a.instanceId === b.instanceId && a.flowId === b.flowId;
-
-export function rememberProviderAuthSignIn(signIn: Omit<CodexSignIn, "expiresAt">): void {
-  const now = Date.now();
-  writeLocalStorageValue(
-    SIGN_INS_KEY,
-    (signIns) => [
-      ...signIns.filter((other) => other.expiresAt > now && !sameFlow(other, signIn)),
-      { ...signIn, expiresAt: now + SIGN_IN_LIFETIME_MS },
-    ],
-    [],
-    CodexSignIns,
-  );
-}
 
 const liveSignIns = () => {
   const now = Date.now();
@@ -46,21 +35,28 @@ const liveSignIns = () => {
     (signIn) => signIn.expiresAt > now,
   );
 };
+const writeSignIns = (signIns: ReadonlyArray<CodexSignIn>) =>
+  writeLocalStorageValue(SIGN_INS_KEY, signIns, [], CodexSignIns);
+
+export function rememberProviderAuthSignIn(signIn: SignInFlow): void {
+  writeSignIns([
+    ...liveSignIns().filter((other) => !sameFlow(other, signIn)),
+    { ...signIn, expiresAt: Date.now() + SIGN_IN_LIFETIME_MS },
+  ]);
+}
+
+export function forgetProviderAuthSignIn(signIn: SignInFlow): void {
+  writeSignIns(liveSignIns().filter((other) => !sameFlow(other, signIn)));
+}
 
 /** Whether a delivery for this sign-in would land here, so a handoff is worth offering. */
-export function hasProviderAuthSignIn(signIn: Omit<CodexSignIn, "expiresAt">): boolean {
+export function hasProviderAuthSignIn(signIn: SignInFlow): boolean {
   return liveSignIns().some((other) => sameFlow(other, signIn));
 }
 
 function takeSignIn(delivery: ProviderAuthDelivery): CodexSignIn | undefined {
-  const live = liveSignIns();
-  const signIn = live.find((candidate) => sameFlow(candidate, delivery));
-  writeLocalStorageValue(
-    SIGN_INS_KEY,
-    live.filter((other) => other !== signIn),
-    [],
-    CodexSignIns,
-  );
+  const signIn = liveSignIns().find((candidate) => sameFlow(candidate, delivery));
+  if (signIn) forgetProviderAuthSignIn(signIn);
   return signIn;
 }
 
@@ -79,15 +75,20 @@ export function startProviderAuthDelivery(): void {
   if (!delivery) return;
   const signIn = takeSignIn(delivery);
   if (!signIn) {
-    toastManager.add({
-      type: "error",
-      title: m(msg("ChatGPT sign-in couldn't finish")),
-      description: m(
-        msg(
-          "This browser didn't start that sign-in. Sign in again in the browser that did, and paste the URL from the final localhost page.",
-        ),
-      ),
-    });
+    // Queued past the rest of startup, which starts i18n, so the toast is in the user's language.
+    void Promise.resolve()
+      .then(whenLocaleReady)
+      .then(() =>
+        toastManager.add({
+          type: "error",
+          title: m(msg("ChatGPT sign-in couldn't finish")),
+          description: m(
+            msg(
+              "This browser didn't start that sign-in. Sign in again in the browser that did, and paste the URL from the final localhost page.",
+            ),
+          ),
+        }),
+      );
     return;
   }
 

@@ -15,8 +15,7 @@ import type {
   ProviderInstanceId,
   ServerProvider,
 } from "@t3tools/contracts";
-import { codexAuthHandoffUrl } from "@t3tools/shared/codexAuthHandoff";
-import { providerAuthReturnUrl } from "@t3tools/shared/providerAuthReturnUrl";
+import { codexAuthHandoffUrl, codexAuthReturnUrl } from "@t3tools/shared/codexAuthHandoff";
 import { isLoopbackHost } from "@t3tools/shared/preview";
 import { CheckIcon, ChevronRightIcon, ExternalLinkIcon } from "lucide-react";
 import {
@@ -31,7 +30,11 @@ import {
 import { T, useGT, useMessages } from "gt-react";
 
 import { ensureLocalApi } from "../../localApi";
-import { hasProviderAuthSignIn, rememberProviderAuthSignIn } from "../../providerAuthDelivery";
+import {
+  forgetProviderAuthSignIn,
+  hasProviderAuthSignIn,
+  rememberProviderAuthSignIn,
+} from "../../providerAuthDelivery";
 import { managedInstanceLocks, useManagedPolicy } from "../../state/managedPolicy";
 import { ManagedControl } from "../ManagedPolicy";
 import { useEnvironmentHttpBaseUrl } from "../../state/environments";
@@ -476,6 +479,7 @@ function ManagedCodexSetup({
       setHandoff(null);
       return Promise.resolve();
     }
+    forgetProviderAuthSignIn({ environmentId, instanceId, flowId: auth!.flowId! });
     return run(() => cancelAuth({ environmentId, input: { instanceId, flowId: auth!.flowId! } }));
   };
 
@@ -693,7 +697,7 @@ function ManagedCodexSetup({
     url &&
     auth?.flowId &&
     hasProviderAuthSignIn({ environmentId, instanceId, flowId: auth.flowId }) &&
-    providerAuthReturnUrl(returnUrl.toString(), [window.location.origin])
+    codexAuthReturnUrl(returnUrl.toString(), [window.location.origin])
       ? codexAuthHandoffUrl(
           {
             authorizationUrl: url,
