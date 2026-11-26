@@ -335,11 +335,11 @@ it.live(
         const longLived = JSON.parse(year.stdout);
         yield* assertExpiresIn(longLived.expiresAt, 400 * 24 * 60 * 60_000);
 
-        for (const ttl of ["0s", "Infinity"]) {
+        for (const ttl of ["0s", "500ms", "Infinity"]) {
           const refused = yield* create(ttl);
           assert.notStrictEqual(refused.exitCode, 0, ttl);
           assert.strictEqual(refused.stdout, "", ttl);
-          assert.match(refused.stderr, /--ttl must be a finite duration longer than 0/, ttl);
+          assert.match(refused.stderr, /--ttl must be a finite duration of at least 1 second/, ttl);
         }
 
         assert.sameMembers(yield* listPairingLinkIds(home), [minted.id, longLived.id]);

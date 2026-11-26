@@ -149,9 +149,14 @@ const pairingCreateCommand = Command.make("create", {
   Command.withDescription("Issue a new client pairing token."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      if (Option.exists(flags.ttl, (ttl) => !Duration.isPositive(ttl) || !Duration.isFinite(ttl))) {
+      if (
+        Option.exists(
+          flags.ttl,
+          (ttl) => Duration.isLessThan(ttl, Duration.seconds(1)) || !Duration.isFinite(ttl),
+        )
+      ) {
         return yield* notMinted(
-          "--ttl must be a finite duration longer than 0",
+          "--ttl must be a finite duration of at least 1 second",
           "Pass a duration such as 5m or 1h.",
         );
       }
