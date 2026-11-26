@@ -86,3 +86,29 @@ it.effect("names the unprinted link when it cannot be revoked after the server s
     assert.include(error.message, `auth pairing revoke --base-dir ${baseDir} ${unrevoked}`);
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect("names --dev-url, not the home, when the link lives in the home's dev state", () =>
+  Effect.gen(function* () {
+    const config = yield* ServerConfig.ServerConfig;
+    const auth = yield* EnvironmentAuth.EnvironmentAuth;
+    const devUrl = new URL("http://localhost:5733/");
+    const devHome = {
+      ...config,
+      devUrl,
+      ...(yield* ServerConfig.deriveServerPaths(config.baseDir, devUrl)),
+    };
+
+    const error = yield* mintForRunningServer({ scopes: ["orchestration:read"] }).pipe(
+      Effect.provideService(ServerConfig.ServerConfig, devHome),
+      Effect.provideService(EnvironmentAuth.EnvironmentAuth, {
+        ...auth,
+        revokePairingLink: () =>
+          Effect.fail(new EnvironmentAuth.ServerAuthPairingLinkRevocationError({ cause: "busy" })),
+      }),
+      Effect.flip,
+    );
+
+    const [unrevoked] = yield* activeLinkIds;
+    assert.include(error.message, `auth pairing revoke --dev-url ${devUrl.href} ${unrevoked}`);
+  }).pipe(Effect.provide(layer)),
+);

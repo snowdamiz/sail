@@ -5,6 +5,7 @@ import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -341,13 +342,16 @@ it.live(
     ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.live("pairing create refuses a --ttl under 1 second or past the year 9999, in both forms", () =>
+it.live("pairing create refuses a --ttl under 1 second or near the year 10000, in both forms", () =>
   Effect.gen(function* () {
     const home = yield* makeHome;
-    const cases = ["0s", "500ms", "Infinity", "3000000d", "100000000d"].flatMap((ttl) => [
-      ["--ttl", ttl, "--require-running"],
-      ["--ttl", ttl],
-    ]);
+    const noonOnLastDay = `${Date.UTC(9999, 11, 31, 12) - (yield* Clock.currentTimeMillis)}ms`;
+    const cases = ["0s", "500ms", "Infinity", "3000000d", "100000000d", noonOnLastDay].flatMap(
+      (ttl) => [
+        ["--ttl", ttl, "--require-running"],
+        ["--ttl", ttl],
+      ],
+    );
     yield* Effect.forEach(
       cases,
       (args) =>

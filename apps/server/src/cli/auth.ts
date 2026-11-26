@@ -108,7 +108,7 @@ const baseUrlFlag = Flag.String("base-url").pipe(
 
 const requireRunningFlag = Flag.Boolean("require-running").pipe(
   Flag.withDescription(
-    "Mint nothing unless the runtime record names a live server and this T3 Code home's ownership lock is held both before the token is written and after it is stored.",
+    "Mint nothing unless the runtime record names a running process and this T3 Code home's ownership lock is held both before the token is written and after it is stored.",
   ),
   Flag.withDefault(false),
 );
@@ -122,22 +122,30 @@ const notMinted = (reason: string, retry: string) =>
   new CliError.UserError({ cause: `${reason}, so no pairing token was minted. ${retry}` });
 
 // Expiry is stored as ISO text and compared as text, so a year past 9999 sorts before today.
-const LATEST_EXPIRY_MS = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
+// The store reads the clock again after startup, so the bound stops a day short.
+const LATEST_EXPIRY_MS = Date.UTC(9999, 11, 31);
 
 export const mintForRunningServer = Effect.fn("auth.mintForRunningServer")(function* (
   input: Parameters<EnvironmentAuth.EnvironmentAuth["Service"]["createPairingLink"]>[0],
 ) {
   const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
-  const { baseDir, serverRuntimeStatePath } = yield* ServerConfig.ServerConfig;
+  const { baseDir, devUrl, stateDir, serverRuntimeStatePath } = yield* ServerConfig.ServerConfig;
   const issued = yield* environmentAuth.createPairingLink(input);
   // The OS releases the lock when its holder exits, even on SIGKILL.
   if (isServerOwnershipHeld(serverRuntimeStatePath)) return issued;
   yield* environmentAuth.revokePairingLink(issued.id).pipe(
     Effect.catch(() =>
       Effect.gen(function* () {
+        const explicitHome = yield* ServerConfig.deriveServerPaths(baseDir, devUrl, {
+          baseDirIsExplicit: true,
+        });
+        // Without an explicit home, --dev-url keeps state in <home>/dev, which --base-dir cannot reach.
+        const location =
+          devUrl !== undefined && explicitHome.stateDir !== stateDir
+            ? ["--dev-url", devUrl.href]
+            : ["--base-dir", baseDir];
         const { command } = yield* resolveHostCliCommand("auth pairing revoke", [
-          "--base-dir",
-          baseDir,
+          ...location,
           issued.id,
         ]);
         return yield* new CliError.UserError({
