@@ -1406,7 +1406,26 @@ syncBuiltinESMExports();`,
       const lock = takeLock(NodePath.join(home, "apps", `${swapped.name}.json.lock`));
       lock?.();
       expect(lock, "machine destroy owns the application lock").toBeUndefined();
-      replacing = asyncFly(swapped.args());
+      const waiting = NodePath.join(root, "deploy-waiting-for-app-lock");
+      const hook = NodePath.join(root, "observe-deploy-lock.mjs");
+      NodeFS.writeFileSync(
+        hook,
+        `import fs from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+const exec = DatabaseSync.prototype.exec;
+DatabaseSync.prototype.exec = function (sql) {
+  if (sql === "BEGIN EXCLUSIVE" && this.location().endsWith(${JSON.stringify("/apps/" + swapped.name + ".json.lock")}))
+    fs.writeFileSync(${JSON.stringify(waiting)}, "");
+  return exec.call(this, sql);
+};`,
+      );
+      replacing = asyncFly(swapped.args(), { NODE_OPTIONS: `--import=${hook}` });
+      await Promise.race([
+        expect.poll(() => NodeFS.existsSync(waiting), { timeout: 120_000 }).toBe(true),
+        replacing.then((result) => {
+          throw new Error(`deploy returned before taking application lock: ${result.stderr}`);
+        }),
+      ]);
       NodeFS.writeFileSync(release, "");
       expect(await destroying).toMatchObject({ status: 0 });
       expect(await replacing).toMatchObject({ status: 0 });
@@ -1494,6 +1513,16 @@ syncBuiltinESMExports();`,
       status: 200,
       body: blue,
     });
+    swapped.configure("/unhealthy", 9090);
+    const failed = fly(swapped.args("bluegreen", ["--wait-timeout", "2s"]), {}, root);
+    expect(failed.stderr).toContain("could not get all green machines to be healthy");
+    expect(
+      NodeFS.readFileSync(NodePath.join(caddyDir(), "sites", `fly-${swapped.name}.caddy`), "utf8"),
+    ).toContain(`reverse_proxy ${live}:8080`);
+    await expect(get(`${swapped.site()}/machine`)).resolves.toMatchObject({
+      status: 200,
+      body: blue,
+    });
     ok(["apps", "destroy", swapped.name, "--yes"]);
   });
 
@@ -1524,6 +1553,32 @@ syncBuiltinESMExports();`,
     await expect
       .poll(async () => (await get(`${swapped.site()}/machine`)).body, { timeout: 120_000 })
       .toBe(blue);
+    docker(["rm", "--force", "--volumes", live]);
+    const promotion = NodePath.join(root, "kill-missing-blue-promotion.mjs");
+    NodeFS.writeFileSync(
+      promotion,
+      `import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const rename = fs.renameSync;
+fs.renameSync = (from, to) => {
+  if (typeof to === "string" && to.startsWith(${JSON.stringify(NodePath.join(NodeFS.realpathSync(home), "machines") + "/")}))
+    process.kill(process.pid, "SIGKILL");
+  return rename(from, to);
+};
+syncBuiltinESMExports();`,
+    );
+    const unrecorded = run(swapped.args(), { NODE_OPTIONS: `--import=${promotion}` }, root);
+    expect(unrecorded.status).toBeNull();
+    const serving = (await get(`${swapped.site()}/machine`)).body;
+    expect(serving).not.toBe(blue);
+    expect(swapped.live()).toEqual({ machines: [blue], serving, containers: 1 });
+    const refused = fly(swapped.args("immediate"), {}, root);
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toContain("an unrecorded machine is live");
+    await expect(get(`${swapped.site()}/machine`)).resolves.toMatchObject({
+      status: 200,
+      body: serving,
+    });
     ok(["apps", "destroy", swapped.name, "--yes"]);
   });
 

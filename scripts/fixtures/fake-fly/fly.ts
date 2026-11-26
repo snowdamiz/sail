@@ -197,6 +197,8 @@ function withAppLock<T>(app: string, run: () => T): T {
   return withLock(`${recordPath("apps", app)}.lock`, run);
 }
 
+const routeRepairFile = (app: string) => `${recordPath("apps", app)}.route-repair`;
+
 function read<T>(kind: Kind, id: string): T | undefined {
   return readJson<T>(recordPath(kind, id));
 }
@@ -890,6 +892,7 @@ function destroyApp(name: string): void {
     remove("snapshots", snapshot.id);
   }
   removeSite(siteId(name));
+  NodeFS.rmSync(routeRepairFile(name), { force: true });
   remove("apps", name);
   releaseName(APP_NAMES, name, HOME);
 }
@@ -1442,9 +1445,9 @@ function settleContainers(
   const liveId = held.includes(live) ? hostname(live) : undefined;
   const chosen = records.find((machine) => machine.id === liveId) ?? recorded;
   const kept = chosen && held.find((name) => hostname(name) === chosen.id);
-  if (chosen && !kept && held.includes(live))
+  if (!kept && held.includes(live))
     throw new FlyError(
-      `cannot settle app ${app}: recorded machine ${chosen.id} has no container, but an unrecorded one is live`,
+      `cannot settle app ${app}: an unrecorded machine is live; refusing to replace it`,
     );
   if (chosen && kept) {
     const attachment = inspect<{
@@ -1452,21 +1455,27 @@ function settleContainers(
       readonly IPAddress: string;
     } | null>(kept, `(index .NetworkSettings.Networks "${NETWORK}")`);
     const machineAlias = attachment?.Aliases?.includes(machineHost(chosen)) ?? false;
-    const upstream = machineAlias ? machineHost(chosen) : attachment?.IPAddress;
+    const needsRename = kept !== live;
+    const temporaryRoute = !machineAlias && needsRename;
+    const upstream = machineAlias
+      ? machineHost(chosen)
+      : temporaryRoute
+        ? attachment?.IPAddress
+        : live;
     if (!upstream)
       throw new FlyError(
         `cannot settle app ${app}: machine ${chosen.id} has no fixture network address`,
       );
+    if (temporaryRoute) NodeFS.writeFileSync(routeRepairFile(app), "");
     routeMachine(chosen, upstream);
     for (const name of held) if (name !== kept) destroyMachineContainer(name);
-    if (kept !== live) {
-      docker(["rename", kept, live]);
-    }
-    if (!machineAlias) routeMachine(chosen, live);
+    if (needsRename) docker(["rename", kept, live]);
+    if (temporaryRoute) routeMachine(chosen, live);
   } else {
     for (const name of held) destroyMachineContainer(name);
   }
   for (const stale of records) if (stale.id !== chosen?.id) remove("machines", stale.id);
+  NodeFS.rmSync(routeRepairFile(app), { force: true });
   return chosen;
 }
 
@@ -1569,15 +1578,16 @@ function deployApp(ctx: Ctx, loaded: LoadedConfig, appName: string): number {
   const probes = healthProbes(containerName(appName), http);
   const recorded = machineOf(appName);
   // A bluegreen deploy killed partway converges before anything relies on which machine is live.
-  const previous = docker([
-    "ps",
-    "--all",
-    "--quiet",
-    "--filter",
-    `name=^${containerName(appName)}_`,
-  ]).trim()
-    ? settleContainers(appName, recorded)
-    : recorded;
+  const live = containerName(appName);
+  const liveId =
+    ownership("container", live) === "mine"
+      ? docker(["container", "inspect", "--format", "{{.Config.Hostname}}", live]).trim()
+      : undefined;
+  const swapped = docker(["ps", "--all", "--quiet", "--filter", `name=^${live}_`]).trim();
+  const previous =
+    swapped || (liveId && liveId !== recorded?.id) || NodeFS.existsSync(routeRepairFile(appName))
+      ? settleContainers(appName, recorded)
+      : recorded;
   const blueGreen = previous !== undefined && strategy === "bluegreen";
   const unmodeled = [
     ...(config.mounts.length > 0 ? ["[[mounts]]"] : []),

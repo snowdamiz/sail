@@ -413,6 +413,9 @@ describe("fixture Caddyfile version", () => {
 
 describe.skipIf(!hasDocker())("fixture Caddy", () => {
   beforeAll(() => {
+    vi.stubEnv("SAIL_FIXTURES_CADDY_INSTANCE", `test-fixture-${run}`);
+    vi.stubEnv("SAIL_FIXTURES_HTTP_PORT", undefined);
+    vi.stubEnv("SAIL_FIXTURES_HTTPS_PORT", undefined);
     ensureCaddy(HOME);
     docker([
       "run",
@@ -443,9 +446,13 @@ describe.skipIf(!hasDocker())("fixture Caddy", () => {
   });
 
   afterAll(() => {
-    for (const id of ids) removeSite(id);
-    docker(["rm", "--force", upstream]);
-    if (process.env.SAIL_FIXTURES_CADDY_INSTANCE) removeInstance(caddyContainer(), caddyDir());
+    try {
+      for (const id of ids) removeSite(id);
+      docker(["rm", "--force", upstream]);
+      removeInstance(caddyContainer(), caddyDir());
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("serves every site that processes publish at the same time", async () => {
@@ -692,7 +699,16 @@ describe.skipIf(!hasDocker())("a Caddy that two homes share", () => {
     docker(["rm", "--force", container]);
     docker(
       ["run", "--detach", "--name", container, "--label", `${FIXTURE_LABEL}=caddy`]
-        .concat(["--network", NETWORK, "--memory", "64m", "--volume", `${dir}:/etc/caddy`])
+        .concat([
+          "--network",
+          NETWORK,
+          "--memory",
+          "64m",
+          "--volume",
+          `${dir}:/etc/caddy`,
+          "--volume",
+          `${container}-data-legacy:/data`,
+        ])
         .concat(["caddy:2", "caddy", "run", "--config", "/etc/caddy/Caddyfile"])
         .concat(["--adapter", "caddyfile"]),
     );
@@ -752,9 +768,13 @@ describe.skipIf(!hasDocker())("a Caddy that two homes share", () => {
       expect((await lines.next()).value).toBe("held");
       NodeFS.writeFileSync(NodePath.join(dir, "ca", "version"), "2\n");
       replacing = ensureFor("b");
-      expect((await lines.next()).value, "home b looks for reloads before it replaces Caddy").toBe(
-        "probed",
-      );
+      const milestone = await Promise.race([
+        lines.next(),
+        replacing.then(() => {
+          throw new Error("replacement completed before reload holder was probed");
+        }),
+      ]);
+      expect(milestone.value, "home b looks for reloads before it replaces Caddy").toBe("probed");
       expect(running().Id, "and waits while one runs").toBe(before);
       holder.stdin.end("go\n");
       expect((await held)[0], "never cut off").toBe(0);
@@ -762,12 +782,11 @@ describe.skipIf(!hasDocker())("a Caddy that two homes share", () => {
       expect(running().Id).not.toBe(before);
     } finally {
       if (!holder.stdin.writableEnded) holder.stdin.end("go\n");
-      await held;
-      await replacing?.catch(() => undefined);
+      await Promise.allSettled([held, replacing]);
     }
   });
 
-  it("takes the reload lock before removing a Caddy that was initially stopped", async () => {
+  it("holds the reload lock across restarting a Caddy before replacement", async () => {
     await ensureFor("a");
     const before = running().Id;
     docker(["stop", before]);
@@ -782,6 +801,8 @@ cp.spawnSync = (command, args, ...rest) => {
   if (command === "docker" && args[0] === "rm" && args.includes(${JSON.stringify(before)})) {
     const state = call("docker", ["inspect", "--format", "{{.State.Running}}", ${JSON.stringify(before)}], {encoding: "utf8"});
     assert.equal(state.stdout.trim(), "true");
+    const restarted = call("docker", ["restart", ${JSON.stringify(before)}], {encoding: "utf8"});
+    assert.equal(restarted.status, 0, restarted.stderr);
     const lock = call("docker", ["exec", ${JSON.stringify(before)}, "flock", "-n", "/data/reload.lock", "true"], {encoding: "utf8"});
     assert.equal(lock.status, 1);
     assert.equal(lock.stderr, "");
@@ -903,13 +924,10 @@ try {
     const legacy = `${id}.localtest.me {\n tls internal\n reverse_proxy ${backend}:8080\n}\n# legacy publication\n`;
     const peerUpstream = `sail-peer-${run}:8080`;
     const republished = legacy.replace(`${backend}:8080`, peerUpstream);
-    for (const change of ["none", "remove", "legacy-republish", "legacy-predecessor"]) {
+    for (const change of ["none", "stopped", "remove", "legacy-republish", "legacy-predecessor"]) {
       await publishFor("rollback");
       const before = NodeFS.readFileSync(file, "utf8");
-      const other =
-        change === "remove"
-          ? `import { removeSite } from ${CADDY_TS}; removeSite(${JSON.stringify(id)});`
-          : publishScript(id, next, "rollback");
+      const other = `import { removeSite } from ${CADDY_TS}; removeSite(${JSON.stringify(id)});`;
       await inInstance(`import assert from "node:assert/strict";
 import cp from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
@@ -928,6 +946,10 @@ cp.spawnSync = (command, args, ...rest) => {
   }
   if (command === process.execPath && args[0] === "-e" && args[1].includes('require("node:tls").connect')) {
     assert.equal(advanced, false);
+    if (${JSON.stringify(change)} === "stopped") {
+      const stopped = call("docker", ["stop", ${JSON.stringify(container)}], {encoding: "utf8"});
+      assert.equal(stopped.status, 0, stopped.stderr);
+    }
     if (${JSON.stringify(change)} === "legacy-republish") {
       const peer = call("docker", ["exec", "--interactive", ${JSON.stringify(container)}, "flock", "/data/reload.lock", "sh", "-c",
         ${JSON.stringify(`cat > /etc/caddy/sites/${id}.caddy && caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`)}],
@@ -947,8 +969,12 @@ syncBuiltinESMExports();
 Date.now = () => now() + (advanced ? 120000 : 0);
 assert.throws(() => { ${publishScript(id, next, "rollback").replace(/import .*;\n/, "")} }, /injected certificate failure/);
 import { publishSite } from ${CADDY_TS};`);
-      if (change === "none") expect(NodeFS.readFileSync(file, "utf8")).toBe(before);
-      else if (change === "remove") expect(NodeFS.existsSync(file)).toBe(false);
+      if (change === "none" || change === "stopped") {
+        expect(NodeFS.readFileSync(file, "utf8")).toBe(before);
+        expect(docker(["inspect", "--format", "{{.State.Running}}", container]).trim()).toBe(
+          "true",
+        );
+      } else if (change === "remove") expect(NodeFS.existsSync(file)).toBe(false);
       else if (change === "legacy-predecessor")
         expect(NodeFS.readFileSync(file, "utf8")).toBe(legacy);
       else expect(NodeFS.readFileSync(file, "utf8")).toBe(republished);
@@ -1030,9 +1056,13 @@ assert.throws(() => { ${publishScript(id, `sail-gone-${first ? "a" : "b"}-${run}
       const lines = NodeReadline.createInterface({ input: holder.stdout })[Symbol.asyncIterator]();
       expect((await lines.next()).value).toBe("held");
       reloading = publishFor("a", `sail-gone-${run}:8080`);
-      expect((await lines.next()).value, "home a's reload waits inside the container").toBe(
-        "waiting",
-      );
+      const milestone = await Promise.race([
+        lines.next(),
+        reloading.then(() => {
+          throw new Error("reload completed before holder observed it waiting");
+        }),
+      ]);
+      expect(milestone.value, "home a's reload waits inside the container").toBe("waiting");
       const probe = takeLock(NodePath.join(dir, "caddy.lock"));
       probe?.();
       expect(probe, "and holds the host lock while it waits").toBeUndefined();
@@ -1065,9 +1095,7 @@ assert.throws(() => { ${publishScript(id, `sail-gone-${first ? "a" : "b"}-${run}
       expect(running().Id).not.toBe(before);
     } finally {
       if (!holder.stdin.writableEnded) holder.stdin.end("go\n");
-      await holderExited;
-      await reloading?.catch(() => undefined);
-      await replaced;
+      await Promise.allSettled([holderExited, reloading, replaced]);
     }
     await removeFor("a");
   });

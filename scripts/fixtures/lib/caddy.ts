@@ -431,6 +431,8 @@ function reconcile(dir: string, home: string, retry = true): void {
         ? othersServing(dir, home)
         : [`a reload inside ${caddyContainer()}`];
       if (others.length === 0) {
+        if (!seen.data)
+          throw new Error(`${caddyContainer()} has no fixture data volume; refusing to replace it`);
         legacyLock = holdLegacyReloadLock(dir, seen.id);
         if (!legacyLock) {
           const current = served();
@@ -549,6 +551,7 @@ function holdLegacyReloadLock(dir: string, id: string): LegacyReloadLock | undef
   const scratch = NodeFS.mkdtempSync(NodePath.join(dir, ".reload-"));
   const held = NodePath.join(scratch, "held");
   const finished = NodePath.join(scratch, "finished");
+  const cidFile = NodePath.join(scratch, "container");
   const marker = `${CONFIG_DIR}/${NodePath.basename(scratch)}`;
   const child = NodeChildProcess.spawn(
     "sh",
@@ -556,10 +559,22 @@ function holdLegacyReloadLock(dir: string, id: string): LegacyReloadLock | undef
       "-c",
       'docker "$@"; status=$?; if [ -d "$0" ]; then touch "$0/finished"; fi; exit "$status"',
       scratch,
-      "exec",
+      "run",
+      "--rm",
       "--interactive",
+      "--network",
+      "none",
+      "--memory",
+      "32m",
+      "--label",
+      `${FIXTURE_LABEL}=caddy-reload-lock`,
+      "--cidfile",
+      cidFile,
+      "--volumes-from",
       id,
+      "--entrypoint",
       "sh",
+      CADDY_IMAGE,
       "-c",
       `exec 9<>/data/reload.lock
 deadline=$(($(date +%s) + 60))
@@ -580,7 +595,23 @@ exit 1`,
   child.stdin.on("error", () => {});
   const release = () => {
     child.stdin.end("release\n");
-    NodeFS.rmSync(scratch, { recursive: true, force: true });
+    try {
+      if (NodeFS.existsSync(cidFile)) {
+        const helper = NodeFS.readFileSync(cidFile, "utf8").trim();
+        if (helper) {
+          try {
+            docker(["rm", "--force", helper], { timeoutMs: 30_000 });
+          } catch (error) {
+            if (
+              !(error instanceof DockerError && /no such|removal .*in progress/i.test(error.stderr))
+            )
+              throw error;
+          }
+        }
+      }
+    } finally {
+      NodeFS.rmSync(scratch, { recursive: true, force: true });
+    }
   };
   const isHeld = () => NodeFS.existsSync(held) && !NodeFS.existsSync(finished);
   for (const deadline = Date.now() + 60_000; child.pid && Date.now() < deadline;) {
@@ -704,20 +735,24 @@ function publishLocked(site: Site, dir: string, file: string): string {
   try {
     waitForCertificate(site.host, url);
   } catch (error) {
-    withCaddyLock(dir, () => {
-      const running = served();
-      if (running?.running) {
+    try {
+      withCaddyLock(dir, () => {
+        if (readSite(dir, file) !== body) return;
+        if (!served()?.running) ready(dir, site.home);
+        const running = served();
+        if (!running?.running) throw new Error(`${caddyContainer()} is not ready for rollback`);
         refuseAnotherDirectory(running, dir);
         changeAndReload(
           file,
           before === undefined ? { kind: "delete" } : { kind: "put", body: before },
           publication,
         );
-      } else if (readSite(dir, file) === body) {
-        if (before === undefined) NodeFS.rmSync(NodePath.join(dir, file), { force: true });
-        else NodeFS.writeFileSync(NodePath.join(dir, file), before);
-      }
-    });
+      });
+    } catch (rollbackError) {
+      throw new Error(`${errorText(error)}; rollback refused: ${errorText(rollbackError)}`, {
+        cause: error,
+      });
+    }
     throw error;
   }
   return url;
@@ -803,10 +838,14 @@ case "$change" in
   *) exit 2 ;;
 esac
 rm -f "$saved"
-if [ -e "$file" ]; then cp -p "$file" "$saved" || exit 1; fi
+if [ -e "$file" ]; then
+  cp -p "$file" "$saved" || exit 1
+  printf 1 && cat "$saved" || exit 1
+else
+  printf 0 || exit 1
+fi
 if [ "$change" = delete ]; then rm "$file"; else mv "$next" "$file"; fi || exit 1
 if caddy reload --config Caddyfile --adapter caddyfile >&2; then
-  if [ -e "$saved" ]; then printf 1; cat "$saved"; else printf 0; fi
   rm -f "$saved"
   exit 0
 fi
