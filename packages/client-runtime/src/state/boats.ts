@@ -24,7 +24,6 @@ const EMPTY_BOATS_VIEW: BoatsView = { status: null, state: null };
 
 type BoatViewEvent = Exclude<BoatEvent, { readonly _tag: "notify" }>;
 
-/** Keeps the latest status and state. A notice is a moment, not state, so it goes to `onNotify`. */
 export const foldBoatEvents =
   (onNotify: (notice: BoatNotice) => void) =>
   <E, R>(events: Stream.Stream<BoatEvent, E, R>): Stream.Stream<BoatsView, E, R> =>
@@ -50,7 +49,6 @@ export function createBoatsEnvironmentAtoms<R, E>(
     view: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:boats:view",
       tag: WS_METHODS.subscribeBoats,
-      // Notices show in every client that has Boats open, so the stream ends with the page.
       idleTtlMs: 0,
       transform: foldBoatEvents(options.onNotify),
     }),

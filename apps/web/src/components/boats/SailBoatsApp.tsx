@@ -50,7 +50,6 @@ function Setup({
   follow: FollowLink;
   onError: (t: string) => void;
 }) {
-  // Only the tab that started the sign-in holds its page and code; other tabs see it busy.
   const [signIn, setSignIn] = useState<SignInPrompt | null>(null);
   if (signIn !== null && state.setup !== "signInBoat") setSignIn(null);
 

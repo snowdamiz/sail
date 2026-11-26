@@ -213,7 +213,6 @@ function boatDaemonBinaryName(platform: NodeJS.Platform): string {
   return platform === "win32" ? "sail-boatd.exe" : "sail-boatd";
 }
 
-// The desktop's own override wins. Unpackaged runs leave it unset: the server finds the repo build.
 const resolveBoatDaemonPath = Effect.fn("desktop.backendConfiguration.resolveBoatDaemonPath")(
   function* () {
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
@@ -606,7 +605,6 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
         T3CODE_CLI_PATH: Option.getOrUndefined(input.cliPath),
         [DESKTOP_HOST_SCOPE_ENV]: input.hostScope,
         SAIL_BOATD_PATH: Option.getOrUndefined(input.boatDaemonPath),
-        // sail-boatd opens its own MCP tools' links through the app channel that started it.
         SAIL_DEEP_LINK_SCHEME: getDesktopScheme(environment.isDevelopment),
         SAIL_APP_BUNDLE_ID: environment.isDevelopment ? "com.sail.desktop.dev" : "com.sail.desktop",
       },

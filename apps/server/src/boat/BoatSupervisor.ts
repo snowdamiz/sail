@@ -82,10 +82,6 @@ export const savedStateNeedsDaemon = (stateJson: string): boolean =>
       ),
   });
 
-/**
- * The daemon's `t3` must open this server's database. An implicit home in dev mode keeps its
- * state in `dev/`, which an explicit SAIL_HOME would move to `userdata/`, the live install.
- */
 const cliHomeEnvironment = (
   config: ServerConfig.ServerConfig["Service"],
   path: Path.Path,
@@ -166,9 +162,7 @@ const describeExit = (exit: Exit.Exit<unknown, unknown>): string =>
 export class BoatSupervisor extends Context.Service<
   BoatSupervisor,
   {
-    /** Starts the daemon if needed, then runs one command on it. */
     readonly invoke: (input: BoatInvokeInput) => Effect.Effect<BoatInvokeResult, BoatError>;
-    /** Starts the daemon if needed; begins with the current status and the latest state. */
     readonly events: Stream.Stream<BoatEvent>;
   }
 >()("t3/boat/BoatSupervisor") {}
@@ -254,7 +248,6 @@ const make = Effect.gen(function* () {
     });
   });
 
-  // Per-event work shares the event stream's span.
   const onDaemonEvent = Effect.fnUntraced(function* (event: Sse.Event) {
     if (event.event === "state") {
       const state = decodeStateEvent(event.data);
@@ -300,7 +293,6 @@ const make = Effect.gen(function* () {
       )
       .pipe(Effect.ignore);
 
-  /** One daemon process from spawn to exit; it fails with the reason it is no longer running. */
   const runDaemon = Effect.fn("BoatSupervisor.runDaemon")(function* (
     ready: Deferred.Deferred<Daemon, BoatError>,
   ) {
@@ -419,7 +411,6 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  /** Starts the daemon unless one is starting or running; the result waits for it to be ready. */
   const kick = SynchronizedRef.modifyEffect(lifecycle, (current) => {
     switch (current._tag) {
       case "Running":
@@ -463,8 +454,6 @@ const make = Effect.gen(function* () {
 
   const invoke = Effect.fn("BoatSupervisor.invoke")(function* (input: BoatInvokeInput) {
     const daemon = yield* Effect.flatten(kick);
-    // The daemon drops a command whose request closes, so a caller that disconnects mid
-    // create_machine would leave the create half done. The request belongs to the service.
     const reply = yield* Fiber.join(yield* Effect.forkIn(send(daemon, input), serviceScope));
     if (!reply.ok) return yield* new BoatError({ message: reply.error });
     return {
@@ -476,7 +465,6 @@ const make = Effect.gen(function* () {
 
   const events: BoatSupervisor["Service"]["events"] = Stream.unwrap(
     Effect.gen(function* () {
-      // Under the lifecycle lock, so no status change lands between the snapshot and the subscription.
       const [subscription, status] = yield* SynchronizedRef.modifyEffect(lifecycle, (current) =>
         PubSub.subscribe(hub).pipe(
           Effect.map((subscription) => [[subscription, statusOf(current)] as const, current]),
@@ -496,7 +484,6 @@ const make = Effect.gen(function* () {
     }),
   );
 
-  // A standby server must not run a second daemon on the same Boat data dir.
   yield* ServerActivation.forkParked(
     fileSystem.readFileString(path.join(dataDir, "state.json")).pipe(
       Effect.map(savedStateNeedsDaemon),

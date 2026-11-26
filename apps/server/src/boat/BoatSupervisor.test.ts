@@ -46,7 +46,6 @@ type Report =
   | { readonly event: "shutdown"; readonly pid: number }
   | { readonly event: "add_project"; readonly pid: number; readonly answered: boolean | null };
 
-/** Stands in for sail-boatd: the handshake, the command and SSE routes, and reports to the server. */
 const fakeDaemonSource = `#!${process.execPath}
 const http = require("node:http");
 const { execFileSync } = require("node:child_process");
@@ -130,7 +129,6 @@ server.listen(0, "127.0.0.1", async () => {
 });
 `;
 
-/** Stands in for this server's own entry point, which the daemon's `t3` launcher must run. */
 const fakeServerEntrySource = `console.log(JSON.stringify({
   argv: process.argv.slice(2),
   electronRunAsNode: process.env.ELECTRON_RUN_AS_NODE ?? null,
@@ -140,7 +138,6 @@ const fakeServerEntrySource = `console.log(JSON.stringify({
 }));
 `;
 
-/** A listener for the fake daemon's reports, standing in for this server's HTTP origin. */
 const reportListener = Effect.gen(function* () {
   const reports = yield* Queue.unbounded<Report>();
   const listener = NodeHttp.createServer((request, response) => {
@@ -202,7 +199,6 @@ const setup = Effect.gen(function* () {
           HttpServer.HttpServer,
           HttpServer.make({
             serve: () => Effect.void,
-            // A server bound to every interface still gives the daemon a loopback origin.
             address: NetAddress.inetAddressFromIpStringUnsafe("0.0.0.0", port),
           }),
         ),
@@ -378,7 +374,6 @@ describe("BoatSupervisor", () => {
         const boats = yield* BoatSupervisor.BoatSupervisor;
         const connected = yield* Deferred.make<void>();
         const notice = yield* boats.events.pipe(
-          // The first state event shows the supervisor is reading the daemon's event stream.
           Stream.tap((event) =>
             event._tag === "state" ? Deferred.succeed(connected, undefined) : Effect.void,
           ),

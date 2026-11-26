@@ -53,17 +53,14 @@ pub fn app_bundle_id() -> String {
     non_empty_env("SAIL_APP_BUNDLE_ID").unwrap_or_else(|| DEFAULT_BUNDLE_ID.to_owned())
 }
 
-/// The deep link that shows Sail's "add backend" confirmation for the server at `pairing_url`.
 pub fn pair_link(pairing_url: &str) -> String {
     format!("{}://pair?pairingUrl={}", deep_link_scheme(), urlencoding::encode(pairing_url))
 }
 
-/// The deep link that opens one of an environment's threads in Sail.
 pub fn thread_link(environment_id: &str, thread_id: &str) -> String {
     format!("{}://threads/{environment_id}/{thread_id}", deep_link_scheme())
 }
 
-/// Brings Sail to the front of this computer: by bundle id on macOS, else with a bare deep link.
 pub fn activate() -> Result<()> {
     if cfg!(target_os = "macos") {
         let status = std::process::Command::new("open").args(["-b", &app_bundle_id()]).status()?;
@@ -140,7 +137,6 @@ impl T3Desktop {
         self
     }
 
-    /// Opens a page in this computer's browser, for flows whose callback reaches this computer.
     pub fn open_url(&self, url: &str) -> Result<()> {
         crate::app::open_url(url)
     }

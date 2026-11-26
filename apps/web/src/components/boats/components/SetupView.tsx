@@ -3,7 +3,6 @@ import type { Setup, SetupAction } from "../types";
 import { Icon } from "./Icons";
 import { Dots } from "./common";
 
-/** A Boat sign-in this tab started: the page to finish it on, and the code that page may ask for. */
 export interface SignInPrompt {
   url: string;
   userCode: string | null;
@@ -40,7 +39,6 @@ export function SetupView({
 }: {
   setup: Setup;
   busy: boolean;
-  /** shown only in the tab that started the sign-in, while it waits */
   signIn: SignInPrompt | null;
   onAction: (a: SetupAction) => void;
 }) {

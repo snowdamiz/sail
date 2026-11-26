@@ -1,6 +1,3 @@
-//! Headless HTTP + SSE control daemon (`sail-boatd`) that bridges Sail with the Sail Boat Rust
-//! engine and MCP server.
-
 use crate::app::{self, App, Costs, MachineView, Setup};
 use crate::boat::{Boat, SignIn};
 use crate::machine::provision::{SizeInfo, SIZES};
@@ -113,8 +110,6 @@ pub struct UiState {
     pub version: &'static str,
 }
 
-/// What `/api/events` streams to every client. Links a command produces go only to the client
-/// that ran it, in its `Reply`.
 #[derive(Clone, Debug)]
 enum StreamEvent {
     State(String),
@@ -130,8 +125,6 @@ impl StreamEvent {
     }
 }
 
-/// A command's answer: its data, and a page or deep link for its client to open, with the code
-/// that page may ask for.
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Reply {
@@ -153,14 +146,10 @@ impl Reply {
     }
 }
 
-/// The Boat sign-in a `signInBoat` started, until its wait ends: a repeat from any client gets the
-/// same page and code instead of starting another.
 #[derive(Default)]
 struct PendingSignIn(tokio::sync::Mutex<Option<SignIn>>);
 
 impl PendingSignIn {
-    /// The pending sign-in, else the one `start` begins. Locked across `start`, so overlapping
-    /// calls begin one.
     async fn get_or_start<F: Future<Output = Result<SignIn>>>(&self, start: impl FnOnce() -> F) -> Result<SignIn> {
         let mut pending = self.0.lock().await;
         if let Some(sign_in) = pending.as_ref() {
@@ -584,7 +573,6 @@ impl Daemon {
         Ok(Reply::default())
     }
 
-    /// Starts the engine once setup allows, else refreshes the account.
     async fn recheck_setup(self: &Arc<Self>) {
         if self.app.lock().unwrap().is_none() {
             self.init().await;
@@ -594,8 +582,6 @@ impl Daemon {
         }
     }
 
-    /// Boat's browser sign-in: the page and code for the client to open, once Boat gives them.
-    /// Setup stays busy until the sign-in finishes or expires in the background.
     async fn sign_in_boat(self: &Arc<Self>, boat: Boat) -> Result<SignIn> {
         self.sign_in
             .get_or_start(|| async {
@@ -869,8 +855,6 @@ mod tests {
         (start(config).await.unwrap(), dir)
     }
 
-    /// A daemon serving an app with one unpaired machine, `dev`, whose Boat and Sail CLIs don't
-    /// exist, so nothing it runs reaches Boat. Returns the app, the control port and the data dir.
     async fn daemon_with_machine() -> (Arc<App>, u16, PathBuf) {
         let dir = test_dir();
         let local_port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
@@ -920,7 +904,6 @@ mod tests {
         res.json().await.unwrap()
     }
 
-    /// The one-time code in `link`, once it is the pair link for the machine on `local_port`.
     fn pairing_code(link: &Value, local_port: u16) -> String {
         let link = url::Url::parse(link.as_str().unwrap()).unwrap();
         assert_eq!(link.scheme(), t3desktop::deep_link_scheme(), "{link}");

@@ -445,8 +445,6 @@ impl App {
         self.shared.changed();
     }
 
-    /// Creates a machine, then adds this computer's Sail projects `projects` (ids) to it. The
-    /// caller hands its `pair` link to Sail.
     pub async fn create_machine(self: &Arc<Self>, name: &str, size: &str, projects: Vec<String>) -> Result<Arc<MachineRuntime>> {
         if !valid_name(name) {
             bail!("machine names are 1-32 lowercase letters, digits or dashes, starting with a letter or digit");
@@ -529,8 +527,6 @@ impl App {
         Ok(project)
     }
 
-    /// The deep link to Sail's own "add backend" confirmation for this machine, with a new
-    /// one-time pairing code.
     pub fn pair(&self, machine: &MachineRuntime) -> String {
         let code = machine.auth.new_pairing_code();
         let pairing_url = format!("http://localhost:{}/pair#token={code}", machine.record().local_port);
@@ -752,8 +748,6 @@ impl App {
         })
     }
 
-    /// The deep link that shows the machine in Sail: `thread` on it, or its "add backend"
-    /// dialog while Sail doesn't have it. None when Sail only needs to come to the front.
     pub fn open_in_t3(&self, machine: &MachineRuntime, thread: Option<&str>) -> Option<String> {
         let record = machine.record();
         if record.client_tokens.is_empty() {
@@ -853,7 +847,6 @@ fn human_secs(s: u64) -> String {
     }
 }
 
-/// Opens `url` with this computer's default handler.
 pub fn open_url(url: &str) -> Result<()> {
     let status = if cfg!(target_os = "macos") {
         std::process::Command::new("open").arg(url).status()?

@@ -35,7 +35,6 @@ export interface MachineProject {
   status: string | null; // set while t3boat adds it: clone progress as T3 Code words it
 }
 
-/** A T3 Code project on this server that can go to a machine (it has a git remote). */
 export interface LocalProject {
   id: string;
   title: string;

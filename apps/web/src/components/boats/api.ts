@@ -13,7 +13,6 @@ import { usePairFromLink } from "../desktop/DesktopWebLinkCoordinator";
 import { type BoatLink, type BoatReply, classifyBoatLink, errorText } from "./reply";
 import type { CommandArgs, CommandName, MachineDetails, UiState } from "./types";
 
-/** Runs one sail-boatd command on this server: the primary environment, which serves this app. */
 export async function call<C extends CommandName>(
   command: C,
   args: CommandArgs<C>,
@@ -32,7 +31,6 @@ export async function call<C extends CommandName>(
 
 export type BoatsPage =
   | { readonly kind: "starting" }
-  /** `daemon`: sail-boatd failed, and asking it anything starts it again on the server. */
   | { readonly kind: "offline"; readonly message: string; readonly daemon: boolean }
   | { readonly kind: "setup" | "ready"; readonly state: UiState };
 
@@ -46,7 +44,6 @@ function boatsPage(view: BoatsView | null, error: string | null): BoatsPage {
   return state.setup === "ready" ? { kind: "ready", state } : { kind: "setup", state };
 }
 
-/** What `/boats` shows for this server's Boats stream, and how to bring a failed one back. */
 export function useBoatsPage(environmentId: EnvironmentId | null) {
   const query = useEnvironmentQuery(
     environmentId === null ? null : boatsEnvironment.view({ environmentId, input: {} }),
@@ -59,7 +56,6 @@ export function useBoatsPage(environmentId: EnvironmentId | null) {
   return { page, retry };
 }
 
-/** Acts on a reply's link here, in the tab that asked, and says where it went. */
 export function useFollowBoatLink(onHost: boolean) {
   const router = useRouter();
   const pairFromLink = usePairFromLink();
