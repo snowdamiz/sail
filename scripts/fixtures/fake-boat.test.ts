@@ -56,14 +56,20 @@ interface Failure {
   readonly error: string;
 }
 
-function run(command: string, args: ReadonlyArray<string>, env: NodeJS.ProcessEnv): Promise<Ran> {
+function run(
+  command: string,
+  args: ReadonlyArray<string>,
+  env: NodeJS.ProcessEnv,
+  timeout = 0,
+): Promise<Ran> {
   return new Promise((resolve, reject) => {
     NodeChildProcess.execFile(
       command,
       args,
-      { env, maxBuffer: 16 * 1024 * 1024 },
+      { env, maxBuffer: 16 * 1024 * 1024, timeout },
       (error, stdout, stderr) => {
-        if (error && typeof error.code !== "number") reject(error);
+        if (error?.killed) resolve({ status: null, stdout, stderr });
+        else if (error && typeof error.code !== "number") reject(error);
         else resolve({ status: error ? Number(error.code) : 0, stdout, stderr });
       },
     );
@@ -554,6 +560,54 @@ describe("fake boat records and output", () => {
     });
     expect(lastJson<Failure>(garbled.stderr).error).toContain("FAKE_BOAT_SETTLE_SECS");
   });
+
+  it("finishes only a stop it began, for a sandbox id, without touching anything else", async () => {
+    const home = await NodeFSP.mkdtemp(NodePath.join(state, "internal-"));
+    const shim = NodePath.join(home, "bin");
+    await NodeFSP.mkdir(shim);
+    await NodeFSP.writeFile(
+      NodePath.join(shim, "docker"),
+      `#!/bin/sh\necho "$@" >> '${NodePath.join(home, "docker-ran")}'\n`,
+      { mode: 0o755 },
+    );
+    const env = {
+      ...strippedEnv(),
+      FAKE_BOAT_HOME: home,
+      PATH: `${shim}${NodePath.delimiter}${BOAT_PATH}`,
+    };
+    const until = "2100-01-01T00:00:00.000Z";
+    const outside = NodePath.join(home, "x.json");
+    await NodeFSP.writeFile(outside, JSON.stringify({ state: "stopping", until }));
+    const id = "bx-000000000002";
+    await NodeFSP.mkdir(NodePath.join(home, "sandboxes"));
+    await NodeFSP.writeFile(
+      NodePath.join(home, "sandboxes", `${id}.json`),
+      JSON.stringify({
+        id,
+        name: "n",
+        type: "small",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        ttlSeconds: null,
+        archiveAfter: null,
+      }),
+    );
+    await NodeFSP.mkdir(NodePath.join(home, "transitions"));
+    const theirs = NodePath.join(home, "transitions", `${id}.json`);
+    const transition = JSON.stringify({ id, state: "stopping", until, token: "theirs" });
+    await NodeFSP.writeFile(theirs, transition);
+    for (const argv of [
+      ["--finish-transition", "../x"],
+      ["--finish-transition", id, "mine"],
+      ["--finish-transition", id],
+      ["--watch-outbox", "../x"],
+    ]) {
+      const ran = await run("boat", argv, env);
+      expect(ran.status, argv.join(" ")).toBe(1);
+    }
+    expect(await NodeFSP.readFile(outside, "utf8")).toContain("stopping");
+    expect(await NodeFSP.readFile(theirs, "utf8")).toBe(transition);
+    expect(NodeFS.existsSync(NodePath.join(home, "docker-ran")), "no docker ran").toBe(false);
+  });
 });
 
 describe.skipIf(!hasDocker())("fake boat", () => {
@@ -565,6 +619,8 @@ describe.skipIf(!hasDocker())("fake boat", () => {
   let otherSandbox: string;
   let fromSnapshot: string;
   let hostedUrl: string;
+  /** Ahead of the real `docker` on the PATH of everything the fake starts from `env`. */
+  let hookBin: string;
   const sandboxes: Array<string> = [];
   const children: Array<NodeChildProcess.ChildProcess> = [];
   const suffix = NodeCrypto.randomBytes(3).toString("hex");
@@ -647,19 +703,35 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     const approved = await curl(["--cacert", rootCertPath(), "--fail", target.toString()]);
     expect(approved.stdout, approved.stderr).toContain(code);
   };
-  /** An env whose `docker` runs `script` first, with `$real` the real one and `$here` its dir. */
-  const withDocker = async (script: string) => {
+  /** Writes a `docker` into `dir` that runs `script` first, with `$real` the real one and `$here` `dir`. */
+  const writeDocker = async (dir: string, script: string) => {
     const real = NodeChildProcess.execFileSync("sh", ["-c", "command -v docker"], {
       encoding: "utf8",
     }).trim();
-    const dir = await NodeFSP.mkdtemp(NodePath.join(home, "docker-"));
+    const shim = NodePath.join(dir, "docker");
     await NodeFSP.writeFile(
-      NodePath.join(dir, "docker"),
+      shim,
       `#!/bin/sh\nreal='${real}'\nhere='${dir}'\n${script}\nexec "$real" "$@"\n`,
       { mode: 0o755 },
     );
+    return shim;
+  };
+  /** An env whose `docker` runs `script` first. */
+  const withDocker = async (script: string) => {
+    const dir = await NodeFSP.mkdtemp(NodePath.join(home, "docker-"));
+    await writeDocker(dir, script);
     return { dir, env: { PATH: `${dir}${NodePath.delimiter}${BOAT_PATH}` } };
   };
+  /** Makes every `docker` the fake's own processes run, detached ones included, run `script` first. */
+  const hookDocker = async (script: string) => {
+    const shim = await writeDocker(hookBin, script);
+    return { [Symbol.asyncDispose]: () => NodeFSP.rm(shim, { force: true }) };
+  };
+  /** The command lines of every process on this computer that names `id`. */
+  const processesFor = (id: string) =>
+    NodeChildProcess.execFileSync("ps", ["-A", "-o", "args="], { encoding: "utf8" })
+      .split("\n")
+      .filter((line) => line.includes(id));
   const running = (id: string) =>
     docker(["inspect", "--format", "{{.State.Running}}", `sail-boat-${id}`]).trim() === "true";
   const workerIdle = (forHome: string) => {
@@ -694,7 +766,14 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     const image = process.env.FAKE_BOAT_IMAGE
       ? { FAKE_BOAT_IMAGE: process.env.FAKE_BOAT_IMAGE }
       : {};
-    env = { ...strippedEnv(), ...image, FAKE_BOAT_HOME: home, PATH: BOAT_PATH };
+    hookBin = NodePath.join(home, "hook-bin");
+    await NodeFSP.mkdir(hookBin);
+    env = {
+      ...strippedEnv(),
+      ...image,
+      FAKE_BOAT_HOME: home,
+      PATH: `${hookBin}${NodePath.delimiter}${BOAT_PATH}`,
+    };
     otherEnv = { ...env, FAKE_BOAT_HOME: otherHome };
   });
 
@@ -721,6 +800,8 @@ describe.skipIf(!hasDocker())("fake boat", () => {
       try {
         await vi.waitFor(() => {
           if (!workerIdle(forHome)) throw new Error(`a snapshot worker for ${forHome} still runs`);
+          const left = sandboxes.flatMap(processesFor);
+          if (left.length > 0) throw new Error(`still running for a removed sandbox: ${left}`);
         }, POLL);
       } finally {
         for (const id of new Set(labelled(forHome, "images"))) {
@@ -1048,10 +1129,10 @@ fi`);
   it("fails boat snapshot inside with the reason when its save fails", async () => {
     await expect.poll(() => workerIdle(home), POLL).toBe(true);
     const failing = `fake-boat-test-${suffix}-failing`;
-    const shim = await withDocker(
+    await using _refused = await hookDocker(
       `[ "$1" = commit ] && { echo 'commit refused by the test' >&2; exit 1; }`,
     );
-    const failed = await exec(`boat snapshot ${sandbox} ${failing} --json`, shim.env);
+    const failed = await exec(`boat snapshot ${sandbox} ${failing} --json`);
     expect(failed.exitCode).toBe(1);
     expect(failed.stdout).toBe("");
     expect(lastJson<Failure>(failed.stderr)).toEqual({
@@ -1089,6 +1170,24 @@ fi`);
     expect(lastJson<Failure>(plain.stderr).code).toBe("json_required");
     expect((await failure(["snapshot", "rm", insideSnapshot])).code).toBe("not_found");
     expect((await failure(["snapshot", sandbox, "Not_Valid"])).code).toBe("invalid_name");
+  });
+
+  it("saves a snapshot asked for inside with no boat command running on the computer", async () => {
+    await expect.poll(() => workerIdle(home), POLL).toBe(true);
+    const name = `fake-boat-test-${suffix}-unattended`;
+    const asked = await run(
+      "docker",
+      ["exec", "-u", "user", `sail-boat-${sandbox}`, "boat", "--json", "snapshot", sandbox, name],
+      env,
+      120_000,
+    );
+    expect(asked, "the watchdog's call with no controller, well inside its 10 minutes").toEqual({
+      status: 0,
+      stdout: "{}\n",
+      stderr: "",
+    });
+    expect(await names()).toEqual([snapshot, name]);
+    expect((await json(["snapshot", "rm", name])).status).toBe(0);
   });
 
   it("stops and resumes, keeping files and the public host", async () => {
@@ -1258,8 +1357,7 @@ fi`);
     expect(await awake(sinceStop), "only the stretch since the resume").toBeLessThan(before);
   });
 
-  it("reports stopping and resuming while FAKE_BOAT_TRANSITION_SECS holds them", async () => {
-    const slow = { FAKE_BOAT_TRANSITION_SECS: "20" };
+  it("returns from stop while it still stops, and from resume once running, with FAKE_BOAT_TRANSITION_SECS", async () => {
     const state = async () => (await info()).state;
     const listed = async () =>
       lastJson<{ sandboxes: Array<SandboxJson> }>((await json(["list", "--all"])).stdout)
@@ -1270,24 +1368,38 @@ fi`);
     ).toContain("FAKE_BOAT_TRANSITION_SECS");
     expect(await state()).toBe("running");
 
-    expect(await json(["stop", sandbox], slow)).toMatchObject({ status: 0, stdout: "{}\n" });
-    expect([await state(), ...(await listed())]).toEqual(["stopping", "stopping"]);
-    expect((await failure(["exec", sandbox, "--", "true"])).code).toBe("sandbox_not_running");
-    expect((await failure(["resume", sandbox])).code).toBe("sandbox_transitioning");
-    expect((await json(["stop", sandbox])).status, "Boat took the stop already").toBe(0);
+    const held = await withDocker(`if [ "$1" = stop ]; then
+  i=0; while [ ! -e "$here/release" ] && [ $i -lt 600 ]; do sleep 0.2; i=$((i+1)); done
+fi`);
+    const stopped = await json(["stop", sandbox], { FAKE_BOAT_TRANSITION_SECS: "1", ...held.env });
+    try {
+      expect(stopped).toMatchObject({ status: 0, stdout: "{}\n" });
+      expect([await state(), ...(await listed())]).toEqual(["stopping", "stopping"]);
+      expect((await failure(["exec", sandbox, "--", "true"])).code).toBe("sandbox_not_running");
+      expect((await failure(["resume", sandbox])).code).toBe("sandbox_transitioning");
+      expect((await failure(["extend", sandbox, "--ttl", "60"])).code).toBe(
+        "sandbox_transitioning",
+      );
+      expect((await json(["stop", sandbox])).status, "Boat took the stop already").toBe(0);
+    } finally {
+      await NodeFSP.writeFile(NodePath.join(held.dir, "release"), "");
+    }
     await expect.poll(state, POLL).toBe("stopped");
     expect((await info()).stoppedAt).toMatch(ISO);
 
-    const resumed = await json(["resume", sandbox, "--ttl", "7200"], slow);
-    expect(resumed.status, resumed.stderr).toBe(0);
-    expect(lastJson<SandboxJson>(resumed.stdout).state).toBe("resuming");
-    expect([await state(), ...(await listed())]).toEqual(["resuming", "resuming"]);
-    expect((await failure(["exec", sandbox, "--", "true"])).code).toBe("sandbox_not_running");
-    expect((await failure(["stop", sandbox])).code).toBe("sandbox_transitioning");
-    await expect.poll(state, POLL).toBe("running");
-    expect((await exec("systemctl --user is-system-running")).stdout).toMatch(
-      /^(running|degraded)\n$/,
-    );
+    const resuming = background(["--json", "resume", sandbox, "--ttl", "7200"], {
+      FAKE_BOAT_TRANSITION_SECS: "10",
+    });
+    const seen: Array<string> = [];
+    while (resuming.child.exitCode === null && resuming.child.signalCode === null) {
+      seen.push(await state());
+    }
+    expect(await resuming.exited, resuming.stderr()).toBe(0);
+    expect(seen, "info said resuming while the resume ran").toContain("resuming");
+    expect(lastJson<SandboxJson>(resuming.stdout()).state).toBe("running");
+    expect(await state(), "running once resume returns").toBe("running");
+    const hosted = await json(["host", sandbox, String(WEB_PORT), "--public", "--localhost"]);
+    expect(hosted.status, `host right after the resume: ${hosted.stderr}`).toBe(0);
     expect(await info()).toMatchObject({
       ttlSeconds: 7200,
       archiveAfter: expect.stringMatching(ISO),
@@ -1341,12 +1453,12 @@ fi`);
       name: gone,
       requestedAt: "1970-01-01T00:00:00.000Z",
     };
+    expect(dockerSucceeds(["rm", "--force", "--volumes", `sail-boat-${otherSandbox}`])).toBe(true);
     await NodeFSP.writeFile(
       NodePath.join(outbox, `${gone}.snapshot.json`),
       JSON.stringify(request),
     );
     await NodeFSP.writeFile(NodePath.join(outbox, "junk.snapshot.json"), "not json");
-    expect(dockerSucceeds(["rm", "--force", "--volumes", `sail-boat-${otherSandbox}`])).toBe(true);
     const statuses: Array<number | null> = [];
     const reported = async () => {
       const listed = await other(["snapshots"]);
@@ -1402,19 +1514,23 @@ fi`);
   it("keeps the old size and lifetime when a resume cannot boot", async () => {
     expect((await exec("sudo ln -sf /bin/false /sbin/init", {}, fromSnapshot)).exitCode).toBe(0);
     expect((await json(["stop", fromSnapshot])).status).toBe(0);
-    const refused = await failure(["resume", fromSnapshot, "--type", "large", "--ttl", "60"]);
-    expect(refused.code).toBe("boot_failed");
-    expect(await info(fromSnapshot)).toMatchObject({
-      type: "small",
-      state: "stopped",
-      ttlSeconds: 9000,
-    });
+    for (const extra of [{}, { FAKE_BOAT_TRANSITION_SECS: "5" }]) {
+      const resume = ["resume", fromSnapshot, "--type", "large", "--ttl", "60"];
+      expect((await failure(resume, extra)).code).toBe("boot_failed");
+      expect(await info(fromSnapshot)).toMatchObject({
+        type: "small",
+        state: "stopped",
+        ttlSeconds: 9000,
+      });
+    }
   });
 
   it("deletes sandboxes with nothing left behind, keeping named snapshots", async () => {
     expect((await failure(["delete", sandbox])).code).toBe("confirmation_required");
+    expect(processesFor(sandbox), "a running sandbox has its watcher").not.toEqual([]);
     for (const id of [sandbox, fromSnapshot]) {
       expect((await json(["delete", id, "--yes"])).status).toBe(0);
+      await expect.poll(() => processesFor(id), POLL).toEqual([]);
       expect(dockerSucceeds(["container", "inspect", `sail-boat-${id}`])).toBe(false);
       expect(
         NodeFS.existsSync(NodePath.join(caddyDir(), "sites", `boat-${id}-${WEB_PORT}.caddy`)),

@@ -91,10 +91,9 @@ async function snapshot(sandbox: string, name: string): Promise<void> {
   const give = Date.now() + SAVE_WAIT_MS;
   while (saving(name)) {
     if (Date.now() >= give) {
-      throw new BoatError(
-        "snapshot_timeout",
-        `${name} is not saved yet; the fake saves it when the next boat command runs on the computer`,
-      );
+      // Unclaimed, it would still save after this call reported that it failed.
+      NodeFS.rmSync(file, { force: true });
+      throw new BoatError("snapshot_timeout", `The computer did not save ${name} in time`);
     }
     await sleep(SAVE_POLL_MS);
   }

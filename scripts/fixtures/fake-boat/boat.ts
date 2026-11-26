@@ -47,6 +47,7 @@ import {
   DEADLINE_FILE,
   ID_FILE,
   OUTBOX_DIR,
+  parseRequestFile,
   READONLY_DIR,
   SNAPSHOT_NAME,
 } from "./sandbox/outbox.ts";
@@ -66,9 +67,12 @@ const DISK_TTL_SECS = 14 * 24 * 3600;
 const SIZES = { small: "1g", default: "1536m", large: "2g" } as const;
 const SANDBOX_ID = /^bx-[0-9a-f]{12}$/;
 const REMOTE_PATH = /^(bx-[0-9a-f]{12}):(.+)$/;
-/** The argument that makes the fake `boat` finish a stop or resume in the background. */
+/** The argument that makes the fake `boat` finish a stop in the background. */
 const FINISH_ARG = "--finish-transition";
-/** After this, a transition whose finisher died no longer hides Docker's own state. */
+/** The argument that makes the fake `boat` save what a running sandbox asks for, as Boat does. */
+const WATCH_ARG = "--watch-outbox";
+const WATCH_POLL_MS = 250;
+/** After this, a transition whose command or finisher died no longer hides Docker's own state. */
 const TRANSITION_STALE_MS = BOOT_TIMEOUT_MS + 2 * 60_000;
 
 type Size = keyof typeof SIZES;
@@ -122,15 +126,15 @@ interface Live {
   readonly finishedAt: string;
 }
 
-/** A stop or resume that returned early, which a detached `boat` finishes (`FINISH_ARG`). */
-type Transition =
-  | { readonly state: "stopping"; readonly until: string }
-  | {
-      readonly state: "resuming";
-      readonly until: string;
-      readonly from: SandboxRecord;
-      readonly to: SandboxRecord;
-    };
+/** A stop or resume in flight, which `info` and `list` report until it ends. */
+interface Transition {
+  readonly id: string;
+  readonly state: "stopping" | "resuming";
+  /** The earliest it may end. */
+  readonly until: string;
+  /** Only the command that began it, or its finisher, may end it. */
+  readonly token: string;
+}
 
 /** One stretch the sandbox ran, which Docker forgets at its next start. */
 interface Run {
@@ -243,7 +247,7 @@ function diskTtlSeconds(): number {
   return Number(raw);
 }
 
-/** How long a stop or resume reports stopping or resuming after it returns; 0 returns when done. */
+/** The least time a stop or resume reports stopping or resuming. Above 0, a stop returns at once. */
 function transitionSecs(): number {
   const raw = process.env.FAKE_BOAT_TRANSITION_SECS;
   if (raw === undefined || raw === "") return 0;
@@ -555,28 +559,60 @@ function stopContainer(id: string): void {
   docker(["stop", "--time", "30", container(id)], { timeoutMs: 60_000 });
 }
 
-/** Starts a stopped sandbox as `to`, or puts `from`'s size and lifetime back if it cannot boot. */
-async function boot(from: SandboxRecord, to: SandboxRecord): Promise<void> {
-  recordRun(to.id);
-  try {
-    docker(["start", container(to.id)]);
-    await waitForBoot(to.id);
-  } catch (error) {
-    dockerSucceeds(["stop", "--time", "30", container(to.id)]);
-    resize(to.id, from.type);
-    setDeadline(to.id, from.archiveAfter);
-    throw error instanceof BoatError ? error : new BoatError("resume_failed", errorMessage(error));
-  }
-  recordStart(to.id);
-  writeJsonAtomic(sandboxFile(to.id), to);
+function beginTransition(id: string, state: Transition["state"], secs: number): Transition {
+  const moving: Transition = {
+    id,
+    state,
+    until: new Date(Date.now() + secs * 1000).toISOString(),
+    token: NodeCrypto.randomBytes(8).toString("hex"),
+  };
+  writeJsonAtomic(transitionFile(id), moving);
+  return moving;
 }
 
-/** Hands the work to a detached `boat`, so the command returns as Boat does once it took it. */
-function beginTransition(id: string, moving: Transition): void {
-  writeJsonAtomic(transitionFile(id), moving);
+function holds(moving: Transition): boolean {
+  return readJson<Transition>(transitionFile(moving.id))?.token === moving.token;
+}
+
+function endTransition(moving: Transition): void {
+  if (holds(moving)) NodeFS.rmSync(transitionFile(moving.id), { force: true });
+}
+
+/**
+ * Starts a stopped sandbox as `to`, reporting `resuming` for at least `secs`, or puts `from`'s size
+ * and lifetime back if it cannot boot.
+ */
+async function boot(from: SandboxRecord, to: SandboxRecord, secs: number): Promise<void> {
+  const moving = beginTransition(to.id, "resuming", secs);
+  try {
+    recordRun(to.id);
+    try {
+      docker(["start", container(to.id)]);
+      await waitForBoot(to.id);
+    } catch (error) {
+      dockerSucceeds(["stop", "--time", "30", container(to.id)]);
+      resize(to.id, from.type);
+      setDeadline(to.id, from.archiveAfter);
+      throw error instanceof BoatError
+        ? error
+        : new BoatError("resume_failed", errorMessage(error));
+    }
+    recordStart(to.id);
+    // A delete meanwhile took the transition with the rest; the record must not come back.
+    if (!holds(moving)) throw new BoatError("not_found", `Sandbox ${to.id} was deleted`);
+    writeJsonAtomic(sandboxFile(to.id), to);
+    detach(WATCH_ARG, to.id);
+    await sleep(Date.parse(moving.until) - Date.now());
+  } finally {
+    endTransition(moving);
+  }
+}
+
+/** Runs this script again with `args`, detached, logging to the home's worker log. */
+function detach(...args: ReadonlyArray<string>): void {
   const log = NodeFS.openSync(at("worker.log"), "a");
   try {
-    NodeChildProcess.spawn(process.execPath, [import.meta.filename, FINISH_ARG, id], {
+    NodeChildProcess.spawn(process.execPath, [import.meta.filename, ...args], {
       detached: true,
       stdio: ["ignore", log, log],
       env: { ...process.env, FAKE_BOAT_HOME: HOME },
@@ -586,20 +622,40 @@ function beginTransition(id: string, moving: Transition): void {
   }
 }
 
-/** Does what the stop or resume left, then keeps reporting it until its `until`. */
-async function finishTransition(id: string): Promise<void> {
-  const moving = readJson<Transition>(transitionFile(id));
-  if (!moving) return;
+/** The rest of a stop that returned early, and only one this home began for that sandbox. */
+async function finishStop(id: string | undefined, token: string | undefined): Promise<void> {
+  const { id: own } = sandboxRecord(id);
+  const moving = readJson<Transition>(transitionFile(own));
+  if (moving?.id !== own || moving.state !== "stopping" || moving.token !== token) {
+    throw new BoatError("not_found", `No stop of ${own} is in flight as ${token ?? ""}`);
+  }
   try {
-    if (moving.state === "stopping") stopContainer(id);
-    else await boot(moving.from, moving.to);
+    stopContainer(own);
   } catch (error) {
-    console.error(
-      JSON.stringify({ code: `${moving.state}_failed`, id, error: errorMessage(error) }),
-    );
+    console.error(JSON.stringify({ code: "stopping_failed", id: own, error: errorMessage(error) }));
   }
   await sleep(Date.parse(moving.until) - Date.now());
-  NodeFS.rmSync(transitionFile(id), { force: true });
+  endTransition(moving);
+}
+
+/**
+ * Starts the save worker whenever the sandbox asks for a snapshot, until the container stops.
+ * The watchdog asks exactly when no controller answered, so no other `boat` may be running.
+ */
+async function watchOutbox(id: string | undefined): Promise<void> {
+  const { id: own } = sandboxRecord(id);
+  const asks = () =>
+    listDir(OUTBOX.dir(own)).some((file) => parseRequestFile(file)?.stage === "pending");
+  const poll = setInterval(() => {
+    if (asks()) startWorker();
+  }, WATCH_POLL_MS);
+  const wait = NodeChildProcess.spawn("docker", ["wait", container(own)], { stdio: "ignore" });
+  await new Promise((resolve) => {
+    wait.once("close", resolve);
+    wait.once("error", resolve);
+  });
+  clearInterval(poll);
+  startWorker();
 }
 
 function hostedPorts(id: string): ReadonlyArray<number> {
@@ -983,6 +1039,7 @@ const TABLE: ReadonlyArray<Command> = [
           : new BoatError("create_failed", errorMessage(error));
       }
       recordStart(id);
+      detach(WATCH_ARG, id);
       print(view(record, requireLive(record)));
       return 0;
     },
@@ -1028,8 +1085,7 @@ const TABLE: ReadonlyArray<Command> = [
       const { state } = requireLive(record);
       if (state === "resuming" || state === "starting") throw transitioning(record.id, state);
       if (state === "running" && secs > 0) {
-        const until = new Date(Date.now() + secs * 1000).toISOString();
-        beginTransition(record.id, { state: "stopping", until });
+        detach(FINISH_ARG, record.id, beginTransition(record.id, "stopping", secs).token);
       } else if (state === "running") {
         stopContainer(record.id);
       }
@@ -1073,15 +1129,9 @@ const TABLE: ReadonlyArray<Command> = [
       writeAuthOrigin(record.id);
       if (state.state === "running") {
         writeJsonAtomic(sandboxFile(record.id), next);
-      } else if (secs > 0) {
-        print({ progress: "resuming", id: record.id });
-        const until = new Date(Date.now() + secs * 1000).toISOString();
-        beginTransition(record.id, { state: "resuming", until, from: record, to: next });
-        print(view(next, { ...state, state: "resuming" }));
-        return 0;
       } else {
         print({ progress: "resuming", id: record.id });
-        await boot(record, next);
+        await boot(record, next, secs);
       }
       print(view(next, requireLive(next)));
       return 0;
@@ -1096,7 +1146,9 @@ const TABLE: ReadonlyArray<Command> = [
     signedIn: true,
     run: async (invocation, signedIn) => {
       const record = sandboxRecord(invocation.args.sandbox);
-      requireLive(record);
+      const { state } = requireLive(record);
+      // A resume in flight writes the record as it boots, and a stop ends the lifetime anyway.
+      if (state !== "running" && state !== "stopped") throw transitioning(record.id, state);
       const ttl = integer(invocation.flags.get("ttl"), "--ttl", 1);
       if (signedIn.plan === "trial" && ttl > TRIAL_TTL_SECS) throw trialRefusal();
       const next: SandboxRecord = { ...record, ttlSeconds: ttl, archiveAfter: deadline(ttl) };
@@ -1196,8 +1248,6 @@ const TABLE: ReadonlyArray<Command> = [
         key.startsWith("FAKE_AUTH_") && value !== undefined ? ["-e", `${key}=${value}`] : [],
       );
       const started = Date.now();
-      // A `boat snapshot` run inside waits for its save, which a worker started meanwhile does.
-      const kick = setInterval(startWorker, 250);
       const ran = await execUnpaused(
         [
           "exec",
@@ -1214,7 +1264,7 @@ const TABLE: ReadonlyArray<Command> = [
           ...invocation.afterDoubleDash,
         ],
         { killAfterMs: (timeout + 10) * 1000 },
-      ).finally(() => clearInterval(kick));
+      );
       // coreutils `timeout` exits 124 when it had to stop the command.
       const timedOut =
         ran.status === null || (ran.status === 124 && Date.now() - started >= timeout * 1000);
@@ -1386,10 +1436,22 @@ function installedBoat(): string | undefined {
   }
 }
 
-if (process.argv[2] === WORKER_ARG) {
-  OUTBOX.work();
-} else if (process.argv[2] === FINISH_ARG) {
-  await finishTransition(process.argv[3] ?? "");
+/** What the fake runs detached; none is a Boat command. */
+const INTERNAL = new Map<string, (args: ReadonlyArray<string>) => void | Promise<void>>([
+  [WORKER_ARG, () => OUTBOX.work()],
+  [FINISH_ARG, ([id, token]) => finishStop(id, token)],
+  [WATCH_ARG, ([id]) => watchOutbox(id)],
+]);
+
+const internal = INTERNAL.get(process.argv[2] ?? "");
+if (internal) {
+  try {
+    await internal(process.argv.slice(3));
+  } catch (error) {
+    const code = error instanceof BoatError ? error.code : "internal";
+    console.error(JSON.stringify({ code, error: errorMessage(error) }));
+    process.exitCode = 1;
+  }
 } else {
   const argv = process.argv.slice(2);
   const result = await main(argv);
