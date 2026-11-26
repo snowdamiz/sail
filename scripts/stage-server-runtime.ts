@@ -78,40 +78,51 @@ export function serverRuntimePlatformKey(
   return `${nodePlatform}-${arch}`;
 }
 
-export const resolveServerRuntimeDependencies = Effect.fn("resolveServerRuntimeDependencies")(
-  function* (input: {
-    readonly repoRoot: string;
-    readonly platform: ServerRuntimePlatform;
-    readonly arch: ServerRuntimeArch;
-  }) {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const workspace = yield* decodeWorkspaceConfig(
-      yield* fs.readFileString(path.join(input.repoRoot, "pnpm-workspace.yaml")),
-    );
-    const catalog = workspace.catalog ?? {};
-    const serverDependencies = resolveCatalogDependencies(
-      serverPackageJson.dependencies,
-      catalog,
-      "apps/server",
-    );
-    const fffNodeVersion = serverDependencies["@ff-labs/fff-node"];
-    if (fffNodeVersion === undefined) {
-      return yield* new ServerRuntimeInputMissingError({
-        inputPath: "apps/server/package.json#dependencies['@ff-labs/fff-node']",
-        hint: "The runtime stages fff's platform binary from this version.",
-      });
-    }
-    return {
-      workspace,
-      catalog,
-      dependencies: {
-        ...selectCliRuntimeExternalDependencies(serverDependencies),
-        ...resolveFffNativeDependencies(input.platform, input.arch, fffNodeVersion),
-      },
-    };
-  },
-);
+export class ServerRuntimeOutputNotEmptyError extends Schema.TaggedError<ServerRuntimeOutputNotEmptyError>()(
+  "ServerRuntimeOutputNotEmptyError",
+  { outputDir: Schema.String },
+) {
+  override get message(): string {
+    return `${this.outputDir} is not empty. Staging writes and deletes package files there, so pass a new directory.`;
+  }
+}
+
+const readServerRuntimeInputs = Effect.fn("readServerRuntimeInputs")(function* (input: {
+  readonly repoRoot: string;
+  readonly platform: ServerRuntimePlatform;
+  readonly arch: ServerRuntimeArch;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const workspace = yield* decodeWorkspaceConfig(
+    yield* fs.readFileString(path.join(input.repoRoot, "pnpm-workspace.yaml")),
+  );
+  const catalog = workspace.catalog ?? {};
+  const serverDependencies = resolveCatalogDependencies(
+    serverPackageJson.dependencies,
+    catalog,
+    "apps/server",
+  );
+  const fffNodeVersion = serverDependencies["@ff-labs/fff-node"];
+  if (fffNodeVersion === undefined) {
+    return yield* new ServerRuntimeInputMissingError({
+      inputPath: "apps/server/package.json#dependencies['@ff-labs/fff-node']",
+      hint: "The runtime stages fff's platform binary from this version.",
+    });
+  }
+  return {
+    workspace,
+    catalog,
+    dependencies: {
+      ...selectCliRuntimeExternalDependencies(serverDependencies),
+      ...resolveFffNativeDependencies(input.platform, input.arch, fffNodeVersion),
+    },
+  };
+});
+
+export const resolveServerRuntimeDependencies = (
+  input: Parameters<typeof readServerRuntimeInputs>[0],
+) => readServerRuntimeInputs(input).pipe(Effect.map((inputs) => inputs.dependencies));
 
 /** Installed runtimes cannot rely on pnpm's store layout surviving archival or a container copy. */
 export const stageServerRuntime = Effect.fn("stageServerRuntime")(function* (input: {
@@ -123,7 +134,7 @@ export const stageServerRuntime = Effect.fn("stageServerRuntime")(function* (inp
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const { workspace, catalog, dependencies } = yield* resolveServerRuntimeDependencies(input);
+  const { workspace, catalog, dependencies } = yield* readServerRuntimeInputs(input);
   const patchedDependencies = createStagePatchedDependencies(
     workspace.patchedDependencies ?? {},
     dependencies,
@@ -219,26 +230,40 @@ const removeNestedBinDirectories = Effect.fn("stage-server-runtime.removeNestedB
   },
 );
 
+export const stageServerRuntimeToNewDirectory = Effect.fn("stageServerRuntimeToNewDirectory")(
+  function* (input: {
+    readonly outputDir: string;
+    readonly platform: ServerRuntimePlatform;
+    readonly arch: ServerRuntimeArch;
+  }) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const stageDir = path.resolve(input.outputDir);
+    const existing = yield* fs
+      .readDirectory(stageDir)
+      .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+    if (existing.length > 0) {
+      return yield* new ServerRuntimeOutputNotEmptyError({ outputDir: stageDir });
+    }
+    yield* stageServerRuntime({
+      repoRoot: yield* path.fromFileUrl(new URL("..", import.meta.url)),
+      stageDir,
+      platform: input.platform,
+      arch: input.arch,
+    });
+  },
+);
+
 const command = Command.make(
   "stage-server-runtime",
   {
     platform: Flag.Literals("platform", ServerRuntimePlatform.literals),
     arch: Flag.Literals("arch", ServerRuntimeArch.literals),
     outputDir: Flag.String("output-dir").pipe(
-      Flag.withDescription("Directory that receives node_modules with the runtime externals."),
+      Flag.withDescription("New or empty directory that receives node_modules."),
     ),
   },
-  (input) =>
-    Effect.gen(function* () {
-      const path = yield* Path.Path;
-      const repoRoot = yield* path.fromFileUrl(new URL("..", import.meta.url));
-      yield* stageServerRuntime({
-        repoRoot,
-        stageDir: path.resolve(input.outputDir),
-        platform: input.platform,
-        arch: input.arch,
-      });
-    }),
+  stageServerRuntimeToNewDirectory,
 ).pipe(
   Command.withDescription(
     "Install the server bundle's runtime externals into <output-dir>/node_modules for one platform.",

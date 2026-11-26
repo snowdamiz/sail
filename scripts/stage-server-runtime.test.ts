@@ -12,6 +12,7 @@ import {
   resolveServerRuntimeDependencies,
   serverRuntimePlatformKey,
   stageServerRuntime,
+  stageServerRuntimeToNewDirectory,
 } from "./stage-server-runtime.ts";
 
 const Manifest = Schema.Struct({
@@ -52,7 +53,7 @@ it.layer(NodeServices.layer)("stage-server-runtime", (it) => {
 
         yield* stageServerRuntime({ repoRoot, stageDir, platform, arch });
 
-        const { dependencies } = yield* resolveServerRuntimeDependencies({
+        const dependencies = yield* resolveServerRuntimeDependencies({
           repoRoot,
           platform,
           arch,
@@ -100,5 +101,24 @@ it.layer(NodeServices.layer)("stage-server-runtime", (it) => {
           [serverRuntimePlatformKey(platform, arch)],
         );
       }).pipe(Effect.scoped),
+  );
+  it.effect("refuses an output directory that already holds files", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const outputDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-server-runtime-" });
+      const manifest = path.join(outputDir, "package.json");
+      yield* fs.writeFileString(manifest, '{"name":"keep-me"}\n');
+
+      const error = yield* stageServerRuntimeToNewDirectory({
+        outputDir,
+        platform: "linux",
+        arch: "x64",
+      }).pipe(Effect.flip);
+
+      assert.equal(error._tag, "ServerRuntimeOutputNotEmptyError");
+      assert.equal(yield* fs.readFileString(manifest), '{"name":"keep-me"}\n');
+      assert.deepEqual(yield* fs.readDirectory(outputDir), ["package.json"]);
+    }).pipe(Effect.scoped),
   );
 });
