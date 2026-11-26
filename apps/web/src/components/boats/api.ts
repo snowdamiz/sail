@@ -115,10 +115,6 @@ export function useMachineDetails(
   return details?.id === id ? details : null;
 }
 
-/**
- * Machine `id`'s latest thread, looked up again when the machine's state changes. Pass null to skip
- * the lookup, which fetches the machine's whole shell. Null when it has none.
- */
 export function useLatestThread(id: string | null, machineState: MachineState): string | null {
   const [latest, setLatest] = useState<{ id: string; thread: string | null } | null>(null);
   useEffect(() => {

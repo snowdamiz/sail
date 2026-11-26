@@ -57,24 +57,22 @@ function Setup({
     attempt: number;
   } | null>(null);
   const [requesting, setRequesting] = useState(false);
-  const current =
+  const agreedSignIn =
     signIn !== null && state.setup === "signInBoat" && signIn.attempt === state.signInAttempt
       ? signIn
       : null;
-  const link = current === null ? null : classifyBoatLink(current.openUrl, onHost);
+  const link = agreedSignIn === null ? null : classifyBoatLink(agreedSignIn.openUrl, onHost);
   const pending: SignInPrompt | null =
-    current !== null && link?.kind === "browser"
-      ? { url: link.url, userCode: current.userCode }
+    agreedSignIn !== null && link?.kind === "browser"
+      ? { url: link.url, userCode: agreedSignIn.userCode }
       : null;
 
-  // A reply can come before or after the state that names its attempt, so the sign-in page opens
-  // once both agree. A reply for an attempt that already ended never opens a dead page.
-  const opened = useRef<number | null>(null);
+  const openedAttempt = useRef<number | null>(null);
   useEffect(() => {
-    if (current === null || opened.current === current.attempt) return;
-    opened.current = current.attempt;
-    follow(current.openUrl);
-  }, [current, follow]);
+    if (agreedSignIn === null || openedAttempt.current === agreedSignIn.attempt) return;
+    openedAttempt.current = agreedSignIn.attempt;
+    follow(agreedSignIn.openUrl);
+  }, [agreedSignIn, follow]);
 
   const act = (action: SetupAction) => {
     setRequesting(true);

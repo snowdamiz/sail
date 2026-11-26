@@ -14,6 +14,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpServer from "effect/http/HttpServer";
 import * as NetAddress from "effect/net/NetAddress";
@@ -35,6 +36,7 @@ const DAEMON_ENV = [
   "SAIL_DEEP_LINK_SCHEME",
   "T3CODE_HOME",
   "T3CODE_DEV_AUTH_TOKEN",
+  "Sail_Boat_Token",
   "FAKE_BOAT_HOME",
 ] as const;
 
@@ -134,6 +136,11 @@ const server = http.createServer((req, res) => {
     reply(res, status, payload);
   });
 });
+if (process.env.FAKE_BOATD_REFUSE_START) {
+  console.error("reaping sb-1: boat list failed: ${BOAT_OUTPUT}");
+  console.log(JSON.stringify({ ready: false, error: "another sail-boatd is using " + env.SAIL_BOAT_DATA_DIR }));
+  process.exit(1);
+}
 server.listen(0, "127.0.0.1", async () => {
   const cli = JSON.parse(execFileSync(env.SAIL_DESKTOP_CLI, ["environment", "list", "--json"], { encoding: "utf8" }));
   const stdin = require("node:fs").fstatSync(0);
@@ -318,6 +325,7 @@ describe("BoatSupervisor", () => {
           SAIL_BOAT_TOKEN: "ambient-token",
           T3CODE_HOME: "/live/install",
           T3CODE_DEV_AUTH_TOKEN: "server-secret",
+          Sail_Boat_Token: "mixed-case-token",
           SAIL_DEEP_LINK_SCHEME: "sail-dev",
           FAKE_BOAT_HOME: "/tmp/fake-boat-home",
         };
@@ -346,6 +354,7 @@ describe("BoatSupervisor", () => {
             SAIL_DEEP_LINK_SCHEME: "sail-dev",
             T3CODE_HOME: null,
             T3CODE_DEV_AUTH_TOKEN: null,
+            Sail_Boat_Token: null,
             FAKE_BOAT_HOME: "/tmp/fake-boat-home",
           },
           stdinIsPipe: true,
@@ -358,6 +367,57 @@ describe("BoatSupervisor", () => {
           },
         });
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live(
+    "says why sail-boatd could not start, and keeps what Boat printed in the daemon's log",
+    () =>
+      Effect.gen(function* () {
+        const { baseDir, supervisor } = yield* setup;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+
+        const refused = yield* Effect.gen(function* () {
+          const boats = yield* BoatSupervisor.BoatSupervisor;
+          return yield* boats.invoke({ command: "get_state" }).pipe(Effect.flip);
+        }).pipe(Effect.provide(supervisor(undefined, { FAKE_BOATD_REFUSE_START: "1" })));
+
+        assert.equal(
+          refused.message,
+          `sail-boatd could not start: another sail-boatd is using ${path.join(baseDir, "boat")}`,
+        );
+        assert.include(
+          yield* fileSystem.readFileString(
+            path.join(baseDir, "userdata", "logs", "sail-boatd.log"),
+          ),
+          BOAT_OUTPUT,
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("leaves a refused sail-boatd for Retry, even when state.json has a machine", () =>
+    Effect.gen(function* () {
+      const { baseDir, saveBoatState, supervisor } = yield* setup;
+      const path = yield* Path.Path;
+      yield* saveBoatState({ machines: [{ name: "m1" }] });
+
+      yield* Effect.gen(function* () {
+        const boats = yield* BoatSupervisor.BoatSupervisor;
+        yield* boats.invoke({ command: "get_state" }).pipe(Effect.flip);
+        yield* TestClock.adjust("10 minutes");
+
+        assert.deepEqual(
+          yield* boats.events.pipe(Stream.runHead),
+          Option.some<BoatEvent>({
+            _tag: "status",
+            status: {
+              phase: "error",
+              error: `sail-boatd could not start: another sail-boatd is using ${path.join(baseDir, "boat")}`,
+            },
+          }),
+        );
+      }).pipe(Effect.provide(supervisor(undefined, { FAKE_BOATD_REFUSE_START: "1" })));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.live("starts sail-boatd at boot, with no Boats call, when state.json has a machine", () =>
@@ -547,7 +607,7 @@ describe("BoatSupervisor", () => {
           );
           assert.isFalse(
             logged.some((line) => line.includes(BOAT_OUTPUT)),
-            "Boat output after the handshake never reaches the server log or its trace",
+            "no Boat output reaches the server log",
           );
           const joinedDuringRestart = yield* boats.events.pipe(Stream.take(2), Stream.runCollect);
           assert.deepEqual(
@@ -559,7 +619,7 @@ describe("BoatSupervisor", () => {
           const second = yield* Queue.take(reports);
           assert.notEqual(second.pid, first.pid);
           assert.deepEqual(restarted.data, { machines: [{ name: "m1" }], pid: second.pid });
-        }).pipe(Effect.provide(supervisor()), Effect.provide(captureLogs));
+        }).pipe(Effect.provide(Layer.merge(supervisor(), captureLogs)));
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
@@ -578,6 +638,7 @@ describe("BoatSupervisor", () => {
       yield* saveBoatState({ machines: [{ name: "m1" }] });
 
       yield* Effect.gen(function* () {
+        yield* untilReady(yield* BoatSupervisor.BoatSupervisor);
         const first = yield* Queue.take(reports);
         process.kill(first.pid, "SIGKILL");
 

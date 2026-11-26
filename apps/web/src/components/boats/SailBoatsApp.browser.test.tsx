@@ -169,6 +169,7 @@ it("shows another tab's sign-in as busy, with no link or code until that tab ask
   await expect.element(screen.getByText("WXYZ-1234")).toBeVisible();
   await expect.element(screen.getByRole("button", { name: "Waiting for sign-in" })).toBeDisabled();
   expect(state.invoked).toEqual([{ command: "setup_action", args: { action: "signInBoat" } }]);
+  expect(state.openExternal).toHaveBeenCalledExactlyOnceWith(url);
 });
 
 it("drops a sign-in page once its wait ends, so a later attempt never shows an old code", async () => {
