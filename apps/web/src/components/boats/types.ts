@@ -66,7 +66,7 @@ export type McpClient = "claudeCode" | "codex";
 export interface UiState {
   setup: Setup;
   setupBusy: boolean;
-  /** the Boat sign-in waiting now; its page and code went only to the tab that started it */
+  /** the Boat sign-in waiting now; its page and code go only to tabs that ask for them */
   signInAttempt: number | null;
   account: { identifier: string | null; plan: string | null } | null;
   machines: MachineView[];

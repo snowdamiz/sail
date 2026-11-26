@@ -62,7 +62,7 @@ export function MachineDetails({
   const d = useMachineDetails(m.id, version, onError);
   const busy = !!pending;
   const gone = m.state === "missing";
-  const latestThread = useLatestThread(m.id, m.state);
+  const latestThread = useLatestThread(m.id, version);
   const access = useBoatAccess();
   const primary = offered(
     access,

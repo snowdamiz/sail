@@ -203,6 +203,7 @@ it("never shows a sign-in page whose attempt already ended, even when its reply 
   await userEvent.click(screen.getByRole("button", { name: "Show sign-in page" }));
 
   expect(state.invoked).toEqual([{ command: "setup_action", args: { action: "signInBoat" } }]);
+  await expect.element(screen.getByRole("button", { name: "Show sign-in page" })).toBeEnabled();
   await expect.element(screen.getByText("OLD-CODE")).not.toBeInTheDocument();
 });
 
