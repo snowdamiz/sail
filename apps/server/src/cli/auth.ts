@@ -4,6 +4,7 @@ import {
   AuthSessionId,
   AuthStandardClientScopes,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -30,8 +31,10 @@ import {
   DurationFromString,
   HttpUrl,
   readRunningServer,
+  recordedPublicUrl,
   resolveCliAuthConfig,
 } from "./config.ts";
+import { resolveHostCliCommand } from "./invocation.ts";
 import * as RunningServer from "./runningServer.ts";
 import { isServerOwnershipHeld } from "../serverOwnership.ts";
 
@@ -104,7 +107,9 @@ const baseUrlFlag = Flag.String("base-url").pipe(
 );
 
 const requireRunningFlag = Flag.Boolean("require-running").pipe(
-  Flag.withDescription("Mint nothing unless a running server owns this T3 Code home."),
+  Flag.withDescription(
+    "Mint nothing unless the runtime record names a live server and this T3 Code home's ownership lock is held both before the token is written and after it is stored.",
+  ),
   Flag.withDefault(false),
 );
 
@@ -116,6 +121,9 @@ const tokenOnlyFlag = Flag.Boolean("token-only").pipe(
 const notMinted = (reason: string, retry: string) =>
   new CliError.UserError({ cause: `${reason}, so no pairing token was minted. ${retry}` });
 
+// Expiry is stored as ISO text and compared as text, so a year past 9999 sorts before today.
+const LATEST_EXPIRY_MS = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
+
 export const mintForRunningServer = Effect.fn("auth.mintForRunningServer")(function* (
   input: Parameters<EnvironmentAuth.EnvironmentAuth["Service"]["createPairingLink"]>[0],
 ) {
@@ -125,11 +133,17 @@ export const mintForRunningServer = Effect.fn("auth.mintForRunningServer")(funct
   // The OS releases the lock when its holder exits, even on SIGKILL.
   if (isServerOwnershipHeld(serverRuntimeStatePath)) return issued;
   yield* environmentAuth.revokePairingLink(issued.id).pipe(
-    Effect.mapError(
-      () =>
-        new CliError.UserError({
-          cause: `The T3 Code server for ${baseDir} stopped before the pairing token was ready, and revoking it failed. It was never printed; to remove it, run \`t3 auth pairing revoke ${issued.id}\`.`,
-        }),
+    Effect.catch(() =>
+      Effect.gen(function* () {
+        const { command } = yield* resolveHostCliCommand("auth pairing revoke", [
+          "--base-dir",
+          baseDir,
+          issued.id,
+        ]);
+        return yield* new CliError.UserError({
+          cause: `The T3 Code server for ${baseDir} stopped before the pairing token was ready, and revoking it failed. It was never printed; to remove it, run \`${command}\`.`,
+        });
+      }),
     ),
   );
   return yield* new CliError.UserError({
@@ -149,16 +163,14 @@ const pairingCreateCommand = Command.make("create", {
   Command.withDescription("Issue a new client pairing token."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      if (
-        Option.exists(
-          flags.ttl,
-          (ttl) => Duration.isLessThan(ttl, Duration.seconds(1)) || !Duration.isFinite(ttl),
-        )
-      ) {
-        return yield* notMinted(
-          "--ttl must be a finite duration of at least 1 second",
-          "Pass a duration such as 5m or 1h.",
-        );
+      if (Option.isSome(flags.ttl)) {
+        const ttlMs = Duration.toMillis(flags.ttl.value);
+        if (ttlMs < 1000 || (yield* Clock.currentTimeMillis) + ttlMs > LATEST_EXPIRY_MS) {
+          return yield* notMinted(
+            "--ttl must be at least 1 second and expire before the year 10000",
+            "Pass a duration such as 5m or 1h.",
+          );
+        }
       }
       const options = { quietLogs: flags.json };
       const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel, options);
@@ -179,6 +191,12 @@ const pairingCreateCommand = Command.make("create", {
           );
         }
       }
+      const recordedUrl = Option.getOrUndefined(running)?.publicUrl;
+      const baseUrl = Option.isSome(flags.baseUrl)
+        ? flags.baseUrl.value.href
+        : recordedUrl === undefined
+          ? undefined
+          : yield* recordedPublicUrl(recordedUrl, config.baseDir);
       const label = Option.getOrElse(flags.label, () => "").trim();
       const request = {
         scopes: flags.scopes,
@@ -204,10 +222,6 @@ const pairingCreateCommand = Command.make("create", {
             ),
         }),
       );
-      const baseUrl = Option.match(flags.baseUrl, {
-        onSome: (url) => url.href,
-        onNone: () => Option.getOrUndefined(running)?.publicUrl,
-      });
       yield* Console.log(
         formatIssuedPairingCredential(issued, {
           json: flags.json,

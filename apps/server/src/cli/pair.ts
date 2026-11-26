@@ -46,7 +46,7 @@ import {
   resolveHeadlessConnectionString,
 } from "../startupAccess.ts";
 import { authScopesFlag } from "./authScopes.ts";
-import { baseDirFlag, DurationFromString, t3HomeConfig } from "./config.ts";
+import { baseDirFlag, DurationFromString, recordedPublicUrl, t3HomeConfig } from "./config.ts";
 import { hostShellWord, resolveHostCliCommand } from "./invocation.ts";
 
 const WELL_KNOWN_ENVIRONMENT_PATH = "/.well-known/t3/environment";
@@ -579,7 +579,7 @@ export const pairCommand = Command.make("pair", {
         pairingBaseUrl = resolved.baseUrl;
         notes.push(...resolved.notes);
       } else if (target.state.publicUrl !== undefined) {
-        pairingBaseUrl = target.state.publicUrl;
+        pairingBaseUrl = yield* recordedPublicUrl(target.state.publicUrl, target.baseDir);
       } else {
         pairingBaseUrl = resolveDirectPairingBaseUrl(target.state, yield* HostProcess.Platform);
         if (isLoopbackHost(new URL(pairingBaseUrl).hostname)) {

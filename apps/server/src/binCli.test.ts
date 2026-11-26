@@ -335,17 +335,38 @@ it.live(
         const longLived = JSON.parse(year.stdout);
         yield* assertExpiresIn(longLived.expiresAt, 400 * 24 * 60 * 60_000);
 
-        for (const ttl of ["0s", "500ms", "Infinity"]) {
-          const refused = yield* create(ttl);
-          assert.notStrictEqual(refused.exitCode, 0, ttl);
-          assert.strictEqual(refused.stdout, "", ttl);
-          assert.match(refused.stderr, /--ttl must be a finite duration of at least 1 second/, ttl);
-        }
-
         assert.sameMembers(yield* listPairingLinkIds(home), [minted.id, longLived.id]);
         assert.deepStrictEqual(requests, []);
       }),
     ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live("pairing create refuses a --ttl under 1 second or past the year 9999, in both forms", () =>
+  Effect.gen(function* () {
+    const home = yield* makeHome;
+    const cases = ["0s", "500ms", "Infinity", "3000000d", "100000000d"].flatMap((ttl) => [
+      ["--ttl", ttl, "--require-running"],
+      ["--ttl", ttl],
+    ]);
+    yield* Effect.forEach(
+      cases,
+      (args) =>
+        Effect.gen(function* () {
+          const refused = yield* runCli(["auth", "pairing", "create", "--json", ...args], {
+            home,
+          });
+          assert.notStrictEqual(refused.exitCode, 0, args.join(" "));
+          assert.strictEqual(refused.stdout, "", args.join(" "));
+          assert.match(
+            refused.stderr,
+            /--ttl must be at least 1 second and expire before the year 10000/,
+            args.join(" "),
+          );
+        }),
+      { concurrency: "unbounded" },
+    );
+    assert.deepStrictEqual(yield* listPairingLinkIds(home), []);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 const expectNothingMinted = (home: string, env?: Record<string, string>) =>
@@ -409,6 +430,30 @@ it.live(
         assert.deepStrictEqual(requests, []);
       }),
     ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live("pairing commands mint nothing when the recorded public URL is malformed", () =>
+  withOwnedServerHome((home) =>
+    Effect.gen(function* () {
+      const statePath = `${home}/userdata/server-runtime.json`;
+      const fs = yield* FileSystem.FileSystem;
+      const state = JSON.parse(yield* fs.readFileString(statePath));
+      yield* fs.writeFileString(statePath, JSON.stringify({ ...state, publicUrl: "not-a-url" }));
+
+      for (const args of [
+        ["auth", "pairing", "create", "--json", "--require-running"],
+        ["auth", "pairing", "create", "--json"],
+        ["pair"],
+      ]) {
+        const refused = yield* runCli(args, { home });
+        assert.notStrictEqual(refused.exitCode, 0, args.join(" "));
+        assert.strictEqual(refused.stdout, "", args.join(" "));
+        assert.match(refused.stderr, /invalid public URL/, args.join(" "));
+        assert.match(refused.stderr, /no pairing token was minted/, args.join(" "));
+      }
+      assert.deepStrictEqual(yield* listPairingLinkIds(home), []);
+    }),
+  ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.live(

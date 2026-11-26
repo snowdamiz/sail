@@ -79,9 +79,10 @@ it.effect("names the unprinted link when it cannot be revoked after the server s
       Effect.flip,
     );
 
+    const { baseDir } = yield* ServerConfig.ServerConfig;
     const [unrevoked] = yield* activeLinkIds;
     assert.isDefined(unrevoked);
     assert.instanceOf(error, CliError.UserError);
-    assert.include(error.message, `t3 auth pairing revoke ${unrevoked}`);
+    assert.include(error.message, `auth pairing revoke --base-dir ${baseDir} ${unrevoked}`);
   }).pipe(Effect.provide(layer)),
 );

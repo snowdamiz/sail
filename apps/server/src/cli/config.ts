@@ -101,6 +101,19 @@ const PublicUrl = HttpUrl.pipe(
     }),
   ),
 );
+const decodePublicUrl = Schema.decodeEffect(PublicUrl);
+/** Checked before minting, so a corrupt record cannot leave a token that was never printed. */
+export const recordedPublicUrl = (publicUrl: string, baseDir: string) =>
+  decodePublicUrl(publicUrl).pipe(
+    Effect.map((url) => url.origin),
+    Effect.mapError(
+      () =>
+        new CliError.UserError({
+          cause: `The runtime record of the T3 Code server for ${baseDir} has an invalid public URL (${publicUrl}), so no pairing token was minted. Restart the server with a valid --public-url, then retry.`,
+        }),
+    ),
+  );
+
 const publicUrlFlag = Flag.String("public-url").pipe(
   Flag.withSchema(PublicUrl),
   Flag.withDescription(
