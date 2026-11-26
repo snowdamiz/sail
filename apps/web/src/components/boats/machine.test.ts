@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 import { classifyBoatLink, errorText } from "./reply";
 import {
+  ACTIONS,
   cleanName,
   duration,
   machineKey,
   menuActions,
-  openIn,
   primaryAction,
   stateTag,
   suggestName,
@@ -15,6 +15,7 @@ import type { MachineView, Size } from "./types";
 function makeMachine(overrides: Partial<MachineView> = {}): MachineView {
   return {
     id: "m-1",
+    environmentId: null,
     name: "harbor",
     state: "idle",
     detail: "",
@@ -46,12 +47,12 @@ describe("Sail Boats helpers", () => {
     const unpaired = makeMachine({ state: "idle", paired: false });
     expect(machineKey(unpaired)).toBe("m-1");
     expect(stateTag(unpaired.state)).toBe("idle");
-    expect(primaryAction(unpaired)?.label).toBe("Add to Sail");
-    expect(openIn("t-1").label).toBe("Open last thread in Sail");
+    expect(primaryAction(unpaired, false)?.label).toBe("Add to Sail");
+    expect(ACTIONS.open.label).toBe("Open last thread in Sail");
 
     const paired = makeMachine({ state: "asleep", paired: true });
-    expect(primaryAction(paired)).toBeNull();
-    const menu = menuActions(paired, SIZES);
+    expect(primaryAction(paired, true)).toBeNull();
+    const menu = menuActions(paired, SIZES, true);
     expect(menu.some((item) => "cmd" in item && item.cmd === "wake_machine")).toBe(true);
     expect(menu.some((item) => "cmd" in item && item.label === "Add to Sail again")).toBe(true);
     expect(menu.some((item) => "cmd" in item && item.label === "Resize to large")).toBe(true);

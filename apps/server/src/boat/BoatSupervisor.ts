@@ -47,9 +47,11 @@ const DAEMON_LOG_BACKUPS = 2;
 const RESTART_DELAY_CAP_SECONDS = 60;
 const STAYED_UP = Duration.minutes(1);
 const STATE_READ_TIMEOUT = Duration.seconds(1);
+const BOAT_DAEMON_PROTOCOL_VERSION = 1;
 
 const Handshake = Schema.Struct({
   ready: Schema.Literal(true),
+  protocolVersion: Schema.optional(Schema.Unknown),
   port: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65_535 })),
   token: Schema.NonEmptyString,
 });
@@ -434,6 +436,11 @@ const make = Effect.gen(function* () {
           ),
       }),
     );
+    if (greeting.protocolVersion !== BOAT_DAEMON_PROTOCOL_VERSION) {
+      return yield* new BoatError({
+        message: `sail-boatd uses an incompatible protocol. Install a matching sail-boatd (protocol version ${BOAT_DAEMON_PROTOCOL_VERSION}) and retry.`,
+      });
+    }
 
     const daemon: Daemon = { baseUrl: `http://127.0.0.1:${greeting.port}`, token: greeting.token };
     // Runs before the spawner's own release, which sends SIGTERM and then SIGKILL.

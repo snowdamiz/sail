@@ -28,6 +28,7 @@ use tokio::task::JoinHandle;
 
 const COSTS_EVERY: Duration = Duration::from_secs(300);
 const EVENT_CHANNEL_CAPACITY: usize = 64;
+const BOAT_DAEMON_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Clone, Debug)]
 pub struct DaemonConfig {
@@ -71,6 +72,7 @@ pub fn generate_hex_token() -> String {
 #[serde(rename_all = "camelCase")]
 pub struct Handshake {
     pub ready: bool,
+    pub protocol_version: u32,
     pub port: u16,
     pub token: String,
     pub mcp_port: u16,
@@ -441,7 +443,11 @@ impl Daemon {
                 let args: Args = parse_args(name, &body)?;
                 let app = self.app()?;
                 let machine = app.machine(&args.id).map_err(err)?;
-                Ok(Reply::open(app.open_in_t3(&machine, args.thread.as_deref())))
+                let url = match args.thread {
+                    Some(thread) => Some(t3desktop::thread_link(&machine.record().environment_id, &thread)),
+                    None => app.open_in_t3(&machine, None),
+                };
+                Ok(Reply::open(url))
             }
             "pair_machine" => {
                 #[derive(Deserialize)]
@@ -862,7 +868,13 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon> {
     };
 
     let daemon = Daemon::new(config.token.clone(), config.data_dir, mcp_port);
-    let handshake = Handshake { ready: true, port: control_port, token: config.token, mcp_port };
+    let handshake = Handshake {
+        ready: true,
+        protocol_version: BOAT_DAEMON_PROTOCOL_VERSION,
+        port: control_port,
+        token: config.token,
+        mcp_port,
+    };
 
     let control_shutdown = wait_shutdown(daemon.subscribe_shutdown());
     let control_router = router(daemon.clone());
@@ -1110,6 +1122,7 @@ mod tests {
     #[tokio::test]
     async fn state_returns_full_ui_contract_payload() {
         let (running, dir) = spawn_test_daemon().await;
+        assert_eq!(serde_json::to_value(&running.handshake).unwrap()["protocolVersion"], 1);
         let port = running.handshake.port;
         let res = reqwest::Client::new()
             .get(format!("http://127.0.0.1:{port}/api/state"))
@@ -1177,13 +1190,21 @@ mod tests {
         let code = pairing_code(&paired["openUrl"], local_port);
         assert!(machine.auth.redeem_pairing_code(&code), "the link carries the machine's live pairing code");
 
-        let unpaired = command(port, "open_machine", json!({ "id": "dev", "thread": "thread-1" })).await;
+        let unpaired = command(port, "open_machine", json!({ "id": "dev" })).await;
         let code = pairing_code(&unpaired["openUrl"], local_port);
         assert!(machine.auth.redeem_pairing_code(&code), "an unpaired machine opens its pair link");
 
-        machine.update_record(|r| r.client_tokens.push("sail-client".into()));
         let thread = command(port, "open_machine", json!({ "id": "dev", "thread": "thread-1" })).await;
         assert_eq!(thread["openUrl"], format!("{}://threads/env-dev/thread-1", t3desktop::deep_link_scheme()));
+        machine.update_record(|r| r.client_tokens.push("sail-client".into()));
+
+        let state = command(port, "get_state", json!({})).await;
+        assert_eq!(state["data"]["machines"][0]["environmentId"], "env-dev");
+        assert_eq!(state["data"]["machines"][0]["paired"], true);
+        let second_client = command(port, "pair_machine", json!({ "id": "dev" })).await;
+        let code = pairing_code(&second_client["openUrl"], local_port);
+        assert!(machine.auth.redeem_pairing_code(&code), "a second client gets its own pairing link");
+
         let front = command(port, "open_machine", json!({ "id": "dev" })).await;
         assert_eq!(front, json!({ "ok": true, "data": null }), "no thread: the caller is already in front");
 

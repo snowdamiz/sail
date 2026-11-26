@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { offered, useBoatAccess } from "../access";
-import { useMachineDetails, useLatestThread } from "../api";
+import { useMachineDetails } from "../api";
 import type { MachineDetails as Details, LocalProject, MachineView, Size } from "../types";
 import {
   ACTIONS,
@@ -12,7 +12,6 @@ import {
   machineKey,
   money,
   powerAction,
-  openIn,
   primaryAction,
   resizeHint,
   resizeTo,
@@ -63,14 +62,10 @@ export function MachineDetails({
   const busy = !!pending;
   const gone = m.state === "missing";
   const access = useBoatAccess();
-  const first = primaryAction(m);
-  const latestThread = useLatestThread(
-    first === null && m.paired && access.onHost ? m.id : null,
-    m.state,
-  );
-  const primary = offered(
+  const paired = access.isPaired(m.environmentId);
+  const primary = offered<Action>(
     access,
-    first ?? (m.paired ? (latestThread ? openIn(latestThread) : null) : ACTIONS.pair),
+    primaryAction(m, paired) ?? (paired ? ACTIONS.open : ACTIONS.pair),
   );
   const [primaryArmed, armPrimary] = useArmed();
 
@@ -128,9 +123,7 @@ export function MachineDetails({
             ) : (
               <>
                 {primary.label}
-                {primary.cmd === "open_machine" && !primary.solid ? (
-                  <Icon name="open" size={10} />
-                ) : null}
+                {primary.cmd === "open_machine" ? <Icon name="open" size={10} /> : null}
               </>
             )}
           </button>

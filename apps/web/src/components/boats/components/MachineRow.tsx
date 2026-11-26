@@ -43,9 +43,10 @@ export function MachineRow({
 }: Props) {
   const key = machineKey(m);
   const access = useBoatAccess();
-  const primary = offered(access, primaryAction(m));
+  const paired = access.isPaired(m.environmentId);
+  const primary = offered(access, primaryAction(m, paired));
   const detail = useDetail(m);
-  const extra = menuActions(m, sizes).filter((a) => "kind" in a || offered(access, a));
+  const extra = menuActions(m, sizes, paired).filter((a) => "kind" in a || offered(access, a));
   const [armed, arm] = useArmed(); // two-step confirm for the primary "Remove"
   // "Add a project…" picks from Sail's projects in the details view
   const menuAction = (a: MenuItem) => ("kind" in a ? onOpen?.(true) : onAction(a));
@@ -126,7 +127,7 @@ export function MachineRow({
             </button>
           ))}
         </div>
-      ) : needsProject(m) && onOpen ? (
+      ) : needsProject(m, paired) && onOpen ? (
         <div className="row-note">
           <span className="row-note-text">No projects yet</span>
           <button

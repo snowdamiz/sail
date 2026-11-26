@@ -64,6 +64,7 @@ pub enum MachineState {
 #[serde(rename_all = "camelCase")]
 pub struct MachineView {
     pub id: String,
+    pub environment_id: Option<String>,
     pub name: String,
     pub size: String,
     pub state: MachineState,
@@ -601,6 +602,7 @@ impl App {
         for c in self.creating.lock().unwrap().iter() {
             views.push(MachineView {
                 id: String::new(),
+                environment_id: None,
                 name: c.name.clone(),
                 size: String::new(),
                 state: MachineState::Creating,
@@ -817,6 +819,7 @@ fn view(m: &MachineRuntime) -> MachineView {
     let running_watchdog = watchdog.as_ref().filter(|_| m.power() == Power::Running);
     MachineView {
         id: r.id.clone(),
+        environment_id: Some(r.environment_id),
         name: r.name.clone(),
         size: r.size.clone(),
         state,

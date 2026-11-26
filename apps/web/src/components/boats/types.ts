@@ -1,4 +1,4 @@
-import type { BoatCommand } from "@t3tools/contracts";
+import type { BoatCommand, EnvironmentId } from "@t3tools/contracts";
 
 // Mirrors docs/ui-contract.md exactly.
 
@@ -17,6 +17,7 @@ export type MachineState =
 
 export interface MachineView {
   id: string;
+  environmentId: EnvironmentId | null;
   name: string;
   size: string;
   state: MachineState;

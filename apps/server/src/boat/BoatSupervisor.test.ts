@@ -62,7 +62,11 @@ type Report =
   | { readonly event: "shutdown"; readonly pid: number }
   | { readonly event: "add_project"; readonly pid: number; readonly answered: boolean | null };
 
-const fakeDaemonSource = `#!${process.execPath}
+const fakeDaemonSource = (
+  protocolVersion: number | null,
+  requestMarkerPath: string,
+) => `#!${process.execPath}
+const fs = require("node:fs");
 const http = require("node:http");
 const { execFileSync } = require("node:child_process");
 const token = "fake-token";
@@ -94,6 +98,7 @@ const commands = {
   },
 };
 const server = http.createServer((req, res) => {
+  if (${protocolVersion !== 1}) fs.writeFileSync(${JSON.stringify(requestMarkerPath)}, req.url);
   if (req.headers.authorization !== "Bearer " + token) return reply(res, 401, { ok: false, error: "unauthorized" });
   if (req.method === "GET" && req.url === "/api/events") {
     res.writeHead(200, { "content-type": "text/event-stream" });
@@ -144,11 +149,11 @@ if (process.env.FAKE_BOATD_REFUSE_START) {
 }
 server.listen(0, "127.0.0.1", async () => {
   const cli = JSON.parse(execFileSync(env.SAIL_DESKTOP_CLI, ["environment", "list", "--json"], { encoding: "utf8" }));
-  const stdin = require("node:fs").fstatSync(0);
+  const stdin = fs.fstatSync(0);
   const stdinIsPipe = stdin.isFIFO() || stdin.isSocket();
   await report({ event: "started", env, cli, stdinIsPipe });
   console.log("sail-boatd starting");
-  console.log(JSON.stringify({ ready: true, port: server.address().port, token, mcpPort: 0 }));
+  console.log(JSON.stringify({ ready: true, protocolVersion: ${protocolVersion ?? "undefined"}, port: server.address().port, token, mcpPort: 0 }));
   console.error("waking m1: boat resume failed: ${BOAT_OUTPUT}");
 });
 `;
@@ -188,14 +193,18 @@ const reportListener = Effect.gen(function* () {
   return { reports, port };
 });
 
-const setup = Effect.gen(function* () {
+const setupWithProtocolVersion = Effect.fnUntraced(function* (protocolVersion: number | null) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-boat-supervisor-" });
   const fixturesDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-boat-fixtures-" });
   const daemonPath = path.join(fixturesDir, "sail-boatd");
   const serverEntry = path.join(fixturesDir, "server-entry.cjs");
-  yield* fileSystem.writeFileString(daemonPath, fakeDaemonSource);
+  const requestMarkerPath = path.join(fixturesDir, "received-request");
+  yield* fileSystem.writeFileString(
+    daemonPath,
+    fakeDaemonSource(protocolVersion, requestMarkerPath),
+  );
   yield* fileSystem.chmod(daemonPath, 0o755);
   yield* fileSystem.writeFileString(serverEntry, fakeServerEntrySource);
   const { reports, port } = yield* reportListener;
@@ -253,8 +262,10 @@ const setup = Effect.gen(function* () {
       ),
     );
 
-  return { baseDir, port, reports, saveBoatState, supervisor };
+  return { baseDir, port, reports, requestMarkerPath, saveBoatState, supervisor };
 });
+
+const setup = setupWithProtocolVersion(1);
 
 const isReady = (event: BoatEvent) => event._tag === "status" && event.status.phase === "ready";
 
@@ -276,6 +287,45 @@ const isAlive = (pid: number) => {
 };
 
 describe("BoatSupervisor", () => {
+  it.live.each([null, 2])(
+    "refuses sail-boatd with protocol version %s before publishing Boats state",
+    (version) =>
+      Effect.gen(function* () {
+        const { reports, requestMarkerPath, supervisor } = yield* setupWithProtocolVersion(version);
+        const fileSystem = yield* FileSystem.FileSystem;
+
+        yield* Effect.gen(function* () {
+          const boats = yield* BoatSupervisor.BoatSupervisor;
+          const events = yield* boats.events.pipe(
+            Stream.takeUntil(
+              (event) =>
+                isReady(event) || (event._tag === "status" && event.status.phase === "error"),
+            ),
+            Stream.runCollect,
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          const result = yield* boats.invoke({ command: "get_state" }).pipe(Effect.result);
+
+          assert.equal(result._tag, "Failure", "an incompatible daemon cannot serve commands");
+          assert.deepEqual(yield* Fiber.join(events), [
+            { _tag: "status", status: { phase: "stopped", error: null } },
+            { _tag: "status", status: { phase: "starting", error: null } },
+            {
+              _tag: "status",
+              status: {
+                phase: "error",
+                error:
+                  "sail-boatd uses an incompatible protocol. Install a matching sail-boatd (protocol version 1) and retry.",
+              },
+            },
+          ]);
+          const started = yield* Queue.take(reports);
+          assert.isFalse(isAlive(started.pid), "the refused daemon has been stopped");
+          assert.isFalse(yield* fileSystem.exists(requestMarkerPath), "no daemon HTTP request");
+        }).pipe(Effect.provide(supervisor()));
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.live(
     "starts sail-boatd on first use, maps its replies, and shuts it down with the server",
     () =>

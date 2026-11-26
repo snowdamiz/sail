@@ -1,12 +1,24 @@
 import { RegistryContext } from "@effect/atom-react";
+import {
+  BearerConnectionTarget,
+  type ConnectionCatalogEntry,
+} from "@t3tools/client-runtime/connection";
 import type { BoatsView } from "@t3tools/client-runtime/state/boats";
-import { BOAT_COMMAND_SCOPES, type BoatCommand, type BoatInvokeInput } from "@t3tools/contracts";
+import type { EnvironmentCatalogState } from "@t3tools/client-runtime/state/connections";
+import {
+  BOAT_COMMAND_SCOPES,
+  EnvironmentId,
+  type BoatCommand,
+  type BoatInvokeInput,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
 import { act, render } from "../../../test/render";
+import { environmentCatalog } from "../../connection/catalog";
 import type { MachineView, UiState } from "./types";
 
 const state = vi.hoisted(() => ({
@@ -37,6 +49,32 @@ vi.mock(import("../../state/boats"), () => ({
 vi.mock(import("../../state/clientHostEnvironment"), () => ({
   clientHostEnvironmentAtom: (() => state.onHost) as never,
 }));
+vi.mock(import("../../connection/catalog"), async (original) => {
+  const { environmentCatalog } = await original();
+  const { Atom } = await import("effect/reactivity");
+  const catalogValueAtom = Atom.make<EnvironmentCatalogState>({
+    isReady: true,
+    entries: new Map(),
+  });
+  return {
+    environmentCatalog: {
+      ...environmentCatalog,
+      catalogValueAtom,
+      setEnabled: {
+        ...environmentCatalog.setEnabled,
+        run: (registry, { environmentId, enabled }) =>
+          Effect.sync(() => {
+            const catalog = registry.get(catalogValueAtom);
+            const entry = catalog.entries.get(environmentId);
+            if (entry === undefined)
+              throw new Error("Environment not registered in the test catalog");
+            const entries = new Map(catalog.entries).set(environmentId, { ...entry, enabled });
+            registry.set(catalogValueAtom, { ...catalog, entries });
+          }),
+      },
+    },
+  };
+});
 vi.mock(import("../../state/environments"), async (original) => ({
   ...(await original()),
   useLocalEnvironmentId: (() => state.environmentId) as never,
@@ -53,10 +91,12 @@ const ALL_COMMANDS = Object.keys(BOAT_COMMAND_SCOPES) as BoatCommand[];
 const READ_COMMANDS = ALL_COMMANDS.filter(
   (command) => BOAT_COMMAND_SCOPES[command] === "orchestration:read",
 );
+const DORY_ENVIRONMENT = EnvironmentId.make("dory-env");
 
 function machine(overrides: Partial<MachineView>): MachineView {
   return {
     id: "m-1",
+    environmentId: null,
     name: "skiff",
     size: "default",
     state: "idle",
@@ -91,8 +131,24 @@ function setup(input: {
   readonly state: UiState;
   readonly allowed?: readonly BoatCommand[];
   readonly onHost?: boolean;
+  readonly machineEnvironment?: EnvironmentId;
+  readonly machineEnabled?: boolean;
 }) {
-  state.registry = AtomRegistry.make();
+  const entries = new Map<EnvironmentId, ConnectionCatalogEntry>();
+  if (input.machineEnvironment !== undefined) {
+    entries.set(input.machineEnvironment, {
+      target: new BearerConnectionTarget({
+        environmentId: input.machineEnvironment,
+        connectionId: "machine-connection",
+        label: "Boat machine",
+      }),
+      profile: Option.none(),
+      enabled: input.machineEnabled ?? true,
+    });
+  }
+  state.registry = AtomRegistry.make({
+    initialValues: [[environmentCatalog.catalogValueAtom, { isReady: true, entries }]],
+  });
   const view: BoatsView = { status: { phase: "ready", error: null }, state: input.state };
   state.view = Atom.make<AsyncResult.AsyncResult<BoatsView>>(AsyncResult.success(view));
   state.allowed = Atom.make<ReadonlySet<string>>(new Set(input.allowed ?? ALL_COMMANDS));
@@ -252,10 +308,11 @@ it("hides Open and Add to Sail for a client that is not on the server's host", a
     state: uiState({
       machines: [
         machine({ id: "m-1", name: "skiff", paired: false }),
-        machine({ id: "m-2", name: "dory", paired: true }),
+        machine({ id: "m-2", name: "dory", paired: true, environmentId: DORY_ENVIRONMENT }),
       ],
     }),
     onHost: false,
+    machineEnvironment: DORY_ENVIRONMENT,
   });
   state.replies.get_machine_details = {
     data: {
@@ -306,8 +363,16 @@ it("restarts a failed daemon from Retry without reloading the page", async () =>
   await vi.waitFor(() => expect(state.invoked).toEqual([{ command: "get_state" }]));
 });
 
-it("offers Open in Sail on a paired machine only once its latest thread is known", async () => {
-  setup({ state: uiState({ machines: [machine({ id: "m-2", name: "dory", paired: true })] }) });
+it("opens the newer thread even when the machine stays working", async () => {
+  const working = machine({
+    id: "m-2",
+    name: "dory",
+    paired: true,
+    state: "working",
+    detail: "Working",
+    environmentId: DORY_ENVIRONMENT,
+  });
+  setup({ state: uiState({ machines: [working] }), machineEnvironment: DORY_ENVIRONMENT });
   state.replies.get_machine_details = {
     data: {
       id: "m-2",
@@ -320,25 +385,17 @@ it("offers Open in Sail on a paired machine only once its latest thread is known
       connect: false,
     },
   };
-  state.replies.latest_thread = { data: null };
+  state.replies.latest_thread = { data: "thread-1" };
   await using screen = await mount();
 
   await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
-  await expect.element(screen.getByText("Sail 1.0.0")).toBeVisible();
-  await expect
-    .element(screen.getByRole("button", { name: /Open .*in Sail/ }))
-    .not.toBeInTheDocument();
-
-  state.replies.latest_thread = { data: "thread-1" };
-  const working = machine({ id: "m-2", name: "dory", paired: true, state: "working" });
-  await publish(uiState({ machines: [working] }));
-  await expect
-    .element(screen.getByRole("button", { name: "Open last thread in Sail" }))
-    .toBeVisible();
+  const open = screen.getByRole("button", { name: "Open last thread in Sail" });
+  await expect.element(open).toBeVisible();
 
   const count = (command: string) =>
     state.invoked.filter((input) => input.command === command).length;
   const detailsFetches = count("get_machine_details");
+  state.replies.latest_thread = { data: "thread-2" };
   await publish(
     uiState({
       machines: [working],
@@ -346,5 +403,58 @@ it("offers Open in Sail on a paired machine only once its latest thread is known
     }),
   );
   await vi.waitFor(() => expect(count("get_machine_details")).toBe(detailsFetches + 1));
-  expect(count("latest_thread")).toBe(2);
+  expect(count("latest_thread")).toBe(0);
+  await userEvent.click(open);
+  await vi.waitFor(() => expect(count("open_machine")).toBe(1));
+  expect(state.invoked).toContainEqual({
+    command: "open_machine",
+    args: { id: "m-2", thread: "thread-2" },
+  });
+  expect(count("latest_thread")).toBe(1);
+});
+
+it("offers Add to Sail to an on-host client that has not paired this machine", async () => {
+  const working = machine({
+    id: "m-2",
+    name: "dory",
+    paired: true,
+    state: "working",
+    detail: "Working",
+    environmentId: DORY_ENVIRONMENT,
+  });
+  setup({
+    state: uiState({ machines: [working] }),
+    machineEnvironment: EnvironmentId.make("other-machine"),
+  });
+  await using screen = await mount();
+
+  const add = screen.getByRole("button", { name: "Add to Sail", exact: true });
+  await expect.element(add).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+  await expect.element(screen.getByRole("heading", { name: "dory" })).toBeVisible();
+  await expect
+    .element(screen.getByRole("button", { name: "Open last thread in Sail" }))
+    .not.toBeInTheDocument();
+  await expect.element(add).toBeVisible();
+  await userEvent.click(add);
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({ command: "pair_machine", args: { id: "m-2" } }),
+  );
+});
+
+it("re-enables a saved machine from Add to Sail and then offers Open", async () => {
+  setup({
+    state: uiState({
+      machines: [machine({ name: "dory", environmentId: DORY_ENVIRONMENT, paired: true })],
+    }),
+    machineEnvironment: DORY_ENVIRONMENT,
+    machineEnabled: false,
+  });
+  await using screen = await mount();
+  await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+  await userEvent.click(screen.getByRole("button", { name: "Add to Sail", exact: true }));
+  await expect
+    .element(screen.getByRole("button", { name: "Open last thread in Sail" }))
+    .toBeVisible();
+  expect(state.invoked.map((input) => input.command)).not.toContain("pair_machine");
 });

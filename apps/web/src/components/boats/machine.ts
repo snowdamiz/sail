@@ -30,8 +30,7 @@ export type Action = {
   /** solid button when primary; outline otherwise */
   solid?: boolean;
 } & (
-  | { cmd: "open_machine"; thread?: string }
-  | { cmd: "pair_machine" | "wake_machine" | "sleep_machine" | "turn_on_connect" }
+  | { cmd: "open_machine" | "pair_machine" | "wake_machine" | "sleep_machine" | "turn_on_connect" }
   | { cmd: "resize_machine"; size: string }
   /** null = until stopped (auto sleep off), 0 ends it */
   | { cmd: "keep_awake"; minutes: number | null }
@@ -54,8 +53,9 @@ export const signInTo = (agent: string): Action => ({
 });
 
 export const ACTIONS = {
-  pair: { cmd: "open_machine", label: "Add to Sail", busy: "Sending…", solid: true },
+  pair: { cmd: "pair_machine", label: "Add to Sail", busy: "Sending…", solid: true },
   repair: { cmd: "pair_machine", label: "Add to Sail again", busy: "Sending…" },
+  open: { cmd: "open_machine", label: "Open last thread in Sail", busy: "Opening…" },
   wake: { cmd: "wake_machine", label: "Wake now", busy: "Waking…" },
   retry: { cmd: "wake_machine", label: "Try waking", busy: "Waking…" },
   sleep: { cmd: "sleep_machine", label: "Sleep now", busy: "Sleeping…" },
@@ -66,12 +66,12 @@ export const ACTIONS = {
 } satisfies Record<string, Action>;
 
 /** The one obvious thing to do with a machine right now, if any. */
-export function primaryAction(m: MachineView): Action | null {
+export function primaryAction(m: MachineView, paired: boolean): Action | null {
   switch (m.state) {
     case "working":
     case "idle":
     case "asleep": // wakes by itself when used in Sail; opening it lives in the details view
-      return m.paired ? null : ACTIONS.pair;
+      return paired ? null : ACTIONS.pair;
     case "error":
       return ACTIONS.retry;
     case "missing":
@@ -80,14 +80,6 @@ export function primaryAction(m: MachineView): Action | null {
       return null; // transitional: the boat + detail line say what's happening
   }
 }
-
-/** Opens the machine's latest thread in Sail, named so the button says where it goes. */
-export const openIn = (thread: string): Action => ({
-  cmd: "open_machine",
-  label: "Open last thread in Sail",
-  busy: "Opening…",
-  thread,
-});
 
 /** "Stay awake for…" choices, in minutes. */
 export const STAY_AWAKE = [15, 30, 60, 120] as const;
@@ -116,13 +108,13 @@ export const resizeTo = (size: string): Action => ({
 });
 
 /** Secondary actions for the ⋯ menu (delete is always appended by the menu). */
-export function menuActions(m: MachineView, sizes: Size[]): MenuItem[] {
+export function menuActions(m: MachineView, sizes: Size[], paired: boolean): MenuItem[] {
   if (!m.id || m.state === "missing") return [];
   const out: MenuItem[] = [];
   if (m.state === "asleep") out.push(ACTIONS.wake);
   if (m.state === "working" || m.state === "idle") out.push(ACTIONS.sleep);
   out.push(PICK_PROJECT);
-  if (m.paired) out.push(ACTIONS.repair);
+  if (paired) out.push(ACTIONS.repair);
   sizes.filter((s) => s.id !== m.size).forEach((s) => out.push(resizeTo(s.id)));
   return out;
 }
@@ -164,8 +156,8 @@ export const hasRepo = (m: MachineView, repoKey: string) =>
   m.projects.some((p) => p.repoKey === repoKey);
 
 /** Up and added to Sail, but nothing to work on yet: the last step of setting it up. */
-export const needsProject = (m: MachineView) =>
-  m.paired && !m.projects.length && !["creating", "missing", "error"].includes(m.state);
+export const needsProject = (m: MachineView, paired: boolean) =>
+  paired && !m.projects.length && !["creating", "missing", "error"].includes(m.state);
 
 export const shortDate = (unixSecs: number) =>
   new Date(unixSecs * 1000).toLocaleDateString("en-US", {

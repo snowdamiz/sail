@@ -11,7 +11,7 @@ import { readLocalEnvironmentId } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { usePairFromLink } from "../desktop/DesktopWebLinkCoordinator";
 import { type BoatLink, type BoatReply, classifyBoatLink, errorText } from "./reply";
-import type { CommandArgs, CommandName, MachineDetails, MachineState, UiState } from "./types";
+import type { CommandArgs, CommandName, MachineDetails, UiState } from "./types";
 
 export async function call<C extends CommandName>(
   command: C,
@@ -113,20 +113,4 @@ export function useMachineDetails(
   }, [id, version, onError]);
 
   return details?.id === id ? details : null;
-}
-
-export function useLatestThread(id: string | null, machineState: MachineState): string | null {
-  const [latest, setLatest] = useState<{ id: string; thread: string | null } | null>(null);
-  useEffect(() => {
-    if (id === null) return;
-    let live = true;
-    void call("latest_thread", { id }).then(
-      ({ data }) => live && setLatest({ id, thread: data }),
-      () => live && setLatest({ id, thread: null }),
-    );
-    return () => {
-      live = false;
-    };
-  }, [id, machineState]);
-  return id !== null && latest?.id === id ? latest.thread : null;
 }

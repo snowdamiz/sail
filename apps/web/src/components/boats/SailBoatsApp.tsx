@@ -1,9 +1,14 @@
-import { useAtomValue } from "@effect/atom-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { msg } from "gt-react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
+import { environmentCatalog } from "~/connection/catalog";
+import { m as message } from "~/i18n/messages";
 import { boatCommandsAllowedAtom } from "~/state/boats";
 import { clientHostEnvironmentAtom } from "~/state/clientHostEnvironment";
 import { useLocalEnvironmentId } from "~/state/environments";
+import { useAtomCommand } from "~/state/use-atom-command";
 import { SailBrandMark } from "../SailBrandMark";
 import { type BoatAccess, BoatAccessContext, useBoatAccess } from "./access";
 import { call, useBoatsPage, useFollowBoatLink } from "./api";
@@ -118,6 +123,8 @@ function Ready({
   toast: (t: string, tone?: "error" | "info") => void;
 }) {
   const access = useBoatAccess();
+  const registry = useContext(RegistryContext);
+  const setEnabled = useAtomCommand(environmentCatalog.setEnabled, { reportFailure: false });
   const [view, setView] = useState<View>("list");
   const [pickProject, setPickProject] = useState(false);
   const [hover, setHover] = useState<string | null>(null);
@@ -205,11 +212,26 @@ function Ready({
           await call("resize_machine", { id: m.id, size: a.size });
           return;
         case "open_machine": {
-          const reply = await call(
-            "open_machine",
-            a.thread !== undefined ? { id: m.id, thread: a.thread } : { id: m.id },
-          );
+          const { data: thread } = await call("latest_thread", { id: m.id });
+          if (thread === null) {
+            toast(message(msg("No thread available to open.")), "info");
+            return;
+          }
+          const reply = await call("open_machine", { id: m.id, thread });
           pairIfAsked(reply.openUrl);
+          return;
+        }
+        case "pair_machine": {
+          const id = m.environmentId;
+          if (id !== null) {
+            const entry = registry.get(environmentCatalog.catalogValueAtom).entries.get(id);
+            if (entry?.enabled === false && entry.unsupportedReason === undefined) {
+              const result = await setEnabled({ environmentId: id, enabled: true });
+              if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+              return;
+            }
+          }
+          pairIfAsked((await call("pair_machine", { id: m.id })).openUrl);
           return;
         }
         default:
@@ -342,7 +364,15 @@ export function SailBoatsApp() {
   const { page, retry } = useBoatsPage(environmentId);
   const allowed = useAtomValue(boatCommandsAllowedAtom(environmentId));
   const onHost = useAtomValue(clientHostEnvironmentAtom(environmentId));
-  const access: BoatAccess = { can: (command) => allowed.has(command), onHost };
+  const { entries } = useAtomValue(environmentCatalog.catalogValueAtom);
+  const access: BoatAccess = {
+    can: (command) => allowed.has(command),
+    isPaired: (id) => {
+      const entry = id === null ? undefined : entries.get(id);
+      return entry?.enabled === true && entry.unsupportedReason === undefined;
+    },
+    onHost,
+  };
   const follow = useFollowBoatLink(onHost);
   const [notice, setNotice] = useState<{ text: string; tone: "error" | "info" } | null>(null);
   const timer = useRef<number | null>(null);
