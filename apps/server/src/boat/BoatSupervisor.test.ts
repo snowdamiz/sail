@@ -37,6 +37,7 @@ const DAEMON_ENV = [
   "T3CODE_HOME",
   "T3CODE_DEV_AUTH_TOKEN",
   "Sail_Boat_Token",
+  "Sail_Mcp_Port",
   "FAKE_BOAT_HOME",
 ] as const;
 
@@ -326,6 +327,7 @@ describe("BoatSupervisor", () => {
           T3CODE_HOME: "/live/install",
           T3CODE_DEV_AUTH_TOKEN: "server-secret",
           Sail_Boat_Token: "mixed-case-token",
+          Sail_Mcp_Port: "4242",
           SAIL_DEEP_LINK_SCHEME: "sail-dev",
           FAKE_BOAT_HOME: "/tmp/fake-boat-home",
         };
@@ -355,6 +357,7 @@ describe("BoatSupervisor", () => {
             T3CODE_HOME: null,
             T3CODE_DEV_AUTH_TOKEN: null,
             Sail_Boat_Token: null,
+            Sail_Mcp_Port: "4242",
             FAKE_BOAT_HOME: "/tmp/fake-boat-home",
           },
           stdinIsPipe: true,
@@ -405,9 +408,11 @@ describe("BoatSupervisor", () => {
         const boats = yield* BoatSupervisor.BoatSupervisor;
         yield* boats.invoke({ command: "get_state" }).pipe(Effect.flip);
         yield* TestClock.adjust("10 minutes");
+        const followBoats = boats.events.pipe(Stream.runHead);
+        yield* followBoats;
 
         assert.deepEqual(
-          yield* boats.events.pipe(Stream.runHead),
+          yield* followBoats,
           Option.some<BoatEvent>({
             _tag: "status",
             status: {
@@ -609,13 +614,19 @@ describe("BoatSupervisor", () => {
             logged.some((line) => line.includes(BOAT_OUTPUT)),
             "no Boat output reaches the server log",
           );
-          const joinedDuringRestart = yield* boats.events.pipe(Stream.take(2), Stream.runCollect);
-          assert.deepEqual(
-            joinedDuringRestart.map((event) => event._tag),
-            ["status", "status"],
-            "a client joining after the crash never sees the dead daemon's state",
+          const joinedAfterCrash = yield* boats.events.pipe(
+            Stream.take(2),
+            Stream.runCollect,
+            Effect.forkScoped({ startImmediately: true }),
           );
           const restarted = yield* boats.invoke({ command: "get_state" });
+          assert.deepEqual(
+            (yield* Fiber.join(joinedAfterCrash)).map((event) =>
+              event._tag === "status" ? event.status.phase : event._tag,
+            ),
+            ["error", "starting"],
+            "a client joining after the crash sees no dead daemon's state and starts nothing itself",
+          );
           const second = yield* Queue.take(reports);
           assert.notEqual(second.pid, first.pid);
           assert.deepEqual(restarted.data, { machines: [{ name: "m1" }], pid: second.pid });
@@ -623,7 +634,7 @@ describe("BoatSupervisor", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it("waits longer after each failed start in a row, never more than a minute", () => {
+  it("waits longer after each crash in a row, never more than a minute", () => {
     assert.deepEqual(
       [1, 2, 3, 7, 1_000].map((failures) =>
         Duration.toSeconds(BoatSupervisor.restartDelay(failures)),

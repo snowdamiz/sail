@@ -17,7 +17,7 @@ async fn main() -> Result<()> {
         Ok(running) => running,
         Err(e) => {
             // The parent shows this reason to every client; stderr can also hold Boat's output.
-            print_line(&serde_json::json!({ "ready": false, "error": format!("{e:#}") }).to_string())?;
+            let _ = print_line(&serde_json::json!({ "ready": false, "error": format!("{e:#}") }).to_string());
             return Err(e);
         }
     };

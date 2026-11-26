@@ -46,6 +46,7 @@ const DAEMON_LOG_MAX_BYTES = 1024 * 1024;
 const DAEMON_LOG_BACKUPS = 2;
 const RESTART_DELAY_CAP_SECONDS = 60;
 const STAYED_UP = Duration.minutes(1);
+const STATE_READ_TIMEOUT = Duration.seconds(1);
 
 const Handshake = Schema.Struct({
   ready: Schema.Literal(true),
@@ -176,8 +177,8 @@ const describeExit = (exit: Exit.Exit<ChildProcessSpawner.ExitCode, PlatformErro
       ),
   });
 
-export const restartDelay = (failuresInARow: number): Duration.Duration =>
-  Duration.seconds(Math.min(2 ** (failuresInARow - 1), RESTART_DELAY_CAP_SECONDS));
+export const restartDelay = (crashesInARow: number): Duration.Duration =>
+  Duration.seconds(Math.min(2 ** (crashesInARow - 1), RESTART_DELAY_CAP_SECONDS));
 
 const SERVER_ENV_FORWARDED_TO_DAEMON = new Set([
   "SAIL_DEEP_LINK_SCHEME",
@@ -192,7 +193,7 @@ const daemonInheritedEnvironment = (
   Object.fromEntries(
     Object.entries(environment).filter(
       ([name]) =>
-        SERVER_ENV_FORWARDED_TO_DAEMON.has(name) ||
+        SERVER_ENV_FORWARDED_TO_DAEMON.has(name.toUpperCase()) ||
         // Electron apps the daemon opens through the OS would inherit it and run as plain Node.
         !/^(SAIL_|T3CODE_|ELECTRON_RUN_AS_NODE$)/i.test(name),
     ),
@@ -235,7 +236,7 @@ const make = Effect.gen(function* () {
   const noticeHub = yield* PubSub.unbounded<BoatNotice>();
   const lifecycle = yield* SynchronizedRef.make<Lifecycle>({ _tag: "Stopped" });
   const latestState = yield* Ref.make(Option.none<unknown>());
-  const failuresInARow = yield* Ref.make(0);
+  const crashesInARow = yield* Ref.make(0);
   const daemonLog = yield* makeAsyncRotatingFileSink({
     filePath: daemonLogPath,
     maxBytes: DAEMON_LOG_MAX_BYTES,
@@ -353,7 +354,7 @@ const make = Effect.gen(function* () {
       )
       .pipe(Effect.ignore);
 
-  const runDaemon = Effect.fn("BoatSupervisor.runDaemon", { root: true })(function* (
+  const runDaemon = Effect.fn("BoatSupervisor.runDaemon")(function* (
     ready: Deferred.Deferred<Daemon, BoatError>,
   ) {
     const command = yield* daemonCommand;
@@ -364,6 +365,8 @@ const make = Effect.gen(function* () {
           (error) => new BoatError({ message: `sail-boatd could not start: ${error.message}` }),
         ),
       );
+    const drained = (fiber: Fiber.Fiber<unknown>) =>
+      Fiber.join(fiber).pipe(Effect.timeout(DRAIN_TIMEOUT), Effect.ignore);
 
     const stderrDrained = yield* child.stderr.pipe(
       Stream.decodeText(),
@@ -371,9 +374,12 @@ const make = Effect.gen(function* () {
       Effect.ignore,
       Effect.forkScoped,
     );
+    // Runs before the scope stops the reader, so the log keeps what a dead daemon printed last.
+    yield* Effect.addFinalizer((exit) =>
+      Exit.hasInterrupts(exit) ? Effect.void : drained(stderrDrained),
+    );
 
-    const handshake = yield* Deferred.make<Handshake>();
-    const startFailure = yield* Ref.make(Option.none<string>());
+    const startup = yield* Deferred.make<Handshake, BoatError>();
     // Kept draining after the handshake so the daemon never blocks on a full stdout pipe.
     const stdoutDrained = yield* child.stdout.pipe(
       Stream.decodeText(),
@@ -383,37 +389,31 @@ const make = Effect.gen(function* () {
           onNone: () => Effect.void,
           onSome: (report) =>
             report.ready
-              ? Deferred.succeed(handshake, report)
-              : Ref.set(startFailure, Option.some(report.error)),
+              ? Deferred.succeed(startup, report)
+              : Deferred.fail(
+                  startup,
+                  new BoatError({ message: `sail-boatd could not start: ${report.error}` }),
+                ),
         }),
       ),
       Effect.ignore,
       Effect.forkScoped,
     );
-    const drained = (fiber: Fiber.Fiber<void>) =>
-      Fiber.join(fiber).pipe(Effect.timeout(DRAIN_TIMEOUT), Effect.ignore);
     const exited = yield* child.exitCode.pipe(Effect.exit, Effect.forkScoped);
-
-    const greeting = yield* Deferred.await(handshake).pipe(
-      Effect.raceFirst(
-        Fiber.join(exited).pipe(
-          Effect.tap(() => drained(stdoutDrained)),
-          Effect.flatMap((exit) =>
-            Ref.get(startFailure).pipe(
-              Effect.flatMap((failure) =>
-                Effect.fail(
-                  new BoatError({
-                    message: Option.match(failure, {
-                      onNone: () => `sail-boatd exited before it was ready (${describeExit(exit)})`,
-                      onSome: (reason) => `sail-boatd could not start: ${reason}`,
-                    }),
-                  }),
-                ),
-              ),
-            ),
-          ),
+    yield* Fiber.join(exited).pipe(
+      Effect.tap(() => drained(stdoutDrained)),
+      Effect.flatMap((exit) =>
+        Deferred.fail(
+          startup,
+          new BoatError({
+            message: `sail-boatd exited before it was ready (${describeExit(exit)})`,
+          }),
         ),
       ),
+      Effect.forkScoped,
+    );
+
+    const greeting = yield* Deferred.await(startup).pipe(
       Effect.timeoutOrElse({
         duration: HANDSHAKE_TIMEOUT,
         orElse: () =>
@@ -441,13 +441,12 @@ const make = Effect.gen(function* () {
     yield* Effect.logInfo("sail-boatd is ready", { port: greeting.port });
     yield* followEvents(daemon).pipe(Effect.forkScoped);
     const stayedUp = yield* Effect.sleep(STAYED_UP).pipe(
-      Effect.andThen(Ref.set(failuresInARow, 0)),
+      Effect.andThen(Ref.set(crashesInARow, 0)),
       Effect.forkScoped,
     );
 
     const exit = yield* Fiber.join(exited);
     yield* Fiber.interrupt(stayedUp);
-    yield* drained(stderrDrained);
     return yield* new BoatError({
       message: `sail-boatd exited unexpectedly (${describeExit(exit)})`,
     });
@@ -471,25 +470,14 @@ const make = Effect.gen(function* () {
           cause: exit.cause,
           log: daemonLogPath,
         }).pipe(
-          Effect.andThen(
-            SynchronizedRef.modifyEffect(lifecycle, (previous) =>
-              enter(failed).pipe(
-                Effect.map((next) => [previous._tag === "Running", next] as const),
-              ),
-            ),
-          ),
+          Effect.andThen(transition(failed)),
+          Effect.andThen(Deferred.isDone(ready)),
           // A failed start waits for Retry, so a server refused another's data dir never takes it.
-          Effect.flatMap((diedRunning) =>
-            diedRunning ? dataDirNeedsDaemon : Effect.succeed(false),
-          ),
-          Effect.flatMap((needed) =>
-            needed
-              ? Effect.forkIn(restartLater(failed), serviceScope, { startImmediately: true })
-              : Effect.void,
-          ),
+          Effect.flatMap((crashed) => (crashed ? restartIfNeeded(failed) : Effect.void)),
           Effect.andThen(Deferred.fail(ready, error)),
         );
       }),
+      Effect.withSpan("BoatSupervisor.supervise", { root: true }),
     );
 
   const start = Effect.gen(function* () {
@@ -499,12 +487,25 @@ const make = Effect.gen(function* () {
     return [Deferred.await(ready), next] as const;
   });
 
-  const restartLater = Effect.fnUntraced(function* (failed: Lifecycle) {
-    yield* Effect.sleep(restartDelay(yield* Ref.updateAndGet(failuresInARow, (n) => n + 1)));
-    yield* SynchronizedRef.updateEffect(lifecycle, (current) =>
-      current === failed ? start.pipe(Effect.map(([, next]) => next)) : Effect.succeed(current),
+  const startIf = (shouldStart: (current: Lifecycle) => boolean) =>
+    SynchronizedRef.updateEffect(lifecycle, (current) =>
+      shouldStart(current) ? Effect.map(start, ([, next]) => next) : Effect.succeed(current),
     );
+
+  const restartLater = Effect.fnUntraced(function* (failed: Lifecycle) {
+    yield* Effect.sleep(restartDelay(yield* Ref.updateAndGet(crashesInARow, (n) => n + 1)));
+    yield* startIf((current) => current === failed);
   });
+
+  const restartIfNeeded = (failed: Lifecycle) =>
+    dataDirNeedsDaemon.pipe(
+      Effect.timeoutOrElse({ duration: STATE_READ_TIMEOUT, orElse: () => Effect.succeed(false) }),
+      Effect.flatMap((needed) =>
+        needed
+          ? Effect.forkIn(restartLater(failed), serviceScope, { startImmediately: true })
+          : Effect.void,
+      ),
+    );
 
   const ensureStarted = SynchronizedRef.modifyEffect(lifecycle, (current) => {
     switch (current._tag) {
@@ -566,7 +567,8 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const [subscription, status] = yield* subscribeWithCurrentStatus;
       const state = yield* Ref.get(latestState);
-      yield* Effect.asVoid(ensureStarted);
+      // A failed daemon waits for a command such as Retry, so a page that reconnects never retries.
+      yield* startIf((current) => current._tag === "Stopped");
       return Stream.concat(
         Stream.fromIterable<BoatEvent>([
           { _tag: "status", status },
