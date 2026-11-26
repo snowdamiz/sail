@@ -2178,6 +2178,10 @@ function status(ctx: Ctx): number {
 
 function destroyMachine(machine: MachineRecord, force: boolean): void {
   const { app, id } = machine;
+  if (NodeFS.existsSync(routeRepairFile(app)))
+    throw new FlyError(
+      `app ${app} has an unresolved route repair; refusing to destroy machine ${id}. Redeploy or destroy the app instead.`,
+    );
   for (const name of [swapName(app, "green"), swapName(app, "blue")])
     if (ownership("container", name) !== "absent")
       throw new FlyError(
