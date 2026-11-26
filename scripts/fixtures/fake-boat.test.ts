@@ -1292,12 +1292,11 @@ fi`);
       `d=$(mktemp -d); mkfifo "$d/in"; nohup sh -c 'exec 3<>"$1/in"; exec script -qfec "claude auth login" "$1/log" <&3' sh "$d" >/dev/null 2>&1 & echo "$d"`,
     );
     const dir = started.stdout.trim();
-    const manual = /https:\/\/auth\.localtest\.me\/claude\/authorize\?\S+/;
+    const auth = publicUrl(AUTH_HOST);
+    const manual = new RegExp(`${RegExp.escape(auth)}/claude/authorize\\?\\S+`);
     await expect.poll(async () => (await exec(`cat ${dir}/log`)).stdout, POLL).toMatch(manual);
     const url = manual.exec((await exec(`cat ${dir}/log`)).stdout)?.[0] ?? "";
-    expect(new URL(url).searchParams.get("redirect_uri")).toBe(
-      "https://auth.localtest.me/claude/code/callback",
-    );
+    expect(new URL(url).searchParams.get("redirect_uri")).toBe(`${auth}/claude/code/callback`);
     const page = await curl(["--cacert", rootCertPath(), await authorizeLink(url)]);
     const code = /<pre id="code">([^<]+)<\/pre>/.exec(page.stdout)?.[1] ?? "";
     expect(code).toBe(`fake-code#${new URL(url).searchParams.get("state")}`);

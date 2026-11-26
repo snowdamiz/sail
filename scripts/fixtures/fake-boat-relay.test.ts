@@ -9,7 +9,7 @@ import * as NodeReadline from "node:readline";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import { publishedHosts } from "./fake-boat/relay.ts";
-import { removeSite } from "./lib/caddy.ts";
+import { AUTH_HOST, publicUrl, removeSite } from "./lib/caddy.ts";
 import {
   docker,
   dockerSucceeds,
@@ -341,7 +341,7 @@ describe.skipIf(!hasDocker())("fake boat relay", () => {
     const before = lastJson<{ account: { signedIn: boolean } }>((await ok(["status"])).stdout);
     expect(before.account.signedIn).toBe(false);
     const started = lastJson<{ url: string; userCode: string }>((await ok(["onboard"])).stdout);
-    expect(started.url).toBe(`https://auth.localtest.me/boat/device?code=${started.userCode}`);
+    expect(started.url).toBe(`${publicUrl(AUTH_HOST)}/boat/device?code=${started.userCode}`);
     await ok(["onboard", "--wait"]);
     const after = lastJson<{ account: { signedIn: boolean } }>((await ok(["status"])).stdout);
     expect(after.account.signedIn).toBe(true);

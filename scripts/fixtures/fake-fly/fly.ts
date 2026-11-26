@@ -12,7 +12,15 @@ import {
   publishSite,
   removeSite,
 } from "../lib/caddy.ts";
-import { docker, DockerError, exists, FIXTURE_LABEL, NETWORK } from "../lib/docker.ts";
+import {
+  docker,
+  DockerError,
+  exists,
+  FIXTURE_LABEL,
+  inspect,
+  NETWORK,
+  stopDockerContainer,
+} from "../lib/docker.ts";
 import {
   createJsonExclusive,
   heldElsewhere,
@@ -23,6 +31,7 @@ import {
   releaseName,
   reserveName,
   standInHome,
+  withLock,
   writeJsonAtomic,
 } from "../lib/state.ts";
 import {
@@ -182,6 +191,10 @@ interface SnapshotRecord {
 function recordPath(kind: Kind, id: string): string {
   if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new FlyError(`invalid id: ${id}`);
   return NodePath.join(HOME, kind, `${id}.json`);
+}
+
+function withAppLock<T>(app: string, run: () => T): T {
+  return withLock(`${recordPath("apps", app)}.lock`, run);
 }
 
 function read<T>(kind: Kind, id: string): T | undefined {
@@ -529,7 +542,20 @@ interface MachineConfigJson {
   readonly guest: { readonly cpu_kind: string; readonly cpus: number; readonly memory_mb: number };
   readonly metadata: Readonly<Record<string, string>>;
   readonly mounts?: ReadonlyArray<MachineMountJson>;
-  readonly services?: ReadonlyArray<unknown>;
+  readonly services?: ReadonlyArray<{
+    readonly protocol: string;
+    readonly internal_port: number;
+    readonly autostop?: HttpService["autostop"];
+    readonly autostart?: boolean;
+    readonly min_machines_running?: number;
+    readonly ports: ReadonlyArray<{
+      readonly port: number;
+      readonly handlers: ReadonlyArray<string>;
+      readonly force_https?: boolean;
+    }>;
+    readonly checks?: HttpService["checks"];
+    readonly force_instance_key: null;
+  }>;
   readonly stop_config?: StopConfig;
   readonly image: string;
   readonly restart: { readonly policy: string; readonly max_retries: number };
@@ -723,9 +749,10 @@ const DEFAULT_STOP = { signal: "SIGINT", timeout: "5s" } as const;
 function stopMachineContainer(name: string, stop: StopConfig | undefined): void {
   if (ownership("container", name) !== "mine") return;
   const seconds = Math.ceil((durationMs(stop?.timeout ?? DEFAULT_STOP.timeout) ?? 5000) / 1000);
-  docker(
-    ["stop", "--signal", stop?.signal ?? DEFAULT_STOP.signal, "--timeout", String(seconds), name],
-    { timeoutMs: (seconds + 30) * 1000 },
+  stopDockerContainer(
+    name,
+    ["--signal", stop?.signal ?? DEFAULT_STOP.signal, "--timeout", String(seconds)],
+    (seconds + 30) * 1000,
   );
 }
 
@@ -799,12 +826,14 @@ function appsCreate(ctx: Ctx): number {
   // The fixtures' own pages hold these hosts, so a deploy could never publish the app.
   if (isReservedHost(appHost(name)))
     throw new FlyError("Validation failed: Name has already been taken");
-  const app: AppRecord = { name, createdAt: now(), releaseVersion: 0 };
-  if (!reserveName(APP_NAMES, name, HOME) || !createJsonExclusive(recordPath("apps", name), app))
-    throw new FlyError("Validation failed: Name has already been taken");
-  if (bool(ctx, "json")) printJson(appJson(app));
-  else out(`New app created: ${name}\n`);
-  return 0;
+  return withAppLock(name, () => {
+    const app: AppRecord = { name, createdAt: now(), releaseVersion: 0 };
+    if (!reserveName(APP_NAMES, name, HOME) || !createJsonExclusive(recordPath("apps", name), app))
+      throw new FlyError("Validation failed: Name has already been taken");
+    if (bool(ctx, "json")) printJson(appJson(app));
+    else out(`New app created: ${name}\n`);
+    return 0;
+  });
 }
 
 function appsList(ctx: Ctx): number {
@@ -872,8 +901,11 @@ function appsDestroy(ctx: Ctx): number {
       err("Destroying an app is not reversible.\n");
       if (!confirm(`Destroy app ${name}?`)) continue;
     }
-    destroyApp(name);
-    out(`Destroyed app ${name}\n`);
+    withAppLock(name, () => {
+      requireApp(name);
+      destroyApp(name);
+      out(`Destroyed app ${name}\n`);
+    });
   }
   return 0;
 }
@@ -1378,11 +1410,24 @@ function validateStrategy(
   throw new FlyError("App configuration is not valid");
 }
 
-/**
- * Leaves only the recorded machine's container, under the app's own name. A bluegreen deploy that
- * failed or was killed partway can leave either machine under a swap name. A container's hostname
- * is its machine's id.
- */
+function routeMachine(machine: MachineRecord, upstream = machineHost(machine)): string {
+  const service = machine.config.services?.[0];
+  return publishSite({
+    id: siteId(machine.app),
+    home: HOME_ID,
+    container: containerName(machine.app),
+    host: appHost(machine.app),
+    upstream: `${upstream}:${service?.internal_port ?? 8080}`,
+    plainHttp: service !== undefined && !service.ports.some((port) => port.force_https),
+    headers: {
+      "Fly-Forwarded-Proto": "{http.request.scheme}",
+      "Fly-Forwarded-Port": "{http.request.local.port}",
+      "X-Forwarded-Port": "{http.request.local.port}",
+      "Fly-Client-IP": "{remote_host}",
+    },
+  });
+}
+
 function settleContainers(
   app: string,
   recorded: MachineRecord | undefined,
@@ -1394,12 +1439,33 @@ function settleContainers(
   const hostname = (name: string) =>
     docker(["container", "inspect", "--format", "{{.Config.Hostname}}", name]).trim();
   const records = all<MachineRecord>("machines").filter((machine) => machine.app === app);
-  // Killed after green took the app's name and was recorded, the machine under that name serves.
   const liveId = held.includes(live) ? hostname(live) : undefined;
   const chosen = records.find((machine) => machine.id === liveId) ?? recorded;
   const kept = chosen && held.find((name) => hostname(name) === chosen.id);
-  for (const name of held) if (name !== kept) destroyMachineContainer(name);
-  if (kept !== undefined && kept !== live) docker(["rename", kept, live]);
+  if (chosen && !kept && held.includes(live))
+    throw new FlyError(
+      `cannot settle app ${app}: recorded machine ${chosen.id} has no container, but an unrecorded one is live`,
+    );
+  if (chosen && kept) {
+    const attachment = inspect<{
+      readonly Aliases: ReadonlyArray<string> | null;
+      readonly IPAddress: string;
+    } | null>(kept, `(index .NetworkSettings.Networks "${NETWORK}")`);
+    const machineAlias = attachment?.Aliases?.includes(machineHost(chosen)) ?? false;
+    const upstream = machineAlias ? machineHost(chosen) : attachment?.IPAddress;
+    if (!upstream)
+      throw new FlyError(
+        `cannot settle app ${app}: machine ${chosen.id} has no fixture network address`,
+      );
+    routeMachine(chosen, upstream);
+    for (const name of held) if (name !== kept) destroyMachineContainer(name);
+    if (kept !== live) {
+      docker(["rename", kept, live]);
+    }
+    if (!machineAlias) routeMachine(chosen, live);
+  } else {
+    for (const name of held) destroyMachineContainer(name);
+  }
   for (const stale of records) if (stale.id !== chosen?.id) remove("machines", stale.id);
   return chosen;
 }
@@ -1434,8 +1500,9 @@ function replaceBlueWithGreen(
   const live = containerName(blue.app);
   const greenName = swapName(blue.app, "green");
   const blueName = swapName(blue.app, "blue");
-  const rollBack = () => {
-    settleContainers(blue.app, blue);
+  const rollBack = (promoting: boolean) => {
+    if (promoting) settleContainers(blue.app, blue);
+    else destroyMachineContainer(greenName);
     err(`\nRolling back failed deployment\n  Deleted machine ${green.id} [app]\n`);
   };
   err("\nCreating green machines\n");
@@ -1444,7 +1511,7 @@ function replaceBlueWithGreen(
   try {
     waitForHealthy(greenName, green, healthProbes(greenName, http), waitMs);
   } catch (error) {
-    rollBack();
+    rollBack(false);
     throw error instanceof FlyError
       ? new FlyError("wait timeout\ncould not get all green machines to be healthy")
       : error;
@@ -1455,7 +1522,7 @@ function replaceBlueWithGreen(
     docker(["rename", greenName, live]);
     steps.route(green);
   } catch (error) {
-    rollBack();
+    rollBack(true);
     throw error instanceof Error
       ? new FlyError(`${error.message}\nfailed to mark green machines as ready`)
       : error;
@@ -1479,6 +1546,10 @@ function deploy(ctx: Ctx): number {
     throw new FlyError(
       "the config for your app is missing an app name, add an app field to the fly.toml file or specify with the -a flag",
     );
+  return withAppLock(appName, () => deployApp(ctx, loaded, appName));
+}
+
+function deployApp(ctx: Ctx, loaded: LoadedConfig, appName: string): number {
   const app = requireApp(appName);
   const waitText = str(ctx, "wait-timeout") ?? "5m0s";
   const waitMs = durationMs(waitText);
@@ -1525,7 +1596,6 @@ function deploy(ctx: Ctx): number {
   const version = ulid();
   const releaseVersion = app.releaseVersion + 1;
   const memory = config.memoryMb ?? 2048;
-  const port = http?.internalPort ?? 8080;
   ensureCaddy(HOME_ID);
   const url = publicUrl(appHost(appName));
 
@@ -1645,21 +1715,6 @@ function deploy(ctx: Ctx): number {
       image.run,
     ]);
 
-  const route = (target: MachineRecord) =>
-    publishSite({
-      id: siteId(appName),
-      home: HOME_ID,
-      container: containerName(appName),
-      host: appHost(appName),
-      upstream: `${machineHost(target)}:${port}`,
-      plainHttp: http !== undefined && !http.forceHttps,
-      headers: {
-        "Fly-Forwarded-Proto": "{http.request.scheme}",
-        "Fly-Forwarded-Port": "{http.request.local.port}",
-        "X-Forwarded-Port": "{http.request.local.port}",
-        "Fly-Client-IP": "{remote_host}",
-      },
-    });
   const release = () =>
     write("apps", appName, {
       ...app,
@@ -1669,14 +1724,15 @@ function deploy(ctx: Ctx): number {
     } satisfies AppRecord);
 
   if (previous) out(`Updating existing machines in '${appName}' with ${strategy} strategy\n`);
-  if (blueGreen) replaceBlueWithGreen(previous, machine, http, waitMs, { start, route, release });
+  if (blueGreen)
+    replaceBlueWithGreen(previous, machine, http, waitMs, { start, route: routeMachine, release });
   else {
     if (previous) stopMachineContainer(containerName(appName), previous.config.stop_config);
     destroyMachineContainer(containerName(appName));
     write("machines", machine.id, machine);
     start(containerName(appName));
     release();
-    route(machine);
+    routeMachine(machine);
   }
   if (previous?.builtTag && previous.builtTag !== image.builtTag) removeBuiltTag(previous.builtTag);
   if (!blueGreen) {
@@ -2107,21 +2163,59 @@ function status(ctx: Ctx): number {
   return 0;
 }
 
+function destroyMachine(machine: MachineRecord, force: boolean): void {
+  const { app, id } = machine;
+  for (const name of [swapName(app, "green"), swapName(app, "blue")])
+    if (ownership("container", name) !== "absent")
+      throw new FlyError(
+        `app ${app} has an interrupted bluegreen swap; refusing to destroy machine ${id}. Redeploy or destroy the app instead.`,
+      );
+  const live = containerName(app);
+  let container:
+    | {
+        readonly Id: string;
+        readonly Config: {
+          readonly Hostname: string;
+          readonly Labels: Readonly<Record<string, string>> | null;
+        };
+        readonly State: ContainerState;
+      }
+    | undefined;
+  try {
+    container = inspect(live, ".");
+  } catch (error) {
+    if (!(error instanceof DockerError && /no such/i.test(error.stderr))) throw error;
+  }
+  if (container) {
+    if (!HOME_IDS.has(container.Config.Labels?.[HOME_LABEL] ?? ""))
+      throw new FlyError(
+        `container ${live} belongs to another fake fly home; refusing to touch it`,
+      );
+    if (container.Config.Hostname !== id)
+      throw new FlyError(`app ${app} has a different live machine; refusing to destroy ${id}`);
+  }
+  const state = container?.State.Running || container?.State.Restarting ? "started" : "stopped";
+  if (state === "started" && !force)
+    throw new FlyError(`machine ${id} currently started, either stop first or use --force flag`);
+  out(`machine ${id} was found and is currently in ${state} state, attempting to destroy...\n`);
+  if (container) docker(["rm", "--force", "--volumes", container.Id]);
+  removeBuiltTag(machine.builtTag);
+  remove("machines", id);
+  out(`${id} has been destroyed\n`);
+}
+
 function machineDestroy(ctx: Ctx): number {
   const appName = appNameOf(ctx);
   for (const id of ctx.args) {
     const machine = read<MachineRecord>("machines", id);
     if (!machine || (appName && machine.app !== appName))
       throw new FlyError(`could not get machine ${id}: machine not found`);
-    const state = machineState(machine);
-    if (state === "started" && !bool(ctx, "force"))
-      throw new FlyError(`machine ${id} currently started, either stop first or use --force flag`);
-    refuseForeign("container", containerName(machine.app));
-    out(`machine ${id} was found and is currently in ${state} state, attempting to destroy...\n`);
-    destroyMachineContainer(containerName(machine.app));
-    removeBuiltTag(machine.builtTag);
-    remove("machines", id);
-    out(`${id} has been destroyed\n`);
+    withAppLock(machine.app, () => {
+      const current = read<MachineRecord>("machines", id);
+      if (!current || current.app !== machine.app)
+        throw new FlyError(`could not get machine ${id}: machine not found`);
+      destroyMachine(current, bool(ctx, "force"));
+    });
   }
   return 0;
 }

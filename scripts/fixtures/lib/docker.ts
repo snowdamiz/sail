@@ -10,10 +10,17 @@ export const DOCKER_TEST_TIMEOUT_MS = 480_000;
 export class DockerError extends Error {
   readonly status: number | null;
   readonly stderr: string;
-  constructor(args: ReadonlyArray<string>, status: number | null, stderr: string) {
+  readonly timedOut: boolean;
+  constructor(
+    args: ReadonlyArray<string>,
+    status: number | null,
+    stderr: string,
+    timedOut = false,
+  ) {
     super(`docker ${args[0] ?? ""} failed (${status}): ${stderr.trim()}`);
     this.status = status;
     this.stderr = stderr;
+    this.timedOut = timedOut;
   }
 }
 
@@ -29,7 +36,13 @@ export function docker(args: ReadonlyArray<string>, options: DockerOptions = {})
     timeout: options.timeoutMs,
     maxBuffer: 64 * 1024 * 1024,
   });
-  if (result.error) throw new DockerError(args, null, result.error.message);
+  if (result.error)
+    throw new DockerError(
+      args,
+      null,
+      result.error.message,
+      "code" in result.error && result.error.code === "ETIMEDOUT",
+    );
   if (result.status !== 0) throw new DockerError(args, result.status, result.stderr);
   return result.stdout;
 }
@@ -57,4 +70,31 @@ export function ensureNetwork(): void {
 
 export function inspect<T>(name: string, format: string): T {
   return JSON.parse(docker(["inspect", "--format", `{{json ${format}}}`, name])) as T;
+}
+
+export function stopDockerContainer(
+  name: string,
+  args: ReadonlyArray<string>,
+  timeoutMs: number,
+  waitTimeoutMs = 120_000,
+): void {
+  try {
+    docker(["stop", ...args, name], { timeoutMs });
+  } catch (error) {
+    if (!(error instanceof DockerError && error.timedOut)) throw error;
+    const running = () =>
+      docker(
+        ["container", "inspect", "--format", "{{or .State.Running .State.Restarting}}", name],
+        {
+          timeoutMs: 30_000,
+        },
+      ).trim() !== "false";
+    if (!running()) return;
+    try {
+      docker(["wait", name], { timeoutMs: waitTimeoutMs });
+    } catch (waitError) {
+      if (!(waitError instanceof DockerError && waitError.timedOut)) throw waitError;
+    }
+    if (running()) throw error;
+  }
 }

@@ -145,10 +145,6 @@ function readCa(dir: string): Ca | undefined {
   return { version, fingerprint: fingerprint(dir) };
 }
 
-/**
- * Held while anything changes the root, the container serving it, or its config, for up to 5
- * minutes, so a replacement never cuts off another lane's reload.
- */
 function withCaddyLock<T>(dir: string, run: () => T): T {
   return withLock(NodePath.join(dir, "caddy.lock"), run);
 }
@@ -407,46 +403,75 @@ function ready(dir: string, home: string): void {
  * that other homes serve through is refused rather than replaced. Each root gets its own data
  * volume, since the certificates the old root issued are kept there. The caller holds the lock.
  */
-function reconcile(dir: string, home: string): void {
+function reconcile(dir: string, home: string, retry = true): void {
   recoverRetired(dir);
-  const seen = served();
+  let seen = served();
   if (seen) refuseAnotherDirectory(seen, dir);
   const ca = readCa(dir);
   if (seen?.running && ca && ca.version >= CA_VERSION && seen.root === ca.fingerprint) return;
   const upgrade = !ca || ca.version < CA_VERSION;
   const replacing = !seen || upgrade || seen.root !== ca?.fingerprint;
-  let others = othersServing(dir, home);
-  if (others.length === 0 && seen?.running && replacing) {
-    // An older lane's reload holds no host lock; once it is done, a site it put in place counts.
-    others = reloadsSettle(seen.id)
-      ? othersServing(dir, home)
-      : [`a reload inside ${caddyContainer()}`];
+  if (seen && !seen.running && replacing) {
+    const stoppedId = seen.id;
+    docker(["start", stoppedId]);
+    waitForAdmin();
+    seen = served();
+    if (!seen?.running || seen.id !== stoppedId)
+      throw new Error(
+        `${caddyContainer()} changed while starting for replacement; refusing to remove it`,
+      );
+    refuseAnotherDirectory(seen, dir);
   }
-  // Version 1 can vouch for an IP address, so it goes even while others serve through it.
-  const rotate = !ca || ca.version < 2 || (upgrade && others.length === 0);
-  if (seen && ca && !rotate && seen.root === ca.fingerprint) {
-    if (!seen.running) {
-      docker(["start", seen.id]);
-      waitForAdmin();
+  let legacyLock: LegacyReloadLock | undefined;
+  let rotate: boolean;
+  try {
+    let others = othersServing(dir, home);
+    if (others.length === 0 && seen?.running && replacing) {
+      others = reloadsSettle(seen.id)
+        ? othersServing(dir, home)
+        : [`a reload inside ${caddyContainer()}`];
+      if (others.length === 0) {
+        legacyLock = holdLegacyReloadLock(dir, seen.id);
+        if (!legacyLock) {
+          const current = served();
+          if (!current?.running || current.id !== seen.id) {
+            if (retry) return reconcile(dir, home, false);
+            throw new Error(`${caddyContainer()} changed during legacy reload lock acquisition`);
+          }
+        }
+        others = legacyLock ? othersServing(dir, home) : [`a reload inside ${caddyContainer()}`];
+        if (legacyLock && reloadCount(seen.id) > 0)
+          others = [...others, `a waiting reload inside ${caddyContainer()}`];
+      }
     }
-    return;
-  }
-  if (seen?.running && others.length > 0) {
-    const why =
-      ca && ca.version < 2 && seen.root === ca.fingerprint
-        ? "runs on a version 1 root, which can vouch for IP addresses"
-        : `runs on root ${seen.root ?? "unknown"} and the root on disk is ${ca?.fingerprint ?? "missing"}`;
-    throw new Error(
-      `${caddyContainer()} ${why}, but other homes still serve ${others.join(", ")} through it. Replacing it would cut them off; remove those sites or their containers, then try again.`,
-    );
-  }
-  // The old container goes before the root changes, so a failure here leaves the two matching.
-  if (seen) {
-    try {
-      docker(["rm", "--force", seen.id]);
-    } catch (error) {
-      if (!isNoSuch(error)) throw error;
+    rotate = !ca || ca.version < 2 || (upgrade && others.length === 0);
+    if (seen && ca && !rotate && seen.root === ca.fingerprint) {
+      if (!seen.running) {
+        docker(["start", seen.id]);
+        waitForAdmin();
+      }
+      return;
     }
+    if (seen?.running && others.length > 0) {
+      const why =
+        ca && ca.version < 2 && seen.root === ca.fingerprint
+          ? "runs on a version 1 root, which can vouch for IP addresses"
+          : `runs on root ${seen.root ?? "unknown"} and the root on disk is ${ca?.fingerprint ?? "missing"}`;
+      throw new Error(
+        `${caddyContainer()} ${why}, but other homes still serve ${others.join(", ")} through it. Replacing it would cut them off; remove those sites or their containers, then try again.`,
+      );
+    }
+    if (seen) {
+      if (seen.running && !legacyLock?.isHeld())
+        throw new Error(`${caddyContainer()} lost its legacy reload lock; refusing to remove it`);
+      try {
+        docker(["rm", "--force", seen.id]);
+      } catch (error) {
+        if (!isNoSuch(error)) throw error;
+      }
+    }
+  } finally {
+    legacyLock?.release();
   }
   if (rotate) rotateRoot(dir, ca);
   const root = fingerprint(dir);
@@ -496,26 +521,75 @@ function reconcile(dir: string, home: string): void {
   waitForAdmin();
 }
 
-/**
- * Lanes at older revisions reload under only the lock inside the container, so a replacement
- * first waits, for up to 30 seconds, until no such reload runs or waits there.
- */
 function reloadsSettle(id: string): boolean {
-  const count = "ps -o args | grep -c '^flock /data/reload.lock' || true";
-  for (let attempt = 0; attempt < 150; attempt++) {
-    let running: string;
-    try {
-      running = docker(["exec", id, "sh", "-c", count]);
-    } catch (error) {
-      // Nothing reloads inside a container that is not running.
-      if (error instanceof DockerError && /not running|is restarting|no such/i.test(error.stderr))
-        return true;
-      throw error;
-    }
-    if (Number(running.trim()) === 0) return true;
+  for (const deadline = Date.now() + 30_000; Date.now() < deadline;) {
+    if (reloadCount(id) === 0) return true;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
   }
   return false;
+}
+
+function reloadCount(id: string): number {
+  const count = "ps -o args | grep -c '^flock /data/reload.lock' || true";
+  try {
+    return Number(docker(["exec", id, "sh", "-c", count], { timeoutMs: 30_000 }).trim());
+  } catch (error) {
+    if (error instanceof DockerError && /not running|is restarting|no such/i.test(error.stderr))
+      return 0;
+    throw error;
+  }
+}
+
+interface LegacyReloadLock {
+  readonly isHeld: () => boolean;
+  readonly release: () => void;
+}
+
+function holdLegacyReloadLock(dir: string, id: string): LegacyReloadLock | undefined {
+  const scratch = NodeFS.mkdtempSync(NodePath.join(dir, ".reload-"));
+  const held = NodePath.join(scratch, "held");
+  const finished = NodePath.join(scratch, "finished");
+  const marker = `${CONFIG_DIR}/${NodePath.basename(scratch)}`;
+  const child = NodeChildProcess.spawn(
+    "sh",
+    [
+      "-c",
+      'docker "$@"; status=$?; if [ -d "$0" ]; then touch "$0/finished"; fi; exit "$status"',
+      scratch,
+      "exec",
+      "--interactive",
+      id,
+      "sh",
+      "-c",
+      `exec 9<>/data/reload.lock
+deadline=$(($(date +%s) + 60))
+while [ -d "$1" ] && [ "$(date +%s)" -lt "$deadline" ]; do
+  if flock -n 9; then
+    touch "$1/held" && read -r release
+    exit
+  fi
+  sleep 0.1
+done
+exit 1`,
+      "sh",
+      marker,
+    ],
+    { stdio: ["pipe", "ignore", "ignore"] },
+  );
+  child.on("error", () => {});
+  child.stdin.on("error", () => {});
+  const release = () => {
+    child.stdin.end("release\n");
+    NodeFS.rmSync(scratch, { recursive: true, force: true });
+  };
+  const isHeld = () => NodeFS.existsSync(held) && !NodeFS.existsSync(finished);
+  for (const deadline = Date.now() + 60_000; child.pid && Date.now() < deadline;) {
+    if (NodeFS.existsSync(finished)) break;
+    if (isHeld()) return { isHeld, release };
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+  }
+  release();
+  return undefined;
 }
 
 function waitForAdmin(): void {
@@ -609,31 +683,40 @@ export function publishSite(site: Site): string {
     throw new Error(
       `${site.host} is not a name under ${DOMAIN}, the only names the fixtures serve`,
     );
+  const dir = prepare();
+  const file = siteFile(site.id);
+  return withLock(NodePath.join(dir, `${file}.publish.lock`), () => publishLocked(site, dir, file));
+}
+
+function publishLocked(site: Site, dir: string, file: string): string {
   const address = site.plainHttp ? `http://${site.host}, https://${site.host}` : site.host;
   const headers = Object.entries(site.headers ?? {})
     .map(([name, value]) => `\t\theader_up ${name} "${value}"\n`)
     .join("");
-  const body = `${address} {\n\ttls internal\n\treverse_proxy ${site.upstream} {\n${headers}\t}\n}\n# sail-fixture home ${site.home}\n# sail-fixture container ${site.container}\n`;
-  const dir = prepare();
-  const file = siteFile(site.id);
+  const publication = NodeCrypto.randomBytes(16).toString("hex");
+  const body = `${address} {\n\ttls internal\n\treverse_proxy ${site.upstream} {\n${headers}\t}\n}\n# sail-fixture home ${site.home}\n# sail-fixture container ${site.container}\n# sail-fixture publish ${publication}\n`;
   const { url, before } = withCaddyLock(dir, () => {
     ready(dir, site.home);
-    const shown = { url: publicUrl(site.host), before: readSite(dir, file) };
-    changeAndReload(file, { kind: "put", body });
-    return shown;
+    const url = publicUrl(site.host);
+    const before = changeAndReload(file, { kind: "put", body });
+    return { url, before };
   });
   try {
     waitForCertificate(site.host, url);
   } catch (error) {
-    // The caller rolls back to what served before, so the route it had comes back too.
     withCaddyLock(dir, () => {
-      if (served()?.running)
+      const running = served();
+      if (running?.running) {
+        refuseAnotherDirectory(running, dir);
         changeAndReload(
           file,
           before === undefined ? { kind: "delete" } : { kind: "put", body: before },
+          publication,
         );
-      else if (before === undefined) NodeFS.rmSync(NodePath.join(dir, file), { force: true });
-      else NodeFS.writeFileSync(NodePath.join(dir, file), before);
+      } else if (readSite(dir, file) === body) {
+        if (before === undefined) NodeFS.rmSync(NodePath.join(dir, file), { force: true });
+        else NodeFS.writeFileSync(NodePath.join(dir, file), before);
+      }
     });
     throw error;
   }
@@ -700,38 +783,38 @@ type Change =
   | { readonly kind: "delete" }
   | { readonly kind: "upgrade"; readonly body: string; readonly version: number };
 
-/**
- * `$1` is a path under the config directory, `$2` the change, `$3` the version an upgrade brings.
- * The old file is kept until Caddy accepts the new config, and put back if it refuses.
- */
 const CHANGE_AND_RELOAD = `cd ${CONFIG_DIR} || exit 1
-key=$(printf %s "$1" | tr / _)
+file=$1
+change=$2
+version=$3
+publication=$4
+if [ -n "$publication" ] && ! grep -Fqx "# sail-fixture publish $publication" "$file" 2>/dev/null; then exit 0; fi
+key=$(printf %s "$file" | tr / _)
 next=".next-$key"
 saved=".saved-$key"
-case "$2" in
-  delete) [ -e "$1" ] || exit 0 ;;
+case "$change" in
+  delete) [ -e "$file" ] || exit 0 ;;
   upgrade)
-    stamp=$(head -n 1 "$1")
+    stamp=$(head -n 1 "$file")
     case "$stamp" in "# sail-fixtures Caddyfile v"*) have=$(printf %s "$stamp" | tr -cd 0-9) ;; *) have=0 ;; esac
-    [ "$have" -lt "$3" ] || exit 0
+    [ "$have" -lt "$version" ] || exit 0
     cat > "$next" || exit 1 ;;
   put) cat > "$next" || exit 1 ;;
   *) exit 2 ;;
 esac
 rm -f "$saved"
-if [ -e "$1" ]; then cp -p "$1" "$saved" || exit 1; fi
-if [ "$2" = delete ]; then rm "$1"; else mv "$next" "$1"; fi || exit 1
-if caddy reload --config Caddyfile --adapter caddyfile; then rm -f "$saved"; exit 0; fi
-if [ -e "$saved" ]; then mv "$saved" "$1"; else rm -f "$1"; fi
+if [ -e "$file" ]; then cp -p "$file" "$saved" || exit 1; fi
+if [ "$change" = delete ]; then rm "$file"; else mv "$next" "$file"; fi || exit 1
+if caddy reload --config Caddyfile --adapter caddyfile >&2; then
+  if [ -e "$saved" ]; then printf 1; cat "$saved"; else printf 0; fi
+  rm -f "$saved"
+  exit 0
+fi
+if [ -e "$saved" ]; then mv "$saved" "$file"; else rm -f "$file"; fi
 exit 1`;
 
-/**
- * The caller holds the Caddy lock. Lanes at older revisions take only the lock inside the container,
- * so a change runs whole under both, and no reload reads a file Caddy refused or lands an older set
- * of sites after a newer one.
- */
-function changeAndReload(file: string, change: Change): void {
-  docker(
+function changeAndReload(file: string, change: Change, publication = ""): string | undefined {
+  const previous = docker(
     [
       "exec",
       "--interactive",
@@ -745,9 +828,11 @@ function changeAndReload(file: string, change: Change): void {
       file,
       change.kind,
       change.kind === "upgrade" ? String(change.version) : "",
+      publication,
     ],
     { input: change.kind === "delete" ? "" : change.body },
   );
+  return previous.startsWith("1") ? previous.slice(1) : undefined;
 }
 
 export function rootCertPath(): string {

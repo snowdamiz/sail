@@ -24,6 +24,7 @@ import {
   FIXTURE_LABEL,
   inspect,
   NETWORK,
+  stopDockerContainer,
 } from "../lib/docker.ts";
 import {
   createJsonExclusive,
@@ -585,7 +586,7 @@ function awakeSeconds(id: string, state: Live, sinceSecs: number): number {
 }
 
 function stopContainer(id: string): void {
-  docker(["stop", "--time", "30", container(id)], { timeoutMs: 60_000 });
+  stopDockerContainer(container(id), ["--time", "30"], 60_000);
 }
 
 /** Begins a transition this process owns, unless one whose owner still runs is in flight. */

@@ -7,9 +7,9 @@ import * as NodeHttps from "node:https";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import { caddyDir, publicUrl, removeSite, rootCertPath } from "./lib/caddy.ts";
-import { docker, exists, hasDocker, DOCKER_TEST_TIMEOUT_MS } from "./lib/docker.ts";
-import { fixturesRoot, homeId } from "./lib/state.ts";
+import { caddyDir, publicUrl, publishSite, removeSite, rootCertPath } from "./lib/caddy.ts";
+import { docker, exists, hasDocker, NETWORK, DOCKER_TEST_TIMEOUT_MS } from "./lib/docker.ts";
+import { fixturesRoot, homeId, takeLock } from "./lib/state.ts";
 
 // oxlint-disable-next-line t3code/no-test-timeout-or-unreasoned-skip -- Docker work on the VM every lane shares, not a hidden wait.
 vi.setConfig({ testTimeout: DOCKER_TEST_TIMEOUT_MS, hookTimeout: DOCKER_TEST_TIMEOUT_MS });
@@ -381,7 +381,8 @@ describe.skipIf(!hasDocker())("fake fly", () => {
           `label=sail-fixture.fly-app=${name}`,
         ])
           .trim()
-          .split("\n").length,
+          .split("\n")
+          .filter(Boolean).length,
       }),
     };
   };
@@ -464,6 +465,10 @@ primary_region = "iad" # comment
       `${app}-g`,
       `${app}-k`,
       `${app}-l`,
+      `${app}-m`,
+      `${app}-n`,
+      `${app}-q`,
+      `${app}-r`,
       `${app}-s`,
       `${app}-t`,
       `${app}-y`,
@@ -1267,7 +1272,10 @@ primary_region = "iad" # comment
     });
 
     swapped.configure("/unhealthy", 9090);
-    const failed = fly(swapped.args("bluegreen", ["--wait-timeout", "2s"]), {}, root);
+    const refuseReload = dockerShim("unhealthy-green-never-published", [
+      'case "$*" in *"/data/reload.lock"*) echo "unexpected reload" >&2; exit 1;; esac',
+    ]);
+    const failed = fly(swapped.args("bluegreen", ["--wait-timeout", "2s"]), refuseReload, root);
     expect(failed.status).toBe(1);
     expect(failed.stderr).toMatch(
       /\nRolling back failed deployment\n {2}Deleted machine [0-9a-f]{14} \[app\]\nError: wait timeout\ncould not get all green machines to be healthy\n$/,
@@ -1312,8 +1320,210 @@ primary_region = "iad" # comment
       status: 200,
       body: blue,
     });
+    expect(swapped.live().containers).toBe(2);
+    const destroyed = fly(["machine", "destroy", blue, "--force", "-a", swapped.name]);
+    expect(destroyed.status).toBe(1);
+    expect(destroyed.stderr).toContain("interrupted bluegreen swap");
+    expect(swapped.live()).toMatchObject({ machines: [blue], containers: 2 });
+    await expect(get(`${swapped.site()}/machine`)).resolves.toMatchObject({
+      status: 200,
+      body: blue,
+    });
     expect(fly(swapped.args("immediate"), {}, root)).toMatchObject({ status: 0 });
     expect(swapped.live()).toEqual({ machines: [blue], serving: blue, containers: 1 });
+    ok(["apps", "destroy", swapped.name, "--yes"]);
+  });
+
+  it("restores the recorded machine's route when killed after green takes traffic", async () => {
+    const swapped = blueGreenApp(`${app}-r`);
+    ok(["apps", "create", swapped.name]);
+    swapped.configure("/", 8080);
+    expect(fly(swapped.args(), {}, root)).toMatchObject({ status: 0 });
+    const blue = swapped.live().serving;
+    const hook = NodePath.join(root, "kill-before-green-record.mjs");
+    NodeFS.writeFileSync(
+      hook,
+      `import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const rename = fs.renameSync;
+fs.renameSync = (from, to) => {
+  if (typeof to === "string" && to.startsWith(${JSON.stringify(NodePath.join(NodeFS.realpathSync(home), "machines") + "/")})) {
+    process.kill(process.pid, "SIGKILL");
+  }
+  return rename(from, to);
+};
+syncBuiltinESMExports();`,
+    );
+    swapped.configure("/", 9090);
+    const killed = run(swapped.args(), { NODE_OPTIONS: `--import=${hook}` }, root);
+    expect(killed.status).toBeNull();
+    expect(swapped.live().machines).toEqual([blue]);
+    const after = await get(`${swapped.site()}/machine`);
+    expect(after.status).toBe(200);
+    expect(after.body).not.toBe(blue);
+    swapped.configure("/unhealthy", 9090);
+    const failed = fly(swapped.args("bluegreen", ["--wait-timeout", "2s"]), {}, root);
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toContain("could not get all green machines to be healthy");
+    expect(swapped.live()).toEqual({ machines: [blue], serving: blue, containers: 1 });
+    await expect(get(`${swapped.site()}/machine`)).resolves.toMatchObject({
+      status: 200,
+      body: blue,
+    });
+    ok(["apps", "destroy", swapped.name, "--yes"]);
+  });
+
+  it("serializes a machine destroy with a deployment in the same home", async () => {
+    const swapped = blueGreenApp(`${app}-q`);
+    ok(["apps", "create", swapped.name]);
+    swapped.configure("/", 8080);
+    expect(fly(swapped.args(), {}, root)).toMatchObject({ status: 0 });
+    const blue = swapped.live().serving;
+    const held = NodePath.join(root, "destroy-held");
+    const release = NodePath.join(root, "destroy-release");
+    const pause = dockerShim("pause-destroy", [
+      `if [ "$1" = rm ] && [ "$2" = --force ] && [ "$3" = --volumes ]; then
+        : > "${held}"
+        i=0
+        until [ -f "${release}" ]; do i=$((i+1)); [ "$i" -lt 1200 ] || exit 1; sleep 0.1; done
+      fi`,
+    ]);
+    const asyncFly = (args: ReadonlyArray<string>, extraEnv = {}) =>
+      new Promise<Run>((resolve) => {
+        calls++;
+        NodeChildProcess.execFile(
+          "fly",
+          args,
+          { cwd: root, env: { ...env, ...extraEnv } },
+          (error, stdout, stderr) =>
+            resolve({ status: error ? Number(error.code) : 0, stdout, stderr }),
+        );
+      });
+    const destroying = asyncFly(["machine", "destroy", blue, "--force", "-a", swapped.name], pause);
+    let replacing: Promise<Run> | undefined;
+    try {
+      await expect.poll(() => NodeFS.existsSync(held), { timeout: 120_000 }).toBe(true);
+      const lock = takeLock(NodePath.join(home, "apps", `${swapped.name}.json.lock`));
+      lock?.();
+      expect(lock, "machine destroy owns the application lock").toBeUndefined();
+      replacing = asyncFly(swapped.args());
+      NodeFS.writeFileSync(release, "");
+      expect(await destroying).toMatchObject({ status: 0 });
+      expect(await replacing).toMatchObject({ status: 0 });
+      const green = swapped.live().serving;
+      expect(green).not.toBe(blue);
+      expect(swapped.live()).toEqual({ machines: [green], serving: green, containers: 1 });
+      await expect(get(`${swapped.site()}/machine`)).resolves.toMatchObject({
+        status: 200,
+        body: green,
+      });
+    } finally {
+      NodeFS.writeFileSync(release, "");
+      await Promise.allSettled([destroying, replacing]);
+      ok(["apps", "destroy", swapped.name, "--yes"]);
+    }
+  });
+
+  it("keeps a legacy container reachable if recovery dies just after its rename", async () => {
+    const swapped = blueGreenApp(`${app}-m`);
+    ok(["apps", "create", swapped.name]);
+    swapped.configure("/", 8080);
+    expect(fly(swapped.args(), {}, root)).toMatchObject({ status: 0 });
+    const blue = swapped.live().serving;
+    const live = `sail-fly-${swapped.name}`;
+    docker(["rm", "--force", "--volumes", live]);
+    docker([
+      "run",
+      "--detach",
+      "--name",
+      live,
+      "--hostname",
+      blue,
+      "--network",
+      NETWORK,
+      "--label",
+      "sail-fixture=fly-machine",
+      "--label",
+      `sail-fixture.fly-app=${swapped.name}`,
+      "--label",
+      `sail-fixture.home=${homeId(home)}`,
+      "--env",
+      `FLY_MACHINE_ID=${blue}`,
+      "--env",
+      "PORT=8080",
+      "--memory",
+      "128m",
+      image,
+    ]);
+    publishSite({
+      id: `fly-${swapped.name}`,
+      home: homeId(home),
+      container: live,
+      host: `${swapped.name}.localtest.me`,
+      upstream: `${live}:8080`,
+    });
+    await expect
+      .poll(async () => (await get(`${swapped.site()}/machine`)).body, { timeout: 120_000 })
+      .toBe(blue);
+    const killed = run(
+      swapped.args(),
+      dockerShim("kill-legacy-promotion", [
+        `[ "$*" = "rename ${live}_green ${live}" ] && { kill -9 $PPID; exit 1; }`,
+      ]),
+      root,
+    );
+    expect(killed.status).toBeNull();
+    const hook = NodePath.join(root, "kill-after-legacy-rename.mjs");
+    NodeFS.writeFileSync(
+      hook,
+      `import cp from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+const call = cp.spawnSync;
+cp.spawnSync = (command, args, ...rest) => {
+  const result = call(command, args, ...rest);
+  if (command === "docker" && args[0] === "rename" && args[1] === ${JSON.stringify(live + "_blue")} && result.status === 0)
+    process.kill(process.pid, "SIGKILL");
+  return result;
+};
+syncBuiltinESMExports();`,
+    );
+    const recovered = run(swapped.args(), { NODE_OPTIONS: `--import=${hook}` }, root);
+    expect(recovered.status).toBeNull();
+    expect(swapped.live()).toEqual({ machines: [blue], serving: blue, containers: 1 });
+    await expect(get(`${swapped.site()}/machine`)).resolves.toMatchObject({
+      status: 200,
+      body: blue,
+    });
+    ok(["apps", "destroy", swapped.name, "--yes"]);
+  });
+
+  it("cleans up an interrupted unrouted candidate when the recorded machine is absent", async () => {
+    const swapped = blueGreenApp(`${app}-n`);
+    ok(["apps", "create", swapped.name]);
+    swapped.configure("/", 8080);
+    expect(fly(swapped.args(), {}, root)).toMatchObject({ status: 0 });
+    const blue = swapped.live().serving;
+    const live = `sail-fly-${swapped.name}`;
+    docker(["rm", "--force", "--volumes", live]);
+    swapped.configure("/unhealthy", 9090);
+    const failed = fly(swapped.args("bluegreen", ["--wait-timeout", "2s"]), {}, root);
+    expect(failed.stderr).toContain("could not get all green machines to be healthy");
+    expect(swapped.live()).toMatchObject({ machines: [blue], containers: 0 });
+    swapped.configure("/", 8080);
+    const killed = run(
+      swapped.args(),
+      dockerShim("kill-without-blue", [
+        `[ "$*" = "rename ${live}_green ${live}" ] && { kill -9 $PPID; exit 1; }`,
+      ]),
+      root,
+    );
+    expect(killed.status).toBeNull();
+    expect(swapped.live()).toMatchObject({ machines: [blue], containers: 1 });
+    expect(fly(swapped.args("immediate"), {}, root)).toMatchObject({ status: 0 });
+    expect(swapped.live()).toEqual({ machines: [blue], serving: blue, containers: 1 });
+    await expect
+      .poll(async () => (await get(`${swapped.site()}/machine`)).body, { timeout: 120_000 })
+      .toBe(blue);
     ok(["apps", "destroy", swapped.name, "--yes"]);
   });
 
