@@ -19,7 +19,6 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
-import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
@@ -41,7 +40,6 @@ const FORCE_KILL_AFTER = Duration.seconds(3);
 const SSE_RECONNECT_DELAY = Duration.millis(1_500);
 const STDERR_DRAIN_TIMEOUT = Duration.seconds(1);
 const STDERR_TAIL_LINES = 5;
-const BOOT_START_RETRY = Schedule.exponential("2 seconds").pipe(Schedule.upTo({ times: 5 }));
 
 const Handshake = Schema.Struct({
   ready: Schema.Literal(true),
@@ -399,8 +397,10 @@ const make = Effect.gen(function* () {
     yield* followEvents(daemon).pipe(Effect.forkScoped);
 
     const exit = yield* Fiber.join(exited);
-    // After the handshake the daemon's log can hold Boat output, and status reaches every client.
-    yield* Effect.logWarning("sail-boatd exited", { stderr: yield* stderrTail });
+    // After the handshake the daemon's log can hold Boat output. Status reaches every client and a
+    // log message reaches trace diagnostics; annotations reach neither.
+    const tail = yield* stderrTail;
+    yield* Effect.logWarning("sail-boatd exited").pipe(Effect.annotateLogs({ stderr: tail }));
     return yield* new BoatError({
       message: `sail-boatd exited unexpectedly (${describeExit(exit)})`,
     });
@@ -508,12 +508,7 @@ const make = Effect.gen(function* () {
     fileSystem.readFileString(path.join(dataDir, "state.json")).pipe(
       Effect.map(savedStateNeedsDaemon),
       Effect.orElseSucceed(() => false),
-      Effect.flatMap((needed) =>
-        needed
-          ? // A daemon left by a server that just died can still hold the data dir for a moment.
-            Effect.flatten(ensureStarted).pipe(Effect.retry(BOOT_START_RETRY))
-          : Effect.void,
-      ),
+      Effect.flatMap((needed) => (needed ? Effect.flatten(ensureStarted) : Effect.void)),
       Effect.ignore,
     ),
   );
