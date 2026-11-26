@@ -311,7 +311,21 @@ function requireLive(record: SandboxRecord): Live {
   return state;
 }
 
+const PAUSE_WAIT_MS = 60_000;
+
+function isPaused(id: string): boolean {
+  try {
+    return inspect<boolean>(container(id), ".State.Paused");
+  } catch {
+    return false;
+  }
+}
+
+/** `docker commit` pauses a sandbox so its snapshot is consistent; a call waits that out. */
 function requireRunning(record: SandboxRecord): Live {
+  for (let waited = 0; waited < PAUSE_WAIT_MS && isPaused(record.id); waited += 200) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+  }
   const state = requireLive(record);
   if (state.state !== "running") {
     throw new BoatError("sandbox_not_running", `Sandbox ${record.id} is ${state.state}`);
@@ -483,7 +497,6 @@ function commitSnapshot(sandboxId: string, name: string): void {
   const imageId = docker(
     [
       "commit",
-      "--no-pause",
       "--change",
       `LABEL ${FIXTURE_LABEL}=boat-snapshot`,
       "--change",

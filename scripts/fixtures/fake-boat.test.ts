@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalFetch:off - Drives the fake boat CLI and its Docker sandboxes end to end.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
+import * as NodeEvents from "node:events";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeNet from "node:net";
@@ -366,6 +367,22 @@ describe("fake sign-in codes", () => {
   });
 });
 
+/** A process whose command line names the fake, as a real worker's does. */
+function fakeBoatProcess() {
+  const child = NodeChildProcess.spawn(
+    process.execPath,
+    ["-e", "setTimeout(() => {}, 60_000)", NodePath.join("fake-boat", "boat.ts")],
+    { stdio: "ignore" },
+  );
+  return {
+    pid: child.pid ?? 0,
+    [Symbol.asyncDispose]: async () => {
+      child.kill();
+      await NodeEvents.once(child, "exit");
+    },
+  };
+}
+
 describe("fake boat worker lock", () => {
   let dir: string;
   const deadPid = () => {
@@ -390,18 +407,24 @@ describe("fake boat worker lock", () => {
     expect(takeLock(lock)).toBe(true);
     expect(holder(lock)).toBe(process.pid);
 
+    await using worker = fakeBoatProcess();
     const live = NodePath.join(dir, "live.json");
-    await NodeFSP.writeFile(live, JSON.stringify({ pid: process.ppid }));
+    await NodeFSP.writeFile(live, JSON.stringify({ pid: worker.pid }));
     expect(takeLock(live)).toBe(false);
-    expect(holder(live)).toBe(process.ppid);
+    expect(holder(live)).toBe(worker.pid);
+
+    const reused = NodePath.join(dir, "reused.json");
+    await NodeFSP.writeFile(reused, JSON.stringify({ pid: process.ppid }));
+    expect(takeLock(reused), "a live pid that is not the fake is a dead holder").toBe(true);
   });
 
   it("never removes a lock that a live worker took after the dead holder was seen", async () => {
+    await using worker = fakeBoatProcess();
     const lock = NodePath.join(dir, "raced.json");
     const seen = deadPid();
-    await NodeFSP.writeFile(lock, JSON.stringify({ pid: process.ppid }));
+    await NodeFSP.writeFile(lock, JSON.stringify({ pid: worker.pid }));
     expect(breakStaleLock(lock, seen)).toBe(false);
-    expect(holder(lock)).toBe(process.ppid);
+    expect(holder(lock)).toBe(worker.pid);
     const leftovers = (await NodeFSP.readdir(dir)).filter((name) => name.startsWith("raced.json."));
     expect(leftovers).toEqual([]);
   });
@@ -767,6 +790,23 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     }
     const slow = await json(["exec", sandbox, "--timeout", "1", "--", "sleep", "30"]);
     expect(lastJson<ExecJson>(slow.stdout).exitCode).toBeNull();
+  });
+
+  it("waits out the pause a snapshot save takes instead of failing an exec", async () => {
+    const name = `sail-boat-${sandbox}`;
+    docker(["pause", name]);
+    const unpause = NodeChildProcess.spawn("sh", ["-c", `sleep 1; docker unpause ${name}`]);
+    const unpaused = NodeEvents.once(unpause, "exit");
+    try {
+      const ran = await json(["exec", sandbox, "--", "echo", "after the pause"]);
+      expect(lastJson<ExecJson>(ran.stdout)).toMatchObject({
+        exitCode: 0,
+        stdout: "after the pause\n",
+      });
+    } finally {
+      await unpaused;
+      dockerSucceeds(["unpause", name]);
+    }
   });
 
   it("copies files both ways, landing owned by user", async () => {

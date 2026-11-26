@@ -57,13 +57,12 @@ function hasCode(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
 }
 
+/** Alive only while that pid still runs this fake: a dead worker's pid can be reused by anything. */
 function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return hasCode(error, "EPERM");
-  }
+  const ps = NodeChildProcess.spawnSync("ps", ["-o", "command=", "-p", String(pid)], {
+    encoding: "utf8",
+  });
+  return ps.status === 0 && ps.stdout.includes(NodePath.join("fake-boat", "boat.ts"));
 }
 
 function entries(dir: string): ReadonlyArray<string> {
