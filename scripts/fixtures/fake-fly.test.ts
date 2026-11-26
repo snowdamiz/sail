@@ -155,6 +155,8 @@ const IMAGE_KEYS = ["MachineID", "Registry", "Repository", "Tag", "Version", "Di
 // flyctl's `logs.LogEntry` in field order; `Meta` has no JSON tags but `status_code`.
 const LOG_KEYS = ["level", "instance", "message", "region", "timestamp", "meta"];
 const TIMESTAMP = String.raw`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z`;
+// What the test app prints first: a CRLF line, and a progress meter's redraws before a line separator.
+const LOG_REDRAWS = ["progress 10%\r", "\r 45%\r100%server\u2028ready"];
 const EMPTY_LOG_META = {
   HTTP: { Request: { ID: "", Method: "", Version: "" }, Response: { status_code: 0 } },
   Error: { Code: 0, Message: "" },
@@ -335,6 +337,65 @@ describe.skipIf(!hasDocker())("fake fly", () => {
     followers.push(follower);
     return follower;
   };
+  /** An app whose `fly.toml` has one check of `path` on `port`, the port the test app listens on. */
+  const blueGreenApp = (name: string) => {
+    const dir = NodePath.join(root, name);
+    NodeFS.mkdirSync(dir);
+    return {
+      name,
+      site: () => publicUrl(`${name}.localtest.me`),
+      configure: (path: string, port: number) =>
+        NodeFS.writeFileSync(
+          NodePath.join(dir, "fly.toml"),
+          `app = "${name}"\n\n[env]\n  PORT = "${port}"\n\n[http_service]\n  internal_port = ${port}\n\n  [[http_service.checks]]\n    path = "${path}"\n`,
+        ),
+      args: (strategy = "bluegreen", flags: ReadonlyArray<string> = []) => [
+        "deploy",
+        dir,
+        "--image",
+        image,
+        "--local-only",
+        "--ha=false",
+        "--strategy",
+        strategy,
+        ...flags,
+      ],
+      live: () => ({
+        machines: (json(["machine", "list", "-j", "-a", name]) as Array<{ id: string }>).map(
+          (machine) => machine.id,
+        ),
+        serving: fly([
+          "ssh",
+          "console",
+          "-a",
+          name,
+          "-q",
+          "-C",
+          "printenv FLY_MACHINE_ID",
+        ]).stdout.trim(),
+        containers: docker([
+          "ps",
+          "--all",
+          "--quiet",
+          "--filter",
+          `label=sail-fixture.fly-app=${name}`,
+        ])
+          .trim()
+          .split("\n").length,
+      }),
+    };
+  };
+  /** A `docker` first on `PATH` that runs `lines` before it hands the call to the real one. */
+  const dockerShim = (name: string, lines: ReadonlyArray<string>) => {
+    const dir = NodePath.join(root, name);
+    NodeFS.mkdirSync(dir);
+    NodeFS.writeFileSync(
+      NodePath.join(dir, "docker"),
+      ["#!/bin/sh", "PATH=${PATH#*:}", ...lines, 'exec docker "$@"', ""].join("\n"),
+      { mode: 0o755 },
+    );
+    return { PATH: `${dir}${NodePath.delimiter}${env.PATH}` };
+  };
 
   beforeAll(() => {
     const build = NodePath.join(root, "image");
@@ -342,11 +403,11 @@ describe.skipIf(!hasDocker())("fake fly", () => {
     NodeFS.mkdirSync(appDir, { recursive: true });
     NodeFS.writeFileSync(
       NodePath.join(build, "Caddyfile"),
-      `:8080 {\n\t@unchecked {\n\t\tpath /checked\n\t\tnot header X-Check yes\n\t}\n\trespond @unchecked 503\n\trespond /unhealthy 503\n\trespond "proto={header.X-Forwarded-Proto} fly={header.Fly-Forwarded-Proto} port={header.X-Forwarded-Port} ssl={header.X-Forwarded-Ssl}"\n}\n`,
+      `:{$PORT:8080} {\n\t@unchecked {\n\t\tpath /checked\n\t\tnot header X-Check yes\n\t}\n\trespond @unchecked 503\n\trespond /unhealthy 503\n\trespond /machine "{env.FLY_MACHINE_ID}"\n\trespond "proto={header.X-Forwarded-Proto} fly={header.Fly-Forwarded-Proto} port={header.X-Forwarded-Port} ssl={header.X-Forwarded-Ssl}"\n}\n`,
     );
     NodeFS.writeFileSync(
       NodePath.join(build, "start.sh"),
-      `caddy run --config /etc/caddy/Caddyfile & pid=$!\nfor signal in INT TERM; do trap "echo $signal >> /data/signals; kill $pid; exit 0" $signal; done\nwait $pid\n`,
+      `printf '${LOG_REDRAWS.map((line) => line.replaceAll("%", "%%")).join("\\n")}\\n'\ncaddy run --config /etc/caddy/Caddyfile & pid=$!\nfor signal in INT TERM; do trap "echo $signal >> /data/signals; kill $pid; exit 0" $signal; done\nwait $pid\n`,
     );
     NodeFS.writeFileSync(
       NodePath.join(build, "Dockerfile"),
@@ -401,6 +462,7 @@ primary_region = "iad" # comment
       `${app}-d`,
       `${app}-f`,
       `${app}-g`,
+      `${app}-k`,
       `${app}-l`,
       `${app}-s`,
       `${app}-t`,
@@ -773,26 +835,15 @@ primary_region = "iad" # comment
   });
 
   it("redeploys onto the same machine and volume, and logs follow the new container with only its lines", async () => {
-    const slowDocker = NodePath.join(root, "slow-docker");
-    NodeFS.mkdirSync(slowDocker);
     // Docker on a loaded VM: a stopped container lingers before its removal, so a follower can
     // ask for its logs just as it goes.
-    NodeFS.writeFileSync(
-      NodePath.join(slowDocker, "docker"),
-      [
-        "#!/bin/sh",
-        "PATH=${PATH#*:}",
-        "for target; do :; done",
-        "case $1 in",
-        "rm) sleep 2 ;;",
-        `logs) for _ in $(seq 100); do [ "$(docker inspect --format '{{.State.Running}}' "$target" 2>/dev/null)" = false ] || break; sleep 0.1; done ;;`,
-        "esac",
-        'exec docker "$@"',
-        "",
-      ].join("\n"),
-      { mode: 0o755 },
-    );
-    const racy = { PATH: `${slowDocker}${NodePath.delimiter}${env.PATH}` };
+    const racy = dockerShim("slow-docker", [
+      "for target; do :; done",
+      "case $1 in",
+      "rm) sleep 2 ;;",
+      `logs) for _ in $(seq 100); do [ "$(docker inspect --format '{{.State.Running}}' "$target" 2>/dev/null)" = false ] || break; sleep 0.1; done ;;`,
+      "esac",
+    ]);
     const plainLogs = follow(["logs"], racy);
     const jsonLogs = follow(["logs", "--json"], racy);
     await Promise.all([plainLogs.sees(1), jsonLogs.sees(1)]);
@@ -832,7 +883,7 @@ primary_region = "iad" # comment
     expect(noTail[0]).toMatch(new RegExp(`^\\S+Z app\\[${firstMachine}\\] iad \\[info\\] \\S`));
   });
 
-  it("prints logs as a stream of flyctl's LogEntry JSON", () => {
+  it("prints logs as a stream of flyctl's LogEntry JSON, keeping each app line whole", () => {
     const entries = (text: string): Array<Record<string, unknown>> =>
       text === ""
         ? []
@@ -857,6 +908,15 @@ primary_region = "iad" # comment
         ...EMPTY_LOG_META,
       },
     });
+    const plain = ok(["logs", "--no-tail"]);
+    expect({
+      json: entries(raw)
+        .map((logged) => logged.message)
+        .filter((message) => LOG_REDRAWS.includes(String(message))),
+      plain: LOG_REDRAWS.filter((line) =>
+        plain.includes(`app[${firstMachine}] iad [info] ${line}\n`),
+      ),
+    }).toEqual({ json: LOG_REDRAWS, plain: LOG_REDRAWS });
     const byMachine = ok(["logs", "-n", "-j", "--machine", firstMachine, "--region", "nowhere"]);
     expect(entries(byMachine).length).toBe(entries(raw).length);
     expect(fly(["logs", "-n", "-j", "--region", "nowhere"]).stdout).toBe("");
@@ -1152,6 +1212,18 @@ primary_region = "iad" # comment
       ),
       stderr: `\nVerifying if app can be safely deployed \n\n[WARN] Machine ${launched?.id} [app] doesn't have healthchecks setup. We won't check its health.\n\nYou need to define at least 1 check in order to use blue-green deployments. Refer to https://fly.io/docs/reference/configuration/#services-tcp_checks\nError: app not in valid state for bluegreen deployments\n`,
     });
+    // flyctl counts these checks too, so it would deploy both apps.
+    for (const [table, more] of [
+      ["[checks]", '\n[checks.alive]\n  type = "tcp"\n  port = 8080\n'],
+      [
+        "[[services]]",
+        '\n[[services]]\n  internal_port = 8080\n  protocol = "tcp"\n\n  [[services.tcp_checks]]\n    interval = "15s"\n',
+      ],
+    ])
+      expect(deployWith("bluegreen", more), table).toMatchObject({
+        status: 1,
+        stderr: `Error: fake fly does not model bluegreen deploys of an app with ${table}\n`,
+      });
     expect(json(["machine", "list", "-j", "-a", strategic])).toMatchObject([
       { id: launched?.id, state: "started" },
     ]);
@@ -1161,73 +1233,80 @@ primary_region = "iad" # comment
     ok(["apps", "destroy", strategic, "--yes"]);
   });
 
-  it("replaces the machine with a new one in a bluegreen deploy, and keeps it when the new one fails", async () => {
-    const swapped = `${app}-g`;
-    const dir = NodePath.join(root, "bluegreen-app");
-    NodeFS.mkdirSync(dir, { recursive: true });
-    const deployChecking = (path: string, flags: ReadonlyArray<string> = []) => {
-      NodeFS.writeFileSync(
-        NodePath.join(dir, "fly.toml"),
-        `app = "${swapped}"\n\n[http_service]\n  internal_port = 8080\n\n  [[http_service.checks]]\n    path = "${path}"\n`,
-      );
-      return fly(
-        [
-          "deploy",
-          dir,
-          "--image",
-          image,
-          "--local-only",
-          "--ha=false",
-          "--strategy",
-          "bluegreen",
-          ...flags,
-        ],
-        {},
-        root,
-      );
-    };
-    const live = () => ({
-      machines: (json(["machine", "list", "-j", "-a", swapped]) as Array<{ id: string }>).map(
-        (machine) => machine.id,
-      ),
-      serving: fly([
-        "ssh",
-        "console",
-        "-a",
-        swapped,
-        "-q",
-        "-C",
-        "printenv FLY_MACHINE_ID",
-      ]).stdout.trim(),
-      containers: docker([
-        "ps",
-        "--all",
-        "--quiet",
-        "--filter",
-        `label=sail-fixture.fly-app=${swapped}`,
-      ])
-        .trim()
-        .split("\n").length,
-    });
-    ok(["apps", "create", swapped]);
-    expect(deployChecking("/")).toMatchObject({ status: 0 });
-    const blue = live().serving;
+  it("moves traffic to a new machine in a bluegreen deploy before blue stops, and keeps it when the next one fails", async () => {
+    const swapped = blueGreenApp(`${app}-g`);
+    ok(["apps", "create", swapped.name]);
+    swapped.configure("/", 8080);
+    expect(fly(swapped.args(), {}, root)).toMatchObject({ status: 0 });
+    const blue = swapped.live().serving;
 
-    expect(deployChecking("/")).toMatchObject({ status: 0 });
-    const green = live().serving;
+    const answers = NodePath.join(root, "bluegreen-answers");
+    const askOnStop = dockerShim("ask-on-stop", [
+      `[ "$1" = stop ] && curl -s -w ' %{http_code}\\n' --cacert '${rootCertPath()}' '${swapped.site()}/machine' >> '${answers}'`,
+    ]);
+    swapped.configure("/", 9090);
+    expect(fly(swapped.args(), askOnStop, root)).toMatchObject({ status: 0 });
+    const green = swapped.live().serving;
     expect(green).not.toBe(blue);
-    expect(live()).toEqual({ machines: [green], serving: green, containers: 1 });
-    await expect(get(`${publicUrl(`${swapped}.localtest.me`)}/`)).resolves.toMatchObject({
+    expect(
+      NodeFS.readFileSync(answers, "utf8"),
+      "green answers on its new port as blue starts to stop",
+    ).toBe(`${green} 200\n`);
+    expect(swapped.live()).toEqual({ machines: [green], serving: green, containers: 1 });
+    await expect(get(`${swapped.site()}/machine`)).resolves.toMatchObject({
       status: 200,
+      body: green,
     });
 
-    const failed = deployChecking("/unhealthy", ["--wait-timeout", "2s"]);
+    swapped.configure("/unhealthy", 9090);
+    const failed = fly(swapped.args("bluegreen", ["--wait-timeout", "2s"]), {}, root);
     expect(failed.status).toBe(1);
     expect(failed.stderr).toMatch(
       /\nRolling back failed deployment\n {2}Deleted machine [0-9a-f]{14} \[app\]\nError: wait timeout\ncould not get all green machines to be healthy\n$/,
     );
-    expect(live()).toEqual({ machines: [green], serving: green, containers: 1 });
-    ok(["apps", "destroy", swapped, "--yes"]);
+    expect(swapped.live()).toEqual({ machines: [green], serving: green, containers: 1 });
+    ok(["apps", "destroy", swapped.name, "--yes"]);
+  });
+
+  it("keeps blue serving when a bluegreen swap fails, and settles a killed one on the next deploy", async () => {
+    const swapped = blueGreenApp(`${app}-k`);
+    ok(["apps", "create", swapped.name]);
+    swapped.configure("/", 8080);
+    expect(fly(swapped.args(), {}, root)).toMatchObject({ status: 0 });
+    const blue = swapped.live().serving;
+
+    const intoPlace = `[ "$*" = "rename sail-fly-${swapped.name}_green sail-fly-${swapped.name}" ]`;
+    const refused = fly(
+      swapped.args(),
+      dockerShim("refuse-rename", [
+        `${intoPlace} && { echo 'Error response from daemon: injected' >&2; exit 1; }`,
+      ]),
+      root,
+    );
+    expect(refused.status).toBe(1);
+    expect(swapped.live()).toEqual({ machines: [blue], serving: blue, containers: 1 });
+    expect(refused.stderr).toMatch(
+      /\nRolling back failed deployment\n {2}Deleted machine [0-9a-f]{14} \[app\]\nError: .*injected\nfailed to mark green machines as ready\n$/,
+    );
+    await expect(get(`${swapped.site()}/machine`)).resolves.toMatchObject({
+      status: 200,
+      body: blue,
+    });
+
+    // `run`, not `fly`: a killed fly never records its call.
+    const killed = run(
+      swapped.args(),
+      dockerShim("kill-on-rename", [`${intoPlace} && { kill -9 $PPID; exit 1; }`]),
+      root,
+    );
+    expect(killed.status).toBeNull();
+    await expect(get(`${swapped.site()}/machine`)).resolves.toMatchObject({
+      status: 200,
+      body: blue,
+    });
+    expect(fly(swapped.args("immediate"), {}, root)).toMatchObject({ status: 0 });
+    expect(swapped.live()).toEqual({ machines: [blue], serving: blue, containers: 1 });
+    ok(["apps", "destroy", swapped.name, "--yes"]);
   });
 
   it("treats a home written with a trailing slash as the same home", () => {

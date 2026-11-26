@@ -56,6 +56,8 @@ export interface DeployConfig {
   readonly buildImage: string | undefined;
   readonly dockerfile: string | undefined;
   readonly deployStrategy: string | undefined;
+  /** Tables flyctl reads checks from that this fake ignores; app records older revisions saved lack it. */
+  readonly ignoredCheckTables?: ReadonlyArray<"[checks]" | "[[services]]">;
 }
 
 export const EMPTY_CONFIG: DeployConfig = {
@@ -71,6 +73,7 @@ export const EMPTY_CONFIG: DeployConfig = {
   buildImage: undefined,
   dockerfile: undefined,
   deployStrategy: undefined,
+  ignoredCheckTables: [],
 };
 
 const GO_DURATION = /^(0|(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+)$/;
@@ -323,6 +326,10 @@ function toDeployConfig(toml: Raw, file: string): DeployConfig {
     buildImage: field.string(build.image, "Build.build.image"),
     dockerfile: field.string(build.dockerfile, "Build.build.dockerfile"),
     deployStrategy: field.string(deploy.strategy, "Deploy.deploy.strategy"),
+    ignoredCheckTables: [
+      ...(toml.checks === undefined ? [] : ["[checks]" as const]),
+      ...(toml.services === undefined ? [] : ["[[services]]" as const]),
+    ],
   };
 }
 

@@ -243,6 +243,8 @@ const flapsTime = (iso: string) => iso.replace(/\.\d+Z$/, "Z");
 const containerName = (app: string) => `sail-fly-${app}`;
 /** A bluegreen deploy's machines while they swap; app names have no `_`, so no app's name collides. */
 const swapName = (app: string, color: "green" | "blue") => `${containerName(app)}_${color}`;
+/** Fly's private DNS name for a machine; its container answers to it, so a route outlives a rename. */
+const machineHost = (machine: MachineRecord) => `${machine.id}.vm.${machine.app}.internal`;
 const volumeName = (id: string) => `sail-fly-vol-${id}`;
 const snapshotName = (id: string) => `sail-fly-snap-${id}`;
 const siteId = (app: string) => `fly-${app}`;
@@ -1370,15 +1372,42 @@ function validateStrategy(
 }
 
 /**
- * flyctl's `blueGreen.Deploy` for this fake's one machine: green starts beside blue and takes
- * blue's container name, and with it the Caddy route, once its checks pass.
+ * Leaves only the recorded machine's container, under the app's own name. A bluegreen deploy that
+ * failed or was killed partway can leave either machine under a swap name. A container's hostname
+ * is its machine's id.
+ */
+function settleContainers(app: string, recorded: MachineRecord | undefined): void {
+  const live = containerName(app);
+  const held = [live, swapName(app, "green"), swapName(app, "blue")].filter(
+    (name) => ownership("container", name) === "mine",
+  );
+  const kept =
+    recorded &&
+    held.find(
+      (name) =>
+        docker(["container", "inspect", "--format", "{{.Config.Hostname}}", name]).trim() ===
+        recorded.id,
+    );
+  for (const name of held) if (name !== kept) destroyMachineContainer(name);
+  if (kept !== undefined && kept !== live) docker(["rename", kept, live]);
+}
+
+interface DeploySteps {
+  readonly start: (container: string) => void;
+  readonly route: (machine: MachineRecord) => void;
+  readonly release: () => void;
+}
+
+/**
+ * flyctl's `blueGreen.Deploy` for this fake's one machine. Green takes the app's container name and
+ * then Caddy's route while blue still serves; only then do the records move to green and blue stop.
  */
 function replaceBlueWithGreen(
   blue: MachineRecord,
   green: MachineRecord,
   http: HttpService | undefined,
   waitMs: number,
-  start: (container: string) => void,
+  steps: DeploySteps,
 ): void {
   err("\nVerifying if app can be safely deployed \n");
   if (!http || http.checks.length === 0) {
@@ -1393,23 +1422,36 @@ function replaceBlueWithGreen(
   const live = containerName(blue.app);
   const greenName = swapName(blue.app, "green");
   const blueName = swapName(blue.app, "blue");
-  for (const leftover of [greenName, blueName]) destroyMachineContainer(leftover);
+  const rollBack = () => {
+    settleContainers(blue.app, blue);
+    err(`\nRolling back failed deployment\n  Deleted machine ${green.id} [app]\n`);
+  };
   err("\nCreating green machines\n");
-  start(greenName);
+  steps.start(greenName);
   err(`  Created machine ${green.id} [app]\n\nWaiting for all green machines to be healthy\n`);
   try {
     waitForHealthy(greenName, green, healthProbes(greenName, http), waitMs);
   } catch (error) {
-    destroyMachineContainer(greenName);
-    err(`\nRolling back failed deployment\n  Deleted machine ${green.id} [app]\n`);
+    rollBack();
     throw error instanceof FlyError
       ? new FlyError("wait timeout\ncould not get all green machines to be healthy")
       : error;
   }
+  err("\nMarking green machines as ready\n");
+  try {
+    if (ownership("container", live) === "mine") docker(["rename", live, blueName]);
+    docker(["rename", greenName, live]);
+    steps.route(green);
+  } catch (error) {
+    rollBack();
+    throw error instanceof Error
+      ? new FlyError(`${error.message}\nfailed to mark green machines as ready`)
+      : error;
+  }
+  err(`  Machine ${green.id} now ready\n`);
   write("machines", green.id, green);
   remove("machines", blue.id);
-  if (ownership("container", live) === "mine") docker(["rename", live, blueName]);
-  docker(["rename", greenName, live]);
+  steps.release();
   err("\nStopping all blue machines\n");
   stopMachineContainer(blueName, blue.config.stop_config);
   err("\nDestroying all blue machines\n");
@@ -1444,8 +1486,14 @@ function deploy(ctx: Ctx): number {
   const probes = healthProbes(containerName(appName), http);
   const previous = machineOf(appName);
   const blueGreen = previous !== undefined && strategy === "bluegreen";
-  if (blueGreen && config.mounts.length > 0)
-    throw new FlyError("fake fly does not model bluegreen deploys of an app with [[mounts]]");
+  const unmodeled = [
+    ...(config.mounts.length > 0 ? ["[[mounts]]"] : []),
+    ...(config.ignoredCheckTables ?? []),
+  ];
+  if (blueGreen && unmodeled.length > 0)
+    throw new FlyError(
+      `fake fly does not model bluegreen deploys of an app with ${unmodeled.join(" and ")}`,
+    );
   if (ctx.flags.get("ha") !== false)
     err("fake fly: runs one machine per app; real Fly adds a standby machine unless --ha=false\n");
   const image = resolveImage(ctx, appName, loaded);
@@ -1558,6 +1606,8 @@ function deploy(ctx: Ctx): number {
       machineId,
       "--network",
       NETWORK,
+      "--network-alias",
+      machineHost(machine),
       "--label",
       `${FIXTURE_LABEL}=fly-machine`,
       "--label",
@@ -1573,34 +1623,41 @@ function deploy(ctx: Ctx): number {
       image.run,
     ]);
 
+  const route = (target: MachineRecord) =>
+    publishSite({
+      id: siteId(appName),
+      home: HOME_ID,
+      host: appHost(appName),
+      upstream: `${machineHost(target)}:${port}`,
+      plainHttp: http !== undefined && !http.forceHttps,
+      headers: {
+        "Fly-Forwarded-Proto": "{http.request.scheme}",
+        "Fly-Forwarded-Port": "{http.request.local.port}",
+        "X-Forwarded-Port": "{http.request.local.port}",
+        "Fly-Client-IP": "{remote_host}",
+      },
+    });
+  const release = () =>
+    write("apps", appName, {
+      ...app,
+      releaseVersion,
+      deployedAt: now(),
+      config,
+    } satisfies AppRecord);
+
   if (previous) out(`Updating existing machines in '${appName}' with ${strategy} strategy\n`);
-  if (blueGreen) replaceBlueWithGreen(previous, machine, http, waitMs, start);
+  if (docker(["ps", "--all", "--quiet", "--filter", `name=^${containerName(appName)}_`]).trim())
+    settleContainers(appName, previous);
+  if (blueGreen) replaceBlueWithGreen(previous, machine, http, waitMs, { start, route, release });
   else {
     if (previous) stopMachineContainer(containerName(appName), previous.config.stop_config);
     destroyMachineContainer(containerName(appName));
     write("machines", machine.id, machine);
     start(containerName(appName));
+    release();
+    route(machine);
   }
   if (previous?.builtTag && previous.builtTag !== image.builtTag) removeBuiltTag(previous.builtTag);
-  write("apps", appName, {
-    ...app,
-    releaseVersion,
-    deployedAt: now(),
-    config,
-  } satisfies AppRecord);
-  publishSite({
-    id: siteId(appName),
-    home: HOME_ID,
-    host: appHost(appName),
-    upstream: `${containerName(appName)}:${port}`,
-    plainHttp: http !== undefined && !http.forceHttps,
-    headers: {
-      "Fly-Forwarded-Proto": "{http.request.scheme}",
-      "Fly-Forwarded-Port": "{http.request.local.port}",
-      "X-Forwarded-Port": "{http.request.local.port}",
-      "Fly-Client-IP": "{remote_host}",
-    },
-  });
   if (!blueGreen) {
     out(`Machine ${machineId} [app] ${previous ? "update" : "launch"} started\n`);
     if (!bool(ctx, "detach")) {
@@ -1718,9 +1775,10 @@ const sortableTime = (ts: string) =>
 
 /**
  * `docker logs` writes the app's stderr to its own stderr, beside Docker's errors, such as one for a
- * container a redeploy just removed; only the app's lines carry a timestamp.
+ * container a redeploy just removed; only the app's lines carry a timestamp. `s` keeps a message
+ * that holds `\r`, U+2028, or U+2029.
  */
-const LOG_LINE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z) (.*)$/;
+const LOG_LINE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z) (.*)$/s;
 
 function streamLogs(
   args: ReadonlyArray<string>,
