@@ -9,6 +9,7 @@ import { act, render } from "../../../test/render";
 import { isMacPlatform } from "../../lib/utils";
 import { linkedThreadSurface } from "../../linkedThreadSurface";
 import { selectThreadRightPanelState, useRightPanelStore } from "../../rightPanelStore";
+import { chatMarkdownClipboardPayload } from "../../markdown-clipboard";
 import { MarkdownThreadLink } from "./MarkdownThreadLink";
 
 const HERE = scopeThreadRef(EnvironmentId.make("environment"), ThreadId.make("here"));
@@ -20,6 +21,11 @@ const state = vi.hoisted(() => ({
   cached: null as unknown,
   linked: new Map<string, string>(),
   connected: [] as Array<string>,
+  origin: "https://before.example.test",
+}));
+vi.mock(import("../../hostedPairing"), async (original) => ({
+  ...(await original()),
+  linkOrigin: () => state.origin,
 }));
 vi.mock(import("../../state/entities"), () => ({
   useThreadShell: ((ref: { environmentId: string } | null) =>
@@ -265,4 +271,32 @@ it("opens a linked machine's thread directly once this client is connected to it
   );
   await expect.element(screen.getByText("Fix the build")).toBeVisible();
   await expect.element(screen.getByRole("button")).not.toBeInTheDocument();
+});
+
+it("copies a selected thread chip as a link at the origin in use when copying", async () => {
+  const { registry } = setup();
+  using _registry = { [Symbol.dispose]: () => registry.dispose() };
+  state.origin = "https://before.example.test";
+  await using screen = await render(
+    <RegistryContext value={registry}>
+      <MarkdownThreadLink
+        environmentId={EnvironmentId.make("environment")}
+        link={{
+          environmentId: EnvironmentId.make("remote"),
+          threadId: ThreadId.make("older-thread"),
+        }}
+        label={null}
+      />
+    </RegistryContext>,
+  );
+  await expect
+    .element(screen.getByRole("link", { name: "Thread, Remote thread", exact: true }))
+    .toBeVisible();
+  state.origin = "https://after.example.test";
+  const selection = window.getSelection()!;
+  selection.selectAllChildren(screen.container);
+
+  expect(chatMarkdownClipboardPayload(selection)?.text).toBe(
+    "[Remote thread](https://after.example.test/threads/remote/older-thread)",
+  );
 });

@@ -53,34 +53,59 @@ const ignoreWebLinks = DesktopWebLinks.DesktopWebLinks.of({
   setRendererReady: () => Effect.void,
 });
 
-const savedServers = (
-  httpBaseUrls: ReadonlyArray<string> = [],
-  disabledEnvironmentIds: ReadonlyArray<string> = [],
-  learned = false,
-) =>
+interface SavedServer {
+  readonly environmentId: string;
+  /** Absent for an environment reached through a relay, which has no page of its own. */
+  readonly httpBaseUrl?: string;
+  readonly learned?: boolean;
+}
+interface SavedCatalog {
+  servers: ReadonlyArray<SavedServer>;
+  disabledEnvironmentIds: ReadonlyArray<string>;
+}
+
+// Read on every get, so a test can change what is saved while a sign-in is open.
+const catalogStore = (catalog: SavedCatalog) =>
   DesktopConnectionCatalogStore.DesktopConnectionCatalogStore.of({
     get: Effect.sync(() =>
       Option.some(
         JSON.stringify({
           schemaVersion: 1,
-          targets: [],
-          profiles: httpBaseUrls.map((httpBaseUrl, index) => ({
-            _tag: "BearerConnectionProfile",
-            connectionId: `saved-${index}`,
-            environmentId: `saved-${index}`,
-            label: "Saved",
-            httpBaseUrl,
-            wsBaseUrl: httpBaseUrl.replace(/^http/u, "ws"),
-            ...(learned ? { learned: true } : {}),
-          })),
+          targets: catalog.servers.map(({ environmentId, httpBaseUrl }, index) =>
+            httpBaseUrl === undefined
+              ? { _tag: "RelayConnectionTarget", environmentId, label: "Saved" }
+              : {
+                  _tag: "BearerConnectionTarget",
+                  environmentId,
+                  label: "Saved",
+                  connectionId: `saved-${index}`,
+                },
+          ),
+          profiles: catalog.servers.flatMap(({ environmentId, httpBaseUrl, learned }, index) =>
+            httpBaseUrl === undefined
+              ? []
+              : [
+                  {
+                    _tag: "BearerConnectionProfile",
+                    connectionId: `saved-${index}`,
+                    environmentId,
+                    label: "Saved",
+                    httpBaseUrl,
+                    wsBaseUrl: httpBaseUrl.replace(/^http/u, "ws"),
+                    ...(learned ? { learned: true } : {}),
+                  },
+                ],
+          ),
           credentials: [],
           remoteDpopTokens: [],
-          disabledEnvironmentIds,
+          disabledEnvironmentIds: catalog.disabledEnvironmentIds,
         }),
       ),
     ),
     set: () => Effect.succeed(true),
   });
+const savedServers = (servers: ReadonlyArray<SavedServer> = []) =>
+  catalogStore({ servers, disabledEnvironmentIds: [] });
 
 const layerDesktopClerk = (
   isDevelopment = true,
@@ -400,34 +425,27 @@ it.effect(
   },
 );
 
-const httpsPage = "https://sail.example.test/settings/providers?instanceId=work";
-it.effect.each([
-  { case: "a saved HTTPS server", saved: ["https://sail.example.test/"], page: httpsPage },
-  {
-    case: "a saved plain HTTP server",
-    saved: ["http://sail.example.test/"],
-    page: "http://sail.example.test/settings/providers?instanceId=work",
-    refused: true,
-  },
-  {
-    case: "a disabled saved server",
-    saved: ["https://sail.example.test/"],
-    disabled: ["saved-0"],
-    page: httpsPage,
-    refused: true,
-  },
-  {
-    case: "an address a saved server reported",
-    saved: ["https://sail.example.test/"],
-    learned: true,
-    page: httpsPage,
-    refused: true,
-  },
-  { case: "a server not saved here", saved: [], page: httpsPage, refused: true },
-])("returns web sign-in to $case only when it is HTTPS and in use", (input) =>
+interface HandoffCase {
+  readonly saved: ReadonlyArray<SavedServer>;
+  readonly disabled?: ReadonlyArray<string>;
+  readonly hosted?: string;
+  readonly page: string;
+  readonly environmentId: string;
+  readonly duringSignIn?: (catalog: SavedCatalog) => void;
+}
+type HandoffOutcome =
+  | { readonly kind: "answered"; readonly status: number; readonly location: string | null }
+  | { readonly kind: "revealed" };
+
+const runHandoff = (input: HandoffCase) =>
   Effect.gen(function* () {
     storageMock.mockReturnValue(storageAdapter);
     createClerkBridgeMock.mockReturnValue({ cleanup: vi.fn(), isPrimaryInstance: true });
+    if (input.hosted !== undefined) vi.stubGlobal("__T3CODE_BUILD_HOSTED_APP_URL__", input.hosted);
+    const catalog: SavedCatalog = {
+      servers: input.saved,
+      disabledEnvironmentIds: input.disabled ?? [],
+    };
     const port = yield* Effect.promise(async () => {
       const server = NodeHttp.createServer();
       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -448,17 +466,15 @@ it.effect.each([
     const request = {
       authorizationUrl: authorize.toString(),
       returnUrl: input.page,
-      environmentId: EnvironmentId.make("remote-one"),
+      environmentId: EnvironmentId.make(input.environmentId),
       instanceId: ProviderInstanceId.make("work"),
       flowId: "flow-one",
     };
-    const settled = Promise.withResolvers<
-      | { readonly kind: "delivered"; readonly location: string | null }
-      | { readonly kind: "revealed" }
-    >();
+    const settled = Promise.withResolvers<HandoffOutcome>();
     const shell = ElectronShell.ElectronShell.of({
       openExternal: (value) =>
         Effect.promise(async () => {
+          input.duringSignIn?.(catalog);
           const url = new URL(String(value));
           const callback = new URL(url.searchParams.get("redirect_uri")!);
           callback.search = new URLSearchParams({
@@ -467,7 +483,11 @@ it.effect.each([
             client_id: "oaiapp_test",
           }).toString();
           const response = await fetch(callback, { redirect: "manual" });
-          settled.resolve({ kind: "delivered", location: response.headers.get("location") });
+          settled.resolve({
+            kind: "answered",
+            status: response.status,
+            location: response.headers.get("location"),
+          });
           return true;
         }),
       openSystemSettings: () => Effect.succeed(false),
@@ -490,21 +510,10 @@ it.effect.each([
           listeners.set(name, listener);
         }),
     } as unknown as ElectronApp.ElectronApp["Service"];
-    yield* Effect.gen(function* () {
+    return yield* Effect.gen(function* () {
       const clerk = yield* DesktopClerk.DesktopClerk;
       yield* clerk.configure;
-      const outcome = yield* Effect.promise(() => settled.promise);
-      if (input.refused) {
-        assert.deepStrictEqual(outcome, { kind: "revealed" });
-        return;
-      }
-      assert.strictEqual(outcome.kind, "delivered");
-      const location = outcome.kind === "delivered" ? outcome.location : null;
-      assert.strictEqual(new URL(location!).origin, "https://sail.example.test");
-      assert.strictEqual(
-        readCodexAuthDelivery(location!, ["https://sail.example.test"])?.returnUrl,
-        request.returnUrl,
-      );
+      return { request, outcome: yield* Effect.promise(() => settled.promise) };
     }).pipe(
       Effect.provide(layerDesktopClerk(true, [], "darwin", undefined, shell, listeners)),
       Effect.provideService(HostProcess.Arguments, ["t3", codexAuthHandoffUrl(request, true)]),
@@ -512,10 +521,160 @@ it.effect.each([
       Effect.provideService(ElectronWindow.ElectronWindow, electronWindow),
       Effect.provideService(
         DesktopConnectionCatalogStore.DesktopConnectionCatalogStore,
-        savedServers(input.saved, input.disabled, input.learned),
+        catalogStore(catalog),
       ),
       Effect.provideService(DesktopWebLinks.DesktopWebLinks, ignoreWebLinks),
     );
+  }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals())));
+
+const serverPage = "https://sail.example.test/settings/providers?instanceId=work";
+const hostedPage = "https://hosted.example.test/settings/providers?instanceId=work";
+const localPage = "http://127.0.0.1:3773/welcome#agents:relayed";
+const server = { environmentId: "server", httpBaseUrl: "https://sail.example.test/" };
+const otherServer = { environmentId: "other", httpBaseUrl: "https://other.example.test/" };
+const relayed = { environmentId: "relayed" };
+const hosted = "https://hosted.example.test";
+it.effect.each<HandoffCase & { readonly case: string; readonly returns: boolean }>([
+  {
+    case: "a saved HTTPS server",
+    saved: [server],
+    page: serverPage,
+    environmentId: "server",
+    returns: true,
+  },
+  {
+    case: "a saved plain HTTP server",
+    saved: [{ environmentId: "server", httpBaseUrl: "http://sail.example.test/" }],
+    page: "http://sail.example.test/settings/providers?instanceId=work",
+    environmentId: "server",
+    returns: false,
+  },
+  {
+    case: "a disabled saved server",
+    saved: [server],
+    disabled: ["server"],
+    page: serverPage,
+    environmentId: "server",
+    returns: false,
+  },
+  {
+    case: "an address a saved server reported",
+    saved: [{ ...server, learned: true }],
+    page: serverPage,
+    environmentId: "server",
+    returns: false,
+  },
+  {
+    case: "a server not saved here",
+    saved: [],
+    page: serverPage,
+    environmentId: "server",
+    returns: false,
+  },
+  {
+    case: "a saved server's page for another saved server",
+    saved: [server, otherServer],
+    page: serverPage,
+    environmentId: "other",
+    returns: false,
+  },
+  {
+    case: "a saved server's page for a disabled environment",
+    saved: [server, relayed],
+    disabled: ["relayed"],
+    page: serverPage,
+    environmentId: "relayed",
+    returns: false,
+  },
+  {
+    case: "the build's hosted app",
+    saved: [relayed],
+    hosted,
+    page: hostedPage,
+    environmentId: "relayed",
+    returns: true,
+  },
+  {
+    case: "a hosted app this build does not name",
+    saved: [relayed],
+    page: hostedPage,
+    environmentId: "relayed",
+    returns: false,
+  },
+  {
+    case: "the build's hosted app for an environment not saved here",
+    saved: [],
+    hosted,
+    page: hostedPage,
+    environmentId: "relayed",
+    returns: false,
+  },
+  {
+    case: "the build's hosted app for a disabled environment",
+    saved: [relayed],
+    disabled: ["relayed"],
+    hosted,
+    page: hostedPage,
+    environmentId: "relayed",
+    returns: false,
+  },
+  {
+    case: "a page on this computer",
+    saved: [relayed],
+    page: localPage,
+    environmentId: "relayed",
+    returns: true,
+  },
+  {
+    case: "a page on this computer for an environment not saved here",
+    saved: [],
+    page: localPage,
+    environmentId: "relayed",
+    returns: false,
+  },
+])("returns web sign-in to $case: $returns", (input) =>
+  Effect.gen(function* () {
+    const { request, outcome } = yield* runHandoff(input);
+    if (!input.returns) {
+      assert.deepStrictEqual(outcome, { kind: "revealed" });
+      return;
+    }
+    assert.strictEqual(outcome.kind === "answered" ? outcome.status : null, 303);
+    const location = outcome.kind === "answered" ? outcome.location : null;
+    const origin = new URL(input.page).origin;
+    assert.strictEqual(new URL(location!).origin, origin);
+    assert.deepStrictEqual(
+      [
+        readCodexAuthDelivery(location!, [origin])?.environmentId,
+        readCodexAuthDelivery(location!, [origin])?.returnUrl,
+      ],
+      [request.environmentId, request.returnUrl],
+    );
+  }),
+);
+
+it.effect.each<{ readonly case: string; readonly duringSignIn: (catalog: SavedCatalog) => void }>([
+  {
+    case: "disabled",
+    duringSignIn: (catalog) => {
+      catalog.disabledEnvironmentIds = ["server"];
+    },
+  },
+  {
+    case: "removed",
+    duringSignIn: (catalog) => {
+      catalog.servers = [];
+    },
+  },
+])("sends no code to a server $case while its sign-in is open", ({ duringSignIn }) =>
+  Effect.gen(function* () {
+    const { outcome } = yield* runHandoff({
+      saved: [server],
+      page: serverPage,
+      environmentId: "server",
+      duringSignIn,
+    });
+    assert.deepStrictEqual(outcome, { kind: "answered", status: 403, location: null });
   }),
 );
 
@@ -602,7 +761,7 @@ it.effect.each(["startup", "open-url", "early-second-instance"] as const)(
         ),
         Effect.provideService(
           DesktopConnectionCatalogStore.DesktopConnectionCatalogStore,
-          savedServers(),
+          savedServers([{ environmentId: "remote-one" }]),
         ),
         Effect.provideService(DesktopWebLinks.DesktopWebLinks, ignoreWebLinks),
       );
