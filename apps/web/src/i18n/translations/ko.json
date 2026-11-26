@@ -306,6 +306,8 @@
   "e2130fe5df35d0fc": "{count, plural, other {환경 기본 설정 업데이트 {count}회 시도함}}",
   "04360a2f0b44b37b": "{count, plural, other {테마 {count}회 확인함}}",
   "227120bfdd990e37": "{count, plural, other {테마 확인 {count}회 시도함}}",
+  "5d8ebbc9d89cd225": "{count, plural, other {Boats {count}회 확인함}}",
+  "896d5b817473dbae": "{count, plural, other {Boats 확인 {count}회 시도함}}",
   "a16ae702cbb60dde": "{count, plural, other {테마 {count}회 설정함}}",
   "978b4b05bea775d1": "{count, plural, other {테마 설정 {count}회 시도함}}",
   "d533fcae02ad5016": "{count, plural, other {연결된 환경 목록 {count}회 조회함}}",

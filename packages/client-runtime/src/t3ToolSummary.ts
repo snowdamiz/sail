@@ -1122,6 +1122,23 @@ export function summarizeT3ToolCalls(
           );
       break;
     }
+    case "boats-read": {
+      const count = selected.length;
+      label = done
+        ? resolve(
+            msg(
+              "{count, plural, one {Checked Boats {count} time} other {Checked Boats {count} times}}",
+              { count },
+            ),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to check Boats {count} time} other {Tried to check Boats {count} times}}",
+              { count },
+            ),
+          );
+      break;
+    }
     case "theme-read": {
       const count = selected.length;
       label = done

@@ -306,6 +306,8 @@
   "e2130fe5df35d0fc": "{count, plural, one {Tried to update environment preferences {count} time} other {Tried to update environment preferences {count} times}}",
   "04360a2f0b44b37b": "{count, plural, one {Checked themes {count} time} other {Checked themes {count} times}}",
   "227120bfdd990e37": "{count, plural, one {Tried to check themes {count} time} other {Tried to check themes {count} times}}",
+  "5d8ebbc9d89cd225": "{count, plural, one {Checked Boats {count} time} other {Checked Boats {count} times}}",
+  "896d5b817473dbae": "{count, plural, one {Tried to check Boats {count} time} other {Tried to check Boats {count} times}}",
   "a16ae702cbb60dde": "{count, plural, one {Set the theme {count} time} other {Set the theme {count} times}}",
   "978b4b05bea775d1": "{count, plural, one {Tried to set the theme {count} time} other {Tried to set the theme {count} times}}",
   "d533fcae02ad5016": "{count, plural, one {Listed linked environments {count} time} other {Listed linked environments {count} times}}",

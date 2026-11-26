@@ -306,6 +306,8 @@
   "e2130fe5df35d0fc": "{count, plural, one {Попытка обновить настройки окружения: {count} раз} few {Попытка обновить настройки окружения: {count} раза} many {Попытка обновить настройки окружения: {count} раз} other {Попытка обновить настройки окружения: {count} раза}}",
   "04360a2f0b44b37b": "{count, plural, one {Темы проверены {count} раз} few {Темы проверены {count} раза} many {Темы проверены {count} раз} other {Темы проверены {count} раза}}",
   "227120bfdd990e37": "{count, plural, one {Попытка проверить темы: {count} раз} few {Попытка проверить темы: {count} раза} many {Попытка проверить темы: {count} раз} other {Попытка проверить темы: {count} раза}}",
+  "5d8ebbc9d89cd225": "{count, plural, one {Boats проверены {count} раз} few {Boats проверены {count} раза} many {Boats проверены {count} раз} other {Boats проверены {count} раза}}",
+  "896d5b817473dbae": "{count, plural, one {Попытка проверить Boats: {count} раз} few {Попытка проверить Boats: {count} раза} many {Попытка проверить Boats: {count} раз} other {Попытка проверить Boats: {count} раза}}",
   "a16ae702cbb60dde": "{count, plural, one {Тема задана {count} раз} few {Тема задана {count} раза} many {Тема задана {count} раз} other {Тема задана {count} раза}}",
   "978b4b05bea775d1": "{count, plural, one {Попытка задать тему: {count} раз} few {Попытка задать тему: {count} раза} many {Попытка задать тему: {count} раз} other {Попытка задать тему: {count} раза}}",
   "d533fcae02ad5016": "{count, plural, one {Список привязанных окружений получен {count} раз} few {Список привязанных окружений получен {count} раза} many {Список привязанных окружений получен {count} раз} other {Список привязанных окружений получен {count} раза}}",

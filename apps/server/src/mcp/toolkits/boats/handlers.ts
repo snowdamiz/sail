@@ -5,7 +5,7 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import { BoatsToolkit } from "./tools.ts";
 
 export const layer = McpToolAccess.toLayer(BoatsToolkit, {
-  t3_boats_state: McpToolAccess.reads(() =>
+  t3_boats_read: McpToolAccess.reads(() =>
     Effect.gen(function* () {
       const boats = yield* BoatSupervisor.BoatSupervisor;
       const { data } = yield* boats.invoke({ command: "get_state" }).pipe(

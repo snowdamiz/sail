@@ -306,6 +306,8 @@
   "e2130fe5df35d0fc": "{count, plural, one {Tentative de mettre à jour les préférences de l’environnement {count} fois} other {Tentative de mettre à jour les préférences de l’environnement {count} fois}}",
   "04360a2f0b44b37b": "{count, plural, one {Thèmes vérifiés {count} fois} other {Thèmes vérifiés {count} fois}}",
   "227120bfdd990e37": "{count, plural, one {Tentative de vérifier les thèmes {count} fois} other {Tentative de vérifier les thèmes {count} fois}}",
+  "5d8ebbc9d89cd225": "{count, plural, one {Boats vérifiés {count} fois} other {Boats vérifiés {count} fois}}",
+  "896d5b817473dbae": "{count, plural, one {Tentative de vérifier Boats {count} fois} other {Tentative de vérifier Boats {count} fois}}",
   "a16ae702cbb60dde": "{count, plural, one {Thème défini {count} fois} other {Thème défini {count} fois}}",
   "978b4b05bea775d1": "{count, plural, one {Tentative de définir le thème {count} fois} other {Tentative de définir le thème {count} fois}}",
   "d533fcae02ad5016": "{count, plural, one {Environnements associés listés {count} fois} other {Environnements associés listés {count} fois}}",

@@ -306,6 +306,8 @@
   "e2130fe5df35d0fc": "{count, plural, one {Intentó actualizar las preferencias del entorno {count} vez} other {Intentó actualizar las preferencias del entorno {count} veces}}",
   "04360a2f0b44b37b": "{count, plural, one {Consultó los temas {count} vez} other {Consultó los temas {count} veces}}",
   "227120bfdd990e37": "{count, plural, one {Intentó consultar los temas {count} vez} other {Intentó consultar los temas {count} veces}}",
+  "5d8ebbc9d89cd225": "{count, plural, one {Consultó Boats {count} vez} other {Consultó Boats {count} veces}}",
+  "896d5b817473dbae": "{count, plural, one {Intentó consultar Boats {count} vez} other {Intentó consultar Boats {count} veces}}",
   "a16ae702cbb60dde": "{count, plural, one {Cambió el tema {count} vez} other {Cambió el tema {count} veces}}",
   "978b4b05bea775d1": "{count, plural, one {Intentó cambiar el tema {count} vez} other {Intentó cambiar el tema {count} veces}}",
   "d533fcae02ad5016": "{count, plural, one {Listó entornos vinculados {count} vez} other {Listó entornos vinculados {count} veces}}",

@@ -306,6 +306,8 @@
   "e2130fe5df35d0fc": "{count, plural, other {尝试更新环境偏好设置 {count} 次}}",
   "04360a2f0b44b37b": "{count, plural, other {已检查主题 {count} 次}}",
   "227120bfdd990e37": "{count, plural, other {尝试检查主题 {count} 次}}",
+  "5d8ebbc9d89cd225": "{count, plural, other {已检查 Boats {count} 次}}",
+  "896d5b817473dbae": "{count, plural, other {尝试检查 Boats {count} 次}}",
   "a16ae702cbb60dde": "{count, plural, other {已设置主题 {count} 次}}",
   "978b4b05bea775d1": "{count, plural, other {尝试设置主题 {count} 次}}",
   "d533fcae02ad5016": "{count, plural, other {已列出关联的环境 {count} 次}}",

@@ -306,6 +306,8 @@
   "e2130fe5df35d0fc": "{count, plural, one {Versucht, Umgebungseinstellungen {count}-mal zu aktualisieren} other {Versucht, Umgebungseinstellungen {count}-mal zu aktualisieren}}",
   "04360a2f0b44b37b": "{count, plural, one {Designs {count}-mal geprüft} other {Designs {count}-mal geprüft}}",
   "227120bfdd990e37": "{count, plural, one {Versucht, Designs {count}-mal zu prüfen} other {Versucht, Designs {count}-mal zu prüfen}}",
+  "5d8ebbc9d89cd225": "{count, plural, one {Boats {count}-mal geprüft} other {Boats {count}-mal geprüft}}",
+  "896d5b817473dbae": "{count, plural, one {Versucht, Boats {count}-mal zu prüfen} other {Versucht, Boats {count}-mal zu prüfen}}",
   "a16ae702cbb60dde": "{count, plural, one {Design {count}-mal festgelegt} other {Design {count}-mal festgelegt}}",
   "978b4b05bea775d1": "{count, plural, one {Versucht, das Design {count}-mal festzulegen} other {Versucht, das Design {count}-mal festzulegen}}",
   "d533fcae02ad5016": "{count, plural, one {Verknüpfte Umgebungen {count}-mal aufgelistet} other {Verknüpfte Umgebungen {count}-mal aufgelistet}}",

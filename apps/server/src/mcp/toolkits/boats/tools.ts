@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 import * as BoatSupervisor from "../../../boat/BoatSupervisor.ts";
 
-const BoatsStateTool = Tool.make("t3_boats_state", {
+const BoatsReadTool = Tool.make("t3_boats_read", {
   failure: OrchestratorMcpFailure,
   failureMode: "return" as const,
   dependencies: [BoatSupervisor.BoatSupervisor],
@@ -14,4 +14,4 @@ const BoatsStateTool = Tool.make("t3_boats_state", {
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);
 
-export const BoatsToolkit = Toolkit.make(BoatsStateTool);
+export const BoatsToolkit = Toolkit.make(BoatsReadTool);
