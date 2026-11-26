@@ -6,7 +6,10 @@ if [ "$(/usr/bin/id -u)" = 0 ]; then
   /usr/bin/chown --no-dereference sail:sail /data
   exec /usr/local/bin/as-sail /usr/local/bin/sail-entrypoint "$@"
 fi
-/usr/bin/mkdir -p -- /data/home "$SAIL_HOME"
+if ! /usr/bin/mkdir -p -- /data/home "$SAIL_HOME" || [ ! -w /data/home ] || [ ! -w "$SAIL_HOME" ]; then
+  echo "Sail cannot create its home or state directory. Make /data/home and SAIL_HOME writable by sail (uid 1000)." >&2
+  exit 1
+fi
 
 if [ -z "${SAIL_PUBLIC_URL:-}${T3CODE_PUBLIC_URL:-}" ]; then
   if [ -n "${FLY_APP_NAME:-}" ]; then

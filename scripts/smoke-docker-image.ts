@@ -332,6 +332,21 @@ const expectNoNewPrivs = Effect.fn("smoke-docker-image.expectNoNewPrivs")(functi
   }
 });
 
+const expectSignedInSession = Effect.fn("smoke-docker-image.expectSignedInSession")(function* (
+  origin: string,
+  cookie: string,
+) {
+  const client = yield* HttpClient.HttpClient;
+  const session = yield* HttpClientRequest.get(`${origin}/api/auth/session`).pipe(
+    HttpClientRequest.setHeader("cookie", cookie),
+    client.execute,
+    Effect.flatMap(HttpClientResponse.schemaBodyJson(SessionState)),
+  );
+  if (!session.authenticated) {
+    return yield* fail("GET /api/auth/session", "the redeemed cookie is not signed in");
+  }
+});
+
 const pair = Effect.fn("smoke-docker-image.pair")(function* (
   container: string,
   origin: string,
@@ -382,15 +397,10 @@ const pair = Effect.fn("smoke-docker-image.pair")(function* (
     Effect.flatMap(HttpClientResponse.filterStatusOk),
   );
   yield* HttpClientResponse.schemaBodyJson(BrowserSession)(redeemed);
-  const session = yield* HttpClientRequest.get(`${origin}/api/auth/session`).pipe(
-    HttpClientRequest.setHeader("cookie", Cookies.toCookieHeader(redeemed.cookies)),
-    client.execute,
-    Effect.flatMap(HttpClientResponse.schemaBodyJson(SessionState)),
-  );
-  if (!session.authenticated) {
-    return yield* fail("GET /api/auth/session", "the redeemed cookie is not signed in");
-  }
-  return issued.credential;
+  const cookie = Cookies.toCookieHeader(redeemed.cookies);
+  yield* Ref.set(secrets, [issued.credential, cookie]);
+  yield* expectSignedInSession(origin, cookie);
+  return { credential: issued.credential, cookie };
 });
 
 /** Desktop releases brand the web client from the version; the image must match that rule. */
@@ -508,13 +518,23 @@ const expectRootIgnoresSailCommands = Effect.fn("smoke-docker-image.expectRootIg
   },
 );
 
-export const smokeDockerImage = Effect.fn("smokeDockerImage")(function* (input: {
+interface SmokeInput {
   readonly image: string;
   readonly platform: Option.Option<string>;
   readonly timeoutSeconds: number;
-}) {
-  yield* expectCleanBuildContext();
-  yield* expectCleanRuntime(input.image, input.platform);
+}
+
+const logContainerFailure = Effect.fn("smoke-docker-image.logContainerFailure")(
+  function* (id: string, secrets: ReadonlyArray<string>) {
+    const logs = yield* docker(["logs", "--tail", "200", id]);
+    yield* Console.error(redactTokens(`${logs.stdout}\n${logs.stderr}`, secrets));
+  },
+  (effect) => Effect.ignore(effect),
+);
+
+const smokeFreshVolume = Effect.fn("smoke-docker-image.smokeFreshVolume")(function* (
+  input: SmokeInput,
+) {
   const client = yield* HttpClient.HttpClient;
   const secrets = yield* Ref.make<ReadonlyArray<string>>([]);
   const container = yield* startContainer(input);
@@ -532,7 +552,7 @@ export const smokeDockerImage = Effect.fn("smokeDockerImage")(function* (input: 
     yield* expectNoNewPrivs(container.id);
     yield* expectReleaseIcons(origin, descriptor.serverVersion);
 
-    const credential = yield* pair(container.id, origin, input.timeoutSeconds, secrets);
+    const { credential, cookie } = yield* pair(container.id, origin, input.timeoutSeconds, secrets);
     yield* Console.log(
       "A pairing link from t3 auth pairing create redeemed to a signed-in session.",
     );
@@ -569,6 +589,22 @@ export const smokeDockerImage = Effect.fn("smokeDockerImage")(function* (input: 
     ]);
     yield* Console.log("node-pty ran a command in a PTY, and fff loaded its native library.");
 
+    yield* docker([
+      "exec",
+      container.id,
+      "/usr/bin/chown",
+      "--no-dereference",
+      "root:root",
+      "/data",
+    ]);
+    yield* docker(["restart", "-t", "30", container.id]);
+    yield* waitForApp(container.id, input.timeoutSeconds);
+    yield* expectDataOwnership(container.id, "/data/sail");
+    yield* expectSignedInSession(origin, cookie);
+    yield* Console.log(
+      "An existing volume with a root-owned mount retained its signed-in session after restart.",
+    );
+
     yield* expectRootIgnoresSailCommands(container.id, input.timeoutSeconds);
     yield* Console.log(
       "After a restart, root ran no command sail planted on PATH, and root shells use /root.",
@@ -580,30 +616,50 @@ export const smokeDockerImage = Effect.fn("smokeDockerImage")(function* (input: 
       ),
     ),
     Effect.tapError(() =>
-      Effect.gen(function* () {
-        const logs = yield* docker(["logs", "--tail", "200", container.id]);
-        yield* Console.error(
-          redactTokens(`${logs.stdout}\n${logs.stderr}`, yield* Ref.get(secrets)),
-        );
-      }).pipe(Effect.ignore),
+      Ref.get(secrets).pipe(Effect.flatMap((issued) => logContainerFailure(container.id, issued))),
     ),
   );
-  yield* Effect.scoped(
-    Effect.gen(function* () {
-      const preownedHome = "/data/home/sail";
-      const { id } = yield* startContainer({ ...input, preownedHome });
-      yield* waitForApp(id, input.timeoutSeconds);
-      yield* expectServerRunsAsSail(id);
-      yield* expectDataOwnership(id, preownedHome);
-      yield* docker(["restart", "-t", "30", id]);
-      yield* waitForApp(id, input.timeoutSeconds);
-      yield* expectServerRunsAsSail(id);
-      yield* expectDataOwnership(id, preownedHome);
-      yield* Console.log("A sail-owned volume with nested SAIL_HOME booted and restarted as sail.");
-    }),
-  );
-  yield* Console.log(`Smoke passed for ${input.image}.`);
 }, Effect.scoped);
+
+const smokePreownedVolume = Effect.fn("smoke-docker-image.smokePreownedVolume")(function* (
+  input: SmokeInput,
+) {
+  const preownedHome = "/data/home/sail";
+  const { id } = yield* startContainer({ ...input, preownedHome });
+  const expectReady = Effect.gen(function* () {
+    yield* waitForApp(id, input.timeoutSeconds);
+    yield* expectServerRunsAsSail(id);
+    yield* expectDataOwnership(id, preownedHome);
+    yield* docker([
+      "exec",
+      "--user",
+      "sail",
+      id,
+      "/usr/bin/test",
+      "-s",
+      `${preownedHome}/userdata/statev2.sqlite`,
+    ]);
+  });
+  yield* Effect.gen(function* () {
+    yield* expectReady;
+    const marker = `${preownedHome}/.smoke-persistence`;
+    yield* docker(["exec", "--user", "sail", id, "/usr/bin/touch", marker]);
+    yield* docker(["restart", "-t", "30", id]);
+    yield* expectReady;
+    yield* docker(["exec", "--user", "sail", id, "/usr/bin/test", "-f", marker]);
+    yield* Console.log(
+      "A sail-owned volume with nested SAIL_HOME booted and retained its files across restart.",
+    );
+  }).pipe(Effect.tapError(() => logContainerFailure(id, [])));
+}, Effect.scoped);
+
+export const smokeDockerImage = Effect.fn("smokeDockerImage")(function* (input: SmokeInput) {
+  yield* expectCleanBuildContext();
+  yield* expectCleanRuntime(input.image, input.platform);
+  yield* smokeFreshVolume(input);
+  yield* smokePreownedVolume(input);
+  yield* Console.log(`Smoke passed for ${input.image}.`);
+});
 
 const command = Command.make(
   "smoke-docker-image",
