@@ -239,9 +239,12 @@ export const stageServerRuntimeToNewDirectory = Effect.fn("stageServerRuntimeToN
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const stageDir = path.resolve(input.outputDir);
-    const existing = yield* fs
-      .readDirectory(stageDir)
-      .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+    const existing = yield* fs.readDirectory(stageDir).pipe(
+      Effect.catchIf(
+        (error) => error.reason._tag === "NotFound",
+        (): Effect.Effect<ReadonlyArray<string>> => Effect.succeed([]),
+      ),
+    );
     if (existing.length > 0) {
       return yield* new ServerRuntimeOutputNotEmptyError({ outputDir: stageDir });
     }

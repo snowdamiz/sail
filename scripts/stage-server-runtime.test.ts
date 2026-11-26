@@ -121,4 +121,26 @@ it.layer(NodeServices.layer)("stage-server-runtime", (it) => {
       assert.deepEqual(yield* fs.readDirectory(outputDir), ["package.json"]);
     }).pipe(Effect.scoped),
   );
+  it.effect("refuses an output directory it cannot list", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const parent = yield* fs.makeTempDirectoryScoped({ prefix: "t3-server-runtime-" });
+      const outputDir = path.join(parent, "unlistable");
+      yield* fs.makeDirectory(outputDir);
+      const manifest = path.join(outputDir, "package.json");
+      yield* fs.writeFileString(manifest, '{"name":"keep-me"}\n');
+      yield* fs.chmod(outputDir, 0o300);
+
+      const error = yield* stageServerRuntimeToNewDirectory({
+        outputDir,
+        platform: "linux",
+        arch: "x64",
+      }).pipe(Effect.flip, Effect.ensuring(fs.chmod(outputDir, 0o700).pipe(Effect.ignore)));
+
+      // Root can list it anyway, and then the non-empty check refuses it.
+      assert.include(["PlatformError", "ServerRuntimeOutputNotEmptyError"], error._tag);
+      assert.equal(yield* fs.readFileString(manifest), '{"name":"keep-me"}\n');
+    }).pipe(Effect.scoped),
+  );
 });
