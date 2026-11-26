@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { render } from "../../../test/render";
+import { act, render } from "../../../test/render";
 
 const setup = vi.hoisted(() => ({
   auth: null as ProviderAuthState | null,
@@ -42,7 +42,7 @@ vi.mock(import("../../state/query"), async (original) => ({
   })) as never,
 }));
 
-import { rememberProviderAuthSignIn } from "../../providerAuthDelivery";
+import { forgetProviderAuthSignIn, rememberProviderAuthSignIn } from "../../providerAuthDelivery";
 import { CodexSetupSection } from "./CodexSetupSection";
 
 const environmentId = EnvironmentId.make("relay-only");
@@ -101,15 +101,14 @@ describe("Codex sign-in start", () => {
       window.localStorage.clear();
       setup.auth = started;
       setup.installation = installed;
-      {
-        await using screen = await render(card());
-        expect(handoffLink(screen.container)).toBeNull();
-      }
-      rememberProviderAuthSignIn({ environmentId, instanceId, flowId: started.flowId! });
-      {
-        await using screen = await render(card());
-        expect(handoffLink(screen.container)).not.toBeNull();
-      }
+      await using screen = await render(card());
+      expect(handoffLink(screen.container)).toBeNull();
+
+      const flow = { environmentId, instanceId, flowId: started.flowId! };
+      await act(async () => rememberProviderAuthSignIn(flow));
+      expect(handoffLink(screen.container)).not.toBeNull();
+      await act(async () => forgetProviderAuthSignIn(flow));
+      expect(handoffLink(screen.container)).toBeNull();
     } finally {
       window.history.replaceState(null, "", page);
     }

@@ -17,8 +17,15 @@ type Presentation = { readonly connection: { readonly phase: string } } | undefi
 
 vi.mock("@t3tools/client-runtime/state/runtime", () => ({ runAtomCommand: vi.fn() }));
 vi.mock("./components/ui/toast", () => ({ toastManager: { add: vi.fn() } }));
-const locale = vi.hoisted(() => ({ ready: Promise.resolve() }));
+const locale = vi.hoisted(() => ({ ready: Promise.resolve(), active: "en" }));
 vi.mock("./i18n/runtime", () => ({ whenLocaleReady: () => locale.ready }));
+vi.mock(import("./i18n/messages"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    m: ((message, options) => `${locale.active}:${actual.m(message, options)}`) as typeof actual.m,
+  };
+});
 vi.mock("./state/server", () => ({
   serverEnvironment: { completeProviderAuth: "completeProviderAuth" },
 }));
@@ -151,9 +158,15 @@ describe("Codex sign-in delivery", () => {
     await Promise.resolve();
     expect(toastManager.add).not.toHaveBeenCalled();
 
+    locale.active = "de";
     loaded.resolve();
-    await vi.waitFor(() => expect(toastManager.add).toHaveBeenCalled());
+    await vi.waitFor(() =>
+      expect(toastManager.add).toHaveBeenCalledWith(
+        expect.objectContaining({ description: expect.stringMatching(/^de:/) }),
+      ),
+    );
     locale.ready = Promise.resolve();
+    locale.active = "en";
   });
 
   it("sends no code for a sign-in this browser cancelled", async () => {
@@ -165,6 +178,33 @@ describe("Codex sign-in delivery", () => {
 
     expect(runAtomCommand).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(toastManager.add).toHaveBeenCalled());
+  });
+
+  it("sends no code when the sign-in is cancelled while its delivery waits to connect", async () => {
+    connect("connecting");
+    openTab(page);
+    rememberProviderAuthSignIn(signIn);
+    openTab(delivery());
+    startProviderAuthDelivery();
+    openTab(page);
+    forgetProviderAuthSignIn(signIn);
+
+    connect("connected");
+    expect(runAtomCommand).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(toastManager.add).toHaveBeenCalled());
+  });
+
+  it("sends a code once when two tabs wait for the same environment", () => {
+    connect("connecting");
+    openTab(page);
+    rememberProviderAuthSignIn(signIn);
+    openTab(delivery());
+    startProviderAuthDelivery();
+    openTab(delivery());
+    startProviderAuthDelivery();
+
+    connect("connected");
+    expect(vi.mocked(runAtomCommand).mock.calls).toEqual([completed()]);
   });
 
   it("sends a code once, so another tab cannot replay the same sign-in", () => {
