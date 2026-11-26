@@ -83,9 +83,27 @@ function port(name: string, fallback: number): string {
   return process.env[name] ?? String(fallback);
 }
 
-function ensureRootCa(dir: string): boolean {
+/**
+ * Bump with every change to how the root is made. A lane at an older revision keeps whatever
+ * root it finds, so a newer root is never replaced by an older one.
+ */
+export const CA_VERSION = 2;
+
+/** Permits `localtest.me` names only. Excluding every IP keeps the root from vouching for one. */
+const NAME_CONSTRAINTS = `critical,permitted;DNS:${DOMAIN},excluded;IP:0.0.0.0/0.0.0.0,excluded;IP:::/::`;
+
+function caVersion(ca: string): number {
+  try {
+    return Number(NodeFS.readFileSync(NodePath.join(ca, "version"), "utf8").trim()) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** True when it made a new root, whose certificates replace every one the old root issued. */
+export function ensureRootCa(dir: string): boolean {
   const ca = NodePath.join(dir, "ca");
-  if (NodeFS.existsSync(NodePath.join(ca, "root.crt"))) return false;
+  if (caVersion(ca) >= CA_VERSION) return false;
   const staging = NodeFS.mkdtempSync(NodePath.join(dir, "ca-"));
   const openssl = NodeChildProcess.spawnSync(
     "openssl",
@@ -110,12 +128,22 @@ function ensureRootCa(dir: string): boolean {
       "-addext",
       "keyUsage=critical,keyCertSign,cRLSign",
       "-addext",
-      `nameConstraints=critical,permitted;DNS:${DOMAIN}`,
+      `nameConstraints=${NAME_CONSTRAINTS}`,
     ],
     { encoding: "utf8" },
   );
-  if (openssl.status !== 0)
+  if (openssl.status !== 0) {
+    NodeFS.rmSync(staging, { recursive: true, force: true });
     throw new Error(`openssl could not make the fixture CA: ${openssl.stderr}`);
+  }
+  NodeFS.writeFileSync(NodePath.join(staging, "version"), `${CA_VERSION}\n`);
+  const retired = `${staging}-retired`;
+  try {
+    NodeFS.renameSync(ca, retired);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  NodeFS.rmSync(retired, { recursive: true, force: true });
   try {
     NodeFS.renameSync(staging, ca);
     return true;

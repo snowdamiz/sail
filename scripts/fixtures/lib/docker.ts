@@ -4,12 +4,6 @@ import * as NodeChildProcess from "node:child_process";
 export const NETWORK = "sail-fixtures";
 export const FIXTURE_LABEL = "sail-fixture";
 
-/**
- * Tests and hooks that drive Docker get this bound. Lanes share one 8 GB Docker VM at load
- * 40 to 80, where a step that takes seconds on a quiet machine has taken over three minutes.
- */
-export const DOCKER_TEST_TIMEOUT_MS = 480_000;
-
 export class DockerError extends Error {
   readonly status: number | null;
   readonly stderr: string;

@@ -2,16 +2,20 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
+import * as NodeHttps from "node:https";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import {
+  CA_VERSION,
   CADDY_CONTAINER,
   CADDYFILE,
   CADDYFILE_VERSION,
   caddyDir,
   ensureCaddy,
+  ensureRootCa,
   isOlderCaddyfile,
   publishSite,
   removeSite,
@@ -56,6 +60,134 @@ const status = async (url: string) =>
       url,
     ])
   ).stdout;
+
+const scratch = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "fixture-caddy-test-"));
+afterAll(() => NodeFS.rmSync(scratch, { recursive: true, force: true }));
+
+const openssl = (args: ReadonlyArray<string>) =>
+  NodeChildProcess.spawnSync("openssl", args, { encoding: "utf8" });
+
+/** A leaf for `san`, signed by the root in `ca`, as anything holding the root key could make. */
+function issue(ca: string, san: string): { readonly key: string; readonly cert: string } {
+  const dir = NodeFS.mkdtempSync(NodePath.join(scratch, "leaf-"));
+  const at = (name: string) => NodePath.join(dir, name);
+  NodeFS.writeFileSync(at("ext.cnf"), `subjectAltName=${san}\nbasicConstraints=CA:FALSE\n`);
+  const steps = [
+    ["req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes"].concat([
+      "-keyout",
+      at("leaf.key"),
+      "-out",
+      at("leaf.csr"),
+      "-subj",
+      "/CN=leaf",
+    ]),
+    ["x509", "-req", "-in", at("leaf.csr"), "-CA", NodePath.join(ca, "root.crt")]
+      .concat(["-CAkey", NodePath.join(ca, "root.key"), "-set_serial", "1", "-days", "1"])
+      .concat(["-extfile", at("ext.cnf"), "-out", at("leaf.crt")]),
+  ];
+  for (const step of steps) expect(openssl(step).status, step[0]).toBe(0);
+  return { key: at("leaf.key"), cert: at("leaf.crt") };
+}
+
+const verifies = (ca: string, san: string) =>
+  openssl(["verify", "-CAfile", NodePath.join(ca, "root.crt"), issue(ca, san).cert]).status === 0;
+
+/** Node's own TLS client, which an app under test would use with `NODE_EXTRA_CA_CERTS`. */
+async function nodeAccepts(ca: string, san: string, host: string): Promise<boolean> {
+  const leaf = issue(ca, san);
+  const server = NodeHttps.createServer(
+    { key: NodeFS.readFileSync(leaf.key), cert: NodeFS.readFileSync(leaf.cert) },
+    (_request, response) => response.end("ok"),
+  );
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { readonly port: number };
+  try {
+    return await new Promise<boolean>((resolve) => {
+      const request = NodeHttps.get(
+        {
+          host: "127.0.0.1",
+          servername: host,
+          port,
+          ca: NodeFS.readFileSync(NodePath.join(ca, "root.crt")),
+        },
+        (response) => {
+          response.resume();
+          resolve(true);
+        },
+      );
+      request.on("error", () => resolve(false));
+    });
+  } finally {
+    server.close();
+  }
+}
+
+/** The root the build round made: `localtest.me` names permitted, nothing said about IPs. */
+function makeVersionOneRoot(dir: string): void {
+  const ca = NodePath.join(dir, "ca");
+  NodeFS.mkdirSync(ca, { recursive: true });
+  const made = openssl([
+    "req",
+    "-x509",
+    "-newkey",
+    "ec",
+    "-pkeyopt",
+    "ec_paramgen_curve:P-256",
+    "-nodes",
+    "-keyout",
+    NodePath.join(ca, "root.key"),
+    "-out",
+    NodePath.join(ca, "root.crt"),
+    "-days",
+    "1",
+    "-subj",
+    "/CN=Sail fixtures local CA",
+    "-addext",
+    "basicConstraints=critical,CA:TRUE",
+    "-addext",
+    "keyUsage=critical,keyCertSign,cRLSign",
+    "-addext",
+    "nameConstraints=critical,permitted;DNS:localtest.me",
+  ]);
+  expect(made.status).toBe(0);
+}
+
+describe("fixture root CA", () => {
+  const dir = NodeFS.mkdtempSync(NodePath.join(scratch, "home-"));
+  const ca = NodePath.join(dir, "ca");
+  beforeAll(() => {
+    ensureRootCa(dir);
+  });
+
+  it("signs localtest.me names and nothing else, IP addresses included", () => {
+    expect(verifies(ca, "DNS:demo.localtest.me")).toBe(true);
+    expect(verifies(ca, "DNS:evil.example.com")).toBe(false);
+    expect(verifies(ca, "IP:127.0.0.1")).toBe(false);
+    expect(verifies(ca, "IP:1.1.1.1")).toBe(false);
+    expect(verifies(ca, "IP:::1")).toBe(false);
+  });
+
+  it("is refused by Node's TLS client for an IP address", async () => {
+    expect(await nodeAccepts(ca, "DNS:demo.localtest.me", "demo.localtest.me")).toBe(true);
+    expect(await nodeAccepts(ca, "IP:127.0.0.1", "")).toBe(false);
+  });
+
+  it("replaces a root an older revision made, and keeps a current or newer one", () => {
+    const old = NodeFS.mkdtempSync(NodePath.join(scratch, "old-"));
+    makeVersionOneRoot(old);
+    const before = NodeFS.readFileSync(NodePath.join(old, "ca", "root.crt"), "utf8");
+    expect(verifies(NodePath.join(old, "ca"), "IP:127.0.0.1")).toBe(true);
+    expect(ensureRootCa(old)).toBe(true);
+    const after = NodeFS.readFileSync(NodePath.join(old, "ca", "root.crt"), "utf8");
+    expect(after).not.toBe(before);
+    expect(verifies(NodePath.join(old, "ca"), "IP:127.0.0.1")).toBe(false);
+    expect(ensureRootCa(old)).toBe(false);
+    expect(NodeFS.readFileSync(NodePath.join(old, "ca", "root.crt"), "utf8")).toBe(after);
+    NodeFS.writeFileSync(NodePath.join(old, "ca", "version"), `${CA_VERSION + 1}\n`);
+    expect(ensureRootCa(old)).toBe(false);
+    expect(NodeFS.readFileSync(NodePath.join(old, "ca", "root.crt"), "utf8")).toBe(after);
+  });
+});
 
 describe("fixture Caddyfile version", () => {
   const stamped = (version: number) =>
@@ -154,6 +286,11 @@ describe.skipIf(!hasDocker())("fixture Caddy", () => {
     expect(listing.split("\n")).not.toContain(`${bad}.caddy`);
     expect(NodeFS.existsSync(NodePath.join(caddyDir(), "sites", `${bad}.caddy`))).toBe(false);
     expect(await status(`https://${ids[0]}.localtest.me/`)).toBe("200");
+  });
+
+  it("serves with a shared root that cannot sign an IP address", () => {
+    expect(verifies(NodePath.dirname(rootCertPath()), "IP:127.0.0.1")).toBe(false);
+    expect(verifies(NodePath.dirname(rootCertPath()), "DNS:demo.localtest.me")).toBe(true);
   });
 
   it("refuses the hosts the fixtures reserve", () => {

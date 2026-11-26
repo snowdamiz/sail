@@ -16,6 +16,7 @@ const TEST_EXCLUDE = [
 // Directories whose tests belong to a package's own test config. desktop also
 // owns the kde-snap-shot tests through its `include`.
 const TEST_CONFIG_PACKAGES = ["apps/desktop", "apps/server", "apps/web", "packages/client-runtime"];
+const FIXTURES = "scripts/fixtures";
 
 // `vp test run <file>` from the repo root hands each file to its package's
 // config. Packages that borrow this config (`--config ../../vite.config.ts`) run
@@ -157,7 +158,19 @@ export default defineConfig({
                   ...TEST_EXCLUDE,
                   ...TEST_CONFIG_PACKAGES.map((dir) => `${dir}/**`),
                   "native/kde-snap-shot/**",
+                  `${FIXTURES}/**`,
                 ],
+              },
+            },
+            {
+              extends: true,
+              test: {
+                name: "fixtures",
+                include: [`${FIXTURES}/**/*.test.ts`],
+                // The stand-ins drive Docker, where lanes share one 8 GB VM at load 40 to 80 and
+                // a step that takes seconds on a quiet machine has taken over three minutes.
+                hookTimeout: 480_000,
+                testTimeout: 480_000,
               },
             },
           ],
