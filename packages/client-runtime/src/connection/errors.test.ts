@@ -140,7 +140,7 @@ describe("mapRemoteDpopEnvironmentError", () => {
         _tag: "ConnectionBlockedError",
         reason: "authentication",
         detail:
-          "This pairing link was already used or has expired. To get a new one, run t3 pair on the server, or ask its owner.",
+          "This pairing link was already used or has expired. To get a new one, run t3\u00a0pair on the server, or ask its owner.",
       });
     }
   });

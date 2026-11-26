@@ -19,7 +19,8 @@ import {
 
 const usedPairingLinkText = msg(
   "This pairing link was already used or has expired. To get a new one, run {command} on the server, or ask its owner.",
-  { command: "t3 pair" },
+  // A non-breaking space keeps the command on one line.
+  { command: "t3\u00a0pair" },
 );
 
 export function profileMissingError(connectionId: string): ConnectionBlockedError {
