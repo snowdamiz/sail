@@ -308,8 +308,9 @@ const expectRootIgnoresSailCommands = Effect.fn("smoke-docker-image.expectRootIg
       id,
       "/bin/sh",
       "-c",
-      "sail-smoke-probe; claude --version; codex --version; opencode --version",
+      'sail-smoke-probe; claude --version; codex --version; opencode --version; touch "$HOME/.sail-smoke-root-home"',
     ]);
+    yield* docker(["exec", id, "bash", "-ic", "sail-smoke-probe; true"]);
     const planted = (yield* docker([
       "exec",
       id,
