@@ -34,17 +34,22 @@ const STEPS: {
 export function SetupView({
   setup,
   busy,
+  signInWaiting,
   signIn,
+  requesting,
   onAction,
 }: {
   setup: Setup;
   busy: boolean;
+  signInWaiting: boolean;
   signIn: SignInPrompt | null;
+  requesting: boolean;
   onAction: (a: SetupAction) => void;
 }) {
   const canAct = useBoatAccess().can("setup_action");
-  const locked = busy || !canAct;
-  const canShowPendingSignIn = setup === "signInBoat" && busy && signIn === null && canAct;
+  const locked = busy || requesting || !canAct;
+  const canShowPendingSignIn =
+    setup === "signInBoat" && signInWaiting && signIn === null && canAct && !requesting;
   if (setup === "starting" || setup === "ready") {
     return (
       <div className="view center">

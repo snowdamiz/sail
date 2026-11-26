@@ -5,6 +5,7 @@ import type { CommandName } from "./types";
 
 export interface BoatAccess {
   readonly can: (command: CommandName) => boolean;
+  // The daemon's pairing and thread links are http://localhost ones until W12.
   readonly onHost: boolean;
 }
 

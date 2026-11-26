@@ -50,21 +50,29 @@ function Setup({
   follow: FollowLink;
   onError: (t: string) => void;
 }) {
-  const [signIn, setSignIn] = useState<{ prompt: SignInPrompt; waited: boolean } | null>(null);
-  if (signIn !== null) {
-    if (state.setup !== "signInBoat" || (signIn.waited && !state.setupBusy)) setSignIn(null);
-    else if (state.setupBusy && !signIn.waited) setSignIn({ ...signIn, waited: true });
-  }
+  const [signIn, setSignIn] = useState<{ prompt: SignInPrompt; attempt: number } | null>(null);
+  const [requesting, setRequesting] = useState(false);
+  const pending =
+    signIn !== null && state.setup === "signInBoat" && signIn.attempt === state.signInAttempt
+      ? signIn.prompt
+      : null;
 
-  const act = (action: SetupAction) =>
-    void call("setup_action", { action }).then(
-      (reply) => {
-        const link = follow(reply.openUrl);
-        if (action === "signInBoat" && link.kind === "browser")
-          setSignIn({ prompt: { url: link.url, userCode: reply.userCode ?? null }, waited: false });
-      },
-      (e) => onError(errorText(e)),
-    );
+  const act = (action: SetupAction) => {
+    setRequesting(true);
+    void call("setup_action", { action })
+      .then(
+        (reply) => {
+          const link = follow(reply.openUrl);
+          if (action === "signInBoat" && link.kind === "browser" && reply.data !== null)
+            setSignIn({
+              prompt: { url: link.url, userCode: reply.userCode ?? null },
+              attempt: reply.data.attempt,
+            });
+        },
+        (e) => onError(errorText(e)),
+      )
+      .finally(() => setRequesting(false));
+  };
   return (
     <>
       <Ocean boats={[{ key: "setup", name: "Sail", state: "creating" }]}>
@@ -73,7 +81,9 @@ function Setup({
       <SetupView
         setup={state.setup}
         busy={state.setupBusy}
-        signIn={state.setup === "signInBoat" ? (signIn?.prompt ?? null) : null}
+        signInWaiting={state.signInAttempt !== null}
+        signIn={pending}
+        requesting={requesting}
         onAction={act}
       />
     </>
@@ -346,9 +356,10 @@ export function SailBoatsApp() {
               </Ocean>
               <div className="view center">
                 <div className="empty">
-                  <h1 className="display">No server connected</h1>
+                  <h1 className="display">Boats isn't available here</h1>
                   <p className="lede">
-                    Boats runs on the server this app connects to. Connect one, then come back.
+                    Boats runs on the server that serves this app, and this app has none. Open Boats
+                    from that server's own web page, or from Sail desktop with its local server on.
                   </p>
                 </div>
               </div>

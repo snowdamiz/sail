@@ -606,7 +606,7 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
         [DESKTOP_HOST_SCOPE_ENV]: input.hostScope,
         SAIL_BOATD_PATH: Option.getOrUndefined(input.boatDaemonPath),
         SAIL_DEEP_LINK_SCHEME: getDesktopScheme(environment.isDevelopment),
-        SAIL_APP_BUNDLE_ID: environment.appUserModelId,
+        SAIL_APP_BUNDLE_ID: environment.isDevelopment ? "com.sail.desktop.dev" : "com.sail.desktop",
       },
       extendEnv: true,
       bootstrap,

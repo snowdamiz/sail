@@ -66,6 +66,8 @@ export type McpClient = "claudeCode" | "codex";
 export interface UiState {
   setup: Setup;
   setupBusy: boolean;
+  /** the Boat sign-in waiting now; its page and code went only to the tab that started it */
+  signInAttempt: number | null;
   account: { identifier: string | null; plan: string | null } | null;
   machines: MachineView[];
   costs: { today: number; month: number; startsToday: number; startsLimit: number };
@@ -111,7 +113,7 @@ export type Commands = Covering<
     get_machine_details: [{ id: string }, MachineDetails];
     add_mcp: [{ client: McpClient }, void];
     update_settings: [{ settings: Settings }, void];
-    setup_action: [{ action: SetupAction }, void];
+    setup_action: [{ action: SetupAction }, { attempt: number } | null]; // attempt: signInBoat
   }
 >;
 

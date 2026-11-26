@@ -82,11 +82,11 @@ export function primaryAction(m: MachineView): Action | null {
 }
 
 /** Opens the machine's latest thread in Sail, named so the button says where it goes. */
-export const openIn = (thread: string | null): Action => ({
+export const openIn = (thread: string): Action => ({
   cmd: "open_machine",
-  label: thread ? "Open last thread in Sail" : "Open in Sail",
+  label: "Open last thread in Sail",
   busy: "Opening…",
-  ...(thread !== null ? { thread } : {}),
+  thread,
 });
 
 /** "Stay awake for…" choices, in minutes. */

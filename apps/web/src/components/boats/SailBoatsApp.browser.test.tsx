@@ -76,6 +76,7 @@ function uiState(overrides: Partial<UiState>): UiState {
   return {
     setup: "ready",
     setupBusy: false,
+    signInAttempt: null,
     account: { identifier: "me@example.com", plan: "Pro" },
     machines: [],
     costs: { today: 0, month: 0, startsToday: 0, startsLimit: 10 },
@@ -134,11 +135,11 @@ it("shows Boat setup in a plain browser tab from the subscribed state", async ()
 it("shows the sign-in page and code only to the tab whose click answered with them", async () => {
   const url = "https://auth.localtest.me/boat/device?code=WXYZ-1234";
   setup({ state: uiState({ setup: "signInBoat" }) });
-  state.replies.setup_action = { data: null, openUrl: url, userCode: "WXYZ-1234" };
+  state.replies.setup_action = { data: { attempt: 1 }, openUrl: url, userCode: "WXYZ-1234" };
   await using screen = await mount();
 
   await userEvent.click(screen.getByRole("button", { name: "Sign in to Boat" }));
-  await publish(uiState({ setup: "signInBoat", setupBusy: true }));
+  await publish(uiState({ setup: "signInBoat", setupBusy: true, signInAttempt: 1 }));
 
   await expect
     .element(screen.getByRole("link", { name: "Boat's sign-in page" }))
@@ -153,8 +154,8 @@ it("shows the sign-in page and code only to the tab whose click answered with th
 
 it("shows another tab's sign-in as busy, with no link or code until that tab asks", async () => {
   const url = "https://auth.localtest.me/boat/device?code=WXYZ-1234";
-  setup({ state: uiState({ setup: "signInBoat", setupBusy: true }) });
-  state.replies.setup_action = { data: null, openUrl: url, userCode: "WXYZ-1234" };
+  setup({ state: uiState({ setup: "signInBoat", setupBusy: true, signInAttempt: 1 }) });
+  state.replies.setup_action = { data: { attempt: 1 }, openUrl: url, userCode: "WXYZ-1234" };
   await using screen = await mount();
 
   await expect.element(screen.getByRole("link")).not.toBeInTheDocument();
@@ -173,29 +174,46 @@ it("shows another tab's sign-in as busy, with no link or code until that tab ask
 it("drops a sign-in page once its wait ends, so a later attempt never shows an old code", async () => {
   setup({ state: uiState({ setup: "signInBoat" }) });
   state.replies.setup_action = {
-    data: null,
+    data: { attempt: 1 },
     openUrl: "https://auth.localtest.me/boat/device?code=OLD-CODE",
     userCode: "OLD-CODE",
   };
   await using screen = await mount();
 
   await userEvent.click(screen.getByRole("button", { name: "Sign in to Boat" }));
-  await publish(uiState({ setup: "signInBoat", setupBusy: true }));
+  await publish(uiState({ setup: "signInBoat", setupBusy: true, signInAttempt: 1 }));
   await expect.element(screen.getByText("OLD-CODE")).toBeVisible();
 
   await publish(uiState({ setup: "signInBoat", setupBusy: false }));
-  await publish(uiState({ setup: "signInBoat", setupBusy: true }));
+  await publish(uiState({ setup: "signInBoat", setupBusy: true, signInAttempt: 2 }));
 
   await expect.element(screen.getByText("OLD-CODE")).not.toBeInTheDocument();
   await expect.element(screen.getByRole("button", { name: "Show sign-in page" })).toBeEnabled();
 });
 
-it("says no server is connected instead of starting forever", async () => {
+it("never shows a sign-in page whose attempt already ended, even when its reply comes late", async () => {
+  setup({ state: uiState({ setup: "signInBoat", setupBusy: true, signInAttempt: 2 }) });
+  state.replies.setup_action = {
+    data: { attempt: 1 },
+    openUrl: "https://auth.localtest.me/boat/device?code=OLD-CODE",
+    userCode: "OLD-CODE",
+  };
+  await using screen = await mount();
+
+  await userEvent.click(screen.getByRole("button", { name: "Show sign-in page" }));
+
+  expect(state.invoked).toEqual([{ command: "setup_action", args: { action: "signInBoat" } }]);
+  await expect.element(screen.getByText("OLD-CODE")).not.toBeInTheDocument();
+});
+
+it("says Boats is not available here instead of starting forever", async () => {
   setup({ state: uiState({}) });
   state.environmentId = null;
   await using screen = await mount();
 
-  await expect.element(screen.getByRole("heading", { name: "No server connected" })).toBeVisible();
+  await expect
+    .element(screen.getByRole("heading", { name: "Boats isn't available here" }))
+    .toBeVisible();
 });
 
 it("renders state but disables every action for a client that can only read", async () => {
@@ -306,4 +324,12 @@ it("offers Open in Sail on a paired machine only once its latest thread is known
   await expect
     .element(screen.getByRole("button", { name: /Open .*in Sail/ }))
     .not.toBeInTheDocument();
+
+  state.replies.latest_thread = { data: "thread-1" };
+  await publish(
+    uiState({ machines: [machine({ id: "m-2", name: "dory", paired: true, state: "working" })] }),
+  );
+  await expect
+    .element(screen.getByRole("button", { name: "Open last thread in Sail" }))
+    .toBeVisible();
 });

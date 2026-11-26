@@ -47,7 +47,6 @@ describe("Sail Boats helpers", () => {
     expect(machineKey(unpaired)).toBe("m-1");
     expect(stateTag(unpaired.state)).toBe("idle");
     expect(primaryAction(unpaired)?.label).toBe("Add to Sail");
-    expect(openIn(null).label).toBe("Open in Sail");
     expect(openIn("t-1").label).toBe("Open last thread in Sail");
 
     const paired = makeMachine({ state: "asleep", paired: true });
