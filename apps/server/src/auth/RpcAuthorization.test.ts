@@ -482,7 +482,11 @@ it.effect.each([WS_METHODS.subscribeVcsBranch, WS_METHODS.subscribeVcsStatus] as
 
 it.effect("reads Boats with read scope and gates Boat commands by what they change", () =>
   Effect.gen(function* () {
-    const tested = [WS_METHODS.boatsInvoke, WS_METHODS.subscribeBoats] as const;
+    const tested = [
+      WS_METHODS.boatsInvoke,
+      WS_METHODS.subscribeBoats,
+      WS_METHODS.subscribeBoatNotices,
+    ] as const;
     const group = WsRpcGroup.omit(
       ...[...WsRpcGroup.requests.keys()].filter(
         (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof tested)[number]> =>
@@ -500,6 +504,9 @@ it.effect("reads Boats with read scope and gates Boat commands by what they chan
       group.toLayerHandler(WS_METHODS.subscribeBoats, () =>
         Stream.make({ _tag: "status" as const, status: { phase: "ready" as const, error: null } }),
       ),
+      group.toLayerHandler(WS_METHODS.subscribeBoatNotices, () =>
+        Stream.make({ title: "Sail Boat", body: "Machine ready" }),
+      ),
     );
     const clientWith = (...scopes: Parameters<typeof RpcAuthorization.layer>[0]) =>
       RpcTest.makeClient(group).pipe(
@@ -510,6 +517,13 @@ it.effect("reads Boats with read scope and gates Boat commands by what they chan
     expect(yield* Stream.runCollect(reader[WS_METHODS.subscribeBoats]({}))).toEqual([
       { _tag: "status", status: { phase: "ready", error: null } },
     ]);
+    expect(yield* Stream.runCollect(reader[WS_METHODS.subscribeBoatNotices]({}))).toEqual([
+      { title: "Sail Boat", body: "Machine ready" },
+    ]);
+    const outsider = yield* clientWith();
+    expect(
+      yield* Stream.runCollect(outsider[WS_METHODS.subscribeBoatNotices]({})).pipe(Effect.flip),
+    ).toMatchObject({ requiredPermission: AuthOrchestrationReadScope });
     yield* reader[WS_METHODS.boatsInvoke]({ command: "get_state" });
     expect(
       yield* reader[WS_METHODS.boatsInvoke]({ command: "create_machine", args: {} }).pipe(

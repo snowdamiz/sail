@@ -248,6 +248,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.subscribeDeviceState]: AuthOrchestrationReadScope,
   [WS_METHODS.boatsInvoke]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeBoats]: AuthOrchestrationReadScope,
+  [WS_METHODS.subscribeBoatNotices]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeServerConfig]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeServerLifecycle]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeAuthAccess]: AuthAccessReadScope,

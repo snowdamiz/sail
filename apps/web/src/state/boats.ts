@@ -6,7 +6,7 @@ import { toastManager } from "../components/ui/toast";
 import { connectionAtomRuntime } from "../connection/runtime";
 
 export const boatsEnvironment = createBoatsEnvironmentAtoms(connectionAtomRuntime, {
-  onNotify: ({ title, body }) => toastManager.add({ type: "info", title, description: body }),
+  onNotice: ({ title, body }) => toastManager.add({ type: "info", title, description: body }),
 });
 
 const BOAT_COMMANDS = Object.keys(BOAT_COMMAND_SCOPES) as BoatCommand[];

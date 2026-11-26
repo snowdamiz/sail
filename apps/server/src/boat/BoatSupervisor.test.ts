@@ -4,11 +4,11 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { BoatError, type BoatEvent } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -408,38 +408,43 @@ describe("BoatSupervisor", () => {
     );
   });
 
-  it.live("streams notify and state events, and gives a late subscriber the latest state", () =>
-    Effect.gen(function* () {
-      const { supervisor } = yield* setup;
+  it.live(
+    "hands each daemon notice to every notices subscriber, and following notices starts nothing",
+    () =>
+      Effect.gen(function* () {
+        const { supervisor } = yield* setup;
 
-      yield* Effect.gen(function* () {
-        const boats = yield* BoatSupervisor.BoatSupervisor;
-        const connected = yield* Deferred.make<void>();
-        const notice = yield* boats.events.pipe(
-          Stream.tap((event) =>
-            event._tag === "state" ? Deferred.succeed(connected, undefined) : Effect.void,
-          ),
-          Stream.filter((event) => event._tag === "notify"),
-          Stream.runHead,
-          Effect.forkScoped,
-        );
-        yield* Deferred.await(connected);
+        yield* Effect.gen(function* () {
+          const boats = yield* BoatSupervisor.BoatSupervisor;
+          const nextNotice = boats.notices.pipe(
+            Stream.runHead,
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          const tabA = yield* nextNotice;
+          const tabB = yield* nextNotice;
+          assert.deepEqual(
+            yield* boats.events.pipe(Stream.runHead),
+            Option.some<BoatEvent>({ _tag: "status", status: { phase: "stopped", error: null } }),
+            "clients that only follow notices leave sail-boatd stopped",
+          );
 
-        yield* boats.invoke({ command: "update_settings", args: {} });
+          // The daemon's event stream opens with its state, so a notice sent after that arrives.
+          yield* boats.events.pipe(
+            Stream.filter((event) => event._tag === "state"),
+            Stream.runHead,
+          );
+          yield* boats.invoke({ command: "update_settings", args: {} });
 
-        const notify = yield* Fiber.join(notice);
-        assert.deepEqual(notify._tag === "Some" ? notify.value : undefined, {
-          _tag: "notify",
-          title: "Machine ready",
-          body: "m1 is awake.",
-        });
-        const late = yield* boats.events.pipe(Stream.take(2), Stream.runCollect);
-        assert.deepEqual(
-          late.map((event) => event._tag),
-          ["status", "state"],
-        );
-      }).pipe(Effect.provide(supervisor()));
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+          const notice = { title: "Machine ready", body: "m1 is awake." };
+          assert.deepEqual(yield* Fiber.join(tabA), Option.some(notice));
+          assert.deepEqual(yield* Fiber.join(tabB), Option.some(notice));
+          const late = yield* boats.events.pipe(Stream.take(2), Stream.runCollect);
+          assert.deepEqual(
+            late.map((event) => event._tag),
+            ["status", "state"],
+          );
+        }).pipe(Effect.provide(supervisor()));
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.live("keeps a command running on sail-boatd after its caller goes away", () =>

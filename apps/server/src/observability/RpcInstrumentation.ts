@@ -270,6 +270,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.subscribeDeviceState]: "device",
   [WS_METHODS.boatsInvoke]: "boats",
   [WS_METHODS.subscribeBoats]: "boats",
+  [WS_METHODS.subscribeBoatNotices]: "boats",
   [WS_METHODS.subscribeServerConfig]: "server",
   [WS_METHODS.subscribeServerLifecycle]: "server",
   [WS_METHODS.subscribeAuthAccess]: "auth",

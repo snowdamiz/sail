@@ -85,9 +85,12 @@ export type BoatInvokeResult = typeof BoatInvokeResult.Type;
 export const BoatEvent = Schema.Union([
   Schema.TaggedStruct("status", { status: BoatDaemonStatus }),
   Schema.TaggedStruct("state", { state: Schema.Unknown }),
-  Schema.TaggedStruct("notify", { title: Schema.String, body: Schema.String }),
 ]);
 export type BoatEvent = typeof BoatEvent.Type;
+
+/** Goes to every client of the server, so a notice must carry no link or code. */
+export const BoatNotice = Schema.Struct({ title: Schema.String, body: Schema.String });
+export type BoatNotice = typeof BoatNotice.Type;
 
 export class BoatError extends Schema.TaggedError<BoatError>()("BoatError", {
   message: Schema.String,

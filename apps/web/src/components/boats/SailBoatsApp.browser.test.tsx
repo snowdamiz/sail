@@ -23,6 +23,7 @@ const state = vi.hoisted(() => ({
 vi.mock(import("../../state/boats"), () => ({
   boatsEnvironment: {
     view: (() => state.view) as never,
+    notices: (() => null) as never,
     invoke: {
       label: "boats:invoke",
       run: ((_registry: unknown, { input }: { input: BoatInvokeInput }) =>

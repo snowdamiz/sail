@@ -3501,6 +3501,7 @@ export const layerWsRpc = (
         [WS_METHODS.subscribeDeviceState]: (_input) => DeviceService.stateStream(deviceService),
         [WS_METHODS.boatsInvoke]: (input) => boats.invoke(input),
         [WS_METHODS.subscribeBoats]: (_input) => boats.events,
+        [WS_METHODS.subscribeBoatNotices]: (_input) => boats.notices,
         [WS_METHODS.previewStopLocalServer]: (input) => portDiscovery.stopServer(input),
         [WS_METHODS.subscribeDiscoveredLocalServers]: (input) =>
           Stream.callback<DiscoveredLocalServerList>((queue) =>

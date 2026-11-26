@@ -4,6 +4,7 @@ import {
   type BoatEvent,
   type BoatInvokeInput,
   type BoatInvokeResult,
+  BoatNotice,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
@@ -61,9 +62,7 @@ const CommandReply = Schema.Union([
 const decodeCommandReply = Schema.decodeUnknownEffect(CommandReply);
 
 const decodeStateEvent = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
-const decodeNotifyEvent = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Struct({ title: Schema.String, body: Schema.String })),
-);
+const decodeNotifyEvent = Schema.decodeUnknownOption(Schema.fromJsonString(BoatNotice));
 
 const SavedBoatState = Schema.Struct({
   machines: Schema.optional(Schema.Array(Schema.Unknown)),
@@ -169,6 +168,8 @@ export class BoatSupervisor extends Context.Service<
   {
     readonly invoke: (input: BoatInvokeInput) => Effect.Effect<BoatInvokeResult, BoatError>;
     readonly events: Stream.Stream<BoatEvent>;
+    /** Never starts sail-boatd: every client follows this, not only those showing Boats. */
+    readonly notices: Stream.Stream<BoatNotice>;
   }
 >()("t3/boat/BoatSupervisor") {}
 
@@ -196,6 +197,7 @@ const make = Effect.gen(function* () {
       : `http://${loopbackUrlHostForAddress(address)}:${address.port}`;
 
   const hub = yield* PubSub.unbounded<BoatEvent>();
+  const noticeHub = yield* PubSub.unbounded<BoatNotice>();
   const lifecycle = yield* SynchronizedRef.make<Lifecycle>({ _tag: "Stopped" });
   const latestState = yield* Ref.make(Option.none<unknown>());
 
@@ -268,7 +270,7 @@ const make = Effect.gen(function* () {
     } else if (event.event === "notify") {
       const notice = decodeNotifyEvent(event.data);
       if (Option.isNone(notice)) return;
-      yield* PubSub.publish(hub, { _tag: "notify", ...notice.value });
+      yield* PubSub.publish(noticeHub, notice.value);
     }
   });
 
@@ -513,7 +515,7 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  return BoatSupervisor.of({ invoke, events });
+  return BoatSupervisor.of({ invoke, events, notices: Stream.fromPubSub(noticeHub) });
 });
 
 export const layer = Layer.effect(BoatSupervisor, make);
