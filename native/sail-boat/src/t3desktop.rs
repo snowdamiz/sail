@@ -232,7 +232,8 @@ impl T3Desktop {
     }
 
     /// The ignored files Sail's "Add to another machine" dialog selects by default for
-    /// `project`, with their contents. A file that can't be read is left out with its reason.
+    /// `project`, with their contents. A file that can't be read or is too large is left out and
+    /// named in the second list; the log says why.
     pub async fn files_to_copy(&self, project: &Project) -> Result<(Vec<(String, String)>, Vec<String>)> {
         let listed = self.call("projects.listIgnoredFiles", json!({ "cwd": project.path })).await?;
         let mut files = Vec::new();
@@ -243,10 +244,13 @@ impl T3Desktop {
                 continue;
             }
             match self.call("projects.readFile", json!({ "cwd": project.path, "relativePath": path })).await {
-                Ok(read) if read["truncated"] == true => failed.push(format!("{path}: too large to copy")),
+                Ok(read) if read["truncated"] == true => {
+                    tracing::warn!("{path} in {} is too large to copy", project.path);
+                    failed.push(path.to_owned());
+                }
                 Ok(read) => files.push((path.to_owned(), read["contents"].as_str().unwrap_or_default().to_owned())),
                 Err(e) => {
-                    tracing::warn!("reading {path}: {e:#}");
+                    tracing::warn!("reading {path} in {}: {e:#}", project.path);
                     failed.push(path.to_owned());
                 }
             }

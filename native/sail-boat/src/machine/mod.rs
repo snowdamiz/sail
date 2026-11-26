@@ -981,8 +981,8 @@ impl MachineRuntime {
                 // running that long, the machine is restored from its snapshot instead.
                 last_keep_alive = Some(Instant::now());
                 tracing::info!("keep-alive wake for {}", self.id());
-                if let Err(e) = self.ensure_awake().await {
-                    tracing::warn!("keep-alive wake for {}: {e:#}", self.id());
+                if self.ensure_awake().await.is_err() {
+                    tracing::warn!("keep-alive wake for {} failed", self.id());
                 }
             }
             let due = self.scheduled_wake().is_some_and(|due| chrono::Utc::now() >= due - DUE_LEAD);
@@ -991,8 +991,8 @@ impl MachineRuntime {
             {
                 last_due_wake = Some(Instant::now());
                 tracing::info!("waking {} for work due", self.id());
-                if let Err(e) = self.ensure_awake().await {
-                    tracing::warn!("waking {} for work due: {e:#}", self.id());
+                if self.ensure_awake().await.is_err() {
+                    tracing::warn!("waking {} for work due failed", self.id());
                 }
             }
             if let Some((sandbox, stop)) = self.begin_save() {

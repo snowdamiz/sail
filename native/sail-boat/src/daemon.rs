@@ -346,7 +346,10 @@ impl Daemon {
                     let daemon = self.clone();
                     tasks.push(tokio::spawn(async move { daemon.refresh_mcp().await }));
                 }
-                Err(e) => self.emit_notify("Sail Boat could not start", &format!("{e:#}")),
+                Err(e) => {
+                    tracing::error!("starting Sail Boat: {e:#}");
+                    self.emit_notify("Sail Boat could not start", "Its saved state could not be read.");
+                }
             }
         }
         self.emit_state();
@@ -823,7 +826,7 @@ pub struct RunningDaemon {
     pub handshake: Handshake,
     pub daemon: Arc<Daemon>,
     tasks: Vec<JoinHandle<()>>,
-    data_dir_lock: std::fs::File,
+    _data_dir_lock: DataDirLock,
 }
 
 impl RunningDaemon {
@@ -837,8 +840,6 @@ impl RunningDaemon {
         for task in self.tasks {
             let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
         }
-        // Closing the file alone keeps the lock while a process forked meanwhile still shares it.
-        let _ = self.data_dir_lock.unlock();
     }
 }
 
@@ -891,13 +892,23 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon> {
         handshake,
         daemon,
         tasks: vec![control_task, mcp_task, init_task],
-        data_dir_lock,
+        _data_dir_lock: data_dir_lock,
     })
+}
+
+/// Closing the lock's file alone keeps the lock while a process forked at that moment still
+/// shares the file, so dropping this lets go explicitly.
+struct DataDirLock(std::fs::File);
+
+impl Drop for DataDirLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
 }
 
 /// Two daemons on one data dir would each reap, sleep and save the same machines. One a dead
 /// server left behind lets go once it has shut down, so a new one waits up to `wait` for it.
-async fn lock_data_dir(dir: &std::path::Path, wait: Duration) -> Result<std::fs::File> {
+async fn lock_data_dir(dir: &std::path::Path, wait: Duration) -> Result<DataDirLock> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let path = dir.join("daemon.lock");
     let file = std::fs::OpenOptions::new()
@@ -909,7 +920,7 @@ async fn lock_data_dir(dir: &std::path::Path, wait: Duration) -> Result<std::fs:
     let deadline = tokio::time::Instant::now() + wait;
     loop {
         match file.try_lock() {
-            Ok(()) => return Ok(file),
+            Ok(()) => return Ok(DataDirLock(file)),
             Err(std::fs::TryLockError::WouldBlock) if tokio::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
@@ -1236,7 +1247,8 @@ esac
         let app = App::new(Boat::at(bin), t3desktop::T3Desktop::at(dir.join("no-sail")), dir.clone(), tx).unwrap();
         let machine = app.machine("dev").unwrap();
 
-        assert!(machine.ensure_awake().await.is_err(), "Boat refused the resume");
+        let woke = machine.ensure_awake().await;
+        assert!(woke.is_err_and(|e| format!("{e:#}").contains("boat-output")), "the caller that asked sees why");
         let body = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 match rx.recv().await.expect("the app's events") {
@@ -1267,6 +1279,7 @@ esac
         let refused = start(config).await.err().expect("a second daemon must not start on a locked data dir");
         assert!(format!("{refused:#}").contains("another sail-boatd is using"), "{refused:#}");
 
+        let forked_meanwhile = first._data_dir_lock.0.try_clone().unwrap();
         first.shutdown().await;
         let config = DaemonConfig {
             control_port: 0,
@@ -1276,6 +1289,7 @@ esac
             lock_wait: Duration::ZERO,
         };
         let next = start(config).await.expect("the data dir is free once its daemon is gone");
+        drop(forked_meanwhile);
         stop_test_daemon(next, dir).await;
     }
 

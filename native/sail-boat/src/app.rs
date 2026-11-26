@@ -493,9 +493,12 @@ impl App {
         let (app, m) = (self.clone(), machine.clone());
         tokio::spawn(async move {
             for id in projects {
-                if let Err(e) = app.add_project(&m, &id).await {
+                let added = match app.resolve_project(&id).await {
+                    Ok(project) => app.add_resolved_project(&m, &project).await.map_err(|e| (Some(project.title), e)),
+                    Err(e) => Err((None, e)),
+                };
+                if let Err((title, e)) = added {
                     tracing::warn!("adding {id} to {}: {e:#}", m.id());
-                    let title = app.local_projects().await.ok().and_then(|ps| ps.into_iter().find(|p| p.id == id)).map(|p| p.title);
                     app.shared.notify(
                         format!("{} didn't reach {}", title.as_deref().unwrap_or("A project"), m.record().name),
                         "Adding it again from Boats shows why.",
@@ -515,21 +518,29 @@ impl App {
     /// Sail's "Add to another machine" does: cloned from its remote, with its env files. Resolves
     /// once cloned.
     pub async fn add_project(&self, machine: &MachineRuntime, project: &str) -> Result<crate::projects::Project> {
-        let project = self
-            .local_projects()
+        let project = self.resolve_project(project).await?;
+        self.add_resolved_project(machine, &project).await?;
+        Ok(project)
+    }
+
+    async fn resolve_project(&self, project: &str) -> Result<crate::projects::Project> {
+        self.local_projects()
             .await?
             .into_iter()
             .find(|p| p.id == project || p.path == project || p.title.eq_ignore_ascii_case(project))
-            .ok_or_else(|| anyhow!("no project {project} with a git remote"))?;
-        let (files, mut failed) = self.shared.t3.files_to_copy(&project).await?;
-        failed.extend(machine.add_project(&project, files).await?);
+            .ok_or_else(|| anyhow!("no project {project} with a git remote"))
+    }
+
+    async fn add_resolved_project(&self, machine: &MachineRuntime, project: &crate::projects::Project) -> Result<()> {
+        let (files, mut failed) = self.shared.t3.files_to_copy(project).await?;
+        failed.extend(machine.add_project(project, files).await?);
         if !failed.is_empty() {
             self.shared.notify(
                 format!("Some of {}'s files didn't reach {}", project.title, machine.record().name),
                 failed.join("\n"),
             );
         }
-        Ok(project)
+        Ok(())
     }
 
     pub fn pair_link(&self, machine: &MachineRuntime) -> String {
