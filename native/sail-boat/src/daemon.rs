@@ -2,7 +2,7 @@
 //! engine and MCP server.
 
 use crate::app::{self, App, Costs, MachineView, Setup};
-use crate::boat::Boat;
+use crate::boat::{Boat, SignIn};
 use crate::machine::provision::{SizeInfo, SIZES};
 use crate::machine::Event;
 use crate::mcp;
@@ -89,8 +89,6 @@ pub struct McpStatus {
 struct SetupState {
     setup: Setup,
     busy: bool,
-    /// The code Boat's sign-in page may ask for while a sign-in is pending.
-    sign_in_code: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -105,7 +103,6 @@ pub struct Account {
 pub struct UiState {
     pub setup: Setup,
     pub setup_busy: bool,
-    pub sign_in_code: Option<String>,
     pub account: Option<Account>,
     pub machines: Vec<MachineView>,
     pub costs: Costs,
@@ -156,6 +153,29 @@ impl Reply {
     }
 }
 
+/// The Boat sign-in a `signInBoat` started, until its wait ends: a repeat from any client gets the
+/// same page and code instead of starting another.
+#[derive(Default)]
+struct PendingSignIn(tokio::sync::Mutex<Option<SignIn>>);
+
+impl PendingSignIn {
+    /// The pending sign-in, else the one `start` begins. Locked across `start`, so overlapping
+    /// calls begin one.
+    async fn get_or_start<F: Future<Output = Result<SignIn>>>(&self, start: impl FnOnce() -> F) -> Result<SignIn> {
+        let mut pending = self.0.lock().await;
+        if let Some(sign_in) = pending.as_ref() {
+            return Ok(sign_in.clone());
+        }
+        let sign_in = start().await?;
+        *pending = Some(sign_in.clone());
+        Ok(sign_in)
+    }
+
+    async fn finish(&self) {
+        *self.0.lock().await = None;
+    }
+}
+
 enum CmdErr {
     BadRequest(String),
     Internal(String),
@@ -195,6 +215,7 @@ pub struct Daemon {
     token: String,
     data_dir: PathBuf,
     events_tx: broadcast::Sender<StreamEvent>,
+    sign_in: PendingSignIn,
     /// One `init` at a time: startup and `recheck` must not both construct an `App`.
     init_lock: tokio::sync::Mutex<()>,
     shutdown_tx: watch::Sender<bool>,
@@ -214,6 +235,7 @@ impl Daemon {
             token,
             data_dir,
             events_tx,
+            sign_in: PendingSignIn::default(),
             init_lock: tokio::sync::Mutex::new(()),
             shutdown_tx,
             background_tasks: Mutex::new(Vec::new()),
@@ -238,7 +260,6 @@ impl Daemon {
         UiState {
             setup: setup.setup,
             setup_busy: setup.busy,
-            sign_in_code: setup.sign_in_code,
             account: self.account.lock().unwrap().clone(),
             machines: app.as_ref().map(|a| a.views()).unwrap_or_default(),
             costs: app.as_ref().map(|a| a.costs()).unwrap_or_default(),
@@ -552,11 +573,8 @@ impl Daemon {
             }
             "signInBoat" => {
                 let boat = Boat::locate().ok_or_else(|| CmdErr::Internal("Boat CLI not found".to_owned()))?;
-                self.set_busy(true);
-                let result = self.sign_in_boat(&boat).await;
-                self.setup.lock().unwrap().sign_in_code = None;
-                self.set_busy(false);
-                result.map_err(err)?;
+                let sign_in = self.sign_in_boat(boat).await.map_err(err)?;
+                return Ok(Reply { open_url: Some(sign_in.url), user_code: sign_in.code, ..Reply::default() });
             }
             "installT3" => {}
             "recheck" => {}
@@ -576,13 +594,27 @@ impl Daemon {
         }
     }
 
-    /// Boat's browser sign-in: opens its page, publishes the code the page may ask for, and waits.
-    async fn sign_in_boat(&self, boat: &Boat) -> Result<()> {
-        let sign_in = boat.start_sign_in().await?;
-        self.setup.lock().unwrap().sign_in_code = sign_in.code;
-        self.emit_state();
-        app::open_url(&sign_in.url)?;
-        boat.finish_sign_in().await
+    /// Boat's browser sign-in: the page and code for the client to open, once Boat gives them.
+    /// Setup stays busy until the sign-in finishes or expires in the background.
+    async fn sign_in_boat(self: &Arc<Self>, boat: Boat) -> Result<SignIn> {
+        self.sign_in
+            .get_or_start(|| async {
+                self.set_busy(true);
+                let sign_in = boat.start_sign_in().await.inspect_err(|_| self.set_busy(false))?;
+                let daemon = self.clone();
+                let wait = tokio::spawn(async move {
+                    let result = boat.finish_sign_in().await;
+                    daemon.sign_in.finish().await;
+                    daemon.set_busy(false);
+                    if let Err(e) = result {
+                        daemon.emit_notify("Boat sign-in did not finish", &format!("{e:#}"));
+                    }
+                    daemon.recheck_setup().await;
+                });
+                self.background_tasks.lock().unwrap().push(wait);
+                Ok(sign_in)
+            })
+            .await
     }
 }
 
@@ -823,6 +855,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon> {
 mod tests {
     use super::*;
     use futures_util::StreamExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     const TOKEN: &str = "test-secret-token-123";
 
@@ -978,6 +1011,7 @@ mod tests {
         let body: Value = res.json().await.unwrap();
         assert!(body["setup"].is_string());
         assert!(body["setupBusy"].is_boolean());
+        assert!(body.get("signInCode").is_none(), "the sign-in code goes only to the client that started it");
         assert!(body["machines"].is_array());
         assert!(body["costs"].is_object());
         assert!(body["settings"].is_object());
@@ -1077,6 +1111,35 @@ mod tests {
         drop(stream);
         app.shutdown();
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_pending_boat_sign_in_is_handed_out_until_it_finishes() {
+        let pending = PendingSignIn::default();
+        let starts = AtomicUsize::new(0);
+        let start = |ok: bool| {
+            let starts = &starts;
+            move || async move {
+                let n = starts.fetch_add(1, Ordering::SeqCst) + 1;
+                tokio::task::yield_now().await;
+                anyhow::ensure!(ok, "boat onboard failed");
+                Ok(SignIn { url: format!("https://boat.test/device?n={n}"), code: Some(format!("CODE-{n}")) })
+            }
+        };
+
+        let (a, b) = tokio::join!(pending.get_or_start(start(true)), pending.get_or_start(start(true)));
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert_eq!(starts.load(Ordering::SeqCst), 1, "overlapping clicks start one sign-in");
+        assert_eq!((a.url.as_str(), a.code.as_deref()), ("https://boat.test/device?n=1", Some("CODE-1")));
+        assert_eq!((&b.url, &b.code), (&a.url, &a.code));
+        let again = pending.get_or_start(start(true)).await.unwrap();
+        assert_eq!((&again.url, &again.code), (&a.url, &a.code), "a later click gets the pending page");
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+
+        pending.finish().await;
+        assert!(pending.get_or_start(start(false)).await.is_err());
+        let next = pending.get_or_start(start(true)).await.unwrap();
+        assert_eq!(next.url, "https://boat.test/device?n=3", "a finished or failed sign-in is started anew");
     }
 
     #[tokio::test]
