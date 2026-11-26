@@ -9,55 +9,22 @@ import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { fromYaml } from "@t3tools/shared/schemaYaml";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
-import rootPackageJson from "../package.json" with { type: "json" };
-import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
-import {
-  createStagePatchedDependencies,
-  createStageWorkspaceConfig,
-  resolveFffNativeDependencies,
-  STAGE_INSTALL_ARGS,
-} from "./build-desktop-artifact.ts";
 import { assertLinuxArm64PageCompatibility } from "./lib/linux-arm64-sea.ts";
-import { selectCliRuntimeExternalDependencies } from "./lib/cli-external-packages.ts";
 import { signWithJsign } from "./lib/windows-jsign.ts";
 import { windowsSystemTar } from "./lib/windows-tar.ts";
-import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
-
-const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
-const BuildArch = Schema.Literals(["arm64", "x64"]);
-type BuildPlatform = typeof BuildPlatform.Type;
-type BuildArch = typeof BuildArch.Type;
-
-const WorkspaceConfig = Schema.Struct({
-  catalog: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  allowBuilds: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
-});
-const decodeWorkspaceConfig = Schema.decodeEffect(fromYaml(WorkspaceConfig));
-const encodeJsonString = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
-const StageWorkspaceConfig = Schema.Struct({
-  supportedArchitectures: Schema.Struct({
-    os: Schema.Array(Schema.String),
-    cpu: Schema.Array(Schema.String),
-    libc: Schema.optional(Schema.Array(Schema.String)),
-  }),
-  allowBuilds: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
-  patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  nodeLinker: Schema.optional(Schema.Literals(["hoisted"])),
-});
-const encodeStageWorkspaceConfig = Schema.encodeEffect(fromYaml(StageWorkspaceConfig));
+import {
+  ServerRuntimeArch as BuildArch,
+  ServerRuntimePlatform as BuildPlatform,
+  serverRuntimePlatformKey,
+  stageServerRuntime,
+} from "./stage-server-runtime.ts";
 
 const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
@@ -90,13 +57,8 @@ export class CliArchiveInputMissingError extends Schema.TaggedError<CliArchiveIn
   }
 }
 
-export function cliArchivePlatformKey(platform: BuildPlatform, arch: BuildArch): string {
-  const nodePlatform = platform === "mac" ? "darwin" : platform === "win" ? "win32" : "linux";
-  return `${nodePlatform}-${arch}`;
-}
-
 export function cliArchiveStem(version: string, platform: BuildPlatform, arch: BuildArch): string {
-  return `t3-${version}-${cliArchivePlatformKey(platform, arch)}`;
+  return `t3-${version}-${serverRuntimePlatformKey(platform, arch)}`;
 }
 
 export function cliArchiveFileName(version: string, platform: BuildPlatform, arch: BuildArch) {
@@ -130,124 +92,6 @@ const requireInput = Effect.fn("requireInput")(function* (inputPath: string, hin
     return yield* new CliArchiveInputMissingError({ inputPath, hint });
   }
 });
-
-/** Installed runtimes cannot rely on pnpm's store layout surviving archival. */
-const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (input: {
-  readonly repoRoot: string;
-  readonly stageDir: string;
-  readonly platform: BuildPlatform;
-  readonly arch: BuildArch;
-  readonly version: string;
-}) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const workspace = yield* decodeWorkspaceConfig(
-    yield* fs.readFileString(path.join(input.repoRoot, "pnpm-workspace.yaml")),
-  );
-  const catalog = workspace.catalog ?? {};
-  const serverDependencies = resolveCatalogDependencies(
-    serverPackageJson.dependencies,
-    catalog,
-    "apps/server",
-  );
-  const fffNodeVersion = serverDependencies["@ff-labs/fff-node"];
-  if (fffNodeVersion === undefined) {
-    return yield* new CliArchiveInputMissingError({
-      inputPath: "apps/server/package.json#dependencies['@ff-labs/fff-node']",
-      hint: "The archive stages fff's platform binary from this version.",
-    });
-  }
-  const dependencies = {
-    ...selectCliRuntimeExternalDependencies(serverDependencies),
-    ...resolveFffNativeDependencies(input.platform, input.arch, fffNodeVersion),
-  };
-  const patchedDependencies = createStagePatchedDependencies(
-    workspace.patchedDependencies ?? {},
-    dependencies,
-  );
-
-  yield* fs.writeFileString(
-    path.join(input.stageDir, "package.json"),
-    `${yield* encodeJsonString({
-      name: "t3-runtime",
-      version: input.version,
-      private: true,
-      packageManager: rootPackageJson.packageManager,
-      dependencies,
-    })}\n`,
-  );
-  yield* fs.writeFileString(
-    path.join(input.stageDir, "pnpm-workspace.yaml"),
-    yield* encodeStageWorkspaceConfig({
-      ...createStageWorkspaceConfig({
-        platform: input.platform,
-        arch: input.arch,
-        ...(workspace.allowBuilds ? { allowBuilds: workspace.allowBuilds } : {}),
-        patchedDependencies,
-        overrides: resolveCatalogDependencies(workspace.overrides ?? {}, catalog, "apps/server"),
-      }),
-      nodeLinker: "hoisted",
-    }),
-  );
-  if (Object.keys(patchedDependencies).length > 0) {
-    yield* fs.copy(path.join(input.repoRoot, "patches"), path.join(input.stageDir, "patches"));
-  }
-
-  const install = yield* resolveSpawnCommand("vp", [...STAGE_INSTALL_ARGS]);
-  yield* runCommand(
-    ChildProcess.make(install.command, install.args, {
-      cwd: input.stageDir,
-      shell: install.shell,
-      stdout: "inherit",
-      stderr: "inherit",
-    }),
-    "vp install --prod (cli archive runtime externals)",
-  );
-
-  const platformKey = cliArchivePlatformKey(input.platform, input.arch);
-  const prebuildsDir = path.join(input.stageDir, "node_modules/node-pty/prebuilds");
-  const foreignPrebuilds = (yield* fs
-    .readDirectory(prebuildsDir)
-    .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []))).filter(
-    (entry) => entry !== platformKey,
-  );
-  for (const entry of [
-    "package.json",
-    "pnpm-workspace.yaml",
-    "pnpm-lock.yaml",
-    "patches",
-    "node_modules/.pnpm",
-    "node_modules/.modules.yaml",
-    "node_modules/.pnpm-workspace-state-v1.json",
-    "node_modules/.bin",
-    ...foreignPrebuilds.map((entry) => `node_modules/node-pty/prebuilds/${entry}`),
-  ]) {
-    yield* fs.remove(path.join(input.stageDir, entry), { recursive: true, force: true });
-  }
-  // Nested .bin shims are unused symlinks, which the npm registry rejects in tarballs.
-  yield* removeNestedBinDirectories(fs, path, path.join(input.stageDir, "node_modules"));
-});
-
-const removeNestedBinDirectories = Effect.fn("build-cli-archive.removeNestedBinDirectories")(
-  function* (
-    fs: FileSystem.FileSystem,
-    path: Path.Path,
-    root: string,
-  ): Effect.fn.Return<void, PlatformError.PlatformError> {
-    const entries = yield* fs.readDirectory(root).pipe(Effect.orElseSucceed(() => []));
-    for (const entry of entries) {
-      const child = path.join(root, entry);
-      if (entry === ".bin") {
-        yield* fs.remove(child, { recursive: true, force: true });
-        continue;
-      }
-      const info = yield* fs.stat(child).pipe(Effect.option);
-      if (Option.isSome(info) && info.value.type === "Directory") {
-        yield* removeNestedBinDirectories(fs, path, child);
-      }
-    }
-  },
-);
 
 const stageWebClient = Effect.fn("stageWebClient")(function* (source: string, target: string) {
   const fs = yield* FileSystem.FileSystem;
@@ -636,12 +480,11 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   yield* fs.copyFile(builtExecutable, path.join(contentDir, executableName));
   yield* stageWebClient(webClient, path.join(contentDir, "client"));
   yield* fs.copy(resourceMonitorDir, path.join(contentDir, "resource-monitor"));
-  yield* stageRuntimeExternals({
+  yield* stageServerRuntime({
     repoRoot,
     stageDir: contentDir,
     platform: input.platform,
     arch: input.arch,
-    version: input.version,
   });
 
   const executablePath = path.join(contentDir, executableName);
