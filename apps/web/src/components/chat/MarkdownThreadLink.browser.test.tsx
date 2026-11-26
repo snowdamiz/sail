@@ -276,28 +276,29 @@ it("opens a linked machine's thread directly once this client is connected to it
   await expect.element(screen.getByRole("button")).not.toBeInTheDocument();
 });
 
+const selectAll = (container: HTMLElement) => {
+  window.getSelection()!.selectAllChildren(container);
+  return chatMarkdownClipboardPayload(window.getSelection()!)?.text;
+};
 it.each([
   {
     copy: "a selection",
     threadId: "older-thread",
-    serialize: (container: HTMLElement) => {
-      window.getSelection()!.selectAllChildren(container);
-      return chatMarkdownClipboardPayload(window.getSelection()!)?.text;
-    },
+    inTable: false,
+    serialize: selectAll,
     expected: "[Remote thread](https://after.example.test/threads/remote/older-thread)",
   },
   {
     copy: "a selection, for a thread id with a space",
     threadId: "work item",
-    serialize: (container: HTMLElement) => {
-      window.getSelection()!.selectAllChildren(container);
-      return chatMarkdownClipboardPayload(window.getSelection()!)?.text;
-    },
+    inTable: false,
+    serialize: selectAll,
     expected: "[Remote thread](https://after.example.test/threads/remote/work%20item)",
   },
   {
     copy: "a table copied as Markdown",
     threadId: "older-thread",
+    inTable: true,
     serialize: (container: HTMLElement) =>
       serializeTableElementToMarkdown(container.querySelector("table")!),
     expected:
@@ -307,29 +308,34 @@ it.each([
   const { registry } = setup();
   using _registry = { [Symbol.dispose]: () => registry.dispose() };
   state.origin = "https://before.example.test";
+  const chip = (
+    <MarkdownThreadLink
+      environmentId={EnvironmentId.make("environment")}
+      link={{
+        environmentId: EnvironmentId.make("remote"),
+        threadId: ThreadId.make(input.threadId),
+      }}
+      label={null}
+    />
+  );
   await using screen = await render(
     <RegistryContext value={registry}>
-      <table>
-        <thead>
-          <tr>
-            <th>Thread</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>
-              <MarkdownThreadLink
-                environmentId={EnvironmentId.make("environment")}
-                link={{
-                  environmentId: EnvironmentId.make("remote"),
-                  threadId: ThreadId.make(input.threadId),
-                }}
-                label={null}
-              />
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      {input.inTable ? (
+        <table>
+          <thead>
+            <tr>
+              <th>Thread</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>{chip}</td>
+            </tr>
+          </tbody>
+        </table>
+      ) : (
+        chip
+      )}
     </RegistryContext>,
   );
   await expect
@@ -337,5 +343,5 @@ it.each([
     .toBeVisible();
   state.origin = "https://after.example.test";
 
-  expect(input.serialize(screen.container)).toContain(input.expected);
+  expect(input.serialize(screen.container)).toBe(input.expected);
 });

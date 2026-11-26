@@ -74,7 +74,7 @@ import {
   encodeComposerContextClipboardHtml,
   encodeComposerContextFragment,
 } from "@t3tools/shared/composerContextClipboard";
-import { chatMarkdownClipboardPayload, markdownCopyOf } from "../../markdown-clipboard";
+import { chatMarkdownClipboardPayload } from "../../markdown-clipboard";
 import type { ChatMarkdownContextReference } from "../ChatMarkdown";
 import { cn } from "~/lib/utils";
 import { markdownProseDirection } from "~/textDirection";
@@ -644,9 +644,9 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       container.appendChild(selection.getRangeAt(index).cloneContents());
       // Diagram source is copied text, not authority to export context records.
       for (const element of container.querySelectorAll(
-        "[data-markdown-copy]:not([data-markdown-mermaid]), [data-markdown-thread-link]",
+        "[data-markdown-copy]:not([data-markdown-mermaid])",
       )) {
-        copiedMarkdown.push(markdownCopyOf(element) ?? "");
+        copiedMarkdown.push(element.getAttribute("data-markdown-copy") ?? "");
       }
     }
     const fragment = selectedMessageContextFragment({

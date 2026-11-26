@@ -38,10 +38,12 @@ export function threadLinkCopyData(ref: ScopedThreadRef, title: string): string 
 }
 
 /** A thread chip without its own Markdown copies as a link at the origin in use now. */
-export function markdownCopyOf(element: Element): string | null {
+function markdownCopyOf(element: Element): string | null {
   const markdown = element.getAttribute("data-markdown-copy");
   if (markdown !== null) return markdown;
-  return Option.match(decodeThreadLinkCopy(element.getAttribute("data-markdown-thread-link")), {
+  const threadLink = element.getAttribute("data-markdown-thread-link");
+  if (threadLink === null) return null;
+  return Option.match(decodeThreadLinkCopy(threadLink), {
     onNone: () => null,
     onSome: ([environmentId, threadId, title]) =>
       formatHostedThreadLink({ environmentId, threadId }, title, linkOrigin()),
@@ -265,7 +267,7 @@ function escapeProse(text: string): string {
 }
 
 function serializeAnchor(anchor: Element, inTableCell: boolean): string {
-  const markdownCopy = markdownCopyOf(anchor);
+  const markdownCopy = anchor.getAttribute("data-markdown-copy");
   if (markdownCopy !== null) return escapeTablePipes(markdownCopy, inTableCell);
   const content = serializeChildren(anchor, inTableCell);
   const href = anchor.getAttribute("href") ?? "";
@@ -396,7 +398,7 @@ function scanForSoleCodeBlock(node: Node, scan: SoleCodeBlockScan): void {
       scan.other = true;
       continue;
     }
-    const markdownCopy = element.getAttribute("data-markdown-copy");
+    const markdownCopy = markdownCopyOf(element);
     if (markdownCopy !== null) {
       if (markdownCopy.trim().length > 0) scan.other = true;
       continue;

@@ -41,7 +41,10 @@ const decodeConnectionCatalog = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ConnectionCatalogDocument),
 );
 
-/** Any page can open a handoff link, so trust comes only from what this desktop knows now. */
+/**
+ * Any page can open a handoff link, so trust comes only from what this desktop knows now. A saved
+ * server's own page speaks only for that server; the hosted app and this computer's pages serve many.
+ */
 function acceptCodexAuthHandoff(
   value: string,
   development: boolean,
@@ -255,7 +258,7 @@ export const make = Effect.gen(function* () {
               if (!current) {
                 await runPromise(
                   Effect.logWarning(
-                    "Refused a ChatGPT desktop handoff whose environment was disabled or removed during sign-in.",
+                    "Refused a ChatGPT desktop handoff that this desktop no longer trusts now that its code arrived.",
                   ),
                 );
                 throw new Error("This sign-in's environment is no longer trusted.");
