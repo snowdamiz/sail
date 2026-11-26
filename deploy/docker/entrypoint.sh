@@ -1,13 +1,12 @@
 #!/bin/sh
 set -eu
 
-# A fresh Fly volume mounts as an empty root-owned /data. Root names commands by path, because
-# sail can write to directories on sail's PATH.
+# Claim only the mount itself; all paths inside it must be resolved as sail.
 if [ "$(/usr/bin/id -u)" = 0 ]; then
-  /usr/bin/install -d -o sail -g sail /data/home "$SAIL_HOME"
-else
-  /usr/bin/mkdir -p /data/home "$SAIL_HOME"
+  /usr/bin/chown --no-dereference sail:sail /data
+  exec /usr/local/bin/as-sail /usr/local/bin/sail-entrypoint "$@"
 fi
+/usr/bin/mkdir -p -- /data/home "$SAIL_HOME"
 
 if [ -z "${SAIL_PUBLIC_URL:-}${T3CODE_PUBLIC_URL:-}" ]; then
   if [ -n "${FLY_APP_NAME:-}" ]; then

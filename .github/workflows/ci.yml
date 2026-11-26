@@ -125,10 +125,16 @@ jobs:
           git diff --quiet HEAD^1 HEAD -- \
             Dockerfile .dockerignore deploy/docker \
             'scripts/stage-server-runtime*' scripts/smoke-docker-image.ts \
-            scripts/lib/cli-external-packages.ts scripts/lib/resolve-catalog.ts patches \
-            scripts/build-desktop-artifact.ts scripts/apply-web-brand-assets.ts scripts/lib/brand-assets.ts \
-            apps/server/scripts/cli.ts \
-            package.json apps/server/package.json pnpm-workspace.yaml \
+            scripts/build-desktop-artifact.ts scripts/apply-web-brand-assets.ts scripts/update-release-package-versions.ts \
+            scripts/lib/cli-external-packages.ts scripts/lib/resolve-catalog.ts scripts/lib/brand-assets.ts \
+            scripts/lib/tagged-source-version.ts scripts/lib/public-config.ts scripts/lib/build-target-arch.ts \
+            scripts/lib/desktop-external-packages.ts scripts/lib/cli-executable-imports.ts scripts/lib/linux-arm64-sea.ts \
+            scripts/lib/cached-tests.ts scripts/lib/third-party-licenses.ts infra/task-cache/src/remoteCache.ts \
+            apps/server/scripts/cli.ts apps/server/scripts/cliErrors.ts \
+            vite.config.ts apps/server/vite.config.ts apps/web/vite.config.ts apps/web/vite \
+            'assets/dev/blueprint-web-*' 'assets/prod/t3-black-web-*' 'assets/nightly/nightly-web-*' \
+            package.json apps/server/package.json apps/web/package.json apps/desktop/package.json \
+            apps/desktop/gnome-extension/bundle.json pnpm-workspace.yaml .pnpmfile.cjs patches \
             .github/workflows/ci.yml || status=$?
           case "$status" in
             0) echo changed=false >> "$GITHUB_OUTPUT" ;;
@@ -151,9 +157,9 @@ jobs:
           node-version-file: package.json
           cache: true
           run-install: true
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Build the server image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           load: true

@@ -115,15 +115,121 @@ const docker = Effect.fn("smoke-docker-image.docker")(function* (args: ReadonlyA
   return { stdout: stdout.trim(), stderr: stderr.trim() };
 }, Effect.scoped);
 
+const LOCAL_CONTEXT_FILES = [
+  ".env",
+  ".env.local",
+  ".env.production.local",
+  ".envrc",
+  ".npmrc",
+  ".gemini/settings.json",
+  ".DS_Store",
+  ".agents/config.json",
+  ".claude/settings.local.json",
+  ".cursor/settings.json",
+  ".idea/workspace.xml",
+  ".vscode/settings.json",
+  ".t3/state.sqlite",
+  ".gstack/state.json",
+  ".plans/local.md",
+  ".audit/local.md",
+  ".logs/local.log",
+  ".generated/state.json",
+  ".android-cache/state.json",
+];
+
+export const expectCleanBuildContext = Effect.fn("smoke-docker-image.expectCleanBuildContext")(
+  function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const temp = yield* fs.makeTempDirectoryScoped({ prefix: "sail-smoke-context-" });
+    const context = path.join(temp, "context");
+    const output = path.join(temp, "output");
+    const root = yield* path.fromFileUrl(new URL("..", import.meta.url));
+    const excluded = ["", "apps/web/", "apps/server/"].flatMap((prefix) =>
+      LOCAL_CONTEXT_FILES.map((file) => prefix + file),
+    );
+    const included = ["package.json", "apps/web/.env.example"];
+    for (const file of [...excluded, ...included]) {
+      const target = path.join(context, file);
+      yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+      yield* fs.writeFileString(target, "synthetic fixture");
+    }
+    yield* fs.copyFile(path.join(root, ".dockerignore"), path.join(context, ".dockerignore"));
+    yield* fs.writeFileString(path.join(context, "Dockerfile"), "FROM scratch\nCOPY . /context\n");
+    yield* docker(["buildx", "build", "--output", `type=local,dest=${output}`, context]);
+    const leaked = yield* Effect.filter(excluded, (file) =>
+      fs.exists(path.join(output, "context", file)),
+    );
+    if (leaked.length > 0) {
+      return yield* fail("build context", `included local files: ${leaked.join(", ")}`);
+    }
+    for (const file of included) {
+      if (!(yield* fs.exists(path.join(output, "context", file)))) {
+        return yield* fail("build context", `excluded build input ${file}`);
+      }
+    }
+    yield* Console.log("Docker excluded local state and credential files at every tested depth.");
+  },
+  Effect.scoped,
+);
+
+const expectCleanRuntime = Effect.fn("smoke-docker-image.expectCleanRuntime")(function* (
+  image: string,
+  platform: Option.Option<string>,
+) {
+  const result = yield* docker([
+    "run",
+    "--rm",
+    ...Option.match(platform, { onNone: () => [], onSome: (p) => ["--platform", p] }),
+    "--entrypoint",
+    "/usr/bin/find",
+    image,
+    "/root",
+    "/tmp",
+    "-maxdepth",
+    "5",
+    "(",
+    "-name",
+    "node-compile-cache",
+    "-o",
+    "-name",
+    "opencode",
+    ")",
+    "-print",
+  ]);
+  if (result.stdout !== "") {
+    return yield* fail("runtime leftovers", result.stdout);
+  }
+});
+
 const startContainer = Effect.fn("smoke-docker-image.startContainer")(function* (input: {
   readonly image: string;
   readonly platform: Option.Option<string>;
+  readonly preownedHome?: string;
 }) {
   const suffix = `${yield* Clock.currentTimeMillis}-${yield* Random.nextIntBetween(0, 1e6)}`;
   const volume = yield* Effect.acquireRelease(
     docker(["volume", "create", `sail-smoke-${suffix}`]).pipe(Effect.map((out) => out.stdout)),
     (name) => docker(["volume", "rm", "--force", name]).pipe(Effect.ignore),
   );
+  const platformArgs = Option.match(input.platform, {
+    onNone: () => [],
+    onSome: (p) => ["--platform", p],
+  });
+  if (input.preownedHome !== undefined) {
+    yield* docker([
+      "run",
+      "--rm",
+      ...platformArgs,
+      "--volume",
+      `${volume}:/data`,
+      "--entrypoint",
+      "/usr/bin/chown",
+      input.image,
+      "1000:1000",
+      "/data",
+    ]);
+  }
   const startedAt = yield* Clock.currentTimeMillis;
   const id = yield* Effect.acquireRelease(
     docker([
@@ -131,7 +237,8 @@ const startContainer = Effect.fn("smoke-docker-image.startContainer")(function* 
       "--detach",
       "--name",
       `sail-smoke-${suffix}`,
-      ...Option.match(input.platform, { onNone: () => [], onSome: (p) => ["--platform", p] }),
+      ...platformArgs,
+      ...(input.preownedHome === undefined ? [] : ["--env", `SAIL_HOME=${input.preownedHome}`]),
       "--publish",
       "127.0.0.1::8080",
       "--volume",
@@ -195,6 +302,33 @@ const expectServerRunsAsSail = Effect.fn("smoke-docker-image.expectServerRunsAsS
     .filter((user) => user !== "");
   if (users.length === 0 || users.some((user) => user !== "sail")) {
     return yield* fail("server user", `PID 1's children run as ${users.join(", ") || "nobody"}`);
+  }
+});
+
+const expectDataOwnership = Effect.fn("smoke-docker-image.expectDataOwnership")(function* (
+  id: string,
+  sailHome: string,
+) {
+  const paths = ["/data", "/data/home", sailHome];
+  for (const path of paths) {
+    const owner = (yield* docker(["exec", id, "/usr/bin/stat", "-c", "%u:%g", path])).stdout;
+    if (owner !== "1000:1000") {
+      return yield* fail("volume ownership", `${path} is owned by ${owner}, not sail`);
+    }
+  }
+});
+
+const expectNoNewPrivs = Effect.fn("smoke-docker-image.expectNoNewPrivs")(function* (id: string) {
+  const status = (yield* docker([
+    "exec",
+    id,
+    "/usr/local/bin/as-sail",
+    "/usr/bin/grep",
+    "^NoNewPrivs:",
+    "/proc/self/status",
+  ])).stdout;
+  if (!/^NoNewPrivs:\s+1$/.test(status)) {
+    return yield* fail("privilege drop", "as-sail did not set no-new-privs");
   }
 });
 
@@ -379,6 +513,8 @@ export const smokeDockerImage = Effect.fn("smokeDockerImage")(function* (input: 
   readonly platform: Option.Option<string>;
   readonly timeoutSeconds: number;
 }) {
+  yield* expectCleanBuildContext();
+  yield* expectCleanRuntime(input.image, input.platform);
   const client = yield* HttpClient.HttpClient;
   const secrets = yield* Ref.make<ReadonlyArray<string>>([]);
   const container = yield* startContainer(input);
@@ -392,6 +528,8 @@ export const smokeDockerImage = Effect.fn("smokeDockerImage")(function* (input: 
       .pipe(Effect.flatMap(HttpClientResponse.schemaBodyJson(EnvironmentDescriptor)));
     yield* Console.log(`Environment: ${descriptor.platform.os} ${descriptor.platform.arch}.`);
     yield* expectServerRunsAsSail(container.id);
+    yield* expectDataOwnership(container.id, "/data/sail");
+    yield* expectNoNewPrivs(container.id);
     yield* expectReleaseIcons(origin, descriptor.serverVersion);
 
     const credential = yield* pair(container.id, origin, input.timeoutSeconds, secrets);
@@ -449,6 +587,20 @@ export const smokeDockerImage = Effect.fn("smokeDockerImage")(function* (input: 
         );
       }).pipe(Effect.ignore),
     ),
+  );
+  yield* Effect.scoped(
+    Effect.gen(function* () {
+      const preownedHome = "/data/home/sail";
+      const { id } = yield* startContainer({ ...input, preownedHome });
+      yield* waitForApp(id, input.timeoutSeconds);
+      yield* expectServerRunsAsSail(id);
+      yield* expectDataOwnership(id, preownedHome);
+      yield* docker(["restart", "-t", "30", id]);
+      yield* waitForApp(id, input.timeoutSeconds);
+      yield* expectServerRunsAsSail(id);
+      yield* expectDataOwnership(id, preownedHome);
+      yield* Console.log("A sail-owned volume with nested SAIL_HOME booted and restarted as sail.");
+    }),
   );
   yield* Console.log(`Smoke passed for ${input.image}.`);
 }, Effect.scoped);

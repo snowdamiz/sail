@@ -1,7 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG NODE_VERSION=26.13.1
-
-FROM rust:1.99-bookworm AS rust
+FROM rust:1.99-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS rust
 ARG TARGETARCH
 WORKDIR /src
 COPY native/resource-monitor native/resource-monitor
@@ -14,15 +12,18 @@ RUN --mount=type=cache,id=sail-cargo-registry,target=/usr/local/cargo/registry,s
 
 # The bundle and web client are the same on every platform, so this stage runs natively when
 # cross-building. Only the staged runtime externals pick packages for the target.
-FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm AS build
-ARG VP_VERSION=1.8.0
+FROM --platform=$BUILDPLATFORM node:26.13.1-bookworm@sha256:893ea48106e988a5f91e69629d6472600daa9d0494adf7db87eb0b886ce82255 AS build
 ENV CI=true \
     VP_NODE_MANAGER=no \
     VP_BIN_DIR=/opt/vp/bin \
     VP_DATA_DIR=/opt/vp/data \
     VP_CACHE_DIR=/opt/vp/cache \
     PATH=/opt/vp/bin:$PATH
-RUN curl -fsSL https://vite.plus -o /tmp/vp.sh && VP_VERSION=$VP_VERSION bash /tmp/vp.sh && vp --version
+RUN curl -fsSL https://raw.githubusercontent.com/voidzero-dev/vite-plus/374262589fa191b7ff1bb047b763f7ef86991fad/packages/cli/install.sh -o /tmp/vp.sh \
+    && echo '5d360005c321fedb48d5a6dafb4e22e6ffc8d5a03e1b3aa3d7ee1c88f9ced3a9  /tmp/vp.sh' | sha256sum -c - \
+    && VP_VERSION=1.8.0 bash /tmp/vp.sh \
+    && rm /tmp/vp.sh \
+    && vp --version
 WORKDIR /src
 COPY --exclude=deploy --exclude=native/sail-boat --exclude=native/resource-monitor \
     --exclude=docs --exclude=.github \
@@ -44,7 +45,7 @@ RUN --mount=type=cache,id=sail-pnpm-store,target=/root/.local/share/pnpm/store,s
       --arch "$(if [ "$TARGETARCH" = amd64 ]; then echo x64; else echo "$TARGETARCH"; fi)" \
       --output-dir /stage
 
-FROM node:${NODE_VERSION}-bookworm-slim AS runtime
+FROM node:26.13.1-bookworm-slim@sha256:0042e17d232a87a2cd485be1da7900fca4d10a4ad11b29e9285da1d2e54798c9 AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       bash ca-certificates curl git openssh-client procps ripgrep tini \
@@ -60,7 +61,8 @@ RUN npm install --global --prefix /opt/npm-global \
       @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
       @openai/codex@${CODEX_VERSION} \
       opencode-ai@${OPENCODE_VERSION} \
-    && rm -rf /root/.npm \
+    && rm -rf /root/.npm /tmp/node-compile-cache /tmp/opencode \
+      /root/.cache/opencode /root/.config/opencode /root/.local/share/opencode /root/.local/state/opencode \
     && chown -R sail:sail /opt/npm-global
 
 COPY --from=rust /out/sail-boatd /opt/sail/bin/sail-boatd
@@ -78,7 +80,7 @@ EOF
 COPY --chmod=0755 <<'EOF' /usr/local/bin/as-sail
 #!/bin/sh
 if [ "$(/usr/bin/id -u)" = 0 ]; then
-  exec /usr/bin/setpriv --reuid=sail --regid=sail --init-groups -- /usr/local/bin/as-sail "$@"
+  exec /usr/bin/setpriv --reuid=sail --regid=sail --init-groups --no-new-privs -- /usr/local/bin/as-sail "$@"
 fi
 . /etc/sail/env.sh
 exec "$@"
@@ -92,7 +94,7 @@ COPY --chmod=0755 <<'EOF' /usr/local/bin/claude
 #!/bin/sh
 name=${0##*/}
 if [ "$(/usr/bin/id -u)" = 0 ]; then
-  exec /usr/bin/setpriv --reuid=sail --regid=sail --init-groups -- "/usr/local/bin/$name" "$@"
+  exec /usr/bin/setpriv --reuid=sail --regid=sail --init-groups --no-new-privs -- "/usr/local/bin/$name" "$@"
 fi
 for dir in /data/home/.local/bin /opt/npm-global/bin; do
   [ -f "$dir/$name" ] && [ -x "$dir/$name" ] && exec /usr/local/bin/as-sail "$dir/$name" "$@"
