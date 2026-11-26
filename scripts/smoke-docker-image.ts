@@ -48,6 +48,8 @@ const PLANTED_COMMANDS = [
 ];
 const PLANTED_LOG = "/data/home/.sail-smoke-planted";
 const AGENT_CLIS = ["claude", "codex", "opencode"];
+/** The server runs the agent CLIs itself at startup, so root's calls carry an argument of their own. */
+const ROOT_MARKER = "--sail-smoke-from-root";
 const NATIVE_EXTERNALS_PROBE = `
 const { FileFinder } = await import("@ff-labs/fff-node");
 const finder = FileFinder.create({ basePath: "/opt/sail/server" });
@@ -86,7 +88,7 @@ const fail = (step: string, detail: string) => new SmokeDockerImageError({ step,
 
 export const redactTokens = (text: string, secrets: ReadonlyArray<string> = []) =>
   secrets.reduce(
-    (redacted, secret) => redacted.replaceAll(secret, "<redacted>"),
+    (redacted, secret) => (secret === "" ? redacted : redacted.replaceAll(secret, "<redacted>")),
     text.replace(
       /(pairing ?url:\s*\S*?#token=|#token=|["']?(?:token|credential)["']?\s*[:=]\s*["']?)[^\s&"',}]+/gi,
       "$1<redacted>",
@@ -220,8 +222,11 @@ const pair = Effect.fn("smoke-docker-image.pair")(function* (
     ]),
     (error) => error._tag === "SmokeDockerImageError" && error.detail.includes(NOT_RUNNING_YET),
   ).pipe(
-    Effect.flatMap((out) => decodeIssuedPairing(out.stdout)),
-    Effect.mapError(() => fail("t3 auth pairing create", "printed no pairing JSON")),
+    Effect.flatMap((out) =>
+      decodeIssuedPairing(out.stdout).pipe(
+        Effect.mapError(() => fail("t3 auth pairing create", "printed no pairing JSON")),
+      ),
+    ),
   );
   yield* Ref.set(secrets, [issued.credential]);
   const link = yield* Effect.try({
@@ -264,10 +269,10 @@ const expectReleaseIcons = Effect.fn("smoke-docker-image.expectReleaseIcons")(fu
   const client = yield* HttpClient.HttpClient;
   const repoRoot = yield* path.fromFileUrl(new URL("..", import.meta.url));
   const brand = resolveDesktopWebAssetBrand(serverVersion);
-  for (const icon of resolveWebIconOverrides(brand, origin)) {
+  for (const icon of resolveWebIconOverrides(brand, ".")) {
     const expected = yield* fs.readFile(path.join(repoRoot, icon.sourceRelativePath));
     const served = new Uint8Array(
-      yield* client.get(icon.targetRelativePath).pipe(
+      yield* client.get(new URL(icon.targetRelativePath, `${origin}/`).href).pipe(
         Effect.flatMap(HttpClientResponse.filterStatusOk),
         Effect.flatMap((response) => response.arrayBuffer),
       ),
@@ -292,7 +297,7 @@ const expectRootIgnoresSailCommands = Effect.fn("smoke-docker-image.expectRootIg
     ).join(" && ");
     const plantAgents = AGENT_CLIS.map(
       (name) =>
-        `printf '#!/bin/sh\\necho "$(/usr/bin/id -u) $0" >> ${PLANTED_LOG}\\n' > /data/home/.local/bin/${name} && chmod +x /data/home/.local/bin/${name}`,
+        `printf '#!/bin/sh\\necho "$(/usr/bin/id -u) $0 $*" >> ${PLANTED_LOG}\\n' > /data/home/.local/bin/${name} && chmod +x /data/home/.local/bin/${name}`,
     ).join(" && ");
     yield* docker(["exec", "--user", "sail", id, "/bin/sh", "-c", `${plant} && ${plantAgents}`]);
     yield* docker(["restart", "-t", "30", id]);
@@ -301,7 +306,7 @@ const expectRootIgnoresSailCommands = Effect.fn("smoke-docker-image.expectRootIg
     yield* docker(["exec", id, "id", "-u"]);
     yield* docker(["exec", id, "t3", "--version"]);
     yield* docker(["exec", id, "sh", "-lc", "id -u"]);
-    for (const name of AGENT_CLIS) yield* docker(["exec", id, name, "--version"]);
+    for (const name of AGENT_CLIS) yield* docker(["exec", id, name, ROOT_MARKER]);
     yield* docker([
       "exec",
       id,
@@ -338,7 +343,7 @@ const expectRootIgnoresSailCommands = Effect.fn("smoke-docker-image.expectRootIg
       );
     }
     for (const name of AGENT_CLIS) {
-      if (!planted.includes(`1000 /data/home/.local/bin/${name}`)) {
+      if (!planted.includes(`1000 /data/home/.local/bin/${name} ${ROOT_MARKER}`)) {
         return yield* fail("agent CLIs", `root's ${name} did not run sail's copy as sail`);
       }
     }

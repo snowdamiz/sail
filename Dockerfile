@@ -78,7 +78,7 @@ EOF
 COPY --chmod=0755 <<'EOF' /usr/local/bin/as-sail
 #!/bin/sh
 if [ "$(/usr/bin/id -u)" = 0 ]; then
-  exec /usr/bin/setpriv --reuid=sail --regid=sail --init-groups /usr/local/bin/as-sail "$@"
+  exec /usr/bin/setpriv --reuid=sail --regid=sail --init-groups -- /usr/local/bin/as-sail "$@"
 fi
 . /etc/sail/env.sh
 exec "$@"
@@ -92,7 +92,7 @@ COPY --chmod=0755 <<'EOF' /usr/local/bin/claude
 #!/bin/sh
 name=${0##*/}
 if [ "$(/usr/bin/id -u)" = 0 ]; then
-  exec /usr/bin/setpriv --reuid=sail --regid=sail --init-groups "/usr/local/bin/$name" "$@"
+  exec /usr/bin/setpriv --reuid=sail --regid=sail --init-groups -- "/usr/local/bin/$name" "$@"
 fi
 for dir in /data/home/.local/bin /opt/npm-global/bin; do
   [ -f "$dir/$name" ] && [ -x "$dir/$name" ] && exec /usr/local/bin/as-sail "$dir/$name" "$@"
