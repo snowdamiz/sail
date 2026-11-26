@@ -140,6 +140,11 @@ impl T3Desktop {
         self
     }
 
+    /// Opens a page in this computer's browser, for flows whose callback reaches this computer.
+    pub fn open_url(&self, url: &str) -> Result<()> {
+        crate::app::open_url(url)
+    }
+
     /// e.g. `0.1.10-nightly.20261114.4669`.
     pub async fn version(&self) -> Result<String> {
         let out = command(&self.cli)

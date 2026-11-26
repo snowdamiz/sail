@@ -85,7 +85,7 @@ impl MachineRuntime {
                 .await?;
             let (exit, log) = out.stdout.split_once("---").unwrap_or_default();
             if !opened && let Some(url) = log.split_whitespace().find(|w| w.starts_with("https://")) {
-                crate::app::open_url(url)?;
+                self.shared.t3.open_url(url)?;
                 opened = true;
             }
             match exit.trim() {
