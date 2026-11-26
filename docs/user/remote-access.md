@@ -251,8 +251,9 @@ server's machine. It issues a token only when the server's record names a
 running process and a T3 Code process, normally the server, holds that data
 directory both before the token is written and after it is stored. If nothing
 holds the directory at either check, the command fails, and a token already
-written is revoked. The two checks do not prove that one server held the
-directory the whole time. A server started by an older release that the command
+written is revoked. If that revoke also fails, the error prints the exact
+command that removes the token. The two checks do not prove that one server
+held the directory the whole time. A server started by an older release that the command
 cannot check must be restarted first. The `pairUrl` it prints
 uses the server's `--public-url`. If the server has none, pass `--base-url`, or
 the output has only the token.
