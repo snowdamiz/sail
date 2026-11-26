@@ -1,6 +1,4 @@
 # syntax=docker/dockerfile:1
-# A headless Sail server: `docker run -p 8080:8080 -v sail:/data <image>`, then pair with
-# `docker exec -u sail <container> t3 auth pairing create --json --require-running`.
 ARG NODE_VERSION=26.13.1
 
 FROM rust:1.99-bookworm AS rust

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-/** The server bundle loads its runtime externals from disk, so every server install carries this tree. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -79,7 +78,6 @@ export function serverRuntimePlatformKey(
   return `${nodePlatform}-${arch}`;
 }
 
-/** The server's runtime externals, plus fff's binary for the target, as a staged package.json would list them. */
 export const resolveServerRuntimeDependencies = Effect.fn("resolveServerRuntimeDependencies")(
   function* (input: {
     readonly repoRoot: string;

@@ -1,4 +1,3 @@
-# The image builds from source, so leave out history, installs, build output, and local state.
 .git
 .repos
 **/node_modules

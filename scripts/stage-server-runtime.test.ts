@@ -20,7 +20,6 @@ const Manifest = Schema.Struct({
 });
 const decodeManifest = Schema.decodeEffect(Schema.fromJsonString(Manifest));
 
-/** Node's package lookup: the nearest node_modules/<name> from `fromDir` up to the stage root. */
 const findPackageDir = Effect.fn("test.findPackageDir")(function* (
   stageDir: string,
   fromDir: string,

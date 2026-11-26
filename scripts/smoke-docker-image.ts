@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-/** Proves a server image serves the app, keeps tokens out of its logs, and pairs a client. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
@@ -67,7 +66,6 @@ const docker = Effect.fn("smoke-docker-image.docker")(function* (args: ReadonlyA
   return { stdout: stdout.trim(), stderr: stderr.trim() };
 }, Effect.scoped);
 
-/** Removed by id on every exit, so a failed smoke leaves no container or volume behind. */
 const startContainer = Effect.fn("smoke-docker-image.startContainer")(function* (input: {
   readonly image: string;
   readonly platform: Option.Option<string>;
