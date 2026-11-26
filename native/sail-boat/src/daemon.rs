@@ -35,6 +35,8 @@ pub struct DaemonConfig {
     pub mcp_port: u16,
     pub token: String,
     pub data_dir: PathBuf,
+    /// How long to wait for a daemon a dead server left behind to let go of the data dir.
+    pub lock_wait: Duration,
 }
 
 impl DaemonConfig {
@@ -53,7 +55,7 @@ impl DaemonConfig {
             .filter(|v| !v.is_empty())
             .unwrap_or_else(generate_hex_token);
         let data_dir = t3desktop::data_dir()?;
-        Ok(Self { control_port, mcp_port, token, data_dir })
+        Ok(Self { control_port, mcp_port, token, data_dir, lock_wait: Duration::from_secs(10) })
     }
 }
 
@@ -101,7 +103,7 @@ pub struct Account {
 pub struct UiState {
     pub setup: Setup,
     pub setup_busy: bool,
-    /// The Boat sign-in waiting now; its page and code went only to the client that started it.
+    /// The Boat sign-in waiting now. Its page and code go only to clients that ask for them.
     pub sign_in_attempt: Option<u64>,
     pub account: Option<Account>,
     pub machines: Vec<MachineView>,
@@ -153,10 +155,17 @@ impl Reply {
 #[derive(Default)]
 struct PendingSignIn(tokio::sync::Mutex<SignIns>);
 
-#[derive(Default)]
 struct SignIns {
     last_attempt: u64,
     pending: Option<(u64, SignIn)>,
+}
+
+impl Default for SignIns {
+    /// A random start, so a tab still holding an attempt from an earlier daemon never matches one
+    /// from the next.
+    fn default() -> Self {
+        Self { last_attempt: u64::from(rand::random::<u32>()), pending: None }
+    }
 }
 
 impl PendingSignIn {
@@ -624,10 +633,10 @@ impl Daemon {
                         .sign_in
                         .finish(async {
                             daemon.setup.lock().unwrap().sign_in_attempt = None;
+                            daemon.emit_state();
                             daemon.recheck_setup().await;
                             daemon.set_busy(false);
-                            // Boat's output can carry the sign-in code, and the daemon's log and
-                            // notices reach clients.
+                            // Boat's output can carry the sign-in code, and notices reach every client.
                             if finished.is_err() {
                                 tracing::warn!("Boat sign-in did not finish");
                                 daemon.emit_notify("Boat sign-in did not finish", "Sign in to Boat again.");
@@ -834,7 +843,7 @@ impl RunningDaemon {
 /// Binds the control API and MCP listeners, spawns their servers and startup setup check, and
 /// returns the handshake ready to print to stdout.
 pub async fn start(config: DaemonConfig) -> Result<RunningDaemon> {
-    let data_dir_lock = lock_data_dir(&config.data_dir)?;
+    let data_dir_lock = lock_data_dir(&config.data_dir, config.lock_wait).await?;
     let control_listener = tokio::net::TcpListener::bind(("127.0.0.1", config.control_port))
         .await
         .with_context(|| format!("binding control port {}", config.control_port))?;
@@ -884,8 +893,9 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon> {
     })
 }
 
-/// Two daemons on one data dir would each reap, sleep and save the same machines.
-fn lock_data_dir(dir: &std::path::Path) -> Result<std::fs::File> {
+/// Two daemons on one data dir would each reap, sleep and save the same machines. One a dead
+/// server left behind lets go once it has shut down, so a new one waits up to `wait` for it.
+async fn lock_data_dir(dir: &std::path::Path, wait: Duration) -> Result<std::fs::File> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let path = dir.join("daemon.lock");
     let file = std::fs::OpenOptions::new()
@@ -894,12 +904,20 @@ fn lock_data_dir(dir: &std::path::Path) -> Result<std::fs::File> {
         .truncate(false)
         .open(&path)
         .with_context(|| format!("opening {}", path.display()))?;
-    match file.try_lock() {
-        Ok(()) => Ok(file),
-        Err(std::fs::TryLockError::WouldBlock) => {
-            anyhow::bail!("another sail-boatd is using {}", dir.display())
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                anyhow::bail!("another sail-boatd is using {}", dir.display())
+            }
+            Err(std::fs::TryLockError::Error(e)) => {
+                return Err(e).with_context(|| format!("locking {}", path.display()));
+            }
         }
-        Err(std::fs::TryLockError::Error(e)) => Err(e).with_context(|| format!("locking {}", path.display())),
     }
 }
 
@@ -936,7 +954,13 @@ mod tests {
 
     async fn spawn_test_daemon() -> (RunningDaemon, PathBuf) {
         let dir = test_dir();
-        let config = DaemonConfig { control_port: 0, mcp_port: 0, token: TOKEN.to_owned(), data_dir: dir.clone() };
+        let config = DaemonConfig {
+            control_port: 0,
+            mcp_port: 0,
+            token: TOKEN.to_owned(),
+            data_dir: dir.clone(),
+            lock_wait: Duration::ZERO,
+        };
         (start(config).await.unwrap(), dir)
     }
 
@@ -1185,14 +1209,53 @@ mod tests {
     #[tokio::test]
     async fn a_second_daemon_on_the_same_data_dir_refuses_to_start() {
         let (first, dir) = spawn_test_daemon().await;
-        let config = DaemonConfig { control_port: 0, mcp_port: 0, token: TOKEN.to_owned(), data_dir: dir.clone() };
+        let config = DaemonConfig {
+            control_port: 0,
+            mcp_port: 0,
+            token: TOKEN.to_owned(),
+            data_dir: dir.clone(),
+            lock_wait: Duration::ZERO,
+        };
         let refused = start(config).await.err().expect("a second daemon must not start on a locked data dir");
         assert!(format!("{refused:#}").contains("another sail-boatd is using"), "{refused:#}");
 
         first.shutdown().await;
-        let config = DaemonConfig { control_port: 0, mcp_port: 0, token: TOKEN.to_owned(), data_dir: dir.clone() };
+        let config = DaemonConfig {
+            control_port: 0,
+            mcp_port: 0,
+            token: TOKEN.to_owned(),
+            data_dir: dir.clone(),
+            lock_wait: Duration::ZERO,
+        };
         let next = start(config).await.expect("the data dir is free once its daemon is gone");
         stop_test_daemon(next, dir).await;
+    }
+
+    #[tokio::test]
+    async fn a_second_daemon_waits_for_the_first_to_let_go() {
+        let (first, dir) = spawn_test_daemon().await;
+        let config = DaemonConfig {
+            control_port: 0,
+            mcp_port: 0,
+            token: TOKEN.to_owned(),
+            data_dir: dir.clone(),
+            lock_wait: Duration::from_secs(10),
+        };
+        let mut second = tokio::spawn(start(config));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), &mut second).await.is_err(),
+            "the second daemon waits while the first holds the data dir"
+        );
+        first.shutdown().await;
+        let next = second.await.unwrap().expect("the second daemon starts once the first lets go");
+        stop_test_daemon(next, dir).await;
+    }
+
+    #[test]
+    fn sign_in_attempts_from_two_daemons_do_not_collide() {
+        let first = SignIns::default().last_attempt;
+        let second = SignIns::default().last_attempt;
+        assert_ne!(first, second, "a stale tab must never match the next daemon's attempt");
     }
 
     #[tokio::test]
