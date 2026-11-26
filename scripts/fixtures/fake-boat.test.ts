@@ -24,7 +24,7 @@ const SANDBOX_ID = /^bx-[0-9a-f]{12}$/;
 const USER_CODE = /^[A-Z2-9]{4}-[A-Z2-9]{4}$/;
 const WEB_PORT = 8123;
 const WEB_BODY = "hello from the sandbox\n";
-const POLL = { timeout: 30_000, interval: 250 };
+const POLL = { timeout: 120_000, interval: 250 };
 const OTHER_ORIGIN = "https://auth.localtest.me:8443";
 
 interface Ran {
@@ -468,12 +468,38 @@ describe("fake boat records and output", () => {
     expect(lastJson<Failure>(late.stderr).code).toBe("json_required");
   });
 
-  it("fails a command that needs a save still running instead of answering without it", async () => {
+  it("warns on success that Sail Boat would run a real boat in ~/.ascii/bin instead", async () => {
+    const userHome = await NodeFSP.mkdtemp(NodePath.join(state, "user-home-"));
+    const env = {
+      ...strippedEnv(),
+      HOME: userHome,
+      FAKE_BOAT_HOME: NodePath.join(userHome, "fake-boat"),
+      PATH: BOAT_PATH,
+    };
+    const installed = NodePath.join(userHome, ".ascii", "bin", "boat");
+    await NodeFSP.mkdir(installed, { recursive: true });
+    expect((await run("boat", ["--json", "status"], env)).stderr, "a directory is no CLI").toBe("");
+    await NodeFSP.rm(installed, { recursive: true });
+    await NodeFSP.writeFile(installed, "#!/bin/sh\n", { mode: 0o755 });
+    const warned = await run("boat", ["--json", "status"], env);
+    expect(warned.status).toBe(0);
+    expect(lastJson(warned.stdout)).toEqual({
+      account: { identifier: null, signedIn: false, plan: null },
+    });
+    expect(warned.stderr.trim().split("\n")).toEqual([expect.stringContaining(installed)]);
+    const failed = await run("boat", ["--json", "list", "--all"], env);
+    expect(failed.stderr, "Sail Boat shows a failed call's stderr whole").toBe(
+      `${JSON.stringify({ code: "not_signed_in", error: "Not signed in. Run boat onboard." })}\n`,
+    );
+  });
+
+  it("lists saved snapshots while one still saves, and fails a command that needs that save", async () => {
     const home = await NodeFSP.mkdtemp(NodePath.join(state, "saving-"));
     const id = "bx-000000000001";
     const name = "still-saving";
     await using worker = fakeBoatProcess();
     await NodeFSP.mkdir(NodePath.join(home, "sandboxes"));
+    await NodeFSP.mkdir(NodePath.join(home, "snapshots"));
     await NodeFSP.mkdir(NodePath.join(home, "outbox", id), { recursive: true });
     const createdAt = "2026-01-01T00:00:00.000Z";
     await NodeFSP.writeFile(
@@ -485,6 +511,10 @@ describe("fake boat records and output", () => {
       JSON.stringify({ id, name, type: "small", createdAt, ttlSeconds: null, archiveAfter: null }),
     );
     await NodeFSP.writeFile(
+      NodePath.join(home, "snapshots", "saved.json"),
+      JSON.stringify({ name: "saved", sandboxId: id, createdAt, imageId: "sha256:saved" }),
+    );
+    await NodeFSP.writeFile(
       NodePath.join(
         home,
         "outbox",
@@ -493,14 +523,14 @@ describe("fake boat records and output", () => {
       ),
       JSON.stringify({ sandboxId: id, name, requestedAt: createdAt }),
     );
-    const env = {
-      ...strippedEnv(),
-      FAKE_BOAT_HOME: home,
-      FAKE_BOAT_SETTLE_SECS: "1",
-      PATH: BOAT_PATH,
-    };
+    const base = { ...strippedEnv(), FAKE_BOAT_HOME: home, PATH: BOAT_PATH };
+    const listed = await run("boat", ["--json", "snapshots"], base);
+    expect({ status: listed.status, stdout: lastJson(listed.stdout) }).toEqual({
+      status: 0,
+      stdout: { named: [{ name: "saved", sandboxId: id, createdAt }] },
+    });
+    const env = { ...base, FAKE_BOAT_SETTLE_SECS: "1" };
     const commands = [
-      ["snapshots"],
       ["snapshot", "rm", name],
       ["snapshot", id, name],
       ["new", "--name", "late", "--type", "small", "--from", name, "--no-auto-stop"],
@@ -515,7 +545,7 @@ describe("fake boat records and output", () => {
       });
       expect(lastJson<Failure>(ran.stderr).code, args.join(" ")).toBe("snapshot_in_progress");
     }
-    const garbled = await run("boat", ["--json", "snapshots"], {
+    const garbled = await run("boat", ["--json", "snapshot", "rm", name], {
       ...env,
       FAKE_BOAT_SETTLE_SECS: "soon",
     });
@@ -614,6 +644,19 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     const approved = await curl(["--cacert", rootCertPath(), "--fail", target.toString()]);
     expect(approved.stdout, approved.stderr).toContain(code);
   };
+  /** An env whose `docker` runs `script` first, with `$real` the real one and `$here` its dir. */
+  const withDocker = async (script: string) => {
+    const real = NodeChildProcess.execFileSync("sh", ["-c", "command -v docker"], {
+      encoding: "utf8",
+    }).trim();
+    const dir = await NodeFSP.mkdtemp(NodePath.join(home, "docker-"));
+    await NodeFSP.writeFile(
+      NodePath.join(dir, "docker"),
+      `#!/bin/sh\nreal='${real}'\nhere='${dir}'\n${script}\nexec "$real" "$@"\n`,
+      { mode: 0o755 },
+    );
+    return { dir, env: { PATH: `${dir}${NodePath.delimiter}${BOAT_PATH}` } };
+  };
   const running = (id: string) =>
     docker(["inspect", "--format", "{{.State.Running}}", `sail-boat-${id}`]).trim() === "true";
   const workerIdle = (forHome: string) => {
@@ -654,26 +697,33 @@ describe.skipIf(!hasDocker())("fake boat", () => {
 
   afterAll(async () => {
     for (const child of children) child.kill("SIGKILL");
-    for (const forHome of [home, otherHome].filter(Boolean)) {
-      await vi.waitFor(
-        () => {
-          if (!workerIdle(forHome)) throw new Error(`a snapshot worker for ${forHome} still runs`);
-        },
-        { timeout: 50_000, interval: 250 },
-      );
+    const homes = [home, otherHome].filter(Boolean);
+    const labelled = (forHome: string, kind: "ps" | "images") => {
       const label = `label=sail-fixture.home=${homeId(forHome)}`;
-      const ids = (kind: "ps" | "images") =>
-        docker(
-          kind === "ps" ? ["ps", "-aq", "--filter", label] : ["images", "-q", "--filter", label],
-        )
-          .split("\n")
-          .filter(Boolean);
-      for (const id of ids("ps")) dockerSucceeds(["rm", "--force", "--volumes", id]);
-      for (const id of new Set(ids("images"))) dockerSucceeds(["image", "rm", "--force", id]);
+      return docker(
+        kind === "ps" ? ["ps", "-aq", "--filter", label] : ["images", "-q", "--filter", label],
+      )
+        .split("\n")
+        .filter(Boolean);
+    };
+    // Containers first: a save still queued then fails at once instead of being waited out.
+    for (const forHome of homes) {
+      for (const id of labelled(forHome, "ps")) dockerSucceeds(["rm", "--force", "--volumes", id]);
     }
     for (const id of sandboxes) {
       dockerSucceeds(["rm", "--force", "--volumes", `sail-boat-${id}`]);
       removeSite(`boat-${id}-${WEB_PORT}`);
+    }
+    for (const forHome of homes) {
+      try {
+        await vi.waitFor(() => {
+          if (!workerIdle(forHome)) throw new Error(`a snapshot worker for ${forHome} still runs`);
+        }, POLL);
+      } finally {
+        for (const id of new Set(labelled(forHome, "images"))) {
+          dockerSucceeds(["image", "rm", "--force", id]);
+        }
+      }
     }
     for (const name of [snapshot, insideSnapshot]) {
       dockerSucceeds(["image", "rm", "--force", `sail-fake-boat-snapshot:${name}`]);
@@ -851,19 +901,33 @@ describe.skipIf(!hasDocker())("fake boat", () => {
     expect(lastJson<ExecJson>(slow.stdout).exitCode).toBeNull();
   });
 
+  it("keeps a login shell's output clean when its script ends with exit", async () => {
+    expect(await exec("echo out; echo err >&2; exit 0")).toEqual({
+      exitCode: 0,
+      stdout: "out\n",
+      stderr: "err\n",
+    });
+  });
+
   it("waits out the pause a snapshot save takes instead of failing an exec", async () => {
     const name = `sail-boat-${sandbox}`;
+    const shim = await withDocker(`if [ "$1" = inspect ] && [ ! -e "$here/seen" ]; then
+  "$real" "$@"; status=$?
+  : > "$here/seen"
+  "$real" unpause ${name} >/dev/null
+  exit $status
+fi`);
     docker(["pause", name]);
-    const unpause = NodeChildProcess.spawn("sh", ["-c", `sleep 1; docker unpause ${name}`]);
-    const unpaused = NodeEvents.EventEmitter.once(unpause, "exit");
     try {
-      const ran = await json(["exec", sandbox, "--", "echo", "after the pause"]);
+      const ran = await json(["exec", sandbox, "--", "echo", "after the pause"], shim.env);
       expect(lastJson<ExecJson>(ran.stdout)).toMatchObject({
         exitCode: 0,
         stdout: "after the pause\n",
       });
+      expect(NodeFS.existsSync(NodePath.join(shim.dir, "seen")), "it asked while paused").toBe(
+        true,
+      );
     } finally {
-      await unpaused;
       dockerSucceeds(["unpause", name]);
     }
   });
@@ -928,27 +992,16 @@ describe.skipIf(!hasDocker())("fake boat", () => {
 
   it("waits out a pause that starts after the pause check, for exec, scp, and host", async () => {
     const name = `sail-boat-${sandbox}`;
-    const real = NodeChildProcess.execFileSync("sh", ["-c", "command -v docker"], {
-      encoding: "utf8",
-    }).trim();
     /** Pauses the sandbox right before the first `docker exec`, as a commit starting then does. */
     const pausedAtExec = async (args: ReadonlyArray<string>) => {
-      const dir = await NodeFSP.mkdtemp(NodePath.join(home, "pausing-docker-"));
-      const refused = NodePath.join(dir, "refused");
-      await NodeFSP.writeFile(
-        NodePath.join(dir, "docker"),
-        `#!/bin/sh
-if [ "$1" = exec ] && [ ! -e '${refused}' ]; then
-  '${real}' pause ${name} >/dev/null || exit 1
-  '${real}' "$@"; status=$?
-  : > '${refused}'
+      const shim = await withDocker(`if [ "$1" = exec ] && [ ! -e "$here/refused" ]; then
+  "$real" pause ${name} >/dev/null || exit 1
+  "$real" "$@"; status=$?
+  : > "$here/refused"
   exit $status
-fi
-exec '${real}' "$@"
-`,
-        { mode: 0o755 },
-      );
-      const ran = json(args, { PATH: `${dir}${NodePath.delimiter}${BOAT_PATH}` });
+fi`);
+      const refused = NodePath.join(shim.dir, "refused");
+      const ran = json(args, shim.env);
       try {
         await expect.poll(() => NodeFS.existsSync(refused), POLL).toBe(true);
       } finally {
@@ -982,22 +1035,46 @@ exec '${real}' "$@"
 
     expect((await exec("head -c 150M /dev/urandom > big")).exitCode).toBe(0);
     await saveInside();
-    expect((await json(["status"])).status).toBe(0);
     expect(
       dockerSucceeds(["image", "inspect", snapshotImage(home, insideSnapshot)]),
-      "status returns without waiting for the save",
-    ).toBe(false);
-    expect(await names(), "snapshots waits for a save the sandbox asked for").toEqual([
-      snapshot,
-      insideSnapshot,
-    ]);
-    for (const name of [snapshot, insideSnapshot]) {
-      expect(dockerSucceeds(["image", "inspect", snapshotImage(home, name)]), name).toBe(true);
-    }
+      "boat snapshot inside returns once the save is done",
+    ).toBe(true);
+    expect(await names()).toEqual([snapshot, insideSnapshot]);
+  });
+
+  it("fails boat snapshot inside with the reason when its save fails", async () => {
+    await expect.poll(() => workerIdle(home), POLL).toBe(true);
+    const failing = `fake-boat-test-${suffix}-failing`;
+    const shim = await withDocker(
+      `[ "$1" = commit ] && { echo 'commit refused by the test' >&2; exit 1; }`,
+    );
+    const failed = await exec(`boat snapshot ${sandbox} ${failing} --json`, shim.env);
+    expect(failed.exitCode).toBe(1);
+    expect(failed.stdout).toBe("");
+    expect(lastJson<Failure>(failed.stderr)).toEqual({
+      code: "snapshot_failed",
+      error: expect.stringContaining("commit refused by the test"),
+    });
+    expect(dockerSucceeds(["image", "inspect", snapshotImage(home, failing)])).toBe(false);
+    expect(await names()).toEqual([snapshot, insideSnapshot]);
   });
 
   it("never brings back a removed snapshot from a save still in flight", async () => {
-    await saveInside();
+    await expect.poll(() => workerIdle(home), POLL).toBe(true);
+    const requested = {
+      sandboxId: sandbox,
+      name: insideSnapshot,
+      requestedAt: "2026-01-01T00:00:00Z",
+    };
+    await NodeFSP.writeFile(
+      NodePath.join(
+        home,
+        "outbox",
+        sandbox,
+        requestFile({ stage: "pending", base: insideSnapshot }),
+      ),
+      JSON.stringify(requested),
+    );
     expect((await json(["snapshot", "rm", insideSnapshot])).status).toBe(0);
     await expect.poll(() => workerIdle(home), POLL).toBe(true);
     expect(await names(), "a save still in flight never brings a removed snapshot back").toEqual([
@@ -1161,6 +1238,57 @@ exec '${real}' "$@"
     expect((await curl([callback.toString()])).stdout).toContain("Signed in");
     child.kill("SIGKILL");
     await expect.poll(async () => (await exec("codex login status")).exitCode, POLL).toBe(0);
+  });
+
+  it("counts every awake stretch since a time in usage, across a stop and resume", async () => {
+    const awake = async (since: string) =>
+      lastJson<{ seconds: number }>((await json(["usage", sandbox, "--since", since])).stdout)
+        .seconds;
+    const before = await awake("0");
+    expect((await json(["stop", sandbox])).status).toBe(0);
+    const { stoppedAt } = await info();
+    expect((await json(["resume", sandbox])).status).toBe(0);
+    expect(await awake("0"), "the stretch before the stop still counts").toBeGreaterThanOrEqual(
+      before,
+    );
+    const sinceStop = String(Math.ceil(Date.parse(stoppedAt ?? "") / 1000));
+    expect(await awake(sinceStop), "only the stretch since the resume").toBeLessThan(before);
+  });
+
+  it("reports stopping and resuming while FAKE_BOAT_TRANSITION_SECS holds them", async () => {
+    const slow = { FAKE_BOAT_TRANSITION_SECS: "20" };
+    const state = async () => (await info()).state;
+    const listed = async () =>
+      lastJson<{ sandboxes: Array<SandboxJson> }>((await json(["list", "--all"])).stdout)
+        .sandboxes.filter((row) => row.id === sandbox)
+        .map((row) => row.state);
+    expect(
+      (await failure(["stop", sandbox], { FAKE_BOAT_TRANSITION_SECS: "soon" })).error,
+    ).toContain("FAKE_BOAT_TRANSITION_SECS");
+    expect(await state()).toBe("running");
+
+    expect(await json(["stop", sandbox], slow)).toMatchObject({ status: 0, stdout: "{}\n" });
+    expect([await state(), ...(await listed())]).toEqual(["stopping", "stopping"]);
+    expect((await failure(["exec", sandbox, "--", "true"])).code).toBe("sandbox_not_running");
+    expect((await failure(["resume", sandbox])).code).toBe("sandbox_transitioning");
+    expect((await json(["stop", sandbox])).status, "Boat took the stop already").toBe(0);
+    await expect.poll(state, POLL).toBe("stopped");
+    expect((await info()).stoppedAt).toMatch(ISO);
+
+    const resumed = await json(["resume", sandbox, "--ttl", "7200"], slow);
+    expect(resumed.status, resumed.stderr).toBe(0);
+    expect(lastJson<SandboxJson>(resumed.stdout).state).toBe("resuming");
+    expect([await state(), ...(await listed())]).toEqual(["resuming", "resuming"]);
+    expect((await failure(["exec", sandbox, "--", "true"])).code).toBe("sandbox_not_running");
+    expect((await failure(["stop", sandbox])).code).toBe("sandbox_transitioning");
+    await expect.poll(state, POLL).toBe("running");
+    expect((await exec("systemctl --user is-system-running")).stdout).toMatch(
+      /^(running|degraded)\n$/,
+    );
+    expect(await info()).toMatchObject({
+      ttlSeconds: 7200,
+      archiveAfter: expect.stringMatching(ISO),
+    });
   });
 
   it("stops a sandbox when its lifetime ends, with nobody calling boat", async () => {

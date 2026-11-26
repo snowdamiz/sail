@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeNet from "node:net";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import {
@@ -65,10 +66,14 @@ const DISK_TTL_SECS = 14 * 24 * 3600;
 const SIZES = { small: "1g", default: "1536m", large: "2g" } as const;
 const SANDBOX_ID = /^bx-[0-9a-f]{12}$/;
 const REMOTE_PATH = /^(bx-[0-9a-f]{12}):(.+)$/;
+/** The argument that makes the fake `boat` finish a stop or resume in the background. */
+const FINISH_ARG = "--finish-transition";
+/** After this, a transition whose finisher died no longer hides Docker's own state. */
+const TRANSITION_STALE_MS = BOOT_TIMEOUT_MS + 2 * 60_000;
 
 type Size = keyof typeof SIZES;
 type Plan = "paid" | "trial";
-type State = "running" | "stopped" | "starting" | "stopping";
+type State = "running" | "stopped" | "starting" | "stopping" | "resuming";
 
 class BoatError extends Error {
   readonly code: string;
@@ -104,14 +109,33 @@ interface SnapshotRecord {
 
 interface DockerState {
   readonly Status: string;
+  readonly Running: boolean;
   readonly StartedAt: string;
   readonly FinishedAt: string;
 }
 
 interface Live {
   readonly state: State;
+  /** Docker's own answer, which a stop or resume still finishing runs ahead of. */
+  readonly running: boolean;
   readonly startedAt: string;
   readonly finishedAt: string;
+}
+
+/** A stop or resume that returned early, which a detached `boat` finishes (`FINISH_ARG`). */
+type Transition =
+  | { readonly state: "stopping"; readonly until: string }
+  | {
+      readonly state: "resuming";
+      readonly until: string;
+      readonly from: SandboxRecord;
+      readonly to: SandboxRecord;
+    };
+
+/** One stretch the sandbox ran, which Docker forgets at its next start. */
+interface Run {
+  readonly from: string;
+  readonly to: string;
 }
 
 /** `paused` is a running sandbox mid-`docker commit`. */
@@ -135,6 +159,8 @@ const container = (id: string) => `sail-boat-${id}`;
 const siteId = (id: string, port: number) => `boat-${id}-${port}`;
 const snapshotTag = (name: string) => `${SNAPSHOT_REPO}:${HOME_ID}-${name}`;
 const sandboxFile = (id: string) => at("sandboxes", `${id}.json`);
+const transitionFile = (id: string) => at("transitions", `${id}.json`);
+const runsFile = (id: string) => at("runs", `${id}.jsonl`);
 const snapshotFile = (name: string) => at("snapshots", `${name}.json`);
 const signInFile = (code: string) => NodePath.join(SIGN_INS, `${code}.json`);
 const readonlyDir = (id: string) => at("readonly", id);
@@ -156,6 +182,15 @@ function isNoSuch(error: unknown): boolean {
 function listDir(dir: string): ReadonlyArray<string> {
   try {
     return NodeFS.readdirSync(dir);
+  } catch (error) {
+    if (isMissingFile(error)) return [];
+    throw error;
+  }
+}
+
+function lines(file: string): ReadonlyArray<string> {
+  try {
+    return NodeFS.readFileSync(file, "utf8").split("\n").filter(Boolean);
   } catch (error) {
     if (isMissingFile(error)) return [];
     throw error;
@@ -206,6 +241,17 @@ function diskTtlSeconds(): number {
     );
   }
   return Number(raw);
+}
+
+/** How long a stop or resume reports stopping or resuming after it returns; 0 returns when done. */
+function transitionSecs(): number {
+  const raw = process.env.FAKE_BOAT_TRANSITION_SECS;
+  if (raw === undefined || raw === "") return 0;
+  return integer(raw, "FAKE_BOAT_TRANSITION_SECS", 0, 3600);
+}
+
+function transitioning(id: string, state: State): BoatError {
+  return new BoatError("sandbox_transitioning", `Sandbox ${id} is ${state}; try once it settles`);
 }
 
 function trialRefusal(): BoatError {
@@ -291,18 +337,25 @@ function snapshotRecord(name: string): SnapshotRecord {
   return record;
 }
 
+function transition(id: string): Transition | undefined {
+  const moving = readJson<Transition>(transitionFile(id));
+  return moving && Date.now() < Date.parse(moving.until) + TRANSITION_STALE_MS ? moving : undefined;
+}
+
 function live(id: string): Live | null {
+  let state: DockerState;
   try {
-    const state = inspect<DockerState>(container(id), ".State");
-    return {
-      state: STATES[state.Status] ?? "stopped",
-      startedAt: new Date(state.StartedAt).toISOString(),
-      finishedAt: new Date(state.FinishedAt).toISOString(),
-    };
+    state = inspect<DockerState>(container(id), ".State");
   } catch (error) {
     if (isNoSuch(error)) return null;
     throw error;
   }
+  return {
+    state: transition(id)?.state ?? STATES[state.Status] ?? "stopped",
+    running: state.Running,
+    startedAt: new Date(state.StartedAt).toISOString(),
+    finishedAt: new Date(state.FinishedAt).toISOString(),
+  };
 }
 
 function requireLive(record: SandboxRecord): Live {
@@ -476,6 +529,79 @@ function recordStart(id: string): void {
   NodeFS.appendFileSync(at("starts.jsonl"), `${JSON.stringify({ time: now(), sandboxId: id })}\n`);
 }
 
+function recordRun(id: string): void {
+  const ended = live(id);
+  if (!ended || ended.running) return;
+  const run: Run = { from: ended.startedAt, to: ended.finishedAt };
+  NodeFS.mkdirSync(at("runs"), { recursive: true });
+  NodeFS.appendFileSync(runsFile(id), `${JSON.stringify(run)}\n`);
+}
+
+/** Seconds awake since `sinceSecs`, every stretch counted once, the current one up to now. */
+function awakeSeconds(id: string, state: Live, sinceSecs: number): number {
+  const runs = new Map<string, number>();
+  for (const line of lines(runsFile(id))) {
+    const run = JSON.parse(line) as Run;
+    runs.set(run.from, Date.parse(run.to));
+  }
+  runs.set(state.startedAt, state.running ? Date.now() : Date.parse(state.finishedAt));
+  let ms = 0;
+  for (const [from, to] of runs)
+    ms += Math.max(0, to - Math.max(Date.parse(from), sinceSecs * 1000));
+  return Math.round(ms / 1000);
+}
+
+function stopContainer(id: string): void {
+  docker(["stop", "--time", "30", container(id)], { timeoutMs: 60_000 });
+}
+
+/** Starts a stopped sandbox as `to`, or puts `from`'s size and lifetime back if it cannot boot. */
+async function boot(from: SandboxRecord, to: SandboxRecord): Promise<void> {
+  recordRun(to.id);
+  try {
+    docker(["start", container(to.id)]);
+    await waitForBoot(to.id);
+  } catch (error) {
+    dockerSucceeds(["stop", "--time", "30", container(to.id)]);
+    resize(to.id, from.type);
+    setDeadline(to.id, from.archiveAfter);
+    throw error instanceof BoatError ? error : new BoatError("resume_failed", errorMessage(error));
+  }
+  recordStart(to.id);
+  writeJsonAtomic(sandboxFile(to.id), to);
+}
+
+/** Hands the work to a detached `boat`, so the command returns as Boat does once it took it. */
+function beginTransition(id: string, moving: Transition): void {
+  writeJsonAtomic(transitionFile(id), moving);
+  const log = NodeFS.openSync(at("worker.log"), "a");
+  try {
+    NodeChildProcess.spawn(process.execPath, [import.meta.filename, FINISH_ARG, id], {
+      detached: true,
+      stdio: ["ignore", log, log],
+      env: { ...process.env, FAKE_BOAT_HOME: HOME },
+    }).unref();
+  } finally {
+    NodeFS.closeSync(log);
+  }
+}
+
+/** Does what the stop or resume left, then keeps reporting it until its `until`. */
+async function finishTransition(id: string): Promise<void> {
+  const moving = readJson<Transition>(transitionFile(id));
+  if (!moving) return;
+  try {
+    if (moving.state === "stopping") stopContainer(id);
+    else await boot(moving.from, moving.to);
+  } catch (error) {
+    console.error(
+      JSON.stringify({ code: `${moving.state}_failed`, id, error: errorMessage(error) }),
+    );
+  }
+  await sleep(Date.parse(moving.until) - Date.now());
+  NodeFS.rmSync(transitionFile(id), { force: true });
+}
+
 function hostedPorts(id: string): ReadonlyArray<number> {
   return listDir(at("hosts", id)).map(Number);
 }
@@ -487,7 +613,14 @@ function removeSandbox(id: string): void {
     if (!isNoSuch(error)) throw error;
   }
   for (const port of hostedPorts(id)) removeSite(siteId(id, port));
-  for (const path of [at("hosts", id), OUTBOX.dir(id), readonlyDir(id), sandboxFile(id)]) {
+  for (const path of [
+    at("hosts", id),
+    OUTBOX.dir(id),
+    readonlyDir(id),
+    transitionFile(id),
+    runsFile(id),
+    sandboxFile(id),
+  ]) {
     NodeFS.rmSync(path, { recursive: true, force: true });
   }
 }
@@ -532,6 +665,15 @@ const OUTBOX = outbox({
     commitSnapshot(sandboxId, name);
   },
 });
+
+/** Saves queued requests in a detached worker; on failure they wait for the next command. */
+function startWorker(): void {
+  try {
+    OUTBOX.start();
+  } catch (error) {
+    console.error(JSON.stringify({ code: "worker_not_started", error: errorMessage(error) }));
+  }
+}
 
 function reportFailures(failures: ReadonlyArray<SnapshotFailure>): void {
   for (const failure of failures) {
@@ -880,10 +1022,17 @@ const TABLE: ReadonlyArray<Command> = [
     prints: "json",
     signedIn: true,
     run: async (invocation) => {
+      const secs = transitionSecs();
       const record = sandboxRecord(invocation.args.sandbox);
       await settled({ sandboxId: record.id }, 20_000);
-      requireLive(record);
-      docker(["stop", "--time", "30", container(record.id)], { timeoutMs: 60_000 });
+      const { state } = requireLive(record);
+      if (state === "resuming" || state === "starting") throw transitioning(record.id, state);
+      if (state === "running" && secs > 0) {
+        const until = new Date(Date.now() + secs * 1000).toISOString();
+        beginTransition(record.id, { state: "stopping", until });
+      } else if (state === "running") {
+        stopContainer(record.id);
+      }
       print({});
       return 0;
     },
@@ -897,10 +1046,16 @@ const TABLE: ReadonlyArray<Command> = [
     signedIn: true,
     run: async (invocation, signedIn) => {
       const diskTtl = diskTtlSeconds();
+      const secs = transitionSecs();
       const record = sandboxRecord(invocation.args.sandbox);
       const state = requireLive(record);
       const type = invocation.flags.has("type") ? size(invocation.flags.get("type")) : record.type;
       const life = lifetime(invocation, signedIn.plan) ?? { ttlSeconds: record.ttlSeconds };
+      if (state.state === "stopping") throw transitioning(record.id, state.state);
+      if (state.state === "resuming" || state.state === "starting") {
+        print(view(record, state));
+        return 0;
+      }
       if (state.state === "stopped" && Date.now() - Date.parse(state.finishedAt) > diskTtl * 1000) {
         throw new BoatError(
           "snapshot_data_expired",
@@ -916,22 +1071,18 @@ const TABLE: ReadonlyArray<Command> = [
       resize(record.id, type);
       setDeadline(record.id, next.archiveAfter);
       writeAuthOrigin(record.id);
-      if (state.state !== "running") {
+      if (state.state === "running") {
+        writeJsonAtomic(sandboxFile(record.id), next);
+      } else if (secs > 0) {
         print({ progress: "resuming", id: record.id });
-        try {
-          docker(["start", container(record.id)]);
-          await waitForBoot(record.id);
-        } catch (error) {
-          dockerSucceeds(["stop", "--time", "30", container(record.id)]);
-          resize(record.id, record.type);
-          setDeadline(record.id, record.archiveAfter);
-          throw error instanceof BoatError
-            ? error
-            : new BoatError("resume_failed", errorMessage(error));
-        }
-        recordStart(record.id);
+        const until = new Date(Date.now() + secs * 1000).toISOString();
+        beginTransition(record.id, { state: "resuming", until, from: record, to: next });
+        print(view(next, { ...state, state: "resuming" }));
+        return 0;
+      } else {
+        print({ progress: "resuming", id: record.id });
+        await boot(record, next);
       }
-      writeJsonAtomic(sandboxFile(record.id), next);
       print(view(next, requireLive(next)));
       return 0;
     },
@@ -1013,7 +1164,8 @@ const TABLE: ReadonlyArray<Command> = [
     prints: "json",
     signedIn: true,
     run: async () => {
-      await settled({}, 15_000);
+      // Saved ones only, at once: Sail Boat gives this 20 s, and a save in flight can take minutes.
+      reportFailures(OUTBOX.failures());
       const named = snapshotRecords().map(({ name, sandboxId, createdAt }) => ({
         name,
         sandboxId,
@@ -1044,6 +1196,8 @@ const TABLE: ReadonlyArray<Command> = [
         key.startsWith("FAKE_AUTH_") && value !== undefined ? ["-e", `${key}=${value}`] : [],
       );
       const started = Date.now();
+      // A `boat snapshot` run inside waits for its save, which a worker started meanwhile does.
+      const kick = setInterval(startWorker, 250);
       const ran = await execUnpaused(
         [
           "exec",
@@ -1060,7 +1214,7 @@ const TABLE: ReadonlyArray<Command> = [
           ...invocation.afterDoubleDash,
         ],
         { killAfterMs: (timeout + 10) * 1000 },
-      );
+      ).finally(() => clearInterval(kick));
       // coreutils `timeout` exits 124 when it had to stop the command.
       const timedOut =
         ran.status === null || (ran.status === 124 && Date.now() - started >= timeout * 1000);
@@ -1175,9 +1329,7 @@ const TABLE: ReadonlyArray<Command> = [
       const record = sandboxRecord(invocation.args.sandbox);
       const state = requireLive(record);
       const since = integer(invocation.flags.get("since"), "--since");
-      const started = Date.parse(state.startedAt) / 1000;
-      const ended = (state.state === "stopped" ? Date.parse(state.finishedAt) : Date.now()) / 1000;
-      print({ dollars: 0, seconds: Math.max(0, Math.round(ended - Math.max(since, started))) });
+      print({ dollars: 0, seconds: awakeSeconds(record.id, state, since) });
       return 0;
     },
   },
@@ -1189,10 +1341,7 @@ const TABLE: ReadonlyArray<Command> = [
     signedIn: true,
     run: async () => {
       const today = now().slice(0, 10);
-      const lines = NodeFS.existsSync(at("starts.jsonl"))
-        ? NodeFS.readFileSync(at("starts.jsonl"), "utf8").split("\n").filter(Boolean)
-        : [];
-      const used = lines.filter((line) => {
+      const used = lines(at("starts.jsonl")).filter((line) => {
         const start = JSON.parse(line) as { readonly time: string };
         return start.time.startsWith(today);
       }).length;
@@ -1226,17 +1375,33 @@ async function main(argv: ReadonlyArray<string>): Promise<{ code: number; mutati
   }
 }
 
+/** What `Boat::locate` (`native/sail-boat/src/boat.rs`) runs before any `boat` on PATH. */
+function installedBoat(): string | undefined {
+  const home = process.env.HOME || NodeOS.userInfo().homedir;
+  const path = NodePath.join(home, ".ascii", "bin", "boat");
+  try {
+    return NodeFS.statSync(path).isFile() ? path : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 if (process.argv[2] === WORKER_ARG) {
   OUTBOX.work();
+} else if (process.argv[2] === FINISH_ARG) {
+  await finishTransition(process.argv[3] ?? "");
 } else {
   const argv = process.argv.slice(2);
   const result = await main(argv);
   logCall(HOME, { argv, mutating: result.mutating, exitCode: result.code });
-  try {
-    // Requests this command's own work queued, such as an in-sandbox `boat snapshot` it ran.
-    OUTBOX.start();
-  } catch (error) {
-    console.error(JSON.stringify({ code: "worker_not_started", error: errorMessage(error) }));
+  // Requests this command's own work queued, such as an in-sandbox `boat snapshot` it ran.
+  startWorker();
+  // On success only: Sail Boat reads no stderr then, and shows a failed call's stderr whole.
+  const installed = result.code === 0 ? installedBoat() : undefined;
+  if (installed) {
+    console.error(
+      `fake boat: warning: Sail Boat runs ${installed} before any boat on PATH, so it would use the real Boat CLI instead of this fake`,
+    );
   }
   process.exitCode = result.code;
 }

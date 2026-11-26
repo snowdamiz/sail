@@ -21,7 +21,9 @@ RUN systemctl mask \
     proc-sys-fs-binfmt_misc.automount systemd-journald-audit.socket \
     apt-daily.timer apt-daily-upgrade.timer e2scrub_all.timer fstrim.timer
 
-RUN useradd --create-home --uid 1000 --shell /bin/bash user \
+# Debian's skeleton .bash_logout runs clear_console, which writes to a login shell's output on `exit`.
+RUN rm -f /etc/skel/.bash_logout \
+  && useradd --create-home --uid 1000 --shell /bin/bash user \
   && echo 'user ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/user \
   && chmod 440 /etc/sudoers.d/user \
   && mkdir -p /var/lib/systemd/linger /var/lib/fake-boat/outbox /var/lib/fake-boat/readonly \
