@@ -39,8 +39,7 @@ const SHUTDOWN_REQUEST_TIMEOUT = Duration.seconds(1);
 const FORCE_KILL_AFTER = Duration.seconds(3);
 const SSE_RECONNECT_DELAY = Duration.millis(1_500);
 const STDERR_DRAIN_TIMEOUT = Duration.seconds(1);
-const STDERR_TAIL_LINES = 20;
-const STDERR_TAIL_IN_MESSAGE = 5;
+const STDERR_TAIL_LINES = 5;
 
 const Handshake = Schema.Struct({
   ready: Schema.Literal(true),
@@ -329,9 +328,7 @@ const make = Effect.gen(function* () {
       Effect.timeout(STDERR_DRAIN_TIMEOUT),
       Effect.ignore,
       Effect.andThen(Ref.get(stderrLines)),
-      Effect.map((lines) =>
-        lines.length === 0 ? "" : `: ${lines.slice(-STDERR_TAIL_IN_MESSAGE).join(" | ")}`,
-      ),
+      Effect.map((lines) => (lines.length === 0 ? "" : `: ${lines.join(" | ")}`)),
     );
 
     const handshake = yield* Deferred.make<Handshake>();
@@ -405,17 +402,22 @@ const make = Effect.gen(function* () {
 
   const supervise = (ready: Deferred.Deferred<Daemon, BoatError>) =>
     runDaemon(ready).pipe(
-      Effect.catch((error) =>
-        Deferred.fail(ready, error).pipe(
+      Effect.onExit((exit) => {
+        if (Exit.isSuccess(exit) || Cause.hasInterrupts(exit.cause)) {
+          return Deferred.fail(
+            ready,
+            new BoatError({ message: "This server is shutting down." }),
+          ).pipe(Effect.andThen(transition({ _tag: "Stopped" })));
+        }
+        const error = Option.getOrElse(
+          Cause.findErrorOption(exit.cause),
+          () => new BoatError({ message: "sail-boatd stopped for an unknown reason." }),
+        );
+        return Deferred.fail(ready, error).pipe(
           Effect.andThen(transition({ _tag: "Failed", message: error.message })),
-          Effect.andThen(Effect.logWarning("sail-boatd is not running", { cause: error })),
-        ),
-      ),
-      Effect.onInterrupt(() =>
-        Deferred.fail(ready, new BoatError({ message: "This server is shutting down." })).pipe(
-          Effect.andThen(transition({ _tag: "Stopped" })),
-        ),
-      ),
+          Effect.andThen(Effect.logWarning("sail-boatd is not running", { cause: exit.cause })),
+        );
+      }),
     );
 
   /** Starts the daemon unless one is starting or running; the result waits for it to be ready. */
