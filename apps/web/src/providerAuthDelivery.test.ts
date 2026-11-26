@@ -168,6 +168,18 @@ describe("Codex sign-in delivery", () => {
     expect(vi.mocked(runAtomCommand).mock.calls).toEqual([completed()]);
   });
 
+  it("sends no code when its environment connects after the sign-in expired", () => {
+    connect("connecting");
+    openTab(page);
+    rememberProviderAuthSignIn(signIn);
+    openTab(delivery());
+    startProviderAuthDelivery();
+
+    vi.setSystemTime(Date.now() + 10 * 60_000);
+    connect("connected");
+    expect(runAtomCommand).not.toHaveBeenCalled();
+  });
+
   it("stops waiting for its environment when the sign-in expires", () => {
     connect("connecting");
     openTab(page);

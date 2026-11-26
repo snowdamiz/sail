@@ -134,12 +134,15 @@ describe("resolveThreadReferenceCopyTarget", () => {
         title: "Work item",
         linkOrigin: undefined,
       });
-      const pasted = threadLinkContextReferences(target!.value, [], (ref) =>
-        ref.threadId === threadId ? "Work item" : undefined,
-      );
-      expect(pasted.records).toEqual([
-        expect.objectContaining({ kind: "thread", ...threadRef, title: "Work item" }),
-      ]);
+      for (const title of [
+        (ref: { threadId: string }) => (ref.threadId === threadId ? "Work item" : undefined),
+        () => undefined,
+      ]) {
+        const pasted = threadLinkContextReferences(target!.value, [], title);
+        expect(pasted.records).toEqual([
+          expect.objectContaining({ kind: "thread", ...threadRef, title: "Work item" }),
+        ]);
+      }
     },
   );
 
