@@ -124,7 +124,11 @@ const server = http.createServer((req, res) => {
     reply(res, status, payload);
   });
 });
-server.listen(0, "127.0.0.1", async () => {
+const failOnce = process.env.FAKE_BOATD_FAIL_ONCE;
+if (failOnce && require("node:fs").existsSync(failOnce)) {
+  require("node:fs").rmSync(failOnce);
+  process.stderr.write("another sail-boatd is using the data dir\\n", () => process.exit(1));
+} else server.listen(0, "127.0.0.1", async () => {
   const cli = JSON.parse(execFileSync(env.SAIL_DESKTOP_CLI, ["environment", "list", "--json"], { encoding: "utf8" }));
   const stdin = require("node:fs").fstatSync(0);
   const stdinIsPipe = stdin.isFIFO() || stdin.isSocket();
@@ -334,6 +338,22 @@ describe("BoatSupervisor", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.live("retries a boot start that finds the data dir still held", () =>
+    Effect.gen(function* () {
+      const { reports, saveBoatState, supervisor } = yield* setup;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const marker = `${yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-boat-fail-" })}/once`;
+      yield* fileSystem.writeFileString(marker, "");
+      yield* saveBoatState({ machines: [{ name: "m1" }] });
+
+      const report = yield* Queue.take(reports).pipe(
+        Effect.provide(supervisor(undefined, { FAKE_BOATD_FAIL_ONCE: marker })),
+      );
+
+      assert.equal(report.event, "started", "the reaper must run without anyone opening /boats");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.live("starts sail-boatd at boot, with no Boats call, when state.json has a machine", () =>
     Effect.gen(function* () {
       const { reports, saveBoatState, supervisor } = yield* setup;
@@ -488,9 +508,15 @@ describe("BoatSupervisor", () => {
           _tag: "status",
           status: {
             phase: "error",
-            error: "sail-boatd exited unexpectedly (exit code 3): boatd lost its sandbox",
+            error: "sail-boatd exited unexpectedly (exit code 3)",
           },
         });
+        const joinedDuringRestart = yield* boats.events.pipe(Stream.take(2), Stream.runCollect);
+        assert.deepEqual(
+          joinedDuringRestart.map((event) => event._tag),
+          ["status", "status"],
+          "a client joining after the crash never sees the dead daemon's state",
+        );
         const restarted = yield* boats.invoke({ command: "get_state" });
         const second = yield* Queue.take(reports);
         assert.notEqual(second.pid, first.pid);
