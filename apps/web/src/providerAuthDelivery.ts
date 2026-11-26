@@ -13,8 +13,6 @@ import { serverEnvironment } from "./state/server";
 
 type ProviderAuthDelivery = NonNullable<ReturnType<typeof readCodexAuthDelivery>>;
 
-// Origin-scoped, so every tab of this browser at this address shares it, and no other site can
-// write it. A server that asks for a code without the user starting a sign-in here finds nothing.
 const SIGN_INS_KEY = "t3code:codex-sign-ins:v1";
 const SIGN_IN_LIFETIME_MS = 10 * 60_000;
 const CodexSignIn = Schema.Struct({
@@ -29,7 +27,6 @@ const CodexSignIns = Schema.Array(CodexSignIn);
 const sameFlow = (a: Omit<CodexSignIn, "expiresAt">, b: Omit<CodexSignIn, "expiresAt">) =>
   a.environmentId === b.environmentId && a.instanceId === b.instanceId && a.flowId === b.flowId;
 
-/** Lets this browser's tabs at this address accept the code for a sign-in it started. */
 export function rememberProviderAuthSignIn(signIn: Omit<CodexSignIn, "expiresAt">): void {
   const now = Date.now();
   writeLocalStorageValue(
@@ -59,10 +56,8 @@ function takeSignIn(delivery: ProviderAuthDelivery): CodexSignIn | undefined {
 }
 
 /**
- * Remove the code before the router, tracing, or welcome screen sees the incoming address, then
- * hand it to its environment once that environment connects, if this browser started that sign-in
- * and it has not expired. Hosted web receives only the one-time code; the environment verifies and
- * stores tokens.
+ * Run before the router, tracing, or welcome screen sees the incoming address, which may carry a
+ * one-time sign-in code.
  */
 export function startProviderAuthDelivery(): void {
   if (!window.location.hash.startsWith("#codex-auth=")) return;

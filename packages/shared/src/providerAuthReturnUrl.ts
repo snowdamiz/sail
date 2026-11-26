@@ -1,6 +1,5 @@
 import { parseUrl } from "./url.ts";
 
-// At any port. 0.0.0.0 is the address a server binds to, not one a page is served at.
 const THIS_COMPUTER = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 // A delivery carries the one-time OAuth code in the URL fragment, so plain HTTP never qualifies.

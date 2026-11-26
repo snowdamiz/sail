@@ -155,14 +155,11 @@ export function guessThreadLinkRef(
   return null;
 }
 
-// Ids that use only these stay readable as written, as agents see them; any other id is escaped
-// whole, and its decoded candidate names it.
-const WRITTEN_AS_IS = /^[\w\-.~:@!$&'()*+,;=%/]+$/;
+const linkSafeThreadId = (threadId: string) =>
+  /^[\w\-.~:@!$&'()*+,;=%/]+$/.test(threadId) ? threadId : escapedSegment(threadId);
 
 function threadLinkHref(link: ThreadLink): string {
-  const threadId = WRITTEN_AS_IS.test(link.threadId)
-    ? link.threadId
-    : escapedSegment(link.threadId);
+  const threadId = linkSafeThreadId(link.threadId);
   return link.environmentId === null
     ? `${V1_PREFIX}${threadId}`
     : `${V2_PREFIX}${escapedSegment(link.environmentId)}/${threadId}`;
