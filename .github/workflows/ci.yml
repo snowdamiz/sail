@@ -131,6 +131,8 @@ jobs:
             scripts/lib/desktop-external-packages.ts scripts/lib/cli-executable-imports.ts scripts/lib/linux-arm64-sea.ts \
             scripts/lib/cached-tests.ts scripts/lib/third-party-licenses.ts infra/task-cache/src/remoteCache.ts \
             third-party-licenses.config.json third-party-licenses/spdx \
+            native/libghostty-vt/LICENSE apps/web/src/terminal/ghostty/fonts/LICENSE \
+            apps/web/src/components/files/office/LICENSE.opencode \
             apps/server/scripts/cli.ts apps/server/scripts/cliErrors.ts \
             apps/server/src/testUtils/weightedShardSequencer.ts apps/server/src/testUtils/shardWeights.json \
             vite.config.ts apps/server/vite.config.ts apps/web/vite.config.ts apps/web/vite apps/web/src/branding.logic.ts \

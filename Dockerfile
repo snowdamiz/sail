@@ -83,7 +83,7 @@ if [ "$(/usr/bin/id -u)" = 0 ]; then
   exec /usr/bin/setpriv --reuid=sail --regid=sail --init-groups --no-new-privs -- /usr/local/bin/as-sail "$@"
 fi
 . /etc/sail/env.sh
-exec "$@"
+exec /usr/bin/setpriv --no-new-privs -- "$@"
 EOF
 COPY --chmod=0755 <<'EOF' /usr/local/bin/t3
 #!/bin/sh

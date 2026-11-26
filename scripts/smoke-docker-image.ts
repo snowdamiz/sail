@@ -50,6 +50,12 @@ const PLANTED_LOG = "/data/home/.sail-smoke-planted";
 const AGENT_CLIS = ["claude", "codex", "opencode"];
 /** The server runs the agent CLIs itself at startup, so root's calls carry an argument of their own. */
 const ROOT_MARKER = "--sail-smoke-from-root";
+const SAIL_MARKER = "--sail-smoke-from-sail";
+const NO_NEW_PRIVS = /^NoNewPrivs:[ \t]+1$/m;
+const T3_PRIVILEGE_PROBE = `--import=data:text/javascript,${encodeURIComponent(
+  `import { readFileSync } from "node:fs";
+  process.stderr.write(readFileSync("/proc/self/status", "utf8").match(/^NoNewPrivs:.*$/m)[0] + "\\n");`,
+)}`;
 const NATIVE_EXTERNALS_PROBE = `
 const { FileFinder } = await import("@ff-labs/fff-node");
 const finder = FileFinder.create({ basePath: "/opt/sail/server" });
@@ -206,6 +212,7 @@ const startContainer = Effect.fn("smoke-docker-image.startContainer")(function* 
   readonly image: string;
   readonly platform: Option.Option<string>;
   readonly preownedHome?: string;
+  readonly user?: "sail";
 }) {
   const suffix = `${yield* Clock.currentTimeMillis}-${yield* Random.nextIntBetween(0, 1e6)}`;
   const volume = yield* Effect.acquireRelease(
@@ -216,7 +223,7 @@ const startContainer = Effect.fn("smoke-docker-image.startContainer")(function* 
     onNone: () => [],
     onSome: (p) => ["--platform", p],
   });
-  if (input.preownedHome !== undefined) {
+  if (input.preownedHome !== undefined || input.user === "sail") {
     yield* docker([
       "run",
       "--rm",
@@ -238,6 +245,7 @@ const startContainer = Effect.fn("smoke-docker-image.startContainer")(function* 
       "--name",
       `sail-smoke-${suffix}`,
       ...platformArgs,
+      ...(input.user === undefined ? [] : ["--user", input.user]),
       ...(input.preownedHome === undefined ? [] : ["--env", `SAIL_HOME=${input.preownedHome}`]),
       "--publish",
       "127.0.0.1::8080",
@@ -247,7 +255,7 @@ const startContainer = Effect.fn("smoke-docker-image.startContainer")(function* 
     ]).pipe(Effect.map((out) => out.stdout)),
     (container) => docker(["rm", "--force", "--volumes", container]).pipe(Effect.ignore),
   );
-  return { id, startedAt };
+  return { id, startedAt, volume, platformArgs };
 });
 
 const publishedOrigin = Effect.fn("smoke-docker-image.publishedOrigin")(function* (id: string) {
@@ -319,16 +327,33 @@ const expectDataOwnership = Effect.fn("smoke-docker-image.expectDataOwnership")(
 });
 
 const expectNoNewPrivs = Effect.fn("smoke-docker-image.expectNoNewPrivs")(function* (id: string) {
-  const status = (yield* docker([
-    "exec",
-    id,
-    "/usr/local/bin/as-sail",
-    "/usr/bin/grep",
-    "^NoNewPrivs:",
-    "/proc/self/status",
-  ])).stdout;
-  if (!/^NoNewPrivs:\s+1$/.test(status)) {
-    return yield* fail("privilege drop", "as-sail did not set no-new-privs");
+  for (const user of ["root", "sail"]) {
+    const asSail = yield* docker([
+      "exec",
+      "--user",
+      user,
+      id,
+      "as-sail",
+      "/usr/bin/grep",
+      "^NoNewPrivs:",
+      "/proc/self/status",
+    ]);
+    if (!NO_NEW_PRIVS.test(asSail.stdout)) {
+      return yield* fail("privilege drop", `as-sail invoked by ${user} did not set no-new-privs`);
+    }
+    const t3 = yield* docker([
+      "exec",
+      "--user",
+      user,
+      "--env",
+      `NODE_OPTIONS=${T3_PRIVILEGE_PROBE}`,
+      id,
+      "t3",
+      "--version",
+    ]);
+    if (!NO_NEW_PRIVS.test(t3.stderr)) {
+      return yield* fail("privilege drop", `t3 invoked by ${user} did not set no-new-privs`);
+    }
   }
   const pids = (yield* docker(["exec", id, "/bin/ps", "-o", "pid=", "--ppid", "1"])).stdout
     .split(/\s+/)
@@ -341,7 +366,7 @@ const expectNoNewPrivs = Effect.fn("smoke-docker-image.expectNoNewPrivs")(functi
       "^NoNewPrivs:",
       `/proc/${pid}/status`,
     ])).stdout;
-    if (!/^NoNewPrivs:\s+1$/.test(serverStatus)) {
+    if (!NO_NEW_PRIVS.test(serverStatus)) {
       return yield* fail("privilege drop", `server PID ${pid} did not inherit no-new-privs`);
     }
   }
@@ -456,7 +481,7 @@ const expectRootIgnoresSailCommands = Effect.fn("smoke-docker-image.expectRootIg
     ).join(" && ");
     const plantAgents = AGENT_CLIS.map(
       (name) =>
-        `printf '#!/bin/sh\\necho "$(/usr/bin/id -u) $0 $*" >> ${PLANTED_LOG}\\n' > /data/home/.local/bin/${name} && chmod +x /data/home/.local/bin/${name}`,
+        `printf '#!/bin/sh\\necho "$(/usr/bin/id -u) $0 $*" >> ${PLANTED_LOG}\\ncase "$1" in ${ROOT_MARKER}|${SAIL_MARKER}) /usr/bin/grep "^NoNewPrivs:" /proc/self/status;; esac\\n' > /data/home/.local/bin/${name} && chmod +x /data/home/.local/bin/${name}`,
     ).join(" && ");
     yield* docker(["exec", "--user", "sail", id, "/bin/sh", "-c", `${plant} && ${plantAgents}`]);
     yield* docker(["restart", "-t", "30", id]);
@@ -465,7 +490,20 @@ const expectRootIgnoresSailCommands = Effect.fn("smoke-docker-image.expectRootIg
     yield* docker(["exec", id, "id", "-u"]);
     yield* docker(["exec", id, "t3", "--version"]);
     yield* docker(["exec", id, "sh", "-lc", "id -u"]);
-    for (const name of AGENT_CLIS) yield* docker(["exec", id, name, ROOT_MARKER]);
+    for (const name of AGENT_CLIS) {
+      for (const { user, marker } of [
+        { user: "root", marker: ROOT_MARKER },
+        { user: "sail", marker: SAIL_MARKER },
+      ]) {
+        const status = (yield* docker(["exec", "--user", user, id, name, marker])).stdout;
+        if (!NO_NEW_PRIVS.test(status)) {
+          return yield* fail(
+            "privilege drop",
+            `${name} invoked by ${user} did not set no-new-privs`,
+          );
+        }
+      }
+    }
     yield* docker([
       "exec",
       id,
@@ -640,11 +678,10 @@ const smokePreownedVolume = Effect.fn("smoke-docker-image.smokePreownedVolume")(
   input: SmokeInput,
 ) {
   const preownedHome = "/data/home/sail";
-  const { id } = yield* startContainer({ ...input, preownedHome });
+  const { id, volume, platformArgs } = yield* startContainer({ ...input, preownedHome });
   const expectReady = Effect.gen(function* () {
     yield* waitForApp(id, input.timeoutSeconds);
     yield* expectServerRunsAsSail(id);
-    yield* expectDataOwnership(id, preownedHome);
     yield* docker([
       "exec",
       "--user",
@@ -657,14 +694,90 @@ const smokePreownedVolume = Effect.fn("smoke-docker-image.smokePreownedVolume")(
   });
   yield* Effect.gen(function* () {
     yield* expectReady;
+    yield* expectDataOwnership(id, preownedHome);
     const marker = `${preownedHome}/.smoke-persistence`;
-    yield* docker(["exec", "--user", "sail", id, "/usr/bin/touch", marker]);
+    yield* docker([
+      "exec",
+      id,
+      "/usr/bin/install",
+      "-o",
+      "2000",
+      "-g",
+      "1000",
+      "-m",
+      "0640",
+      "/dev/null",
+      marker,
+    ]);
+    yield* docker(["exec", id, "/usr/bin/chown", "2000:1000", preownedHome]);
+    yield* docker(["exec", id, "/usr/bin/chmod", "0770", preownedHome]);
     yield* docker(["restart", "-t", "30", id]);
     yield* expectReady;
-    yield* docker(["exec", "--user", "sail", id, "/usr/bin/test", "-f", marker]);
+    const metadata = (yield* docker([
+      "exec",
+      id,
+      "/usr/bin/stat",
+      "-c",
+      "%u:%g %a",
+      marker,
+      preownedHome,
+    ])).stdout;
+    if (metadata !== "2000:1000 640\n2000:1000 770") {
+      return yield* fail(
+        "volume metadata",
+        `restart changed the file or directory metadata: ${metadata.replace("\n", ", ")}`,
+      );
+    }
     yield* Console.log(
-      "A sail-owned volume with nested SAIL_HOME booted and retained its files across restart.",
+      "A volume with nested SAIL_HOME preserved existing file ownership and directory metadata across restart.",
     );
+
+    const target = "/data/.smoke-root-owned";
+    yield* docker(["exec", id, "/usr/bin/install", "-d", "-m", "0755", target]);
+    yield* docker(["exec", id, "/usr/bin/mv", preownedHome, `${preownedHome}.saved`]);
+    yield* docker(["exec", id, "/usr/bin/ln", "-s", target, preownedHome]);
+    yield* docker(["restart", "-t", "30", id]);
+    const exit = (yield* docker(["wait", id]).pipe(
+      Effect.timeout(`${input.timeoutSeconds} seconds`),
+    )).stdout;
+    if (exit !== "1") {
+      return yield* fail(
+        "volume symlink",
+        `expected startup to refuse the root-owned state directory (exit ${exit})`,
+      );
+    }
+    const targetMetadata = (yield* docker([
+      "run",
+      "--rm",
+      ...platformArgs,
+      "--volume",
+      `${volume}:/data:ro`,
+      "--entrypoint",
+      "/usr/bin/stat",
+      input.image,
+      "-c",
+      "%u:%g %a",
+      target,
+    ])).stdout;
+    if (targetMetadata !== "0:0 755") {
+      return yield* fail(
+        "volume symlink",
+        `restart changed the target metadata to ${targetMetadata}`,
+      );
+    }
+    yield* Console.log(
+      "Startup refused the symlink to a root-owned SAIL_HOME and preserved its target metadata.",
+    );
+  }).pipe(Effect.tapError(() => logContainerFailure(id, [])));
+}, Effect.scoped);
+
+const smokeSailUser = Effect.fn("smoke-docker-image.smokeSailUser")(function* (input: SmokeInput) {
+  const { id } = yield* startContainer({ ...input, user: "sail" });
+  yield* Effect.gen(function* () {
+    yield* waitForApp(id, input.timeoutSeconds);
+    yield* expectServerRunsAsSail(id);
+    yield* expectNoNewPrivs(id);
+    yield* Console.log("The server retained no-new-privs when launched with --user sail.");
   }).pipe(Effect.tapError(() => logContainerFailure(id, [])));
 }, Effect.scoped);
 
@@ -673,6 +786,7 @@ export const smokeDockerImage = Effect.fn("smokeDockerImage")(function* (input: 
   yield* expectCleanRuntime(input.image, input.platform);
   yield* smokeFreshVolume(input);
   yield* smokePreownedVolume(input);
+  yield* smokeSailUser(input);
   yield* Console.log(`Smoke passed for ${input.image}.`);
 });
 
