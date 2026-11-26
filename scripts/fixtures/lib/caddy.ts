@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off globalDate:off - Local stand-ins drive the Docker CLI directly.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off extendsNativeError:off - Local stand-ins are plain Node CLIs that drive Docker directly.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
@@ -315,6 +315,8 @@ function served(): Served | undefined {
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+export class PublicationRollbackRefused extends Error {}
+
 const isNoSuch = (error: unknown) => error instanceof DockerError && /no such/i.test(error.stderr);
 
 /** Another revision may have started Caddy from another directory; that one is left alone. */
@@ -426,7 +428,7 @@ function reconcile(dir: string, home: string, retry = true): void {
         legacyLock = holdLegacyReloadLock(dir, seen.id);
         if (!legacyLock) {
           const current = served();
-          if (!current?.running || current.id !== seen.id) {
+          if (!current || current.id !== seen.id) {
             if (retry) return reconcile(dir, home, false);
             throw new Error(`${caddyContainer()} changed during legacy reload lock acquisition`);
           }
@@ -584,22 +586,13 @@ exit 1`,
   child.on("error", () => {});
   child.stdin.on("error", () => {});
   const release = () => {
-    child.stdin.end("release\n");
     try {
       if (NodeFS.existsSync(cidFile)) {
         const helper = NodeFS.readFileSync(cidFile, "utf8").trim();
-        if (helper) {
-          try {
-            docker(["rm", "--force", helper], { timeoutMs: 30_000 });
-          } catch (error) {
-            if (
-              !(error instanceof DockerError && /no such|removal .*in progress/i.test(error.stderr))
-            )
-              throw error;
-          }
-        }
+        if (helper) removeLockHelper(helper);
       }
     } finally {
+      child.stdin.end("release\n");
       NodeFS.rmSync(scratch, { recursive: true, force: true });
     }
   };
@@ -611,6 +604,26 @@ exit 1`,
   }
   release();
   return undefined;
+}
+
+function removeLockHelper(id: string): void {
+  try {
+    docker(["rm", "--force", id], { timeoutMs: 30_000 });
+    return;
+  } catch (error) {
+    if (isNoSuch(error)) return;
+    if (!(error instanceof DockerError && /removal .*in progress/i.test(error.stderr))) throw error;
+  }
+  for (const deadline = Date.now() + 30_000; Date.now() < deadline;) {
+    try {
+      docker(["container", "inspect", "--format", "{{.Id}}", id], { timeoutMs: 10_000 });
+    } catch (error) {
+      if (isNoSuch(error)) return;
+      throw error;
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+  }
+  throw new Error(`Caddy reload lock helper ${id} was not removed`);
 }
 
 function waitForAdmin(): void {
@@ -730,7 +743,8 @@ function publishLocked(site: Site, dir: string, file: string): string {
         if (readSite(dir, file) !== body) return;
         if (!served()?.running) ready(dir, site.home);
         const running = served();
-        if (!running?.running) throw new Error(`${caddyContainer()} is not ready for rollback`);
+        if (!running?.running)
+          throw new Error(`${caddyContainer()} is not ready for rollback`, { cause: error });
         refuseAnotherDirectory(running, dir);
         changeAndReload(
           file,
@@ -739,9 +753,10 @@ function publishLocked(site: Site, dir: string, file: string): string {
         );
       });
     } catch (rollbackError) {
-      throw new Error(`${errorText(error)}; rollback refused: ${errorText(rollbackError)}`, {
-        cause: error,
-      });
+      throw new PublicationRollbackRefused(
+        `${errorText(error)}; rollback refused: ${errorText(rollbackError)}`,
+        { cause: error },
+      );
     }
     throw error;
   }

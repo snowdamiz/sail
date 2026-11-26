@@ -24,10 +24,16 @@ import {
   isOlderCaddyfile,
   publicUrl,
   publishSite,
-  removeSite,
   rootCertPath,
 } from "./caddy.ts";
-import { docker, FIXTURE_LABEL, hasDocker, NETWORK, DOCKER_TEST_TIMEOUT_MS } from "./docker.ts";
+import {
+  docker,
+  dockerSucceeds,
+  FIXTURE_LABEL,
+  hasDocker,
+  NETWORK,
+  DOCKER_TEST_TIMEOUT_MS,
+} from "./docker.ts";
 import { fixturesRoot, takeLock } from "./state.ts";
 
 // oxlint-disable-next-line t3code/no-test-timeout-or-unreasoned-skip -- Docker work on the VM every lane shares, not a hidden wait.
@@ -72,11 +78,23 @@ echo waiting
 read -r go`;
 
 /** A test's own Caddy, with its data volumes and its directory. */
+function removeTestContainer(name: string): void {
+  if (!dockerSucceeds(["container", "inspect", name])) return;
+  const id = docker(["container", "inspect", "--format", "{{.Id}}", name]).trim();
+  docker(["rm", "--force", id]);
+}
+
 function removeInstance(container: string, dir: string): void {
-  docker(["rm", "--force", container]);
-  const volumes = docker(["volume", "ls", "-q", "--filter", `name=^${container}-data-`]).trim();
-  if (volumes) docker(["volume", "rm", "--force", ...volumes.split("\n")]);
-  NodeFS.rmSync(dir, { recursive: true, force: true });
+  try {
+    removeTestContainer(container);
+  } finally {
+    try {
+      const volumes = docker(["volume", "ls", "-q", "--filter", `name=^${container}-data-`]).trim();
+      if (volumes) docker(["volume", "rm", "--force", ...volumes.split("\n")]);
+    } finally {
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+    }
+  }
 }
 
 /** An older lane's reload: holds the lock inside the container, until told, once a replacer looks. */
@@ -447,9 +465,11 @@ describe.skipIf(!hasDocker())("fixture Caddy", () => {
 
   afterAll(() => {
     try {
-      for (const id of ids) removeSite(id);
-      docker(["rm", "--force", upstream]);
-      removeInstance(caddyContainer(), caddyDir());
+      try {
+        removeTestContainer(upstream);
+      } finally {
+        removeInstance(caddyContainer(), caddyDir());
+      }
     } finally {
       vi.unstubAllEnvs();
     }
@@ -613,8 +633,11 @@ describe.skipIf(!hasDocker())("a Caddy that two homes share", () => {
   });
 
   afterAll(() => {
-    docker(["rm", "--force", backend]);
-    removeInstance(container, dir);
+    try {
+      removeTestContainer(backend);
+    } finally {
+      removeInstance(container, dir);
+    }
   });
 
   it("keeps the root other homes trust, and refuses to replace a Caddy they serve through", async () => {
@@ -846,6 +869,33 @@ assert.ok(scans >= 3);`);
     }
   });
 
+  it("defers a stopped Caddy's upgrade if the old volume lock cannot be obtained", async () => {
+    await ensureFor("a");
+    const before = running().Id;
+    docker(["stop", before]);
+    NodeFS.writeFileSync(NodePath.join(dir, "ca", "version"), "2\n");
+    const shim = NodePath.join(scratch, `hold-refused-${run}`);
+    NodeFS.mkdirSync(shim, { recursive: true });
+    const realDocker = NodeChildProcess.execFileSync("sh", ["-c", "command -v docker"], {
+      encoding: "utf8",
+    }).trim();
+    NodeFS.writeFileSync(
+      NodePath.join(shim, "docker"),
+      `#!/bin/sh
+case "$*" in *"--volumes-from"*) echo "injected lock helper failure" >&2; exit 1;; esac
+exec ${JSON.stringify(realDocker)} "$@"
+`,
+      { mode: 0o755 },
+    );
+    await inChild(`import { ensureCaddy } from ${CADDY_TS}; ensureCaddy("b");`, {
+      ...env,
+      PATH: `${shim}${NodePath.delimiter}${env.PATH ?? ""}`,
+    });
+    expect(running().Id).toBe(before);
+    expect(docker(["inspect", "--format", "{{.State.Running}}", before]).trim()).toBe("true");
+    expect(NodeFS.readFileSync(NodePath.join(dir, "ca", "version"), "utf8")).toBe("2\n");
+  });
+
   it("rebuilds the CA if an already stopped Caddy has lost its root key", async () => {
     await ensureFor("a");
     const before = running().Id;
@@ -1015,6 +1065,7 @@ import { publishSite } from ${CADDY_TS};`);
         expect(docker(["inspect", "--format", "{{.State.Running}}", container]).trim()).toBe(
           "true",
         );
+        await servesWith(keepRoot("root-rollback"), "rollback");
       } else if (change === "remove") expect(NodeFS.existsSync(file)).toBe(false);
       else if (change === "legacy-predecessor")
         expect(NodeFS.readFileSync(file, "utf8")).toBe(legacy);

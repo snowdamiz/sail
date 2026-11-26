@@ -467,6 +467,7 @@ primary_region = "iad" # comment
       `${app}-l`,
       `${app}-m`,
       `${app}-n`,
+      `${app}-p`,
       `${app}-q`,
       `${app}-r`,
       `${app}-s`,
@@ -1523,6 +1524,27 @@ syncBuiltinESMExports();`,
       status: 200,
       body: blue,
     });
+    const address = docker([
+      "inspect",
+      "--format",
+      `{{(index .NetworkSettings.Networks "${NETWORK}").IPAddress}}`,
+      live,
+    ]).trim();
+    expect(address).not.toBe("");
+    const site = NodePath.join(caddyDir(), "sites", `fly-${swapped.name}.caddy`);
+    const repair = NodePath.join(home, "apps", `${swapped.name}.json.route-repair`);
+    NodeFS.writeFileSync(repair, "");
+    publishSite({
+      id: `fly-${swapped.name}`,
+      home: homeId(home),
+      container: live,
+      host: `${swapped.name}.localtest.me`,
+      upstream: `${address}:8080`,
+    });
+    docker(["rm", "--force", "--volumes", live]);
+    expect(fly(swapped.args("bluegreen", ["--wait-timeout", "2s"]), {}, root).status).toBe(1);
+    expect(NodeFS.existsSync(site), "a marked route with no survivor is removed").toBe(false);
+    expect(NodeFS.existsSync(repair)).toBe(false);
     ok(["apps", "destroy", swapped.name, "--yes"]);
   });
 
@@ -1586,6 +1608,46 @@ syncBuiltinESMExports();`,
     await expect(get(`${swapped.site()}/machine`)).resolves.toMatchObject({
       status: 200,
       body: serving,
+    });
+    ok(["apps", "destroy", swapped.name, "--yes"]);
+  });
+
+  it("preserves a candidate whose published route could not be rolled back", async () => {
+    const swapped = blueGreenApp(`${app}-p`);
+    ok(["apps", "create", swapped.name]);
+    swapped.configure("/", 8080);
+    expect(fly(swapped.args(), {}, root)).toMatchObject({ status: 0 });
+    const blue = swapped.live().serving;
+    docker(["rm", "--force", "--volumes", `sail-fly-${swapped.name}`]);
+    const hook = NodePath.join(root, "refuse-certificate-rollback.mjs");
+    NodeFS.writeFileSync(
+      hook,
+      `import cp from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+const call = cp.spawnSync;
+const now = Date.now;
+let advanced = false;
+cp.spawnSync = (command, args, ...rest) => {
+  if (command === process.execPath && args[0] === "-e" && args[1].includes('require("node:tls").connect')) {
+    advanced = true;
+    return {status: 1, stderr: "injected certificate failure", stdout: ""};
+  }
+  if (advanced && command === "docker" && args[0] === "exec" && args.includes("flock") && args.includes("put") && args.at(-1))
+    return {status: 1, stderr: "injected rollback refusal", stdout: ""};
+  return call(command, args, ...rest);
+};
+Date.now = () => now() + (advanced ? 120000 : 0);
+syncBuiltinESMExports();`,
+    );
+    const failed = fly(swapped.args(), { NODE_OPTIONS: `--import=${hook}` }, root);
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toContain("rollback refused");
+    const green = swapped.live().serving;
+    expect(green).not.toBe(blue);
+    expect(swapped.live()).toEqual({ machines: [blue], serving: green, containers: 1 });
+    await expect(get(`${swapped.site()}/machine`)).resolves.toMatchObject({
+      status: 200,
+      body: green,
     });
     ok(["apps", "destroy", swapped.name, "--yes"]);
   });

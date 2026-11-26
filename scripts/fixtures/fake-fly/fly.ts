@@ -9,6 +9,7 @@ import {
   ensureCaddy,
   isReservedHost,
   publicUrl,
+  PublicationRollbackRefused,
   publishSite,
   removeSite,
 } from "../lib/caddy.ts";
@@ -1473,6 +1474,7 @@ function settleContainers(
     if (needsRename) docker(["rename", kept, live]);
     if (temporaryRoute) routeMachine(chosen, live);
   } else {
+    if (NodeFS.existsSync(routeRepairFile(app))) removeSite(siteId(app));
     for (const name of held) destroyMachineContainer(name);
   }
   for (const stale of records) if (stale.id !== chosen?.id) remove("machines", stale.id);
@@ -1532,7 +1534,7 @@ function replaceBlueWithGreen(
     docker(["rename", greenName, live]);
     steps.route(green);
   } catch (error) {
-    rollBack(true);
+    if (!(error instanceof PublicationRollbackRefused)) rollBack(true);
     throw error instanceof Error
       ? new FlyError(`${error.message}\nfailed to mark green machines as ready`)
       : error;
