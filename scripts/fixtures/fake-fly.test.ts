@@ -376,6 +376,7 @@ primary_region = "iad" # comment
       `${app}-l`,
       `${app}-s`,
       `${app}-t`,
+      `${app}-y`,
     ]) {
       fly(["apps", "destroy", name, "--yes"]);
       flyElsewhere(["apps", "destroy", name, "--yes"]);
@@ -1134,6 +1135,43 @@ primary_region = "iad" # comment
     expect(exists("container", `sail-fly-${slashed}`)).toBe(false);
     expect(NodeFS.existsSync(site)).toBe(false);
     expect(NodeFS.existsSync(reservation)).toBe(false);
+  });
+
+  it("treats a home spelled through a symlink and by its real path as one home", () => {
+    const linked = `${app}-y`;
+    const link = `${root}-link`;
+    NodeFS.symlinkSync(root, link);
+    try {
+      const spelled = NodePath.join(link, "sym-home");
+      const real = NodePath.join(NodeFS.realpathSync(root), "sym-home");
+      const site = NodePath.join(caddyDir(), "sites", `fly-${linked}.caddy`);
+      const reservation = NodePath.join(fixturesRoot(), "names", "fly-app", linked);
+      expect(run(["apps", "create", linked], { FAKE_FLY_HOME: spelled }, root).status).toBe(0);
+      const deployed = run(
+        ["deploy", "-a", linked, "--image", image, "--local-only", "--ha=false"],
+        { FAKE_FLY_HOME: spelled },
+        root,
+      );
+      expect(deployed.status, deployed.stderr).toBe(0);
+
+      const record = NodePath.join(otherHome, "apps", `${linked}.json`);
+      NodeFS.mkdirSync(NodePath.dirname(record), { recursive: true });
+      NodeFS.copyFileSync(NodePath.join(real, "apps", `${linked}.json`), record);
+      const refused = flyElsewhere(["apps", "destroy", linked, "--yes"]);
+      expect(refused.status, "a record whose name another home holds").toBe(1);
+      expect(refused.stderr).toContain("another fake fly home");
+      expect(NodeFS.existsSync(record)).toBe(true);
+      NodeFS.rmSync(record);
+      expect(exists("container", `sail-fly-${linked}`)).toBe(true);
+
+      const destroyed = run(["apps", "destroy", linked, "--yes"], { FAKE_FLY_HOME: real }, root);
+      expect(destroyed.status, destroyed.stderr).toBe(0);
+      expect(exists("container", `sail-fly-${linked}`)).toBe(false);
+      expect(NodeFS.existsSync(site)).toBe(false);
+      expect(NodeFS.existsSync(reservation)).toBe(false);
+    } finally {
+      NodeFS.rmSync(link);
+    }
   });
 
   it("destroys the app with its container, volumes, snapshots, and site", async () => {

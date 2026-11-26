@@ -6,7 +6,7 @@ import * as NodeHttp from "node:http";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-import { CADDY_CONTAINER, caddyDir } from "../lib/caddy.ts";
+import { caddyContainer, caddyDir } from "../lib/caddy.ts";
 import { docker, DockerError, NETWORK } from "../lib/docker.ts";
 import { standInHome } from "../lib/state.ts";
 
@@ -182,7 +182,7 @@ function caddyAddress(): string {
         "inspect",
         "--format",
         `{{(index .NetworkSettings.Networks "${NETWORK}").IPAddress}}`,
-        CADDY_CONTAINER,
+        caddyContainer(),
       ],
       { timeoutMs: 30_000 },
     ).trim();

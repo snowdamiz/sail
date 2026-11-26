@@ -4,7 +4,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import {
-  CADDY_CONTAINER,
+  caddyContainer,
   DOMAIN,
   ensureCaddy,
   isReservedHost,
@@ -14,6 +14,7 @@ import {
 } from "../lib/caddy.ts";
 import { docker, DockerError, exists, FIXTURE_LABEL, NETWORK } from "../lib/docker.ts";
 import {
+  canonicalPath,
   createJsonExclusive,
   homeId,
   logCall,
@@ -269,7 +270,11 @@ function refuseForeign(kind: "container" | "volume", name: string): void {
     throw new FlyError(`${kind} ${name} belongs to another fake fly home; refusing to touch it`);
 }
 
-const ownsSite = (app: string) => (nameOwner(APP_NAMES, app) ?? HOME) === HOME;
+/** Reservations made before homes were canonical hold another spelling of the same path. */
+function nameIsMine(app: string): boolean {
+  const owner = nameOwner(APP_NAMES, app);
+  return owner === undefined || canonicalPath(owner) === HOME;
+}
 
 interface LoadedConfig {
   readonly file: string | undefined;
@@ -829,6 +834,8 @@ function appsList(ctx: Ctx): number {
 }
 
 function destroyApp(name: string): void {
+  if (!nameIsMine(name))
+    throw new FlyError(`app ${name} belongs to another fake fly home; refusing to destroy it`);
   const machine = machineOf(name);
   destroyMachineContainer(name);
   removeBuiltImages(name, machine?.builtTag);
@@ -841,7 +848,7 @@ function destroyApp(name: string): void {
     removeDockerVolume(snapshotName(snapshot.id));
     remove("snapshots", snapshot.id);
   }
-  if (ownsSite(name)) removeSite(siteId(name));
+  removeSite(siteId(name));
   remove("apps", name);
   releaseName(APP_NAMES, name, HOME);
 }
@@ -1271,7 +1278,7 @@ function healthProbes(appName: string, http: HttpService | undefined): ReadonlyA
 
 function probePasses(probe: Probe): boolean {
   try {
-    docker(["exec", CADDY_CONTAINER, "wget", "-q", "-O", "/dev/null", ...probe.wget]);
+    docker(["exec", caddyContainer(), "wget", "-q", "-O", "/dev/null", ...probe.wget]);
     return true;
   } catch (error) {
     const answered = error instanceof DockerError && /server returned error/.test(error.stderr);
@@ -1395,7 +1402,7 @@ function deploy(ctx: Ctx): number {
   const releaseVersion = app.releaseVersion + 1;
   const memory = config.memoryMb ?? 2048;
   const port = http?.internalPort ?? 8080;
-  ensureCaddy();
+  ensureCaddy(HOME_ID);
   const url = publicUrl(appHost(appName));
 
   out(`Watch your deployment at https://fly.io/apps/${appName}/monitoring\n\n`);
@@ -1525,6 +1532,7 @@ function deploy(ctx: Ctx): number {
   } satisfies AppRecord);
   publishSite({
     id: siteId(appName),
+    home: HOME_ID,
     host: appHost(appName),
     upstream: `${containerName(appName)}:${port}`,
     plainHttp: http !== undefined && !http.forceHttps,
@@ -1906,7 +1914,7 @@ function statusJson(app: AppRecord) {
     Status: status,
     Hostname: appHost(app.name),
     Version: app.releaseVersion,
-    AppURL: exists("container", CADDY_CONTAINER)
+    AppURL: exists("container", caddyContainer())
       ? publicUrl(appHost(app.name))
       : `https://${appHost(app.name)}`,
     Organization: { ID, InternalNumericID, Name, Slug, RawSlug, PaidPlan },

@@ -3,7 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
-import { lockHolder, readJson, releaseLock, takeLock, writeJsonAtomic } from "../lib/state.ts";
+import { readJson, takeLock, writeJsonAtomic } from "../lib/state.ts";
 import { parseRequest, parseRequestFile, requestFile, type RequestFile } from "./sandbox/outbox.ts";
 
 /** The argument that makes the fake `boat` run as the outbox worker. */
@@ -77,12 +77,9 @@ function entries(dir: string): ReadonlyArray<string> {
   }
 }
 
-/** The worker lock: held only by a live fake `boat`, since a dead worker's pid can be reused. */
-export const takeWorkerLock = (lock: string) => takeLock(lock, isAlive);
-
 export function outbox({ home, entry, save }: OutboxOptions): Outbox {
   const root = NodePath.join(home, "outbox");
-  const lock = NodePath.join(home, "worker.json");
+  const lock = NodePath.join(home, "worker.lock");
   const dir = (sandboxId: string) => NodePath.join(root, sandboxId);
   const sandboxes = (match: Match) =>
     match.sandboxId === undefined ? entries(root) : [match.sandboxId];
@@ -157,8 +154,9 @@ export function outbox({ home, entry, save }: OutboxOptions): Outbox {
 
   const start = (): void => {
     if (queued().length === 0) return;
-    const holder = lockHolder(lock);
-    if (holder !== undefined && isAlive(holder)) return;
+    const release = takeLock(lock);
+    if (!release) return;
+    release();
     const log = NodeFS.openSync(NodePath.join(home, "worker.log"), "a");
     try {
       const worker = NodeChildProcess.spawn(process.execPath, [entry, WORKER_ARG], {
@@ -176,11 +174,10 @@ export function outbox({ home, entry, save }: OutboxOptions): Outbox {
     }
   };
 
-  const release = () => releaseLock(lock);
-
   /** Only the lock's holder saves queued requests, so two of one name never land out of order. */
   const drainHolding = (match: Match = {}): boolean => {
-    if (!takeWorkerLock(lock)) return false;
+    const release = takeLock(lock);
+    if (!release) return false;
     try {
       drain(match);
     } finally {

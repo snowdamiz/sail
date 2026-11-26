@@ -26,12 +26,15 @@ import {
   NETWORK,
 } from "../lib/docker.ts";
 import {
-  breakStaleLock,
   createJsonExclusive,
   homeId,
+  isRunning,
   logCall,
+  processRef,
   readJson,
   standInHome,
+  thisProcess,
+  withLock,
   writeJsonAtomic,
 } from "../lib/state.ts";
 import {
@@ -41,7 +44,7 @@ import {
   waitForApproval,
 } from "./sandbox/auth.ts";
 import { type CommandSpec, type Invocation, parse, UsageError } from "./sandbox/cli.ts";
-import { isAlive, type Match, outbox, type SnapshotFailure, WORKER_ARG } from "./outbox-worker.ts";
+import { type Match, outbox, type SnapshotFailure, WORKER_ARG } from "./outbox-worker.ts";
 import {
   AUTH_LOG,
   AUTH_ORIGIN_FILE,
@@ -125,16 +128,17 @@ interface Live {
   readonly finishedAt: string;
 }
 
-/** A stop or resume in flight, which `info` and `list` report while its owner runs. */
+/** A create, stop, or resume in flight, which `info` and `list` report while its owner runs. */
 interface Transition {
   readonly id: string;
-  readonly state: "stopping" | "resuming";
+  readonly state: "starting" | "stopping" | "resuming";
   /** The earliest it may end. */
   readonly until: string;
   /** Only the command that began it, or its finisher, may end it. */
   readonly token: string;
-  /** The process that ends it: the resume itself, or the stop's finisher. */
+  /** The process that ends it: the create or resume itself, or the stop's finisher. */
   readonly pid: number;
+  readonly started: string;
 }
 
 /** One stretch the sandbox ran, which Docker forgets at its next start. */
@@ -320,7 +324,7 @@ function authOrigin(): string {
   } catch (error) {
     if (!(error instanceof DockerError)) throw error;
   }
-  ensureCaddy();
+  ensureCaddy(HOME_ID);
   return publicUrl(AUTH_HOST);
 }
 
@@ -342,11 +346,24 @@ function snapshotRecord(name: string): SnapshotRecord {
   return record;
 }
 
-/** The stop or resume in flight, while the process that ends it still runs. */
+/** The transition in flight, while the process that ends it still runs. */
 function transition(id: string): Transition | undefined {
-  const moving = readJson<Transition>(transitionFile(id));
-  return moving && isAlive(moving.pid) ? moving : undefined;
+  const moving = readTransition(id);
+  return isRunning(moving) ? moving : undefined;
 }
+
+/** A file that does not parse counts as no transition, so it can never hold a sandbox still. */
+function readTransition(id: string): Transition | undefined {
+  try {
+    return readJson<Transition>(transitionFile(id));
+  } catch (error) {
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
+  }
+}
+
+/** Every change to a transition file happens under this, so a claim never displaces a live one. */
+const withTransitions = <T>(run: () => T): T => withLock(at("transitions.lock"), run);
 
 function live(id: string): Live | null {
   let state: DockerState;
@@ -568,34 +585,40 @@ function stopContainer(id: string): void {
   docker(["stop", "--time", "30", container(id)], { timeoutMs: 60_000 });
 }
 
-/** Begins a stop or resume this process owns, unless one whose owner still runs is in flight. */
+/** Begins a transition this process owns, unless one whose owner still runs is in flight. */
 function claimTransition(
   id: string,
   state: Transition["state"],
   secs: number,
 ): Transition | undefined {
-  const file = transitionFile(id);
   const moving: Transition = {
     id,
     state,
     until: new Date(Date.now() + secs * 1000).toISOString(),
     token: NodeCrypto.randomBytes(8).toString("hex"),
-    pid: process.pid,
+    ...thisProcess(),
   };
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (createJsonExclusive(file, moving)) return moving;
-    const held = readJson<Transition>(file);
-    if (held && (isAlive(held.pid) || !breakStaleLock(file, held.pid))) return undefined;
-  }
-  return undefined;
+  return withTransitions(() => {
+    if (transition(id)) return undefined;
+    writeJsonAtomic(transitionFile(id), moving);
+    return moving;
+  });
 }
 
-function holds(moving: Transition): boolean {
-  return readJson<Transition>(transitionFile(moving.id))?.token === moving.token;
+const holds = (moving: Transition) => readTransition(moving.id)?.token === moving.token;
+
+/** Hands `moving` to the process `pid`, which must keep it counting once this one exits. */
+function handTransition(moving: Transition, pid: number): void {
+  const owner = processRef(pid);
+  withTransitions(() => {
+    if (owner && holds(moving)) writeJsonAtomic(transitionFile(moving.id), { ...moving, ...owner });
+  });
 }
 
 function endTransition(moving: Transition): void {
-  if (holds(moving)) NodeFS.rmSync(transitionFile(moving.id), { force: true });
+  withTransitions(() => {
+    if (holds(moving)) NodeFS.rmSync(transitionFile(moving.id), { force: true });
+  });
 }
 
 /**
@@ -658,7 +681,7 @@ function detach(...args: ReadonlyArray<string>): number | undefined {
 /** The rest of a stop that returned early, and only one this home began for that sandbox. */
 async function finishStop(id: string | undefined, token: string | undefined): Promise<void> {
   const { id: own } = sandboxRecord(id);
-  const moving = readJson<Transition>(transitionFile(own));
+  const moving = readTransition(own);
   if (moving?.id !== own || moving.state !== "stopping" || moving.token !== token) {
     throw new BoatError("not_found", `No stop of ${own} is in flight as ${token ?? ""}`);
   }
@@ -1018,7 +1041,7 @@ const TABLE: ReadonlyArray<Command> = [
         print({});
         return 0;
       }
-      ensureCaddy();
+      ensureCaddy(HOME_ID);
       const signedIn = account();
       if (signedIn) {
         throw new BoatError("already_signed_in", `Already signed in as ${signedIn.identifier}`);
@@ -1059,6 +1082,7 @@ const TABLE: ReadonlyArray<Command> = [
     prints: "json",
     signedIn: true,
     run: async (invocation, signedIn) => {
+      const secs = transitionSecs();
       const type = size(invocation.flags.get("type"));
       const name = text(invocation.flags.get("name"), "--name");
       const life = lifetime(invocation, signedIn.plan);
@@ -1066,7 +1090,7 @@ const TABLE: ReadonlyArray<Command> = [
       const from = invocation.flags.get("from");
       const image =
         from === undefined ? sandboxImage() : (await settledSnapshot(text(from, "--from"))).imageId;
-      ensureCaddy();
+      ensureCaddy(HOME_ID);
       const id = `bx-${NodeCrypto.randomBytes(6).toString("hex")}`;
       const record: SandboxRecord = {
         id,
@@ -1080,6 +1104,7 @@ const TABLE: ReadonlyArray<Command> = [
       prepareMounts(id);
       setDeadline(id, record.archiveAfter);
       writeJsonAtomic(sandboxFile(id), record);
+      const moving = secs > 0 ? claimTransition(id, "starting", secs) : undefined;
       try {
         runContainer(record, image);
         detach(WATCH_ARG, id);
@@ -1092,6 +1117,10 @@ const TABLE: ReadonlyArray<Command> = [
           : new BoatError("create_failed", errorMessage(error));
       }
       recordStart(id);
+      if (moving) {
+        await sleep(Date.parse(moving.until) - Date.now());
+        endTransition(moving);
+      }
       print(view(record, requireLive(record)));
       return 0;
     },
@@ -1145,10 +1174,7 @@ const TABLE: ReadonlyArray<Command> = [
         const moving = claimTransition(record.id, "stopping", secs);
         if (moving) {
           const finisher = detach(FINISH_ARG, record.id, moving.token);
-          // The finisher ends it, so it must keep counting once this command exits.
-          if (finisher !== undefined && holds(moving)) {
-            writeJsonAtomic(transitionFile(record.id), { ...moving, pid: finisher });
-          }
+          if (finisher !== undefined) handTransition(moving, finisher);
           break;
         }
       }
@@ -1402,7 +1428,13 @@ const TABLE: ReadonlyArray<Command> = [
       NodeFS.writeFileSync(at("hosts", record.id, String(port)), "");
       const host = `${record.id}-${port}.${DOMAIN}`;
       const upstream = `${container(record.id)}:${port}`;
-      const https = publishSite({ id: siteId(record.id, port), host, upstream, plainHttp: true });
+      const https = publishSite({
+        id: siteId(record.id, port),
+        home: HOME_ID,
+        host,
+        upstream,
+        plainHttp: true,
+      });
       print({ url: scheme === "http" ? publicUrl(host, "http") : https });
       return 0;
     },

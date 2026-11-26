@@ -11,8 +11,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import { AUTH_HOST, caddyDir, publicUrl, removeSite, rootCertPath } from "./lib/caddy.ts";
 import { docker, dockerSucceeds, hasDocker, DOCKER_TEST_TIMEOUT_MS } from "./lib/docker.ts";
-import { breakStaleLock, homeId } from "./lib/state.ts";
-import { takeWorkerLock, WORKER_ARG } from "./fake-boat/outbox-worker.ts";
+import { homeId, takeLock } from "./lib/state.ts";
+import { WORKER_ARG } from "./fake-boat/outbox-worker.ts";
 import { waitForApproval } from "./fake-boat/sandbox/auth.ts";
 import { requestFile } from "./fake-boat/sandbox/outbox.ts";
 
@@ -393,53 +393,36 @@ function fakeBoatProcess() {
   };
 }
 
+/** Holds `home`'s worker lock from the moment this resolves until it is disposed. */
+async function workerLockHolder(home: string) {
+  const child = NodeChildProcess.spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `import { takeLock } from ${JSON.stringify(NodePath.join(import.meta.dirname, "lib", "state.ts"))};
+       if (!takeLock(${JSON.stringify(NodePath.join(home, "worker.lock"))}, 60_000)) process.exit(3);
+       process.stdout.write("held\\n");
+       setInterval(() => {}, 60_000);`,
+    ],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  const [line] = await NodeEvents.EventEmitter.once(child.stdout, "data");
+  expect(String(line)).toBe("held\n");
+  return {
+    [Symbol.asyncDispose]: async () => {
+      const exited = NodeEvents.EventEmitter.once(child, "exit");
+      child.kill();
+      await exited;
+    },
+  };
+}
+
 function deadPid(): number {
   const ran = NodeChildProcess.spawnSync("true");
   if (ran.pid === undefined) throw new Error("no pid");
   return ran.pid;
 }
-
-describe("fake boat worker lock", () => {
-  let dir: string;
-  const holder = (lock: string) =>
-    (JSON.parse(NodeFS.readFileSync(lock, "utf8")) as { pid: number }).pid;
-
-  beforeAll(async () => {
-    dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "fake-boat-lock-test-"));
-  });
-
-  afterAll(async () => {
-    if (dir) await NodeFSP.rm(dir, { recursive: true, force: true });
-  });
-
-  it("takes over a lock whose holder died, and leaves a live holder's alone", async () => {
-    const lock = NodePath.join(dir, "taken.json");
-    await NodeFSP.writeFile(lock, JSON.stringify({ pid: deadPid() }));
-    expect(takeWorkerLock(lock)).toBe(true);
-    expect(holder(lock)).toBe(process.pid);
-
-    await using worker = fakeBoatProcess();
-    const live = NodePath.join(dir, "live.json");
-    await NodeFSP.writeFile(live, JSON.stringify({ pid: worker.pid }));
-    expect(takeWorkerLock(live)).toBe(false);
-    expect(holder(live)).toBe(worker.pid);
-
-    const reused = NodePath.join(dir, "reused.json");
-    await NodeFSP.writeFile(reused, JSON.stringify({ pid: process.ppid }));
-    expect(takeWorkerLock(reused), "a live pid that is not the fake is a dead holder").toBe(true);
-  });
-
-  it("never removes a lock that a live worker took after the dead holder was seen", async () => {
-    await using worker = fakeBoatProcess();
-    const lock = NodePath.join(dir, "raced.json");
-    const seen = deadPid();
-    await NodeFSP.writeFile(lock, JSON.stringify({ pid: worker.pid }));
-    expect(breakStaleLock(lock, seen)).toBe(false);
-    expect(holder(lock)).toBe(worker.pid);
-    const leftovers = (await NodeFSP.readdir(dir)).filter((name) => name.startsWith("raced.json."));
-    expect(leftovers).toEqual([]);
-  });
-});
 
 describe("fake boat records and output", () => {
   let state: string;
@@ -736,15 +719,9 @@ describe.skipIf(!hasDocker())("fake boat", () => {
   const running = (id: string) =>
     docker(["inspect", "--format", "{{.State.Running}}", `sail-boat-${id}`]).trim() === "true";
   const workerIdle = (forHome: string) => {
-    const lock = NodePath.join(forHome, "worker.json");
-    if (!NodeFS.existsSync(lock)) return true;
-    const { pid } = JSON.parse(NodeFS.readFileSync(lock, "utf8")) as { pid: number };
-    try {
-      process.kill(pid, 0);
-      return false;
-    } catch {
-      return true;
-    }
+    const release = takeLock(NodePath.join(forHome, "worker.lock"));
+    release?.();
+    return release !== undefined;
   };
   const names = async () =>
     lastJson<{ named: Array<{ name: string }> }>((await json(["snapshots"])).stdout).named.map(
@@ -1368,11 +1345,7 @@ fi`);
     let asked: Promise<Ran>;
     {
       // A live holder of the worker lock keeps the request unsaved until it is a dead worker's claim.
-      await using holder = fakeBoatProcess();
-      await NodeFSP.writeFile(
-        NodePath.join(home, "worker.json"),
-        JSON.stringify({ pid: holder.pid }),
-      );
+      await using _holder = await workerLockHolder(home);
       asked = askUnattended(name);
       await expect.poll(() => NodeFS.existsSync(pending), POLL).toBe(true);
       const claimed = requestFile({ stage: "claimed", base: name, pid: deadPid() });
@@ -1491,6 +1464,56 @@ fi`);
       ttlSeconds: 7200,
       archiveAfter: expect.stringMatching(ISO),
     });
+  });
+
+  it("shows starting while a create boots, and returns once running, with FAKE_BOAT_TRANSITION_SECS", async () => {
+    const creating = background(
+      ["--json", "new", "--name", "starting", "--type", "small", "--ttl", "600"],
+      { FAKE_BOAT_TRANSITION_SECS: "15" },
+    );
+    await expect.poll(creating.stdout, POLL).toContain('"progress":"creating"');
+    const { id } = JSON.parse(creating.stdout().split("\n")[0] ?? "") as { readonly id: string };
+    sandboxes.push(id);
+    const stateOf = async () => {
+      const shown = await json(["info", id]);
+      return shown.status === 0
+        ? lastJson<{ sandbox: SandboxJson }>(shown.stdout).sandbox.state
+        : "";
+    };
+    await expect.poll(stateOf, POLL).toBe("starting");
+    const listed = lastJson<{ sandboxes: Array<SandboxJson> }>(
+      (await json(["list", "--all"])).stdout,
+    );
+    expect(listed.sandboxes.find((row) => row.id === id)?.state).toBe("starting");
+    expect((await failure(["exec", id, "--", "true"])).code).toBe("sandbox_not_running");
+    expect((await failure(["resume", id])).code).toBe("sandbox_transitioning");
+    expect(await creating.exited, creating.stderr()).toBe(0);
+    expect(lastJson<SandboxJson>(creating.stdout()).state, "returns once running").toBe("running");
+    expect(await stateOf()).toBe("running");
+    expect((await json(["delete", id, "--yes"])).status).toBe(0);
+  });
+
+  it("counts no transition whose owner is gone, though its pid now runs another fake boat", async () => {
+    expect(await state()).toBe("running");
+    await NodeFSP.mkdir(NodePath.join(home, "transitions"), { recursive: true });
+    const file = NodePath.join(home, "transitions", `${sandbox}.json`);
+    await using reused = fakeBoatProcess();
+    const until = "2100-01-01T00:00:00.000Z";
+    const stale = { id: sandbox, state: "stopping", until, token: "gone", pid: reused.pid };
+    try {
+      for (const left of [
+        JSON.stringify(stale),
+        JSON.stringify({ ...stale, started: "Thu Jan  1 00:00:00 1970" }),
+        JSON.stringify(stale).slice(0, 40),
+      ]) {
+        await NodeFSP.writeFile(file, left);
+        expect(await state(), left).toBe("running");
+      }
+      const extended = await json(["extend", sandbox, "--ttl", "60"]);
+      expect(extended.status, extended.stderr).toBe(0);
+    } finally {
+      await NodeFSP.rm(file, { force: true });
+    }
   });
 
   it("writes no transition for a resume without FAKE_BOAT_TRANSITION_SECS, and nothing on stderr", async () => {
