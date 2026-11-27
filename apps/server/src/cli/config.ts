@@ -45,7 +45,7 @@ const hostFlag = Flag.String("host").pipe(
 );
 export const baseDirFlag = Flag.String("base-dir").pipe(
   Flag.withDescription(
-    "Explicit T3 Code data directory; runtime state is stored under userdata (equivalent to T3CODE_HOME).",
+    "Explicit T3 Code data directory; runtime state is stored under userdata (equivalent to SAIL_HOME, then T3CODE_HOME).",
   ),
   Flag.optional,
 );
@@ -87,6 +87,49 @@ const tailscaleServePortFlag = Flag.Int("tailscale-serve-port").pipe(
   Flag.withDescription("HTTPS port for Tailscale Serve when --tailscale-serve is enabled."),
   Flag.optional,
 );
+export const HttpUrl = Schema.URLFromString.pipe(
+  Schema.check(
+    Schema.makeFilter((url) => url.protocol === "http:" || url.protocol === "https:", {
+      expected: "an http:// or https:// URL",
+    }),
+  ),
+);
+const PublicUrl = HttpUrl.pipe(
+  Schema.check(
+    Schema.makeFilter((url) => url.href === `${url.origin}/`, {
+      expected: "an origin with no path, query, or credentials, such as https://demo.fly.dev",
+    }),
+  ),
+);
+const decodePublicUrl = Schema.decodeEffect(PublicUrl);
+/** Checked before minting, so a corrupt record cannot leave a token that was never printed. */
+export const recordedPublicUrl = (publicUrl: string, baseDir: string) =>
+  decodePublicUrl(publicUrl).pipe(
+    Effect.map((url) => url.origin),
+    Effect.mapError(
+      () =>
+        new CliError.UserError({
+          cause: `The runtime record of the T3 Code server for ${baseDir} has an invalid public URL (${publicUrl}), so no pairing token was minted. Restart the server with a valid --public-url, then retry.`,
+        }),
+    ),
+  );
+
+const publicUrlFlag = Flag.String("public-url").pipe(
+  Flag.withSchema(PublicUrl),
+  Flag.withDescription(
+    "Public origin clients reach this server at, such as https://demo.fly.dev, for pairing links (equivalent to SAIL_PUBLIC_URL).",
+  ),
+  Flag.optional,
+);
+const startupPairingFlag = Flag.Literals(
+  "startup-pairing",
+  ServerConfig.StartupPairing.literals,
+).pipe(
+  Flag.withDescription(
+    "`off` prints no pairing token at startup; run `t3 pair` for a link instead (equivalent to SAIL_STARTUP_PAIRING).",
+  ),
+  Flag.optional,
+);
 const lanFlag = Flag.Boolean("lan").pipe(
   Flag.withDescription(
     "Accept connections from your local network and tailnet, not only this machine (equivalent to T3CODE_LAN).",
@@ -101,6 +144,27 @@ export const traceFileConfig = Config.String("T3CODE_TRACE_FILE").pipe(
 export const traceMaxFilesConfig = Config.Int("T3CODE_TRACE_MAX_FILES").pipe(
   Config.withDefault(10),
 );
+
+export const t3HomeConfig = Config.all([
+  Config.String("SAIL_HOME").pipe(Config.option),
+  Config.String("T3CODE_HOME").pipe(Config.option),
+]).pipe(Config.map(([sail, t3]) => Option.getOrUndefined(Option.orElse(sail, () => t3))));
+
+// Read only when the flag is absent, so a stale variable cannot block an explicit flag.
+const publicUrlConfig = Config.schema(PublicUrl, "SAIL_PUBLIC_URL").pipe(
+  Config.option,
+  Config.flatMap((sail) =>
+    Option.isSome(sail)
+      ? Config.succeed(sail)
+      : Config.schema(PublicUrl, "T3CODE_PUBLIC_URL").pipe(Config.option),
+  ),
+);
+const startupPairingConfig = Config.schema(
+  ServerConfig.StartupPairing,
+  "SAIL_STARTUP_PAIRING",
+).pipe(Config.option);
+const readPairingSetting = <A>(config: Config.Config<A>) =>
+  config.pipe(Effect.mapError((error) => new CliError.UserError({ cause: error.cause.message })));
 
 const EnvServerConfig = Config.all({
   logLevel: Config.LogLevel("T3CODE_LOG_LEVEL").pipe(Config.withDefault("Info")),
@@ -138,10 +202,7 @@ const EnvServerConfig = Config.all({
   ),
   port: Config.Port("T3CODE_PORT").pipe(Config.option, Config.map(Option.getOrUndefined)),
   host: Config.String("T3CODE_HOST").pipe(Config.option, Config.map(Option.getOrUndefined)),
-  t3Home: Config.all([
-    Config.String("SAIL_HOME").pipe(Config.option),
-    Config.String("T3CODE_HOME").pipe(Config.option),
-  ]).pipe(Config.map(([sail, t3]) => Option.getOrUndefined(Option.orElse(sail, () => t3)))),
+  t3Home: t3HomeConfig,
   devUrl: Config.URL("VITE_DEV_SERVER_URL").pipe(Config.option, Config.map(Option.getOrUndefined)),
   devAllowedOrigins: Config.String("T3CODE_DEV_ALLOWED_ORIGINS").pipe(
     Config.withDefault(""),
@@ -213,6 +274,8 @@ export interface CliServerFlags {
   readonly tailscaleServeEnabled: Option.Option<boolean>;
   readonly tailscaleServePort: Option.Option<number>;
   readonly lan: Option.Option<boolean>;
+  readonly publicUrl: Option.Option<URL>;
+  readonly startupPairing: Option.Option<ServerConfig.StartupPairing>;
 }
 
 export interface CliAuthLocationFlags {
@@ -248,7 +311,25 @@ export const sharedServerCommandFlags = {
   tailscaleServeEnabled: tailscaleServeFlag,
   tailscaleServePort: tailscaleServePortFlag,
   lan: lanFlag,
+  publicUrl: publicUrlFlag,
+  startupPairing: startupPairingFlag,
 } as const;
+
+export const readRunningServer = Effect.fn("config.readRunningServer")(function* (
+  serverRuntimeStatePath: string,
+) {
+  const runtime = yield* readPersistedServerRuntimeState(serverRuntimeStatePath);
+  // A killed container can leave a record whose PID is now ours or an unrelated process's.
+  // Lock-aware records are live only while their owner still holds the lock.
+  return Option.filter(
+    runtime,
+    (state) =>
+      state.pid > 0 &&
+      state.pid !== process.pid &&
+      isProcessAlive(state.pid) &&
+      (state.ownerId === undefined || isServerOwnershipHeld(serverRuntimeStatePath)),
+  );
+});
 
 const resolveOptionPrecedence = <Value>(
   ...values: ReadonlyArray<Option.Option<Value>>
@@ -272,6 +353,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     readonly startupPresentation?: ServerConfig.StartupPresentation;
     readonly forceAutoBootstrapProjectFromCwd?: boolean;
     readonly rejectRunningServer?: boolean;
+    readonly servesHome?: boolean;
     readonly selectAutomaticPort?: (
       preferred: number,
       host: string | undefined,
@@ -297,6 +379,8 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     tailscaleServeEnabled: flags.tailscaleServeEnabled ?? Option.none(),
     tailscaleServePort: flags.tailscaleServePort ?? Option.none(),
     lan: flags.lan ?? Option.none(),
+    publicUrl: flags.publicUrl ?? Option.none(),
+    startupPairing: flags.startupPairing ?? Option.none(),
   } satisfies CliServerFlags;
   const bootstrapFd = Option.getOrUndefined(normalizedFlags.bootstrapFd) ?? env.bootstrapFd;
   const bootstrapEnvelope =
@@ -313,6 +397,23 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     ),
     () => "web",
   );
+  // The desktop app inherits the user's shell, where these may be set for another server.
+  const servesWebPairing = mode === "web" && options?.servesHome !== false;
+  const publicUrl = servesWebPairing
+    ? Option.getOrUndefined(
+        Option.isSome(normalizedFlags.publicUrl)
+          ? normalizedFlags.publicUrl
+          : yield* readPairingSetting(publicUrlConfig),
+      )
+    : undefined;
+  const startupPairing: ServerConfig.StartupPairing = servesWebPairing
+    ? Option.getOrElse(
+        Option.isSome(normalizedFlags.startupPairing)
+          ? normalizedFlags.startupPairing
+          : yield* readPairingSetting(startupPairingConfig),
+        () => "on",
+      )
+    : "on";
 
   const devUrl = Option.getOrElse(
     resolveOptionPrecedence(normalizedFlags.devUrl, Option.fromUndefinedOr(env.devUrl)),
@@ -337,17 +438,8 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   // An interactive CLI must not start over a discovered server. Lifetime locking
   // and supervisor handoff are separate; this preflight cannot arbitrate two starts.
   if (options?.rejectRunningServer && mode === "web") {
-    const runtime = yield* readPersistedServerRuntimeState(derivedPaths.serverRuntimeStatePath);
-    // A killed container can leave a record whose PID is now ours or an unrelated process's.
-    // Lock-aware records are live only while their owner still holds the lock.
-    if (
-      Option.isSome(runtime) &&
-      runtime.value.pid > 0 &&
-      runtime.value.pid !== process.pid &&
-      isProcessAlive(runtime.value.pid) &&
-      (runtime.value.ownerId === undefined ||
-        isServerOwnershipHeld(derivedPaths.serverRuntimeStatePath))
-    ) {
+    const runtime = yield* readRunningServer(derivedPaths.serverRuntimeStatePath);
+    if (Option.isSome(runtime)) {
       // Bare `t3 pair` prefers a linked worktree's `.t3`, so always name this home.
       const { command: pairCommand } = yield* resolveHostCliCommand("pair", [
         "--base-dir",
@@ -525,8 +617,10 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     devUrl,
     ...(devAuthToken === undefined ? {} : { devAuthToken }),
     devAllowedOrigins: env.devAllowedOrigins,
+    ...(publicUrl === undefined ? {} : { publicUrl }),
     noBrowser,
     startupPresentation,
+    startupPairing,
     desktopBootstrapToken,
     ...(desktopBootstrapSecret === undefined ? {} : { desktopBootstrapSecret }),
     ...(desktopReadinessSecret === undefined ? {} : { desktopReadinessSecret }),
@@ -566,8 +660,11 @@ export const resolveCliAuthConfig = (
       tailscaleServeEnabled: Option.none(),
       tailscaleServePort: Option.none(),
       lan: Option.none(),
+      publicUrl: Option.none(),
+      startupPairing: Option.none(),
     },
     cliLogLevel,
+    { servesHome: false },
   );
   // Logs go to stdout, where --json and --token-only print, and resolving can
   // log, for example when it sweeps abandoned attachment uploads.

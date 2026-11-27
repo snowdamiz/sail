@@ -23,6 +23,7 @@ import {
   type AuthWebSocketTicketUse,
   DpopFailureReason,
   type DpopFailureReason as DpopFailureReasonType,
+  EnvironmentPairingFailureReason,
   mcpClientScopes,
 } from "@t3tools/contracts";
 import { isLocalLoopbackHost } from "@t3tools/shared/hostClassification";
@@ -408,6 +409,7 @@ export class ServerAuthInvalidCredentialError extends Schema.TaggedError<ServerA
   {
     diagnostic: Schema.optional(Schema.String),
     dpopFailureReason: Schema.optionalKey(DpopFailureReason),
+    pairingFailureReason: Schema.optionalKey(EnvironmentPairingFailureReason),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
@@ -431,6 +433,9 @@ export const serverAuthDpopFailureReason = (
   error: ServerAuthCredentialError,
 ): DpopFailureReasonType | undefined =>
   error._tag === "ServerAuthInvalidCredentialError" ? error.dpopFailureReason : undefined;
+
+export const serverAuthPairingFailureReason = (error: ServerAuthCredentialError) =>
+  error._tag === "ServerAuthInvalidCredentialError" ? error.pairingFailureReason : undefined;
 
 export class ServerAuthInvalidScopeError extends Schema.TaggedError<ServerAuthInvalidScopeError>()(
   "ServerAuthInvalidScopeError",
@@ -702,6 +707,12 @@ const bySessionPriority = (left: AuthClientSession, right: AuthClientSession) =>
   return right.issuedAt.epochMilliseconds - left.issuedAt.epochMilliseconds;
 };
 
+// Pairing links and startup links; T3 Connect, peer-link, and MCP codes have their own recovery.
+const OPENED_LINK_SUBJECTS = new Set([
+  PAIRING_LINK_SUBJECT,
+  INTERNAL_ADMINISTRATIVE_BOOTSTRAP_SUBJECT,
+]);
+
 function toBootstrapExchangeError(
   cause: PairingGrantStore.BootstrapCredentialError,
 ): ServerAuthInvalidCredentialError | ServerAuthInternalError {
@@ -709,8 +720,13 @@ function toBootstrapExchangeError(
     return new ServerAuthBootstrapCredentialValidationError({ cause });
   }
 
+  const spent =
+    (cause._tag === "SpentBootstrapCredentialError" ||
+      cause._tag === "ExpiredBootstrapCredentialError") &&
+    OPENED_LINK_SUBJECTS.has(cause.subject);
   return new ServerAuthInvalidCredentialError({
     cause,
+    ...(spent ? { pairingFailureReason: "used_or_expired" as const } : {}),
   });
 }
 

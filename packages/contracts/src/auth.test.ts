@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
+import { EnvironmentAuthInvalidError } from "./environmentHttp.ts";
 import {
   AuthEnvironmentScopes,
   AuthEnvironmentScope,
@@ -128,5 +129,24 @@ describe("authorization grants", () => {
     },
   ] as const)("sessionGrantsScope accepts $label", ({ session, scope, expected }) => {
     expect(sessionGrantsScope(session, scope)).toBe(expected);
+  });
+});
+
+describe("pairing link failures", () => {
+  it("decodes a rejection whose pairing failure reason this client does not know", () => {
+    const decode = Schema.decodeUnknownSync(EnvironmentAuthInvalidError);
+    const rejection = {
+      _tag: "EnvironmentAuthInvalidError",
+      code: "auth_invalid",
+      reason: "invalid_credential",
+      traceId: "trace",
+    };
+
+    expect(decode({ ...rejection, pairingFailureReason: "used_or_expired" })).toMatchObject({
+      pairingFailureReason: "used_or_expired",
+    });
+    expect(decode({ ...rejection, pairingFailureReason: "revoked" })).not.toHaveProperty(
+      "pairingFailureReason",
+    );
   });
 });

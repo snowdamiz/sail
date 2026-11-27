@@ -4,13 +4,15 @@ import {
   AuthSessionId,
   AuthStandardClientScopes,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as References from "effect/References";
-import * as Schema from "effect/Schema";
 import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
+import * as CliError from "effect/cli/CliError";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 
@@ -27,9 +29,36 @@ import {
   authLocationFlags,
   type CliAuthLocationFlags,
   DurationFromString,
+  HttpUrl,
+  readRunningServer,
+  recordedPublicUrl,
   resolveCliAuthConfig,
 } from "./config.ts";
+import { resolveHostCliCommand } from "./invocation.ts";
 import * as RunningServer from "./runningServer.ts";
+import { isServerOwnershipHeld } from "../serverOwnership.ts";
+
+const withEnvironmentAuth = Effect.fn("auth.withEnvironmentAuth")(function* <A, E, R>(
+  config: ServerConfig.ServerConfig["Service"],
+  run: (environmentAuth: EnvironmentAuth.EnvironmentAuth["Service"]) => Effect.Effect<A, E, R>,
+  options?: {
+    readonly quietLogs?: boolean;
+  },
+) {
+  return yield* Effect.gen(function* () {
+    const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
+    return yield* run(environmentAuth);
+  }).pipe(
+    Effect.provide(
+      EnvironmentAuth.layerRuntime.pipe(
+        Layer.provideMerge(ServerConfig.layer(config)),
+        Layer.provide(
+          Layer.succeed(References.MinimumLogLevel, options?.quietLogs ? "Error" : config.logLevel),
+        ),
+      ),
+    ),
+  );
+});
 
 const runWithEnvironmentAuth = Effect.fn("auth.runWithEnvironmentAuth")(function* <A, E, R>(
   flags: CliAuthLocationFlags,
@@ -38,20 +67,8 @@ const runWithEnvironmentAuth = Effect.fn("auth.runWithEnvironmentAuth")(function
     readonly quietLogs?: boolean;
   },
 ) {
-  const logLevel = yield* GlobalFlag.LogLevel;
-  const config = yield* resolveCliAuthConfig(flags, logLevel, options);
-  const minimumLogLevel = options?.quietLogs ? "Error" : config.logLevel;
-  return yield* Effect.gen(function* () {
-    const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
-    return yield* run(environmentAuth);
-  }).pipe(
-    Effect.provide(
-      EnvironmentAuth.layerRuntime.pipe(
-        Layer.provideMerge(ServerConfig.layer(config)),
-        Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
-      ),
-    ),
-  );
+  const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel, options);
+  return yield* withEnvironmentAuth(config, run, options);
 });
 
 /** Access changes go through a running server, which applies them to its open connections. */
@@ -82,17 +99,18 @@ const subjectFlag = Flag.String("subject").pipe(
 );
 
 const baseUrlFlag = Flag.String("base-url").pipe(
-  Flag.withSchema(
-    Schema.URLFromString.pipe(
-      Schema.check(
-        Schema.makeFilter((url) => url.protocol === "http:" || url.protocol === "https:", {
-          expected: "an http:// or https:// URL",
-        }),
-      ),
-    ),
+  Flag.withSchema(HttpUrl),
+  Flag.withDescription(
+    "Public base URL used to print a ready `/pair#token=...` link. Defaults to the running server's --public-url.",
   ),
-  Flag.withDescription("Optional public base URL used to print a ready `/pair#token=...` link."),
   Flag.optional,
+);
+
+const requireRunningFlag = Flag.Boolean("require-running").pipe(
+  Flag.withDescription(
+    "Mint nothing unless the runtime record names a running process and this T3 Code home's ownership lock is held both before the token is written and after it is stored.",
+  ),
+  Flag.withDefault(false),
 );
 
 const tokenOnlyFlag = Flag.Boolean("token-only").pipe(
@@ -100,36 +118,125 @@ const tokenOnlyFlag = Flag.Boolean("token-only").pipe(
   Flag.withDefault(false),
 );
 
+const notMinted = (reason: string, retry: string) =>
+  new CliError.UserError({ cause: `${reason}, so no pairing token was minted. ${retry}` });
+
+// Expiry is stored as ISO text and compared as text, so a year past 9999 sorts before today.
+// The store reads the clock again after startup, so the bound stops a day short.
+const LATEST_EXPIRY_MS = Date.UTC(9999, 11, 31);
+
+export const mintForRunningServer = Effect.fn("auth.mintForRunningServer")(function* (
+  input: Parameters<EnvironmentAuth.EnvironmentAuth["Service"]["createPairingLink"]>[0],
+) {
+  const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
+  const { baseDir, devUrl, stateDir, serverRuntimeStatePath } = yield* ServerConfig.ServerConfig;
+  const issued = yield* environmentAuth.createPairingLink(input);
+  // The OS releases the lock when its holder exits, even on SIGKILL.
+  if (isServerOwnershipHeld(serverRuntimeStatePath)) return issued;
+  yield* environmentAuth.revokePairingLink(issued.id).pipe(
+    Effect.catch(() =>
+      Effect.gen(function* () {
+        const explicitHome = yield* ServerConfig.deriveServerPaths(baseDir, devUrl, {
+          baseDirIsExplicit: true,
+        });
+        // Without an explicit home, --dev-url keeps state in <home>/dev, which --base-dir cannot reach.
+        const location =
+          devUrl !== undefined && explicitHome.stateDir !== stateDir
+            ? ["--dev-url", devUrl.href]
+            : ["--base-dir", baseDir];
+        const { command } = yield* resolveHostCliCommand("auth pairing revoke", [
+          ...location,
+          issued.id,
+        ]);
+        return yield* new CliError.UserError({
+          cause: `The T3 Code server for ${baseDir} stopped before the pairing token was ready, and revoking it failed. It was never printed; to remove it, run \`${command}\`.`,
+        });
+      }),
+    ),
+  );
+  return yield* new CliError.UserError({
+    cause: `The T3 Code server for ${baseDir} stopped before the pairing token was ready, so it was revoked. Start the server, then retry.`,
+  });
+});
+
 const pairingCreateCommand = Command.make("create", {
   ...authLocationFlags,
   scopes: authScopesFlag(AuthStandardClientScopes),
   ttl: ttlFlag,
   label: labelFlag,
   baseUrl: baseUrlFlag,
+  requireRunning: requireRunningFlag,
   json: jsonFlag,
 }).pipe(
   Command.withDescription("Issue a new client pairing token."),
   Command.withHandler((flags) =>
-    runWithEnvironmentAuth(
-      flags,
-      (environmentAuth) =>
-        Effect.gen(function* () {
-          const issued = yield* environmentAuth.createPairingLink({
-            scopes: flags.scopes,
-            subject: "one-time-token",
-            ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
-            ...(Option.isSome(flags.label) ? { label: flags.label.value } : {}),
-          });
-          const output = formatIssuedPairingCredential(issued, {
-            json: flags.json,
-            ...(Option.isSome(flags.baseUrl) ? { baseUrl: flags.baseUrl.value.href } : {}),
-          });
-          yield* Console.log(output);
+    Effect.gen(function* () {
+      if (Option.isSome(flags.ttl)) {
+        const ttlMs = Duration.toMillis(flags.ttl.value);
+        if (ttlMs < 1000 || (yield* Clock.currentTimeMillis) + ttlMs > LATEST_EXPIRY_MS) {
+          return yield* notMinted(
+            "--ttl must be at least 1 second and expire before the year 10000",
+            "Pass a duration such as 5m or 1h.",
+          );
+        }
+      }
+      const options = { quietLogs: flags.json };
+      const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel, options);
+      const running = yield* readRunningServer(config.serverRuntimeStatePath).pipe(
+        Effect.provideService(References.MinimumLogLevel, flags.json ? "Error" : config.logLevel),
+      );
+      if (flags.requireRunning) {
+        if (Option.isNone(running)) {
+          return yield* notMinted(
+            `No running T3 Code server owns ${config.baseDir}`,
+            "Start the server, or wait until it is ready, then retry.",
+          );
+        }
+        if (running.value.ownerId === undefined) {
+          return yield* notMinted(
+            `The T3 Code server recorded for ${config.baseDir} was started by a release without the ownership lock`,
+            "Restart that server with this release, then retry.",
+          );
+        }
+      }
+      const recordedUrl = Option.getOrUndefined(running)?.publicUrl;
+      const baseUrl = Option.isSome(flags.baseUrl)
+        ? flags.baseUrl.value.href
+        : recordedUrl === undefined
+          ? undefined
+          : yield* recordedPublicUrl(recordedUrl, config.baseDir);
+      const label = Option.getOrElse(flags.label, () => "").trim();
+      const request = {
+        scopes: flags.scopes,
+        subject: "one-time-token",
+        ...(label.length > 0 ? { label } : {}),
+        ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
+      };
+      const issued = yield* withEnvironmentAuth(
+        config,
+        (environmentAuth) =>
+          flags.requireRunning
+            ? mintForRunningServer(request)
+            : environmentAuth.createPairingLink(request),
+        options,
+      ).pipe(
+        Effect.catchTags({
+          ServerOwnsDatabaseError: () =>
+            Effect.fail(
+              notMinted(
+                `Another T3 Code process owns ${config.baseDir} and has not finished updating its database, or runs a different release than this CLI`,
+                "Wait until the server is ready, or use the `t3` that matches it, then retry.",
+              ),
+            ),
         }),
-      {
-        quietLogs: flags.json,
-      },
-    ),
+      );
+      yield* Console.log(
+        formatIssuedPairingCredential(issued, {
+          json: flags.json,
+          ...(baseUrl === undefined ? {} : { baseUrl }),
+        }),
+      );
+    }),
   ),
 );
 

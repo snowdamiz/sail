@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
@@ -635,6 +636,55 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
           )
           .pipe(Effect.flip);
         expect(reused._tag).toBe("ServerAuthInvalidCredentialError");
+      }).pipe(Effect.provide(layerEnvironmentAuth())),
+    );
+
+    it.effect("names a used or expired pairing link, and says nothing about an unknown one", () =>
+      Effect.gen(function* () {
+        const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+        const used = yield* serverAuth.issuePairingCredential({ scopes: ["orchestration:read"] });
+        yield* serverAuth.createBrowserSession(used.credential, requestMetadata);
+        const reused = yield* Effect.flip(
+          serverAuth.createBrowserSession(used.credential, requestMetadata),
+        );
+        const expiring = yield* serverAuth.createPairingLink({
+          scopes: ["orchestration:read"],
+          ttl: Duration.minutes(1),
+        });
+        yield* TestClock.adjust("2 minutes");
+        const expired = yield* Effect.flip(
+          serverAuth.createBrowserSession(expiring.credential, requestMetadata),
+        );
+        const unknown = yield* Effect.flip(
+          serverAuth.createBrowserSession("ZZZZZZZZZZZZ", requestMetadata),
+        );
+
+        for (const error of [reused, expired]) {
+          expect(error).toMatchObject({
+            _tag: "ServerAuthInvalidCredentialError",
+            pairingFailureReason: "used_or_expired",
+          });
+        }
+        expect(unknown._tag).toBe("ServerAuthInvalidCredentialError");
+        expect(unknown).not.toHaveProperty("pairingFailureReason");
+      }).pipe(Effect.provide(layerEnvironmentAuth())),
+    );
+
+    it.effect("points no T3 Connect code at t3 pair", () =>
+      Effect.gen(function* () {
+        const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+        const connect = yield* serverAuth.createPairingLink({
+          scopes: ["orchestration:read"],
+          subject: EnvironmentAuth.CLOUD_CONNECT_SUBJECT,
+          ttl: Duration.minutes(1),
+        });
+        yield* TestClock.adjust("2 minutes");
+        const expired = yield* Effect.flip(
+          serverAuth.createBrowserSession(connect.credential, requestMetadata),
+        );
+
+        expect(expired._tag).toBe("ServerAuthInvalidCredentialError");
+        expect(expired).not.toHaveProperty("pairingFailureReason");
       }).pipe(Effect.provide(layerEnvironmentAuth())),
     );
 

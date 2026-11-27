@@ -17,6 +17,11 @@ import {
   ConnectionTransientError,
 } from "./model.ts";
 
+const usedPairingLinkText = msg(
+  "This pairing link was already used or has expired. To get a new one, run {command} on the server, or ask its owner.",
+  { command: "t3\u00a0pair" },
+);
+
 export function profileMissingError(connectionId: string): ConnectionBlockedError {
   return new ConnectionBlockedError({
     reason: "configuration",
@@ -240,7 +245,11 @@ export function mapRemoteEnvironmentError(
     case "EnvironmentAuthInvalidError":
       return new ConnectionBlockedError({
         reason: "authentication",
-        ...translatableDetail(msg("The environment credential is invalid.")),
+        ...translatableDetail(
+          error.pairingFailureReason === "used_or_expired"
+            ? usedPairingLinkText
+            : msg("The environment credential is invalid."),
+        ),
         traceId: error.traceId,
         hop: "server",
         via,
@@ -323,7 +332,11 @@ export function mapRemoteDpopEnvironmentError(
   error: RemoteEnvironmentAuthError,
   connectionMethod: "relay" | "direct" = "relay",
 ): ConnectionAttemptError {
-  if (error._tag === "EnvironmentAuthInvalidError" && error.reason === "invalid_credential") {
+  if (
+    error._tag === "EnvironmentAuthInvalidError" &&
+    error.reason === "invalid_credential" &&
+    error.pairingFailureReason === undefined
+  ) {
     return new ConnectionBlockedError({
       reason: "authentication",
       ...translatableDetail(

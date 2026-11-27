@@ -117,7 +117,7 @@ in the receiving app. Connection settings are under **Settings → Environments*
 on web and desktop and **Settings → Environments** on mobile. A loopback address
 such as `127.0.0.1` reaches only the device opening the link.
 
-On a computer with the desktop app, you can open the printed `t3code://pair`
+On a computer with the desktop app, you can open the printed `sail://pair`
 app link instead. The desktop app asks you to confirm the server address, then
 adds it.
 
@@ -230,6 +230,40 @@ tailscale serve --https=443 --set-path=/ off
 
 If that port is already in use, choose another with
 `--tailscale-serve-port`. See `t3 pair --help` for other pairing options.
+
+### Behind a proxy or hosting platform
+
+When a reverse proxy or a platform such as Fly.io serves the server at its own
+address, give the server that address so pairing links use it:
+
+```bash
+t3 serve --host 0.0.0.0 --port 8080 --public-url https://demo.fly.dev --startup-pairing off
+```
+
+`--public-url` (or `SAIL_PUBLIC_URL`) sets the address in the startup output,
+`t3 pair`, and `t3 auth pairing create`. `--startup-pairing off` (or
+`SAIL_STARTUP_PAIRING=off`) keeps the server from printing a pairing token when
+it starts, so no token lands in logs that others can read. Run `t3 pair` in a
+shell on the server when you need a link.
+
+In a script, run `t3 auth pairing create --json --require-running` on the
+server's machine. It issues a token only when the server's record names a
+running process and a T3 Code process, normally the server, holds that data
+directory both before the token is written and after it is stored. If nothing
+holds the directory at either check, the command fails, and a token already
+written is revoked. If that revoke also fails, the error prints the exact
+command that removes the token. The two checks do not prove that one server
+held the directory the whole time. A server started by an older release that the command
+cannot check must be restarted first. The `pairUrl` it prints
+uses the server's `--public-url`. If the server has none, pass `--base-url`, or
+the output has only the token.
+
+A reverse proxy in front of the server can refuse large request headers before
+they reach it. Caddy 2.11, for example, answers 431 to headers larger than about
+20 KB unless you raise its `max_header_size`, and a browser holding many cookies
+for that address can send that much. If a browser gets a 431 error through the
+proxy, raise the proxy's header limit or clear that site's cookies in the
+browser.
 
 ### Hosted web app
 

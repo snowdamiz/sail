@@ -3,15 +3,25 @@ import * as NodeHttp from "node:http";
 import * as NodeNet from "node:net";
 import type * as NodeOS from "node:os";
 
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import { HttpServer } from "effect/http";
+import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as NetAddress from "effect/net/NetAddress";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
+import { hostShellWord } from "./cli/invocation.ts";
+import * as ServerConfig from "./config.ts";
 import {
   acceptsPrivateNetworkConnection,
   closeNonPrivateNetworkConnections,
+  formatHeadlessServeOutput,
+  issueHeadlessServeAccessInfo,
   loopbackUrlHostForAddress,
   resolveHeadlessConnectionString,
   resolveLocalOrigin,
@@ -183,4 +193,121 @@ describe("closeNonPrivateNetworkConnections", () => {
       expect(Logger.formatLogFmt.log(warnings[1]!)).toMatch(/closedSinceLastLog\W+999/);
     }),
   );
+});
+
+describe("issueHeadlessServeAccessInfo", () => {
+  const serve = (
+    overrides: Pick<ServerConfig.ServerConfig["Service"], "publicUrl" | "startupPairing">,
+  ) =>
+    Effect.gen(function* () {
+      let issuedCredentials = 0;
+      let baseDir = "";
+      const accessInfo = yield* issueHeadlessServeAccessInfo().pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.effect(
+              ServerConfig.ServerConfig,
+              Effect.gen(function* () {
+                const config = yield* ServerConfig.ServerConfig;
+                baseDir = config.baseDir;
+                return ServerConfig.make({ ...config, ...overrides });
+              }),
+            ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-serve-" }))),
+            Layer.mock(EnvironmentAuth.EnvironmentAuth)({
+              issueStartupPairingCredential: () =>
+                Effect.sync(() => {
+                  issuedCredentials += 1;
+                  return {
+                    id: "startup",
+                    credential: "STARTUPTOKEN",
+                    expiresAt: DateTime.makeUnsafe("2026-11-25T00:05:00.000Z"),
+                  };
+                }),
+            }),
+            Layer.mock(HttpServer.HttpServer)({
+              address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 8080),
+            }),
+          ),
+        ),
+        Effect.provideService(HostProcess.Platform, "linux"),
+        Effect.provideService(HostProcess.Environment, {}),
+        Effect.provideService(HostProcess.Arguments, [
+          process.execPath,
+          "/home/dev/.npm/_npx/0123abcd/node_modules/t3/dist/bin.mjs",
+        ]),
+        Effect.provide(NodeServices.layer),
+      );
+      return {
+        accessInfo,
+        output: formatHeadlessServeOutput(accessInfo),
+        issuedCredentials,
+        baseDir,
+      };
+    });
+
+  it.effect("builds the startup pairing link from the public URL", () =>
+    Effect.gen(function* () {
+      const { accessInfo, output } = yield* serve({
+        publicUrl: new URL("https://demo.fly.dev/"),
+        startupPairing: "on",
+      });
+      expect(accessInfo).toEqual({
+        connectionString: "https://demo.fly.dev",
+        pairing: {
+          token: "STARTUPTOKEN",
+          pairingUrl: "https://demo.fly.dev/pair#token=STARTUPTOKEN",
+        },
+      });
+      expect(output).not.toContain("plain HTTP");
+    }),
+  );
+
+  it.effect("builds the startup pairing link from the listener without a public URL", () =>
+    Effect.gen(function* () {
+      const { accessInfo } = yield* serve({ publicUrl: undefined, startupPairing: "on" });
+      expect(accessInfo).toEqual({
+        connectionString: "http://127.0.0.1:8080",
+        pairing: {
+          token: "STARTUPTOKEN",
+          pairingUrl: "http://127.0.0.1:8080/pair#token=STARTUPTOKEN",
+        },
+      });
+    }),
+  );
+
+  it.effect("issues no credential and prints no token when startup pairing is off", () =>
+    Effect.gen(function* () {
+      const { output, issuedCredentials, baseDir } = yield* serve({
+        publicUrl: new URL("https://demo.fly.dev"),
+        startupPairing: "off",
+      });
+      expect(issuedCredentials).toBe(0);
+      expect(output).toContain("T3 Code server is ready.");
+      expect(output).toContain("Connection string: https://demo.fly.dev");
+      expect(output).toMatch(
+        new RegExp(
+          `\`npx t3\\S* pair --base-dir ${RegExp.escape(hostShellWord("linux", baseDir))}\``,
+        ),
+      );
+      expect(output).not.toMatch(/#token=|Token:/);
+    }),
+  );
+});
+
+describe("formatHeadlessServeOutput", () => {
+  it("warns about the printed token on plain HTTP, and about later links when pairing is off", () => {
+    const connectionString = "http://192.168.1.20:8080";
+    const withToken = formatHeadlessServeOutput({
+      connectionString,
+      pairing: { token: "STARTUPTOKEN", pairingUrl: `${connectionString}/pair#token=STARTUPTOKEN` },
+    });
+    expect(withToken).toContain("can read the\ntoken and control this machine");
+    const off = formatHeadlessServeOutput({
+      connectionString,
+      pairing: { offNotice: "Startup pairing is off." },
+    });
+    expect(off).toContain("plain HTTP");
+    expect(off).toContain("pairing link you open over it");
+    expect(off).not.toMatch(/token/i);
+  });
 });

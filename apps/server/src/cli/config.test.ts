@@ -8,6 +8,7 @@ import * as NodePath from "node:path";
 import { assert, expect, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -35,7 +36,7 @@ import {
 import { deriveServerPaths } from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { acquireServerOwnership } from "../serverOwnership.ts";
-import { resolveServerConfig } from "./config.ts";
+import { type CliServerFlags, resolveCliAuthConfig, resolveServerConfig } from "./config.ts";
 
 const deriveExplicitServerPaths = (baseDir: string, devUrl: URL | undefined) =>
   deriveServerPaths(baseDir, devUrl, { baseDirIsExplicit: true });
@@ -54,6 +55,8 @@ const minimalDesktopFlags = (baseDir: string) => ({
   tailscaleServeEnabled: Option.none<boolean>(),
   tailscaleServePort: Option.none<number>(),
   lan: Option.none<boolean>(),
+  publicUrl: Option.none(),
+  startupPairing: Option.none(),
 });
 
 const encodeDesktopBootstrap = Schema.encodeEffect(Schema.fromJsonString(DesktopBackendBootstrap));
@@ -282,7 +285,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       assert(child.pid !== undefined);
       for (const source of ["flag", "T3CODE_HOME", "default"] as const) {
         const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-preflight-pair-" });
-        const baseDir = source === "default" ? path.join(home, ".t3") : home;
+        const baseDir = source === "default" ? path.join(home, ".sail") : home;
         const stateDir = path.join(baseDir, "userdata");
         yield* fs.makeDirectory(stateDir, { recursive: true });
         yield* fs.writeFileString(
@@ -346,6 +349,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         tailscaleServeEnabled: Option.none<boolean>(),
         tailscaleServePort: Option.none<number>(),
         lan: Option.none<boolean>(),
+        publicUrl: Option.none(),
+        startupPairing: Option.none(),
       };
       const layerConfig = ConfigProvider.layer(
         ConfigProvider.fromEnv({
@@ -391,6 +396,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         tailscaleServeEnabled: Option.none<boolean>(),
         tailscaleServePort: Option.none<number>(),
         lan: Option.none<boolean>(),
+        publicUrl: Option.none(),
+        startupPairing: Option.none(),
       };
       const layerConfig = ConfigProvider.layer(
         ConfigProvider.fromEnv({ env: { T3CODE_DEV_AUTH_TOKEN: secret } }),
@@ -447,6 +454,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServeEnabled: Option.none(),
           tailscaleServePort: Option.none(),
           lan: Option.none(),
+          publicUrl: Option.none(),
+          startupPairing: Option.none(),
         },
         Option.none(),
       ).pipe(
@@ -480,6 +489,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         devUrl: new URL("http://127.0.0.1:4173"),
         noBrowser: false,
         startupPresentation: "browser",
+        startupPairing: "on",
         desktopBootstrapToken: "desktop-bootstrap-token",
         autoBootstrapProjectFromCwd: false,
         logWebSocketEvents: false,
@@ -524,6 +534,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServeEnabled: Option.none(),
           tailscaleServePort: Option.none(),
           lan: Option.none(),
+          publicUrl: Option.none(),
+          startupPairing: Option.none(),
         },
         Option.some("Debug"),
       ).pipe(
@@ -559,6 +571,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         devUrl: new URL("http://127.0.0.1:4173"),
         noBrowser: true,
         startupPresentation: "browser",
+        startupPairing: "on",
         desktopBootstrapToken: "desktop-token",
         autoBootstrapProjectFromCwd: true,
         logWebSocketEvents: true,
@@ -566,6 +579,109 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         tailscaleServePort: 443,
       });
     }),
+  );
+
+  it.effect("prefers --public-url and --startup-pairing over SAIL_ then T3CODE_ variables", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-public-url-" });
+      const resolve = (
+        flags: Pick<CliServerFlags, "publicUrl" | "startupPairing">,
+        env: Record<string, string>,
+      ) =>
+        resolveServerConfig({ ...minimalWebFlags(baseDir), ...flags }, Option.none()).pipe(
+          Effect.provide(
+            Layer.merge(NetService.layer, ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+          ),
+        );
+      const none = { publicUrl: Option.none(), startupPairing: Option.none() };
+      const env = {
+        SAIL_PUBLIC_URL: "https://sail.example",
+        T3CODE_PUBLIC_URL: "not-a-url",
+        SAIL_STARTUP_PAIRING: "off",
+      };
+      const staleEnv = { SAIL_PUBLIC_URL: "https://old.example/app", SAIL_STARTUP_PAIRING: "x" };
+
+      const fromEnv = yield* resolve(none, env);
+      assert.equal(fromEnv.publicUrl?.origin, "https://sail.example");
+      assert.equal(fromEnv.startupPairing, "off");
+      const fromFlags = yield* resolve(
+        {
+          publicUrl: Option.some(new URL("https://flag.example")),
+          startupPairing: Option.some("on"),
+        },
+        env,
+      );
+      assert.equal(fromFlags.publicUrl?.origin, "https://flag.example");
+      assert.equal(fromFlags.startupPairing, "on");
+      const overStale = yield* resolve(
+        {
+          publicUrl: Option.some(new URL("https://flag.example")),
+          startupPairing: Option.some("on"),
+        },
+        staleEnv,
+      );
+      assert.equal(overStale.publicUrl?.origin, "https://flag.example");
+      assert.equal(overStale.startupPairing, "on");
+      const fromLegacy = yield* resolve(none, { T3CODE_PUBLIC_URL: "https://t3.example" });
+      assert.equal(fromLegacy.publicUrl?.origin, "https://t3.example");
+      assert.equal(fromLegacy.startupPairing, "on");
+      const trailingSlash = yield* resolve(none, { SAIL_PUBLIC_URL: "https://demo.fly.dev/" });
+      assert.equal(trailingSlash.publicUrl?.origin, "https://demo.fly.dev");
+      for (const rejected of [
+        "https://demo.fly.dev/sub",
+        "https://demo.fly.dev/?a=1",
+        "https://demo.fly.dev/#x",
+        "https://user:pass@demo.fly.dev",
+        "ftp://demo.fly.dev",
+      ]) {
+        const exit = yield* Effect.exit(
+          resolve(none, { SAIL_PUBLIC_URL: rejected, T3CODE_PUBLIC_URL: "https://t3.example" }),
+        );
+        assert.isTrue(Exit.isFailure(exit), rejected);
+      }
+    }),
+  );
+
+  it.effect(
+    "ignores the pairing variables in desktop mode and in commands that only open the home",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-pairing-env-" });
+        const withEnv = (env: Record<string, string>) =>
+          Effect.provide(
+            Layer.merge(NetService.layer, ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+          );
+        const fromDesktopBootstrap = Effect.gen(function* () {
+          const fd = yield* openBootstrapFd(makeDesktopBootstrap());
+          return yield* resolveServerConfig(
+            { ...minimalDesktopFlags(baseDir), mode: Option.none(), bootstrapFd: Option.some(fd) },
+            Option.none(),
+          );
+        });
+
+        const remote = yield* fromDesktopBootstrap.pipe(
+          withEnv({ SAIL_PUBLIC_URL: "https://remote.fly.dev", SAIL_STARTUP_PAIRING: "off" }),
+        );
+        assert.equal(remote.mode, "desktop");
+        assert.equal(remote.publicUrl, undefined);
+        assert.equal(remote.startupPairing, "on");
+        for (const env of [
+          { SAIL_PUBLIC_URL: "not-a-url" },
+          { SAIL_PUBLIC_URL: "   " },
+          { T3CODE_PUBLIC_URL: "https://demo.fly.dev/subpath" },
+          { SAIL_STARTUP_PAIRING: "bogus" },
+        ]) {
+          const desktop = yield* fromDesktopBootstrap.pipe(withEnv(env));
+          assert.equal(desktop.publicUrl, undefined, JSON.stringify(env));
+          const inspecting = yield* resolveCliAuthConfig(
+            { baseDir: Option.some(baseDir) },
+            Option.none(),
+          ).pipe(withEnv(env));
+          assert.equal(inspecting.publicUrl, undefined, JSON.stringify(env));
+        }
+      }),
   );
 
   it.effect("reports the desktop bootstrap as the source of endpoints it supplied", () =>
@@ -672,6 +788,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServeEnabled: Option.none(),
           tailscaleServePort: Option.none(),
           lan: Option.none(),
+          publicUrl: Option.none(),
+          startupPairing: Option.none(),
         },
         Option.none(),
       ).pipe(
@@ -721,6 +839,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServeEnabled: Option.none(),
           tailscaleServePort: Option.none(),
           lan: Option.none(),
+          publicUrl: Option.none(),
+          startupPairing: Option.none(),
         },
         Option.none(),
       ).pipe(
@@ -762,6 +882,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServeEnabled: Option.none(),
           tailscaleServePort: Option.none(),
           lan: Option.none(),
+          publicUrl: Option.none(),
+          startupPairing: Option.none(),
         },
         Option.none(),
         {
@@ -796,6 +918,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         devUrl: undefined,
         noBrowser: true,
         startupPresentation: "headless",
+        startupPairing: "on",
         desktopBootstrapToken: undefined,
         autoBootstrapProjectFromCwd: false,
         logWebSocketEvents: false,
@@ -825,6 +948,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServeEnabled: Option.none(),
           tailscaleServePort: Option.none(),
           lan: Option.none(),
+          publicUrl: Option.none(),
+          startupPairing: Option.none(),
         },
         Option.none(),
       ).pipe(
@@ -865,6 +990,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     tailscaleServeEnabled: Option.none<boolean>(),
     tailscaleServePort: Option.none<number>(),
     lan: Option.none<boolean>(),
+    publicUrl: Option.none(),
+    startupPairing: Option.none(),
   });
 
   it.effect("uses the automatic port selector only when no port is configured", () =>

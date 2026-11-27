@@ -50,6 +50,7 @@ import {
 import {
   DpopFailureReason,
   AuthSessionId,
+  ForwardCompatibleOptional,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
@@ -131,6 +132,10 @@ export const EnvironmentAuthInvalidReason = Schema.Literals([
 ]);
 export type EnvironmentAuthInvalidReason = typeof EnvironmentAuthInvalidReason.Type;
 
+/** Set on a rejected pairing credential that existed but was spent or ran out. */
+export const EnvironmentPairingFailureReason = Schema.Literal("used_or_expired");
+export type EnvironmentPairingFailureReason = typeof EnvironmentPairingFailureReason.Type;
+
 export const EnvironmentOperationForbiddenReason = Schema.Literals([
   "current_session_revoke_not_allowed",
 ]);
@@ -183,6 +188,7 @@ export class EnvironmentAuthInvalidError extends Schema.TaggedError<EnvironmentA
     code: Schema.Literal("auth_invalid"),
     reason: EnvironmentAuthInvalidReason,
     dpopFailureReason: Schema.optionalKey(DpopFailureReason),
+    pairingFailureReason: ForwardCompatibleOptional(EnvironmentPairingFailureReason),
     traceId: TrimmedNonEmptyString,
   },
   { httpApiStatus: 401 },

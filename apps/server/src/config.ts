@@ -35,6 +35,9 @@ export type RuntimeMode = typeof RuntimeMode.Type;
 export const StartupPresentation = Schema.Literals(["browser", "headless"]);
 export type StartupPresentation = typeof StartupPresentation.Type;
 
+export const StartupPairing = Schema.Literals(["on", "off"]);
+export type StartupPairing = typeof StartupPairing.Type;
+
 export interface ServerDerivedPaths {
   readonly stateDir: string;
   readonly dbPath: string;
@@ -96,8 +99,10 @@ export class ServerConfig extends Context.Service<
     readonly devUrl: URL | undefined;
     readonly devAuthToken?: Redacted.Redacted<string> | undefined;
     readonly devAllowedOrigins: ReadonlyArray<string>;
+    readonly publicUrl?: URL | undefined;
     readonly noBrowser: boolean;
     readonly startupPresentation: StartupPresentation;
+    readonly startupPairing?: StartupPairing | undefined;
     readonly desktopBootstrapToken: string | undefined;
     readonly desktopBootstrapSecret?: string | undefined;
     readonly desktopReadinessSecret?: string | undefined;

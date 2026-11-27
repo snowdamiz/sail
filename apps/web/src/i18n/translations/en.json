@@ -12717,6 +12717,7 @@
   ],
   "8367779e149f723b": "Primary environment request failed during {operation} (HTTP {status}).",
   "c5cd027743a2b5a6": "Invalid pairing token. Check the token and try again.",
+  "bb18f0c340c9356e": "This pairing link was already used or has expired. To get a new one, run {command} on the server, or ask its owner.",
   "0e4b49c8203aae81": "Timed out waiting for authenticated session after bootstrap.",
   "d7ffde2874d60d4f": "Enter a pairing token to continue.",
   "5d18537f82794deb": "The local environment is disabled.",

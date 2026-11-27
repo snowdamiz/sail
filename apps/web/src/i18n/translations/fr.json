@@ -12707,6 +12707,7 @@
   ],
   "8367779e149f723b": "La requête vers l’environnement principal a échoué pendant {operation} (HTTP {status}).",
   "c5cd027743a2b5a6": "Jeton d’appairage non valide. Vérifiez le jeton et réessayez.",
+  "bb18f0c340c9356e": "Ce lien d’appairage a déjà été utilisé ou a expiré. Pour en obtenir un nouveau, exécutez {command} sur le serveur ou demandez-le à son propriétaire.",
   "0e4b49c8203aae81": "Délai dépassé en attendant la session authentifiée après l’amorçage.",
   "d7ffde2874d60d4f": "Saisissez un jeton d’appairage pour continuer.",
   "5d18537f82794deb": "L’environnement local est désactivé.",
