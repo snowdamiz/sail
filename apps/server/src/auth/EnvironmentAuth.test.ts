@@ -227,6 +227,69 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
         ),
     );
 
+    it.effect(
+      "bootstraps an initial owner password once without overwriting a user-changed password on restart",
+      () =>
+        Effect.gen(function* () {
+          const auth = yield* EnvironmentAuth.EnvironmentAuth;
+          const sessions = yield* SessionStore.SessionStore;
+          const origin = "https://sail.example";
+          const initialPassword = Redacted.make("initial-deploy-password-12345");
+          const changedPassword = Redacted.make("user-chosen-replacement-password-98765");
+          const cookieRequest = (token: string) =>
+            HttpServerRequest.fromWeb(
+              new Request(`${origin}/api/auth/session`, {
+                headers: {
+                  host: "sail.example",
+                  origin,
+                  cookie: `${sessions.cookieName}=${token}`,
+                },
+              }),
+            );
+          const anonymous = cookieRequest("");
+
+          expect((yield* auth.getDescriptor()).ownerPassword).toBe("configured");
+          const signedIn = yield* auth.createOwnerPasswordSession(
+            initialPassword,
+            anonymous,
+            requestMetadata,
+          );
+          const signedInRequest = cookieRequest(signedIn.sessionToken);
+          expect((yield* auth.getSessionState(signedInRequest)).authenticated).toBe(true);
+
+          // Changing the password persists to the secret store and must survive restart even when
+          // SAIL_INITIAL_OWNER_PASSWORD is still present in the server config.
+          yield* auth.setOwnerPassword(changedPassword, signedInRequest);
+          const restarted = yield* EnvironmentAuth.make;
+          expect((yield* restarted.getDescriptor()).ownerPassword).toBe("configured");
+          yield* TestClock.adjust("1 second");
+          expect(
+            (yield* Effect.flip(
+              restarted.createOwnerPasswordSession(initialPassword, anonymous, requestMetadata),
+            ))._tag,
+          ).toBe("ServerAuthInvalidCredentialError");
+          yield* TestClock.adjust("1 second");
+          const signedInAfterRestart = yield* restarted.createOwnerPasswordSession(
+            changedPassword,
+            anonymous,
+            requestMetadata,
+          );
+          expect(
+            (yield* restarted.getSessionState(cookieRequest(signedInAfterRestart.sessionToken)))
+              .authenticated,
+          ).toBe(true);
+        }).pipe(
+          Effect.provide(
+            layerEnvironmentAuth({
+              mode: "web",
+              ownerPasswordEnabled: true,
+              initialOwnerPassword: Redacted.make("initial-deploy-password-12345"),
+              publicUrl: new URL("https://sail.example"),
+            }),
+          ),
+        ),
+    );
+
     it.effect("omits browser password setup when policy disallows remote clients", () =>
       Effect.gen(function* () {
         const auth = yield* EnvironmentAuth.EnvironmentAuth;

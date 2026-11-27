@@ -6,7 +6,7 @@ import {
 } from "@t3tools/shared/observability";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { parsePersistedServerObservabilitySettings } from "@t3tools/shared/serverSettings";
-import { DesktopBackendBootstrap, PortSchema } from "@t3tools/contracts";
+import { DesktopBackendBootstrap, isValidOwnerPassword, PortSchema } from "@t3tools/contracts";
 import * as Config from "effect/Config";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -257,6 +257,26 @@ const DevAuthTokenConfig = Config.Redacted("T3CODE_DEV_AUTH_TOKEN").pipe(
   ),
   Config.option,
   Config.map(Option.filter((token) => Redacted.value(token).length > 0)),
+  Config.map(Option.getOrUndefined),
+);
+
+const InitialOwnerPasswordConfig = Config.Redacted("SAIL_INITIAL_OWNER_PASSWORD").pipe(
+  Config.mapEffect((password) => {
+    const value = Redacted.value(password);
+    return value.length === 0 || isValidOwnerPassword(value)
+      ? Effect.succeed(password)
+      : Effect.fail(
+          new Config.ConfigError(
+            new Schema.SchemaError(
+              new SchemaIssue.InvalidValue({
+                message: "SAIL_INITIAL_OWNER_PASSWORD must be 15-256 characters.",
+              }),
+            ),
+          ),
+        );
+  }),
+  Config.option,
+  Config.map(Option.filter((password) => Redacted.value(password).length > 0)),
   Config.map(Option.getOrUndefined),
 );
 
@@ -621,11 +641,18 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     noBrowser,
     startupPresentation,
     startupPairing,
-    ...(servesWebPairing &&
-    publicUrl?.protocol === "https:" &&
-    (yield* Config.Boolean("SAIL_OWNER_PASSWORD").pipe(Config.withDefault(false)))
-      ? { ownerPasswordEnabled: true }
-      : {}),
+    ...(yield* Effect.gen(function* () {
+      const enabled =
+        servesWebPairing &&
+        publicUrl?.protocol === "https:" &&
+        (yield* Config.Boolean("SAIL_OWNER_PASSWORD").pipe(Config.withDefault(false)));
+      if (!enabled) return {};
+      const initialOwnerPassword = yield* InitialOwnerPasswordConfig;
+      return {
+        ownerPasswordEnabled: true as const,
+        ...(initialOwnerPassword === undefined ? {} : { initialOwnerPassword }),
+      };
+    })),
     desktopBootstrapToken,
     ...(desktopBootstrapSecret === undefined ? {} : { desktopBootstrapSecret }),
     ...(desktopReadinessSecret === undefined ? {} : { desktopReadinessSecret }),
