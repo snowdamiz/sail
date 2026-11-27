@@ -8,6 +8,7 @@ import * as CliError from "effect/cli/CliError";
 
 import {
   awaitServiceLauncherStop,
+  claimUnmanagedBoatStart,
   verifyServiceMaintenanceHome,
 } from "../cloud/serviceLauncherClient.ts";
 import * as ServerConfig from "../config.ts";
@@ -44,8 +45,14 @@ const runServerCommand = Effect.fn("server.runServerCommand")(function* (
       ),
     ),
   );
-  if (config.mode !== "desktop" || config.desktopBootstrapToken === undefined) return yield* run;
-  return yield* stopOnLauncherLoss(run);
+  return yield* Effect.acquireUseRelease(
+    claimUnmanagedBoatStart(config.baseDir),
+    () =>
+      config.mode !== "desktop" || config.desktopBootstrapToken === undefined
+        ? run
+        : stopOnLauncherLoss(run),
+    (release) => Effect.sync(release),
+  );
 });
 
 export const runDefaultServerCommand = Effect.fn("server.runDefaultServerCommand")(function* (

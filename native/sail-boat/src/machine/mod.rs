@@ -130,9 +130,32 @@ pub struct WatchdogStatus {
     #[serde(default)]
     pub work_due: bool,
     pub manifest: Option<Manifest>,
+    #[serde(default)]
+    pub sandbox: Option<String>,
+    #[serde(default)]
+    pub maintenance_eligible: bool,
+    #[serde(default)]
+    pub stop_fenced: bool,
+    #[serde(default)]
+    pub maintenance_ready: Option<MaintenanceReady>,
     /// When this app got the status: what its second counts are relative to.
     #[serde(skip, default = "SystemTime::now")]
     pub received: SystemTime,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceReady {
+    environment_id: String,
+    release: MaintenanceRelease,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MaintenanceRelease {
+    version: String,
+    archive_sha256: String,
+    tree_sha256: String,
 }
 
 #[derive(Clone, Debug)]
@@ -284,7 +307,11 @@ impl MachineRuntime {
         });
         if changed {
             if p != Power::Running {
-                *self.watchdog.lock().unwrap() = None;
+                let mut watchdog = self.watchdog.lock().unwrap();
+                // Preserve the fenced stop observation until Boat reports the disk stopped.
+                if p != Power::Stopping || !watchdog.as_ref().is_some_and(|status| status.stop_fenced) {
+                    *watchdog = None;
+                }
             }
             self.shared.changed();
         }
@@ -341,6 +368,16 @@ impl MachineRuntime {
                 *self.lifetime_ends.lock().unwrap() = sb.trial_deadline();
                 let mut p = Power::from_sandbox(&sb);
                 if p == Power::Stopped {
+                    let guarded = self.watchdog_status().is_some_and(|status| {
+                        status.stop_fenced && status.sandbox.as_deref() == Some(id.as_str())
+                    });
+                    if let Some(stop) = sb.stopped_at.filter(|_| guarded) {
+                        self.update_record(|record| {
+                            if record.sandbox_id == id {
+                                record.saved_stop = Some(stop);
+                            }
+                        });
+                    }
                     *self.stop_seen.lock().unwrap() = None;
                 } else if p == Power::Running && self.stop_pending() {
                     // Boat lags behind the watchdog by a few seconds.
@@ -365,6 +402,11 @@ impl MachineRuntime {
                 Err(e)
             }
         }
+    }
+
+    pub(crate) fn stopped_with_lifecycle_receipt(&self) -> bool {
+        self.power() == Power::Stopped
+            && self.stopped_at.lock().unwrap().is_some_and(|stop| self.record().saved_stop == Some(stop))
     }
 
     /// Waits out transitional states, so callers see Running or Stopped (or Missing). A wake
@@ -423,7 +465,9 @@ impl MachineRuntime {
                 return Err(anyhow!(e));
             }
         }
-        if self.power() == Power::Running && !self.is_stopping() && self.fetch_descriptor().await.is_some() {
+        let resume_ack_pending = self.record.read().unwrap().pending_resume.is_some();
+        if self.power() == Power::Running && !self.is_stopping() &&
+            !resume_ack_pending && self.fetch_descriptor().await.is_some() {
             if self.watchdog_status().is_some_and(|w| matches!(w.phase, WatchdogPhase::Saving | WatchdogPhase::Draining)) {
                 // Someone needs it after all: call the sleep off before it stops.
                 self.send_activity(false).await;
@@ -473,6 +517,8 @@ impl MachineRuntime {
                     if self.shared.boat.resume(&record.sandbox_id, &record.size).await? == Resume::DataExpired {
                         self.restore().await?;
                         restored = true;
+                    } else if record.lifecycle_enrolled {
+                        self.update_record(|current| current.pending_resume = Some(record.sandbox_id));
                     }
                     resumed = true;
                     break;
@@ -506,11 +552,33 @@ impl MachineRuntime {
         if restored || self.fetch_descriptor().await.is_none() {
             self.rehost().await?;
         }
-        self.wait_ready(started).await?;
-        // Both resume and restore can start the incumbent before Boat returns. Its service
-        // lifecycle owns recovery, and a wake has no pre-serve window to replace it.
-        if resumed {
+        let record = self.record();
+        if record.lifecycle_enrolled && record.provision_revision.is_empty() {
+            self.refresh_watchdog().await?;
+        }
+        let acknowledge_resume = record.pending_resume.as_deref() == Some(record.sandbox_id.as_str());
+        if acknowledge_resume {
+            let sandbox = record.sandbox_id;
+            loop {
+                if let Ok(status) = self.watchdog_post("/activity", json!({ "resumed": true, "sandbox": sandbox })).await {
+                    if status.sandbox.as_deref() == Some(sandbox.as_str()) {
+                        self.accept_version_receipt(&status);
+                        self.update_record(|current| current.pending_resume = None);
+                        *self.watchdog.lock().unwrap() = Some(status);
+                        break;
+                    }
+                }
+                if started.elapsed() >= READY_TIMEOUT {
+                    bail!("Boat watchdog did not acknowledge the resumed sandbox");
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+        } else if resumed {
             self.send_activity(true).await;
+        }
+        self.wait_ready(started).await?;
+        if resumed || acknowledge_resume {
+            self.maybe_stage_wake().await;
         }
         // Before Running is published: Sail reconnects then, and must find the messages
         // accepted while asleep ahead of anything it sends next.
@@ -639,10 +707,53 @@ impl MachineRuntime {
     async fn send_activity(&self, resumed: bool) {
         *self.last_heartbeat.lock().unwrap() = Some(Instant::now());
         // Refused when the watchdog already stops the machine: watchdog_request records that.
-        if let Ok(s) = self.watchdog_post("/activity", json!({ "resumed": resumed })).await {
-            *self.watchdog.lock().unwrap() = Some(s);
+        let sandbox = self.sandbox_id();
+        if let Ok(status) = self.watchdog_post("/activity", json!({ "resumed": resumed, "sandbox": sandbox })).await {
+            self.accept_version_receipt(&status);
+            *self.watchdog.lock().unwrap() = Some(status);
             self.shared.changed();
         }
+    }
+
+    fn accept_version_receipt(&self, status: &WatchdogStatus) {
+        let Some(ready) = &status.maintenance_ready else { return };
+        let valid_digest = |digest: &str| {
+            digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        };
+        if !valid_digest(&ready.release.archive_sha256) || !valid_digest(&ready.release.tree_sha256) {
+            return;
+        }
+        let record = self.record();
+        if status.sandbox.as_deref() == Some(record.sandbox_id.as_str())
+            && ready.environment_id == record.environment_id
+            && ready.release.version != record.t3_version
+        {
+            self.update_record(|current| {
+                if current.sandbox_id == record.sandbox_id {
+                    current.t3_version = ready.release.version.clone();
+                }
+            });
+        }
+    }
+
+    async fn maybe_stage_wake(&self) {
+        let record = self.record();
+        if !record.lifecycle_enrolled { return }
+        let Ok(status) = self.watchdog_get("/status").await else { return };
+        self.accept_version_receipt(&status);
+        if !status.maintenance_eligible || status.sandbox.as_deref() != Some(record.sandbox_id.as_str()) {
+            return;
+        }
+        let Ok(Ok(target)) = tokio::time::timeout(Duration::from_secs(5), self.shared.t3.version()).await else {
+            return;
+        };
+        if target == self.record().t3_version { return }
+        let shared = self.shared.clone();
+        tokio::spawn(async move {
+            if let Err(error) = provision::stage_wake(&shared.boat, &record, &target).await {
+                tracing::warn!("staging Sail for {}: {error:#}", record.id);
+            }
+        });
     }
 
     async fn watchdog_get(&self, path: &str) -> Result<WatchdogStatus> {
@@ -793,6 +904,7 @@ impl MachineRuntime {
     }
 
     async fn on_watchdog_status(&self, s: WatchdogStatus) {
+        self.accept_version_receipt(&s);
         if s.busy {
             self.cache.lock().unwrap().bump_epoch();
         }
@@ -984,9 +1096,14 @@ impl MachineRuntime {
                     tracing::warn!("waking {} for work due failed", self.id());
                 }
             }
-            if let Some((sandbox, stop)) = self.begin_save() {
+            if self.power() == Power::Stopped {
                 let this = self.clone();
-                tokio::spawn(async move { this.save_snapshot(sandbox, stop).await });
+                tokio::spawn(async move {
+                    let Ok(_waking) = this.waking.try_lock() else { return };
+                    if let Some((sandbox, stop)) = this.begin_save() {
+                        this.save_snapshot(sandbox, stop).await;
+                    }
+                });
             }
             let running = self.power() == Power::Running;
             let came_up = running && !was_running;

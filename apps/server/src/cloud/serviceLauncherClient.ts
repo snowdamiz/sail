@@ -1,3 +1,4 @@
+import { acquireBoatMutation } from "./boatLifecycle.ts";
 import type { ServerSelfUpdateOutcome } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
@@ -174,6 +175,19 @@ const resolveStartup = Effect.fn("cloud.service_launcher_client.resolve_startup"
     const managed = context !== undefined;
 
     return { host, context, managed };
+  },
+);
+
+export const claimUnmanagedBoatStart = Effect.fn("cloud.service_launcher_client.claim_boat_start")(
+  function* (baseDir: string) {
+    const { managed } = yield* resolveStartup();
+    return managed
+      ? () => {}
+      : yield* Effect.try({
+          try: () => acquireBoatMutation(baseDir),
+          catch: (cause) =>
+            new ServiceLauncherClientError({ operation: "maintenance-identity", cause }),
+        });
   },
 );
 
@@ -560,7 +574,13 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     ).pipe(Effect.forkScoped);
     if (fence !== undefined)
       yield* reconcileShellLaunchers(identity.baseDir, fence.release.version);
-    yield* send({ type: "maintenance-ready", peer, ...(fence === undefined ? {} : { fence }) });
+    const censusComplete = admission.producerInventoryComplete;
+    yield* send({
+      type: "maintenance-ready",
+      peer,
+      ...(fence === undefined ? {} : { fence }),
+      ...(censusComplete ? { censusComplete: true } : {}),
+    });
   });
 
   return ServiceLauncherClient.of({

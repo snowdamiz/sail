@@ -562,6 +562,14 @@ impl App {
         let record = {
             // Held until retired: a later wake then sees Missing, and none restores meanwhile.
             let _waking = machine.waking.lock().await;
+            let record = machine.record();
+            if record.lifecycle_enrolled {
+                match machine.power() {
+                    Power::Stopped if machine.stopped_with_lifecycle_receipt() => {}
+                    Power::Stopped => bail!("Boat did not confirm a lifecycle-owned stop; wake the sandbox before deleting it."),
+                    _ => provision::reserve_reaping(&self.shared.boat, &record).await?,
+                }
+            }
             machine.retire();
             // Read under the lock: a wake may have restored it onto a new sandbox.
             machine.record()
@@ -936,7 +944,7 @@ mod tests {
             Json(json!({
                 "phase":"active","busy":false,"workingThreads":0,"workingSubagents":0,"cpuBusy":false,
                 "agentsUnknown":false,"keepAwakeSecs":0,"keepAwakeForever":false,
-                "idleSecs":0,"sleepAfterSecs":180
+                "idleSecs":0,"sleepAfterSecs":180,"sandbox":"bx_dev"
             }))
         };
         let upstream = Router::new()
@@ -958,7 +966,7 @@ mod tests {
                             if id == "lost-ack" && first {
                                 return;
                             }
-                            let exit = if id == "retry-maintenance" && first {
+                            let exit = if id.ends_with("maintenance") && first {
                                 json!({"_tag":"Failure","cause":[{"_tag":"Fail","error":{
                                     "_tag":"OrchestrationV2DispatchCommandError",
                                     "commandId":id,"commandType":payload["type"],"retryable":true,"message":"maintenance"
@@ -977,19 +985,26 @@ mod tests {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
 
-        for restored in [false, true] {
+        for (restored, resume_ack_pending) in [(false, false), (true, false), (false, true)] {
             let dir = std::env::temp_dir().join(format!("sail-boat-wake-{:016x}", rand::random::<u64>()));
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("url"), &url).unwrap();
             if restored {
                 fs::write(dir.join("expired"), "").unwrap();
             }
+            if resume_ack_pending {
+                fs::write(dir.join("already-resumed"), "").unwrap();
+            }
             let boat = dir.join("boat");
             fs::write(&boat, r#"#!/bin/sh
 d=$(dirname "$0"); shift
 echo "$1" >> "$d/calls"
 case "$1" in
-  info) echo '{"sandbox":{"id":"bx_dev","state":"stopped"}}' ;;
+  info)
+    state=stopped
+    if [ -f "$d/already-resumed" ]; then state=running; fi
+    printf '{"sandbox":{"id":"bx_dev","state":"%s"}}\n' "$state"
+    ;;
   resume) if [ -f "$d/expired" ]; then echo snapshot_data_expired >&2; exit 1; fi ;;
   new) echo '{"id":"bx_restored"}' ;;
   delete) echo '{}' ;;
@@ -1023,6 +1038,8 @@ esac
                 local_port: 0,
                 t3_version: "1.0.0".into(),
                 provision_revision: watchdog_receipt.clone(),
+                lifecycle_enrolled: resume_ack_pending,
+                pending_resume: resume_ack_pending.then(|| "bx_dev".into()),
                 environment_id: "env-dev".into(),
                 client_tokens: Vec::new(),
                 link_tokens: Vec::new(),
@@ -1033,8 +1050,8 @@ esac
             };
             let machine = Arc::new(MachineRuntime::new(shared, record, dir.clone()));
             let command = |id: &str| json!({"type":"message.dispatch","commandId":id,"threadId":"fixture-thread"});
-            let initial = if restored { "restore-first" } else { "warm-first" };
-            let retry = if restored { "lost-ack" } else { "retry-maintenance" };
+            let initial = if restored { "restore-first" } else if resume_ack_pending { "resume-retry-first" } else { "warm-first" };
+            let retry = if restored { "lost-ack" } else if resume_ack_pending { "retry-resumed-maintenance" } else { "retry-maintenance" };
             let tail = if restored { "restore-tail" } else { "warm-tail" };
             let originals = vec![command(initial), command(retry), command(tail)];
             machine.cache.lock().unwrap().deferred_commands = originals.clone();
@@ -1087,8 +1104,10 @@ esac
             assert!(machine.last_error().is_none());
             assert!(machine.cache.lock().unwrap().deferred_commands.is_empty());
 
-            let mut expected = vec!["info", "resume"];
+            let mut expected = vec!["info"];
+            if !resume_ack_pending { expected.push("resume"); }
             let record = machine.record();
+            assert!(record.pending_resume.is_none());
             if restored {
                 expected.extend(["new", "delete", "host", "host"]);
                 assert_eq!(record.sandbox_id, "bx_restored");

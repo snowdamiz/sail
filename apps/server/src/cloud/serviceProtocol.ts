@@ -185,6 +185,7 @@ export interface ServiceLauncherContext {
 export type ServiceLauncherChildMessage =
   | {
       readonly type: "maintenance-ready";
+      readonly censusComplete?: true;
       readonly peer: MaintenancePeer;
       readonly fence?: MaintenanceFence;
     }
@@ -269,19 +270,25 @@ function decodeMaintenancePeer(value: unknown): MaintenancePeer | undefined {
   return { baseDir, installationId, environmentId, instanceId };
 }
 
-function decodeMaintenanceFence(value: unknown): MaintenanceFence | undefined {
-  if (!isRecord(value) || !uuid(value.updateId) || !isRecord(value.release)) return undefined;
-  const incumbent = decodeMaintenancePeer(value.incumbent);
-  const { version, archiveSha256, treeSha256 } = value.release;
+export function decodeStagedSailRelease(value: unknown): StagedSailRelease | undefined {
+  if (!isRecord(value)) return undefined;
+  const { version, archiveSha256, treeSha256 } = value;
   if (
-    incumbent === undefined ||
     typeof version !== "string" ||
     !isExactServiceVersion(version) ||
     !sha256(archiveSha256) ||
     !sha256(treeSha256)
   )
     return undefined;
-  return { incumbent, updateId: value.updateId, release: { version, archiveSha256, treeSha256 } };
+  return { version, archiveSha256, treeSha256 };
+}
+
+function decodeMaintenanceFence(value: unknown): MaintenanceFence | undefined {
+  if (!isRecord(value) || !uuid(value.updateId)) return undefined;
+  const incumbent = decodeMaintenancePeer(value.incumbent);
+  const release = decodeStagedSailRelease(value.release);
+  if (incumbent === undefined || release === undefined) return undefined;
+  return { incumbent, updateId: value.updateId, release };
 }
 
 function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
@@ -431,7 +438,11 @@ export function parseLegacyServiceState(value: string) {
 export function serviceStateHasPendingUpdate(value: string): boolean {
   try {
     const parsed: unknown = JSON.parse(value);
-    return isRecord(parsed) && isRecord(parsed.update) && parsed.update.status === "pending";
+    return (
+      isRecord(parsed) &&
+      ((parsed.protocol === SERVICE_MAINTENANCE_STATE_FORMAT && isRecord(parsed.maintenance)) ||
+        (isRecord(parsed.update) && parsed.update.status === "pending"))
+    );
   } catch {
     return false;
   }
@@ -517,7 +528,12 @@ export function decodeServiceLauncherChildMessage(
     peer !== undefined &&
     (value.fence === undefined || fence !== undefined)
   ) {
-    return { type: value.type, peer, ...(fence === undefined ? {} : { fence }) };
+    return {
+      type: value.type,
+      peer,
+      ...(fence === undefined ? {} : { fence }),
+      ...(value.censusComplete === true ? { censusComplete: true } : {}),
+    };
   }
   if (value.type === "maintenance-prepared" && peer !== undefined && fence !== undefined) {
     return { type: value.type, peer, fence };

@@ -250,6 +250,59 @@ if "$stage_only"; then
 fi
 target_dir="${versions_dir}/${version}"
 
+if [ "$platform" = linux ] && { "$stage_only" || [ -e "$t3_home/runtime/boat-installation-id" ]; }; then
+  mkdir -p "$t3_home/runtime"
+  [ ! -L "$t3_home/runtime" ] && [ ! -L "$t3_home/runtime/boat-lifecycle.lock" ] ||
+    fail "the Boat lifecycle requires a canonical runtime directory"
+  exec 9>>"$t3_home/runtime/boat-lifecycle.lock"
+  flock -w 10 9 || fail "another operation owns the pinned Boat lifecycle"
+  [ ! -e "$t3_home/runtime/boat-power-operation" ] || fail "a Boat power operation is pending"
+  if [ -e "$t3_home/runtime/boat-installation-id" ]; then
+    node - "$t3_home/runtime/service-state.json" <<'NODE' || fail "the Boat service journal requires launcher recovery"
+const fs = require("node:fs");
+try {
+  const state = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+  if (![2, 3, 4].includes(state?.protocol) || typeof state.activeVersion !== "string" ||
+      state.maintenance !== undefined || state.update?.status === "pending") process.exitCode = 1;
+} catch (error) {
+  if (error.code !== "ENOENT") process.exitCode = 1;
+}
+NODE
+  fi
+fi
+
+staged_tree_sha256() {
+  # Keep this in step with stagedTreeSha256 in the standalone launcher.
+  node - "$1" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+const crypto = require("node:crypto");
+const root = process.argv[2];
+const tree = crypto.createHash("sha256");
+async function visit(relative) {
+  const file = path.join(root, relative);
+  const stat = fs.lstatSync(file);
+  if (stat.isDirectory()) {
+    tree.update(JSON.stringify([relative, "directory"]));
+    for (const name of fs.readdirSync(file).sort()) {
+      if (relative !== "" || name !== ".sail-tree-sha256") await visit(path.join(relative, name));
+    }
+  } else if (stat.isFile() && relative !== "") {
+    const content = crypto.createHash("sha256");
+    for await (const chunk of fs.createReadStream(file)) content.update(chunk);
+    tree.update(JSON.stringify([relative, "file", stat.mode & 0o777, content.digest("hex")]));
+  } else {
+    throw new Error("Unsupported entry in staged Sail runtime.");
+  }
+}
+visit("").then(() => console.log(tree.digest("hex"))).catch((error) => {
+  console.error(error.message);
+  process.exitCode = 1;
+});
+NODE
+}
+
+
 is_sail_archive() {
   [ -f "$1/.sail-product" ] && [ ! -L "$1/.sail-product" ] &&
     [ "$(cat "$1/.sail-product")" = sail ]
@@ -265,6 +318,9 @@ staged_release_matches() {
     [ "$(cat "$target_dir/.install-complete" 2>/dev/null)" = "$version" ] &&
     is_sail_archive "$target_dir" &&
     [ "$(cat "$target_dir/.sail-archive-sha256" 2>/dev/null)" = "$expected" ] &&
+    [ -f "$target_dir/.sail-tree-sha256" ] && [ ! -L "$target_dir/.sail-tree-sha256" ] &&
+    tree_digest="$(staged_tree_sha256 "$target_dir")" && [ -n "$tree_digest" ] &&
+    [ "$(cat "$target_dir/.sail-tree-sha256")" = "$tree_digest" ] &&
     reports_exact_version "$target_dir"
 }
 
@@ -318,7 +374,12 @@ else
     reports_exact_version "$staging" || fail "the downloaded executable does not report t3 v$version"
     printf '%s\n' "$version" > "$staging/.install-complete"
     printf '%s\n' "$expected" > "$staging/.sail-archive-sha256"
-    # Both attempts may finish validation. Publish once and verify the winner.
+    [ ! -e "$staging/.sail-tree-sha256" ] && [ ! -L "$staging/.sail-tree-sha256" ] ||
+      fail "the release archive contains a reserved staging receipt"
+    tree_digest="$(staged_tree_sha256 "$staging")" || fail "could not digest the staged runtime"
+    printf '%s\n' "$tree_digest" > "$staging/.sail-tree-sha256"
+    sync -f "$staging" || fail "could not sync the verified staged runtime"
+    # Publish only once, after the archive and all extracted bytes have been verified.
     mv -nT "$staging" "$target_dir" || fail "could not publish the staged runtime"
     staged_release_matches || fail "a different or incomplete release occupies $target_dir"
     report_staged_release

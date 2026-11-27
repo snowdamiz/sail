@@ -452,10 +452,8 @@ const layerAdmission = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     return makeAdmission(
-      observeDurableObligations().pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-        Effect.map((blockers) => [...blockers, "producer-inventory-incomplete" as const]),
-      ),
+      observeDurableObligations().pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      "incomplete",
     );
   }),
 ).pipe(Layer.provide(layerPersistence));

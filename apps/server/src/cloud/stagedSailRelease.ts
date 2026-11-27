@@ -24,7 +24,14 @@ export async function stagedTreeSha256(root: string, signal: AbortSignal, durabl
     if (stat.isDirectory()) {
       tree.update(JSON.stringify([relative, "directory"]));
       for (const name of (await NodeFSP.readdir(path)).sort()) {
-        await visit(relative === "" ? name : NodePath.join(relative, name));
+        if (relative === "" && name === ".sail-tree-sha256") {
+          const receipt = NodePath.join(path, name);
+          if (!(await NodeFSP.lstat(receipt)).isFile())
+            throw new Error("Invalid staged tree receipt.");
+          if (durable) await sync(receipt);
+        } else {
+          await visit(relative === "" ? name : NodePath.join(relative, name));
+        }
       }
     } else if (stat.isFile() && relative !== "") {
       const content = NodeCrypto.createHash("sha256");
@@ -55,6 +62,13 @@ export async function verifyStagedSailRelease(
       release.archiveSha256
   ) {
     throw new Error("The staged Sail runtime does not match its verified release.");
+  }
+  const treeReceipt = NodePath.join(path, ".sail-tree-sha256");
+  if (
+    (await exists(treeReceipt)) &&
+    (await NodeFSP.readFile(treeReceipt, "utf8")).trim() !== release.treeSha256
+  ) {
+    throw new Error("The staged Sail tree receipt does not match its verified release.");
   }
   await NodeFSP.access(NodePath.join(path, "t3"), NodeFS.constants.X_OK);
 }
@@ -93,7 +107,7 @@ export async function publishStagedSailRelease(
   signal: AbortSignal,
 ) {
   const versions = NodePath.dirname(target);
-  const temporary = NodePath.join(versions, `.boat-stage-\${updateId}`);
+  const temporary = NodePath.join(versions, `.boat-stage-${updateId}`);
   await NodeFSP.mkdir(temporary, { mode: 0o700 });
   try {
     await NodeFSP.cp(stagedPath(baseDir, release.version), temporary, { recursive: true });
@@ -113,7 +127,7 @@ export async function removeMaintenanceRuntime(
   signal: AbortSignal,
 ) {
   const versions = NodePath.dirname(target);
-  const temporary = NodePath.join(versions, `.boat-stage-\${updateId}`);
+  const temporary = NodePath.join(versions, `.boat-stage-${updateId}`);
   await NodeFSP.rm(temporary, { recursive: true, force: true });
   if (await exists(target)) {
     await verifyStagedSailRelease(target, release, signal);

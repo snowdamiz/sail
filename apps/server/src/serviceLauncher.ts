@@ -13,6 +13,15 @@ import {
   removeMaintenanceRuntime,
   verifyStagedSailRelease,
 } from "./cloud/stagedSailRelease.ts";
+import {
+  acquireBoatLifecycle,
+  BoatLifecycleBusy,
+  boatRuntime,
+  BOAT_CAPABILITY,
+  BOAT_READY,
+  BOAT_REQUEST,
+  openBoatCoordinator,
+} from "./cloud/boatLifecycle.ts";
 import { acquireServiceSelectionLock } from "./cloud/serviceSelectionLock.ts";
 import { RESTORE_OOMD_WATCH_SCRIPT } from "./cloud/userManagerOom.ts";
 import { windowsSystem32Path } from "@t3tools/shared/windowsSystem";
@@ -45,6 +54,7 @@ import {
   serviceTaskIsDisabled,
   serviceUnitBaseDirOf,
   serviceUnitLogPathOf,
+  serviceUnitProgramOf,
   SERVICE_ENV_FILE,
   SERVICE_LAUNCHER_LOCK_FILE,
   SERVICE_SERVING_LOCK_FILE,
@@ -85,6 +95,7 @@ interface ManagedChild {
   readonly version: string;
   readonly maintenancePeer?: MaintenancePeer;
   maintenanceReady: boolean;
+  censusComplete?: true;
   role: ChildRole;
   readonly process: NodeChildProcess.ChildProcess;
 }
@@ -92,6 +103,8 @@ interface ManagedChild {
 interface MaintenanceCoordinator {
   readonly installation: MaintenanceInstallation;
   readonly drainBudgetMs: number;
+  readonly assertReaped?: () => void;
+  readonly automatic?: NonNullable<ReturnType<typeof openBoatCoordinator>>["automatic"];
   // The owner excludes service starts, installer/selector changes and Boat stop/snapshot.
   // On recovery it also establishes that the previous launcher's children have exited.
   readonly acquire: (input: {
@@ -972,6 +985,9 @@ export class Launcher {
   #releaseLifecycle: (() => void) | undefined;
   #releaseSelection: (() => void) | undefined;
   #drainDeadline = 0;
+  readonly #boatRuntime: string | undefined;
+  #releaseStart: (() => void) | undefined;
+  #lastAutomaticRequest: string | undefined;
 
   constructor(
     baseDir: string,
@@ -979,6 +995,7 @@ export class Launcher {
     options: {
       readonly backupSpaceProbe?: Partial<BackupSpaceProbe>;
       readonly maintenanceCoordinator?: MaintenanceCoordinator;
+      readonly boatRuntime?: string;
       readonly serviceUnit?: ServiceUnit;
       readonly environment?: Readonly<NodeJS.ProcessEnv>;
       readonly stateDirOwnerPollMs?: number;
@@ -997,9 +1014,12 @@ export class Launcher {
     this.#environment = { ...(options.environment ?? process.env) };
     this.#output = options.output;
     this.#maintenance = options.maintenanceCoordinator;
+    this.#boatRuntime = options.boatRuntime;
     this.#lockPath =
       options.lockPath ??
-      (this.#maintenance === undefined ? undefined : serviceLauncherLockPath(baseDir));
+      (this.#maintenance === undefined && this.#boatRuntime === undefined
+        ? undefined
+        : serviceLauncherLockPath(baseDir));
     // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
     this.#stopChildOverIpc = options.stopChildOverIpc ?? process.platform === "win32";
     this.#statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
@@ -1011,6 +1031,16 @@ export class Launcher {
     const onSigint = () => void this.stop("SIGINT");
     process.once("SIGTERM", onSigterm);
     process.once("SIGINT", onSigint);
+    const automatic = this.#maintenance?.automatic;
+    const watcher =
+      automatic === undefined
+        ? undefined
+        : NodeFS.watch(automatic.runtime, { persistent: false }, (_, filename) => {
+            if (filename === BOAT_REQUEST) this.#considerAutomaticMaintenance();
+          });
+    watcher?.on("error", (error) =>
+      this.#log(`[service-launcher] Boat request watcher: ${error.message}\n`),
+    );
     try {
       const lock =
         this.#lockPath === undefined ? undefined : await this.#acquireLock(this.#lockPath);
@@ -1018,7 +1048,7 @@ export class Launcher {
         // The launcher that held the lock may have moved the state since main read it.
         if (lock !== undefined) this.#state = await readServiceState(this.#statePath);
         // A stop that arrived before this point leaves nothing to start or recover.
-        if (!this.#stopRequested) this.#enqueue(() => this.#recover());
+        if (!this.#stopRequested) this.#enqueue(() => this.#recoverWithBoatLock());
         await this.#completion.promise;
       } finally {
         if (lock !== undefined) {
@@ -1029,6 +1059,7 @@ export class Launcher {
         }
       }
     } finally {
+      watcher?.close();
       this.#releaseServing();
       process.off("SIGTERM", onSigterm);
       process.off("SIGINT", onSigint);
@@ -1198,6 +1229,47 @@ export class Launcher {
     }
   }
 
+  async #withBoatStart(work: () => Promise<void>): Promise<void> {
+    const runtime = this.#boatRuntime;
+    if (
+      runtime === undefined ||
+      this.#releaseStart !== undefined ||
+      this.#releaseLifecycle !== undefined
+    ) {
+      return work();
+    }
+    while (!this.#stopRequested) {
+      try {
+        this.#releaseStart = acquireBoatLifecycle(runtime, "recover");
+        break;
+      } catch (error) {
+        if (!(error instanceof BoatLifecycleBusy)) throw error;
+        await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_MS));
+      }
+    }
+    const release = this.#releaseStart;
+    if (release === undefined) return;
+    try {
+      await work();
+    } finally {
+      if (this.#releaseStart === release) {
+        this.#releaseStart = undefined;
+        release();
+      }
+    }
+  }
+
+  async #recoverWithBoatLock(): Promise<void> {
+    await this.#withBoatStart(async () => {
+      if (this.#boatRuntime !== undefined) this.#state = await readServiceState(this.#statePath);
+      const automatic = this.#maintenance?.automatic;
+      if (automatic !== undefined) {
+        await NodeFSP.rm(NodePath.join(automatic.runtime, BOAT_CAPABILITY), { force: true });
+      }
+      await this.#recover();
+    });
+  }
+
   async #recover(): Promise<void> {
     await this.#claimServing();
     if (this.#state.maintenance !== undefined) {
@@ -1305,6 +1377,18 @@ export class Launcher {
   }
 
   async #startChild(version: string, role: ChildRole, update?: ServiceUpdateRecord): Promise<void> {
+    await this.#withBoatStart(async () => {
+      if (
+        this.#boatRuntime !== undefined &&
+        !NodeUtil.isDeepStrictEqual(await readServiceState(this.#statePath), this.#state)
+      ) {
+        throw new Error("Boat service selection changed before starting the child.");
+      }
+      await this.#spawnChild(version, role, update);
+    });
+  }
+
+  async #spawnChild(version: string, role: ChildRole, update?: ServiceUpdateRecord): Promise<void> {
     if (this.#stopping || (this.#stopRequested && this.#state.maintenance !== undefined)) return;
     if (
       await this.#deferForDiskSpace(() =>
@@ -1420,11 +1504,15 @@ export class Launcher {
     ) {
       throw new Error("The launcher cannot establish maintenance ownership for this installation.");
     }
-    this.#releaseLifecycle = await coordinator.acquire({
-      recovering,
-      signal: this.#stopSignal.signal,
-    });
+    this.#releaseLifecycle =
+      this.#releaseStart ??
+      (await coordinator.acquire({
+        recovering,
+        signal: this.#stopSignal.signal,
+      }));
+    this.#releaseStart = undefined;
     try {
+      if (recovering) coordinator.assertReaped?.();
       this.#stopSignal.signal.throwIfAborted();
       this.#releaseSelection = await acquireServiceSelectionLock(this.#statePath);
       const selected = await readServiceState(this.#statePath);
@@ -1468,6 +1556,7 @@ export class Launcher {
         if (
           child?.role !== "active" ||
           !child.maintenanceReady ||
+          (this.#maintenance?.automatic !== undefined && child.censusComplete !== true) ||
           peer === undefined ||
           !child.process.connected ||
           this.#releaseLifecycle !== undefined ||
@@ -1583,6 +1672,51 @@ export class Launcher {
     });
   }
 
+  #considerAutomaticMaintenance(): void {
+    const automatic = this.#maintenance?.automatic;
+    const child = this.#child;
+    if (automatic === undefined || child?.censusComplete !== true || this.#stopRequested) return;
+    try {
+      const request = automatic.readRequest();
+      if (request === undefined || request.instanceId !== child.maintenancePeer?.instanceId) return;
+      const key = JSON.stringify(request);
+      if (key === this.#lastAutomaticRequest) return;
+      this.#lastAutomaticRequest = key;
+      void this.requestMaintenance(request.release).catch((error: unknown) =>
+        this.#log(`[service-launcher] Boat update remains pending: ${String(error)}\n`),
+      );
+    } catch (error) {
+      this.#log(`[service-launcher] Invalid Boat update request: ${String(error)}\n`);
+    }
+  }
+
+  async #publishBoatCapability(child: ManagedChild, censusComplete: true | undefined) {
+    const automatic = this.#maintenance?.automatic;
+    const peer = child.maintenancePeer;
+    if (automatic === undefined || peer === undefined) return;
+    if (censusComplete === true) child.censusComplete = true;
+    try {
+      await replaceFileDurably(
+        NodePath.join(automatic.runtime, BOAT_CAPABILITY),
+        JSON.stringify({
+          ...peer,
+          bootId: automatic.bootId,
+          launcherPid: automatic.pid,
+          launcherStart: automatic.launcherStart,
+          childPid: child.process.pid,
+          version: child.version,
+          censusComplete: child.censusComplete === true,
+        }),
+      );
+    } catch (error) {
+      this.#log(
+        `[service-launcher] Could not publish the Boat serving capability: ${String(error)}\n`,
+      );
+      return;
+    }
+    this.#considerAutomaticMaintenance();
+  }
+
   async #handleMaintenanceMessage(
     child: ManagedChild,
     message: Exclude<ServiceLauncherChildMessage, { type: "prepared" | "request-update" }>,
@@ -1593,7 +1727,10 @@ export class Launcher {
     const attempt = this.#state.maintenance;
     const update = this.#state.update;
     if (message.type === "maintenance-ready" && message.fence === undefined) {
-      if (child.role === "active" && attempt === undefined) child.maintenanceReady = true;
+      if (child.role === "active" && attempt === undefined) {
+        child.maintenanceReady = true;
+        await this.#publishBoatCapability(child, message.censusComplete);
+      }
       return;
     }
     if (
@@ -1611,6 +1748,20 @@ export class Launcher {
       child.version === update.targetVersion
     ) {
       this.#clearTimer();
+      const automatic = this.#maintenance?.automatic;
+      if (automatic !== undefined) {
+        await this.#repointServiceUnit(child.version, true);
+        await replaceFileDurably(
+          NodePath.join(automatic.runtime, BOAT_READY),
+          JSON.stringify({
+            environmentId: peer.environmentId,
+            installationId: peer.installationId,
+            instanceId: peer.instanceId,
+            updateId: update.id,
+            release: attempt.fence.release,
+          }),
+        );
+      }
       await this.#selectState({
         protocol: SERVICE_LAUNCHER_PROTOCOL,
         activeVersion: child.version,
@@ -1619,7 +1770,8 @@ export class Launcher {
       child.maintenanceReady = true;
       await discardDatabaseBackup(this.#baseDir, update.id).catch(() => undefined);
       this.#releaseMaintenance();
-      await this.#repointServiceUnit(child.version);
+      if (automatic === undefined) await this.#repointServiceUnit(child.version);
+      await this.#publishBoatCapability(child, message.censusComplete);
       return;
     }
     if (update?.status !== "pending") return;
@@ -1680,6 +1832,7 @@ export class Launcher {
     await this.#selectState({ ...this.#state, maintenance: { ...attempt, phase: "cutover" } });
     this.#child = null;
     await this.#terminate(child.process);
+    this.#maintenance?.assertReaped?.();
     try {
       await publishStagedSailRelease(
         peer.baseDir,
@@ -1702,6 +1855,10 @@ export class Launcher {
   ): Promise<void> {
     const reject = (reason: string) =>
       sendMessage(child.process, { type: "update-rejected", reason });
+    if (this.#boatRuntime !== undefined) {
+      await reject("This Boat installation selects updates through its maintenance lifecycle.");
+      return;
+    }
     if (child.role !== "active") {
       await reject("Only the active server can request an update.");
       return;
@@ -1824,9 +1981,12 @@ export class Launcher {
   }
 
   // Selection is durable before this best-effort unit reconciliation.
-  async #repointServiceUnit(version: string): Promise<void> {
+  async #repointServiceUnit(version: string, required = false): Promise<void> {
     const unit = this.#serviceUnit;
-    if (unit === undefined) return;
+    if (unit === undefined) {
+      if (required) throw new Error("The Boat systemd unit could not be located.");
+      return;
+    }
     try {
       const release = await acquireServiceSelectionLock(unit.path);
       try {
@@ -1838,6 +1998,7 @@ export class Launcher {
           selected.update?.id !== this.#state.update?.id ||
           selected.update?.status !== this.#state.update?.status
         ) {
+          if (required) throw new Error("The Boat service selection or unit has changed.");
           return;
         }
         const contents = decodeServiceUnit(await NodeFSP.readFile(unit.path));
@@ -1847,9 +2008,19 @@ export class Launcher {
           installedBaseDir === undefined ||
           (await real(installedBaseDir)) !== (await real(this.#baseDir))
         ) {
+          if (required) throw new Error("The Boat service selection or unit has changed.");
           return;
         }
         const repointed = repointServiceUnit(contents, version);
+        if (required) {
+          const executable = serviceUnitProgramOf(repointed);
+          if (
+            executable === undefined ||
+            (await NodeFSP.realpath(executable)) !== runtimePaths(this.#baseDir, version).entryPath
+          ) {
+            throw new Error("The Boat unit does not start the committed runtime.");
+          }
+        }
         if (repointed !== contents) {
           await replaceFileDurably(
             unit.path,
@@ -1862,6 +2033,7 @@ export class Launcher {
         release();
       }
     } catch (error) {
+      if (required) throw error;
       process.stderr.write(
         `[service-launcher] Could not point ${unit.path} at t3@${version}: ${error instanceof Error ? error.message : String(error)}\n`,
       );
@@ -2022,6 +2194,7 @@ export class Launcher {
       return;
     const maintenance = this.#state.maintenance;
     if (maintenance?.phase === "cutover" && this.#stopRequested) return;
+    if (maintenance?.phase === "cutover") this.#maintenance?.assertReaped?.();
     await this.#withMaintenanceDatabaseLock(() => restoreDatabaseBackup(this.#baseDir, pending));
     if (maintenance?.phase === "cutover") {
       await removeMaintenanceRuntime(
@@ -2056,10 +2229,12 @@ export interface LauncherOptions {
 }
 
 export async function main(options: LauncherOptions = {}): Promise<void> {
-  const baseDir = options.baseDir ?? process.env.T3CODE_HOME;
-  if (baseDir === undefined || baseDir.trim() === "") {
+  const configuredHome = options.baseDir ?? process.env.T3CODE_HOME;
+  if (configuredHome === undefined || configuredHome.trim() === "") {
     throw new Error("T3CODE_HOME is required by the T3 Code service launcher.");
   }
+  const runtime = boatRuntime(configuredHome);
+  const baseDir = runtime === undefined ? configuredHome : NodePath.dirname(runtime);
   const output =
     options.logFile === undefined ? undefined : NodeFS.openSync(options.logFile, "a", 0o600);
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
@@ -2095,7 +2270,13 @@ export async function main(options: LauncherOptions = {}): Promise<void> {
         SERVICE_LOG_CHECK_INTERVAL_MS,
       ).unref();
     }
+    const maintenanceCoordinator =
+      runtime === undefined
+        ? undefined
+        : openBoatCoordinator(runtime, managerEnvironment[SERVICE_UNIT_ENV]);
     const launcher = new Launcher(baseDir, state, {
+      ...(runtime === undefined ? {} : { boatRuntime: runtime }),
+      ...(maintenanceCoordinator === undefined ? {} : { maintenanceCoordinator }),
       environment,
       ...(serviceUnit === undefined ? {} : { serviceUnit }),
       ...(output === undefined ? {} : { output }),

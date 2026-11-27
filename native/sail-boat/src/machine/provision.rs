@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 
 const PROVISION_SH: &str = include_str!("provision.sh");
 const WATCHDOG_MJS: &str = include_str!("watchdog.mjs");
+const LIFECYCLE_MJS: &str = include_str!("boat-lifecycle.mjs");
 const CLI_RELEASE_DOWNLOAD_URL: &str = "https://github.com/snowdamiz/sail/releases/download";
 const T3_PORT: u16 = 3773;
 const WATCHDOG_PORT: u16 = 3774;
@@ -18,7 +19,7 @@ const WATCHDOG_PORT: u16 = 3774;
 pub fn revision() -> &'static str {
     static REVISION: OnceLock<String> = OnceLock::new();
     REVISION.get_or_init(|| {
-        let hash = fnv1a(PROVISION_SH.bytes().chain(WATCHDOG_MJS.bytes()).chain(SLEEP_AFTER_SECS.to_string().bytes()));
+        let hash = fnv1a(PROVISION_SH.bytes().chain(WATCHDOG_MJS.bytes()).chain(LIFECYCLE_MJS.bytes()).chain(SLEEP_AFTER_SECS.to_string().bytes()));
         format!("{hash:016x}")
     })
 }
@@ -33,6 +34,8 @@ pub fn fnv1a(bytes: impl IntoIterator<Item = u8>) -> u64 {
 struct Provisioned {
     environment_id: String,
     upstream_token: String,
+    #[serde(default)]
+    lifecycle_enrolled: bool,
 }
 
 /// Machine sizes, as Boat sells them.
@@ -96,6 +99,26 @@ pub(super) async fn refresh_watchdog(boat: &Boat, record: &Machine) -> Result<()
     Ok(())
 }
 
+pub(super) async fn stage_wake(boat: &Boat, record: &Machine, target: &str) -> Result<()> {
+    let version = shell_word(target)?;
+    let url = cli_install_url(version, std::env::var("SAIL_CLI_INSTALL_URL").ok().as_deref())?;
+    let url = base64::engine::general_purpose::STANDARD.encode(url);
+    let environment = shell_word(&record.environment_id)?;
+    let sandbox = shell_word(&record.sandbox_id)?;
+    let script = format!(
+        "url=$(echo {url} | base64 -d); exec node \"$HOME/.sail-boat/boat-lifecycle.mjs\" wake {version} \"$url\" {environment} {sandbox}"
+    );
+    boat.exec_ok(sandbox, &script, 600).await?;
+    Ok(())
+}
+
+pub(crate) async fn reserve_reaping(boat: &Boat, record: &Machine) -> Result<()> {
+    let sandbox = shell_word(&record.sandbox_id)?;
+    let script = format!("exec node \"$HOME/.sail-boat/boat-lifecycle.mjs\" retire {sandbox}");
+    boat.exec_ok(sandbox, &script, 15).await?;
+    Ok(())
+}
+
 /// Copies the scripts over as a file so the watchdog secret stays out of command lines.
 /// Only creation passes a version.
 async fn run(
@@ -115,11 +138,12 @@ async fn run(
     };
     let script = format!(
         "set -e; d=$(mktemp -d); trap 'rm -rf \"$d\" \"$0\"' EXIT\n\
-         echo {p} | base64 -d > \"$d/provision.sh\"; echo {w} | base64 -d > \"$d/watchdog.mjs\"\n\
+         echo {p} | base64 -d > \"$d/provision.sh\"; echo {w} | base64 -d > \"$d/watchdog.mjs\"; echo {l} | base64 -d > \"$d/boat-lifecycle.mjs\"\n\
          install_url=$(echo {u} | base64 -d)\n\
          SAIL_BOAT_SECRET={s} SAIL_CLI_INSTALL_URL=\"$install_url\" bash \"$d/provision.sh\" {v} {sleep} {snapshot} {name} {sandbox}\n",
         p = b64(PROVISION_SH),
         w = b64(WATCHDOG_MJS),
+        l = b64(LIFECYCLE_MJS),
         u = b64(&install_url),
         v = version,
         s = shell_word(watchdog_secret)?,
@@ -192,6 +216,8 @@ pub async fn create(
         local_port,
         t3_version: t3_version.to_owned(),
         provision_revision: revision().to_owned(),
+        lifecycle_enrolled: provisioned.lifecycle_enrolled,
+        pending_resume: None,
         environment_id: provisioned.environment_id,
         client_tokens: Vec::new(),
         link_tokens: Vec::new(),
@@ -265,6 +291,7 @@ mod tests {
         let bin = home.join(".local/bin");
         fs::create_dir_all(&bin).unwrap();
         fs::write(home.join("watchdog.mjs"), WATCHDOG_MJS).unwrap();
+        fs::write(home.join("boat-lifecycle.mjs"), LIFECYCLE_MJS).unwrap();
         fs::write(home.join("provision.sh"), PROVISION_SH).unwrap();
         let write_executable = |name, contents| {
             let file = bin.join(name);

@@ -18,8 +18,11 @@ restarts never depend on npm cache eviction or a moving tag.
 
 The Linux installer can stage an exact Sail release with `--stage-only`. It verifies the
 archive checksum, the embedded Sail product marker, and the executable's version. It publishes
-under `runtime/boat-staged`, outside the launcher's version selection. A staged release is only
-a candidate. The incumbent continues to serve after a warm wake or restore.
+under `runtime/boat-staged`, outside the launcher's version selection. On a warm wake or
+restore, the incumbent serves first. A managed Linux Boat launcher can request a handoff
+after the serving child reports producer census coverage. The inventory blocker currently
+keeps this request disabled. A pending service journal belongs to the launcher, and other
+Boat operations must wait for launcher recovery before changing the pinned home.
 
 Legacy migration requires a controlled offline window. Settle accepted work before taking the
 service offline, hold the supervisor against restart, and retain the incumbent runtime and a

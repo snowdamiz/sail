@@ -151,3 +151,21 @@ it.effect("an empty census cannot seal on a zero budget", () =>
     yield* admission.run("root", Effect.void);
   }),
 );
+
+it.effect("keeps the production inventory blocker even if the durable census is empty", () =>
+  Effect.gen(function* () {
+    const admission = makeAdmission(Effect.succeed([]), "incomplete");
+    assert.isFalse(admission.producerInventoryComplete);
+    const draining = yield* admission
+      .drain(Symbol(), "1 second")
+      .pipe(Effect.forkScoped({ startImmediately: true }));
+    yield* TestClock.adjust("1 second");
+    assert.deepEqual(yield* Fiber.join(draining), {
+      kind: "aborted",
+      reason: "deadline",
+      retryable: true,
+      blockers: ["producer-inventory-incomplete"],
+    });
+    assert.isTrue(makeAdmission(Effect.succeed([]), "complete").producerInventoryComplete);
+  }),
+);

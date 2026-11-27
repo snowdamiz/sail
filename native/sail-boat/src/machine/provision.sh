@@ -35,6 +35,12 @@ install_sail() {
   fi
 }
 config="$boat_dir/config.json"
+lifecycle="$here/boat-lifecycle.mjs"
+boot=""
+enrolled=false
+if [ -r /proc/sys/kernel/random/boot_id ]; then
+  boot="$(node "$lifecycle" boot)"
+fi
 if [ "$version" != - ]; then
   if ! sail_installed; then
     install_log="$boat_dir/install.log"
@@ -45,6 +51,24 @@ if [ "$version" != - ]; then
     fi
   fi
   mkdir -p "$t3_home/userdata"
+  if [ -n "$boot" ] && [ ! -e "$t3_home/runtime/service-state.json" ]; then
+    node --no-warnings - "$t3_home" <<'NODE'
+const fs = require("node:fs");
+const crypto = require("node:crypto");
+const { DatabaseSync } = require("node:sqlite");
+const home = process.argv[2];
+const database = new DatabaseSync(home + "/userdata/statev2.sqlite");
+database.close();
+for (const file of ["/userdata/environment-id", "/runtime/boat-installation-id"]) {
+  try {
+    fs.writeFileSync(home + file, crypto.randomUUID() + "\n", { flag: "wx", mode: 0o600 });
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+  }
+}
+NODE
+    sync -f "$t3_home"
+  fi
   node -e '
     const fs = require("fs"), f = process.argv[1];
     const s = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : {};
@@ -77,6 +101,9 @@ if [ "$version" != - ]; then
   watchdog_token="$("$t3" auth session issue --token-only --ttl 3650d --label sail-watchdog --scope orchestration:read)"
   upstream_token="$("$t3" auth session issue --token-only --ttl 3650d --label sail-boat)"
 else
+  if [ -n "$boot" ]; then
+    node "$lifecycle" restore "$sandbox"
+  fi
   watchdog_token="$(node -e 'try{process.stdout.write(require(process.argv[1]).t3Token||"")}catch{}' "$config")"
   if [ -z "$watchdog_token" ]; then
     echo "Watchdog refresh requires its existing read-only token" >&2
@@ -84,13 +111,25 @@ else
   fi
 fi
 
+if [ -f "$t3_home/runtime/boat-installation-id" ]; then
+  enrolled=true
+  exec 9>>"$t3_home/runtime/boat-lifecycle.lock"
+  flock -w 5 9
+  [ ! -e "$t3_home/runtime/boat-power-operation" ] || exit 75
+fi
+
 # The watchdog names its sandbox by id because BOAT_ID is absent from its environment.
-SECRET="$secret" TOKEN="$watchdog_token" SLEEP="$sleep_after" SNAPSHOT="$snapshot" SANDBOX="$sandbox" node -e '
+SECRET="$secret" TOKEN="$watchdog_token" SLEEP="$sleep_after" SNAPSHOT="$snapshot" SANDBOX="$sandbox" BOOT="$boot" node -e '
   const e = process.env;
-  require("fs").writeFileSync(process.argv[1], JSON.stringify({
-    secret: e.SECRET, t3Token: e.TOKEN, sleepAfterSecs: Number(e.SLEEP), snapshot: e.SNAPSHOT, sandbox: e.SANDBOX
+  const fs = require("fs");
+  const path = process.argv[1];
+  const temporary = path + "." + process.pid;
+  fs.writeFileSync(temporary, JSON.stringify({
+    secret: e.SECRET, t3Token: e.TOKEN, sleepAfterSecs: Number(e.SLEEP), snapshot: e.SNAPSHOT, sandbox: e.SANDBOX, bootId: e.BOOT
   }, null, 2), { mode: 0o600 });
+  fs.renameSync(temporary, path);
 ' "$config"
+install -m 600 "$lifecycle" "$boat_dir/boat-lifecycle.mjs"
 install -m 600 "$here/watchdog.mjs" "$boat_dir/watchdog.mjs"
 # Stop legacy t3boat watchdog unit if migrating an existing sandbox.
 systemctl --user disable --now t3boat-watchdog.service >/dev/null 2>&1 || true
@@ -114,7 +153,7 @@ systemctl --user enable sail-watchdog.service >/dev/null 2>&1
 systemctl --user restart sail-watchdog.service
 
 if [ "$version" != - ]; then
-  ENV_ID="$environment_id" TOK="$upstream_token" node -e '
-    console.log(JSON.stringify({ environmentId: process.env.ENV_ID, upstreamToken: process.env.TOK }));
+  ENV_ID="$environment_id" TOK="$upstream_token" ENROLLED="$enrolled" node -e '
+    console.log(JSON.stringify({ environmentId: process.env.ENV_ID, upstreamToken: process.env.TOK, lifecycleEnrolled: process.env.ENROLLED === "true" }));
   '
 fi

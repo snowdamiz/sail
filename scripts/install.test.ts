@@ -125,7 +125,19 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("Boat release s
             expect(first.stdout.trim()).toMatch(/^[a-f0-9]{64}$/);
             expect(concurrent.stdout).toBe(first.stdout);
             expect((await install()).stdout).toBe(first.stdout);
-            expect(await NodeFSP.readFile(NodePath.join(target, "t3"), "utf8")).toBe(executable);
+            const installedExecutable = NodePath.join(target, "t3");
+            expect(await NodeFSP.readFile(installedExecutable, "utf8")).toBe(executable);
+            const treeReceipt = await NodeFSP.readFile(
+              NodePath.join(target, ".sail-tree-sha256"),
+              "utf8",
+            );
+            expect(treeReceipt.trim()).toMatch(/^[a-f0-9]{64}$/);
+
+            await NodeFSP.chmod(installedExecutable, 0o700);
+            await expect(install()).rejects.toMatchObject({
+              stderr: expect.stringContaining("a different or incomplete release occupies"),
+            });
+            await NodeFSP.chmod(installedExecutable, 0o755);
 
             await NodeFSP.writeFile(NodePath.join(payload, "t3"), `${executable}# republished\n`);
             await execFile("tar", ["-czf", archive, stem], { cwd: root });

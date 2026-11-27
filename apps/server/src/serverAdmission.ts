@@ -62,7 +62,10 @@ class CurrentPermit extends Context.Reference<symbol | undefined>("t3/serverAdmi
   defaultValue: () => undefined,
 }) {}
 
-export const makeAdmission = <E>(observe: Effect.Effect<ReadonlyArray<DrainBlocker>, E>) => {
+export const makeAdmission = <E>(
+  observe: Effect.Effect<ReadonlyArray<DrainBlocker>, E>,
+  producerInventory?: "complete" | "incomplete",
+) => {
   // Gate changes and permit registration run in synchronous sections on the server's JS thread.
   let phase: Phase = { kind: "open" };
   const permits = new Set<symbol>();
@@ -188,7 +191,15 @@ export const makeAdmission = <E>(observe: Effect.Effect<ReadonlyArray<DrainBlock
           // A read-only observer can finish after a deadline without holding admission closed.
           const read = Effect.gen(function* () {
             const census = Effect.all([observe, ...observers]).pipe(
-              Effect.map((reports) => [...new Set([...reports.flat(), ...liveProducers.keys()])]),
+              Effect.map((reports) => [
+                ...new Set([
+                  ...reports.flat(),
+                  ...liveProducers.keys(),
+                  ...(producerInventory === "incomplete"
+                    ? ["producer-inventory-incomplete" as const]
+                    : []),
+                ]),
+              ]),
             );
             const result = yield* Effect.acquireUseRelease(
               Effect.forkDetach(Effect.exit(census), { startImmediately: true }),
@@ -240,7 +251,15 @@ export const makeAdmission = <E>(observe: Effect.Effect<ReadonlyArray<DrainBlock
     );
   });
 
-  return { run, fork, drain, abort, registerObserver, trackLifetime };
+  return {
+    run,
+    fork,
+    drain,
+    abort,
+    registerObserver,
+    trackLifetime,
+    producerInventoryComplete: producerInventory === "complete",
+  };
 };
 
 export class ServerAdmission extends Context.Reference<
