@@ -195,6 +195,11 @@ const make = Effect.gen(function* () {
       if (item.fields !== undefined || resolver.saveItem === undefined) {
         return yield* new SecretRequestError({ reason: "fields_mismatch" });
       }
+      const existing = yield* store
+        .get(storeName(yield* refFor(input.threadId, item.id)))
+        .pipe(Effect.mapError(() => new SecretRequestError({ reason: "store_failed" })));
+      if (Option.isSome(existing))
+        return yield* new SecretRequestError({ reason: "vault_save_pending_answer" });
       const attempt = yield* refFor(input.threadId, item.id, "vault-save-attempt");
       const savedAt = yield* Clock.currentTimeMillis;
       const marker = yield* encodeStored({

@@ -58,7 +58,9 @@ const SECRET_REQUEST_FAILURE_MESSAGES = {
   store_failed: "Could not store the secret.",
   reference_unreadable: "Could not read the secret from the secret provider.",
   vault_save_unconfirmed:
-    "Could not confirm the vault save. Check your password manager before trying again, or answer without saving to the vault.",
+    "Could not confirm the vault save. Check your password manager and add the reference in Settings if the item exists. Answer without saving to the vault.",
+  vault_save_pending_answer:
+    "An earlier answer is still pending. Complete the request without saving to the vault. To keep the new value, add it to your password manager and save its reference in Settings.",
   vault_saved_reference_failed:
     "The item was saved to your vault, but its project reference could not be saved. Add that reference in Settings before answering again.",
   record_failed: "Saved the secret, but could not update the request.",

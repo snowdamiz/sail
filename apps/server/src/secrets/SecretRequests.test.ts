@@ -244,6 +244,43 @@ it.effect("an owner can explicitly save a new vault item and keep its project re
 });
 
 it.effect(
+  "a pending one-time answer must be resolved before creating a different vault item",
+  () => {
+    const fixture = fakeVault();
+    return withService(
+      ({ service, settings }) =>
+        Effect.gen(function* () {
+          const first = yield* service
+            .answer({
+              threadId,
+              turnItemId,
+              answer: { type: "save", secret: "synthetic-first-value" },
+            })
+            .pipe(Effect.flip);
+          assert.equal(first.reason, "record_failed");
+          const second = yield* service
+            .answer({
+              threadId,
+              turnItemId,
+              answer: {
+                type: "save-to-vault",
+                secret: "synthetic-second-value",
+                provider: vault,
+                vault: "project",
+                label: "Test key",
+              },
+            })
+            .pipe(Effect.flip);
+          assert.equal(second.reason, "vault_save_pending_answer");
+          assert.equal(fixture.state.created, 0);
+          assert.deepStrictEqual((yield* settings.getSettings).projectCredentialBookmarks, {});
+        }),
+      { resolver: fixture.layer, failedRecords: 1, removeFails: true },
+    );
+  },
+);
+
+it.effect(
   "an unconfirmed vault write leaves the request pending and does not repeat the write",
   () => {
     const fixture = fakeVault();
