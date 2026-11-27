@@ -16,11 +16,17 @@ Fly.io. To select a region for the new volume, add `--region` with a
 deploy/fly/deploy.sh --app my-sail
 ```
 
-The script starts one Machine and creates a 10 GB volume. When Sail is ready,
-the script opens a pairing prompt in the desktop app if you run it in a terminal
-on a computer with Sail installed. Confirm the address in Sail. Use the
-separate HTTPS link to sign in from a browser, or scan its QR code with your
-phone. Each link works once. Keep both links and the QR code private.
+The script starts one Machine, creates a 10 GB volume, and stages a generated
+initial sign-in password in Fly secrets (`SAIL_INITIAL_OWNER_PASSWORD`) before
+booting the server. Open the printed **Sail URL** (`https://my-sail.fly.dev`)
+in any browser and sign in with the printed **Initial password** — no pairing
+token or local command is needed. To supply your own 15–256 character initial
+password instead of generating one, pass `--password-file FILE`.
+
+When run in a local terminal with Sail Desktop installed, the script also opens
+a pairing prompt in the desktop app and prints one-time desktop/browser pairing
+links and a QR code. Keep the initial password, pairing links, and QR code
+private.
 
 The script uses the image for the latest published Sail release. Use
 `--image IMAGE` to pick a specific image that supports Fly deployment. Include
@@ -31,17 +37,20 @@ command without contacting Fly or GitHub.
 
 ## Browser password
 
-If no password has been set, the initial HTTPS pairing link opens
-**Settings → Sharing & access**, where you can set a browser sign-in password
-of 15–256 characters or continue using Sail without one. Use the server's
-configured HTTPS address on future browsers and sign in with the password.
+Fresh Fly deployments boot with password sign-in already configured via
+`SAIL_INITIAL_OWNER_PASSWORD`, so visiting `https://my-sail.fly.dev` opens
+directly to **Sign in to Sail**. Once signed in, you can change the password
+anytime in **Settings → Sharing & access** (15–256 characters). Your updated
+password is stored on the `/data` volume and is preserved across restarts and
+upgrades even while `SAIL_INITIAL_OWNER_PASSWORD` remains set in Fly secrets.
 
-If you forget it, request fresh pairing links using the command under
+If you forget your password, request fresh pairing links using the command under
 [Add another device](#add-another-device), open the HTTPS link, and change the
 password in Sharing & access. Changing your password signs out all browsers
 that previously signed in using the password, including this browser if it
 used that password. Independently paired devices stay signed in. Desktop and
-mobile still use pairing links.
+mobile can pair from **Settings → Sharing & access** (using **Open in Sail
+desktop** or a new pairing link) or with `--pair`.
 
 ## Sign in to providers
 
@@ -148,7 +157,3 @@ network usage. Use the region where you plan to deploy to estimate your bill.
 
 To stop billing for the app, first copy any data you want to keep, then destroy
 the app. This deletes its Machine and volumes.
-
-```bash
-fly apps destroy my-sail
-```

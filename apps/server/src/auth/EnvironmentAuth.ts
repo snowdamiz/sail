@@ -899,6 +899,18 @@ export const make = Effect.gen(function* () {
   const rejectPassword = () => new ServerAuthInvalidCredentialError({});
   const validPassword = (password: Redacted.Redacted<string>) =>
     isValidOwnerPassword(Redacted.value(password));
+  if (
+    passwordEnabled &&
+    Option.isNone(passwordVerifier) &&
+    config.initialOwnerPassword !== undefined &&
+    validPassword(config.initialOwnerPassword)
+  ) {
+    const salt = NodeCrypto.randomBytes(16);
+    const key = yield* derivePassword(config.initialOwnerPassword, salt);
+    const verifier = Buffer.concat([salt, key]);
+    yield* secretStore.set(passwordSecretName, verifier);
+    passwordVerifier = Option.some(verifier);
+  }
 
   const authenticateToken = (
     token: string,

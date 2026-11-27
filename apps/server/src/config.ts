@@ -102,6 +102,7 @@ export class ServerConfig extends Context.Service<
     readonly startupPresentation: StartupPresentation;
     readonly startupPairing?: StartupPairing | undefined;
     readonly ownerPasswordEnabled?: boolean;
+    readonly initialOwnerPassword?: Redacted.Redacted<string>;
     readonly desktopBootstrapToken: string | undefined;
     readonly desktopBootstrapSecret?: string | undefined;
     readonly desktopReadinessSecret?: string | undefined;

@@ -607,6 +607,35 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       assert.equal(fromEnv.publicUrl?.origin, "https://sail.example");
       assert.equal(fromEnv.startupPairing, "off");
       assert.equal(fromEnv.ownerPasswordEnabled, true);
+      assert.equal(fromEnv.initialOwnerPassword, undefined);
+
+      const withInitialPassword = yield* resolve(none, {
+        ...env,
+        SAIL_INITIAL_OWNER_PASSWORD: "initial-owner-password-value",
+      });
+      assert.equal(
+        withInitialPassword.initialOwnerPassword &&
+          Redacted.value(withInitialPassword.initialOwnerPassword),
+        "initial-owner-password-value",
+      );
+      const emptyInitialPassword = yield* resolve(none, {
+        ...env,
+        SAIL_INITIAL_OWNER_PASSWORD: "",
+      });
+      assert.equal(emptyInitialPassword.initialOwnerPassword, undefined);
+      const shortInitialPassword = yield* Effect.exit(
+        resolve(none, {
+          ...env,
+          SAIL_INITIAL_OWNER_PASSWORD: "too-short",
+        }),
+      );
+      assert.isTrue(Exit.isFailure(shortInitialPassword));
+      const ignoredWhenDisabled = yield* resolve(none, {
+        SAIL_PUBLIC_URL: "https://sail.example",
+        SAIL_INITIAL_OWNER_PASSWORD: "too-short",
+      });
+      assert.equal(ignoredWhenDisabled.ownerPasswordEnabled, undefined);
+      assert.equal(ignoredWhenDisabled.initialOwnerPassword, undefined);
       const fromFlags = yield* resolve(
         {
           publicUrl: Option.some(new URL("https://flag.example")),
@@ -676,12 +705,14 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
             SAIL_PUBLIC_URL: "https://remote.fly.dev",
             SAIL_STARTUP_PAIRING: "off",
             SAIL_OWNER_PASSWORD: "true",
+            SAIL_INITIAL_OWNER_PASSWORD: "too-short",
           }),
         );
         assert.equal(remote.mode, "desktop");
         assert.equal(remote.publicUrl, undefined);
         assert.equal(remote.startupPairing, "on");
         assert.equal(remote.ownerPasswordEnabled, undefined);
+        assert.equal(remote.initialOwnerPassword, undefined);
         for (const env of [
           { SAIL_PUBLIC_URL: "not-a-url" },
           { SAIL_PUBLIC_URL: "   " },

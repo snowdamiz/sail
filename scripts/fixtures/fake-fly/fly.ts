@@ -137,12 +137,19 @@ const APP_NAMES = "fly-app";
 
 type Kind = "apps" | "machines" | "volumes" | "snapshots";
 
+interface SecretRecord {
+  readonly value: string;
+  readonly digest: string;
+  readonly createdAt: string;
+}
+
 interface AppRecord {
   readonly name: string;
   readonly createdAt: string;
   readonly releaseVersion: number;
   readonly deployedAt?: string;
   readonly config?: DeployConfig;
+  readonly secrets?: Readonly<Record<string, SecretRecord>>;
 }
 
 interface ImageRef {
@@ -1621,8 +1628,12 @@ function deployApp(ctx: Ctx, loaded: LoadedConfig, appName: string): number {
 
   const mount = config.mounts[0];
   const volume = mount ? chooseVolume(appName, mount, region, previous) : undefined;
+  const secretEnv = Object.fromEntries(
+    Object.entries(app.secrets ?? {}).map(([name, record]) => [name, record.value]),
+  );
   const env = {
     ...config.env,
+    ...secretEnv,
     ...extraEnv,
     FLY_PROCESS_GROUP: "app",
     PRIMARY_REGION: region,
@@ -2237,6 +2248,48 @@ function machineDestroy(ctx: Ctx): number {
   return 0;
 }
 
+function secretsList(ctx: Ctx): number {
+  const appName = requireAppName(ctx);
+  const app = requireApp(appName);
+  const entries = Object.entries(app.secrets ?? {})
+    .toSorted(([a], [b]) => a.localeCompare(b))
+    .map(([name, record]) => ({
+      name,
+      digest: record.digest,
+      created_at: record.createdAt,
+      updated_at: record.createdAt,
+    }));
+  if (bool(ctx, "json")) {
+    printJson(entries);
+    return 0;
+  }
+  for (const entry of entries) out(`${entry.name}\t${entry.digest}\t${entry.created_at}\n`);
+  return 0;
+}
+
+function secretsImport(ctx: Ctx): number {
+  const appName = requireAppName(ctx);
+  const input = NodeFS.readFileSync(0, "utf8");
+  return withAppLock(appName, () => {
+    const app = requireApp(appName);
+    const next: Record<string, SecretRecord> = { ...app.secrets };
+    const now = new Date().toISOString();
+    for (const rawLine of input.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const eq = line.indexOf("=");
+      if (eq <= 0) throw new FlyError(`invalid secret line: ${line}`);
+      const name = line.slice(0, eq);
+      const value = line.slice(eq + 1);
+      const digest = NodeCrypto.createHash("sha256").update(value).digest("hex").slice(0, 16);
+      next[name] = { value, digest, createdAt: now };
+    }
+    write("apps", appName, { ...app, secrets: next });
+    out("Secrets are staged for the first deployment\n");
+    return 0;
+  });
+}
+
 const COMMANDS: ReadonlyArray<Command> = [
   {
     path: ["auth", "whoami"],
@@ -2361,6 +2414,25 @@ const COMMANDS: ReadonlyArray<Command> = [
     mutating: false,
     session: true,
     run: snapshotsList,
+  },
+  {
+    path: ["secrets", "list"],
+    aliases: ["ls"],
+    short: "List the secrets available to the application.",
+    flags: [APP, CONFIG, JSON_OUT],
+    args: [0, 0],
+    mutating: false,
+    session: true,
+    run: secretsList,
+  },
+  {
+    path: ["secrets", "import"],
+    short: "Set one or more encrypted secrets from stdin.",
+    flags: [APP, CONFIG, flag("stage", "bool", "Set secrets but skip deployment for machine apps")],
+    args: [0, 0],
+    mutating: true,
+    session: true,
+    run: secretsImport,
   },
   {
     path: ["status"],
