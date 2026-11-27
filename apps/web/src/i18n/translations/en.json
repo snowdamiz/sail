@@ -12914,5 +12914,7 @@
   "dd6dd61c38ce5759": "Wait for the server to connect before restarting.",
   "6e07680055075423": "Keep local environment",
   "b5d5d4dfc90787f3": "Use {host} as your main server",
-  "85ec11530a2789b4": "Open in Sail desktop"
+  "85ec11530a2789b4": "Open in Sail desktop",
+  "c5e7c250e10ee11f": "Use the same preferences on every device",
+  "1a533c38103d6ca8": "Main server"
 }

@@ -48,6 +48,18 @@ On mobile, use **Add environment** and paste the HTTPS pairing link or scan
 its QR code. To revoke a device, open **Settings → Sharing & access** on the
 server. See [Remote access](./remote-access.md) for more about device access.
 
+## Share preferences
+
+When the browser and Sail Desktop use the same main server, settings such as
+code font size and diff layout follow you between them. Edits made offline sync
+when you reconnect. Browser viewport and desktop quit confirmation stay on
+each device. If you upgraded with Sail Desktop's Local environment already off,
+choose your saved server under **Settings → General → Main server**.
+
+Turn off **Use the same preferences on every device** under **Settings → General**
+to keep future edits on that device. Turning sync off or removing the main
+server keeps your current preferences.
+
 ## Upgrade
 
 Run the original deployment command again. It reuses your volume in its

@@ -12905,5 +12905,7 @@
   "dd6dd61c38ce5759": "Attendez que le serveur soit connecté avant de redémarrer.",
   "6e07680055075423": "Garder l’environnement local",
   "b5d5d4dfc90787f3": "Utiliser {host} comme serveur principal",
-  "85ec11530a2789b4": "Ouvrir dans Sail pour ordinateur"
+  "85ec11530a2789b4": "Ouvrir dans Sail pour ordinateur",
+  "c5e7c250e10ee11f": "Utiliser les mêmes préférences sur tous les appareils",
+  "1a533c38103d6ca8": "Serveur principal"
 }

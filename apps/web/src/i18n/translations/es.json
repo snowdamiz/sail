@@ -12900,5 +12900,7 @@
   "dd6dd61c38ce5759": "Espera a que el servidor se conecte antes de reiniciar.",
   "6e07680055075423": "Mantener el entorno local",
   "b5d5d4dfc90787f3": "Usar {host} como servidor principal",
-  "85ec11530a2789b4": "Abrir en Sail para escritorio"
+  "85ec11530a2789b4": "Abrir en Sail para escritorio",
+  "c5e7c250e10ee11f": "Usar las mismas preferencias en todos los dispositivos",
+  "1a533c38103d6ca8": "Servidor principal"
 }

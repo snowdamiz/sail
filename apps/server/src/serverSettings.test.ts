@@ -2,6 +2,7 @@ import { deriveProviderInstanceConfigMap } from "./provider/ProviderInstanceRegi
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  AuthOrchestrationReadScope,
   DEFAULT_SERVER_SETTINGS,
   globalIdleCompaction,
   type ManagedPolicyDocument,
@@ -17,6 +18,8 @@ import {
   ServerSettingsPatch,
   UsageLimitSourceConfig,
   UsageLimitSourceId,
+  WS_METHODS,
+  WsRpcGroup,
   type SimlockDeviceHostConfig,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -32,8 +35,10 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SchemaAST from "effect/SchemaAST";
+import * as RpcTest from "effect/rpc/RpcTest";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
+import * as RpcAuthorization from "./auth/RpcAuthorization.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import { sourceControlHostSecretName } from "./sourceControl/sourceControlHostSecrets.ts";
 import * as ServerConfig from "./config.ts";
@@ -149,6 +154,95 @@ function strictSecretReferencePaths(
 }
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings", (it) => {
+  it.effect(
+    "persists and streams shared preferences in commit order, including after a retry",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const stream = yield* service.subscribeChanges;
+        const first = {
+          writerId: "427f1564-18fb-4e1c-a15b-5a34e24b8d04",
+          sequence: 1,
+          changes: { fontSizeCode: 16 },
+          initialize: { diffLayout: "split" },
+        } as const;
+        yield* service.updateSettings({ writeClientPreferences: first });
+        assert.deepEqual(Option.getOrThrow(yield* Stream.runHead(stream)).clientPreferences, {
+          revision: 1,
+          values: { fontSizeCode: 16, diffLayout: "split" },
+        });
+
+        yield* Effect.all(
+          [
+            service.updateSettings({
+              writeClientPreferences: {
+                writerId: first.writerId,
+                sequence: 2,
+                changes: { fontSizeCode: 17 },
+              },
+            }),
+            service.updateSettings({
+              writeClientPreferences: {
+                writerId: "4de39b2a-63cc-4e24-b5f2-93aae21ff653",
+                sequence: 1,
+                changes: { wordWrap: false },
+                initialize: { diffLayout: "stacked" },
+              },
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+
+        const retried = yield* service.updateSettings({ writeClientPreferences: first });
+        const expected = {
+          revision: 3,
+          values: { fontSizeCode: 17, diffLayout: "split", wordWrap: false },
+        } as const;
+        assert.deepEqual(retried.clientPreferences, expected);
+        assert.deepEqual(
+          (yield* decodeServerSettingsJson(yield* fs.readFileString(config.settingsPath)))
+            .clientPreferences,
+          expected,
+        );
+      }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect("rejects a preference write by a synthetic read-only session", () =>
+    Effect.gen(function* () {
+      const method = WS_METHODS.serverUpdateSettings;
+      const group = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (tag): tag is Exclude<keyof typeof RpcAuthorization.RPC_REQUIRED_SCOPES, typeof method> =>
+            tag !== method,
+        ),
+      );
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      const before = yield* service.getSettings;
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(method, ({ patch }) => service.updateSettings(patch)),
+            RpcAuthorization.layer([AuthOrchestrationReadScope]),
+          ),
+        ),
+      );
+
+      const rejected = yield* client[method]({
+        patch: {
+          writeClientPreferences: {
+            writerId: "427f1564-18fb-4e1c-a15b-5a34e24b8d04",
+            sequence: 1,
+            changes: { fontSizeCode: 16 },
+          },
+        },
+      }).pipe(Effect.flip);
+      assert.strictEqual(rejected._tag, "EnvironmentAuthorizationError");
+      assert.deepEqual((yield* service.getSettings).clientPreferences, before.clientPreferences);
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("serializes concurrent model preference edits without cancelling duplicate adds", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsModule.ServerSettingsService;

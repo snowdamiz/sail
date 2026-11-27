@@ -19,6 +19,7 @@ import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { openFileInPreview, openUrlInPreview } from "../../browser/openFileInPreview";
 import { isPreviewAvailableFor } from "../../browser/previewRuntime";
 import { requestConfirmDialog } from "../../confirmDialog";
+import { pinClientPreferencesServer } from "../../state/clientPreferences";
 import { isDesktopLocalConnectionTarget } from "../../connection/desktopLocal";
 import { connectPairing } from "../../connection/onboarding";
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
@@ -170,6 +171,7 @@ function MainServerDialog({
     setRestarting(true);
     setError(null);
     try {
+      await pinClientPreferencesServer(server.environmentId);
       await setLocalEnvironmentEnabled(false);
     } catch (cause) {
       setError(thrownErrorMessage(cause, m) ?? gt("Couldn't change this setting."));

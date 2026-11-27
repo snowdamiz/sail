@@ -14,6 +14,8 @@ import {
   sessionGrantsScope,
 } from "@t3tools/contracts";
 import {
+  type ClientPreferencesSnapshot,
+  type ClientPreferencesWrite,
   type ClientSettingsPatch,
   type ClientSettings,
   DEFAULT_CLIENT_SETTINGS,
@@ -30,9 +32,20 @@ import {
   filterSharedServerPatch,
   splitSharedServerPatch,
   supportsSharedSettingsSync,
+  acknowledgeClientPreferences,
+  editClientPreferences,
+  prepareClientPreferencesWrite,
+  reconcileClientPreferences,
+  restoreClientPreferences,
+  type ClientPreferencesSource,
 } from "@t3tools/client-runtime/state/shared-settings";
+import { randomUUID } from "~/lib/utils";
 import { ensureLocalApi } from "~/localApi";
-import { subscribeBrowserClientSettingsWrites } from "~/clientPersistenceStorage";
+import {
+  readBrowserClientSettings,
+  subscribeBrowserClientSettingsWrites,
+  withBrowserClientSettingsLock,
+} from "~/clientPersistenceStorage";
 import {
   getThemeDefinition,
   getThemePreviewSidebarArtwork,
@@ -80,6 +93,178 @@ let clientSettingsHydrationGeneration = 0;
 let clientSettingsPersistenceQueue: Promise<void> = Promise.resolve();
 let deferredClientSettingsPatchCount = 0;
 let unsubscribeOtherTabClientSettings: (() => void) | null = null;
+
+interface ClientPreferencesSync {
+  readonly source: ClientPreferencesSource;
+  readonly connected: boolean;
+  readonly sessionGeneration: number;
+  readonly pinServer: boolean;
+  readonly removedMainServerId: EnvironmentId | undefined;
+  readonly write: (
+    environmentId: EnvironmentId,
+    write: ClientPreferencesWrite,
+  ) => Promise<ClientPreferencesSnapshot | undefined>;
+}
+
+let preferencesSync: ClientPreferencesSync | undefined;
+let preferencesWriteInFlight: ClientPreferencesWrite | undefined;
+let preferencesRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let preferencesRetryMs = 1000;
+
+function resetClientPreferencesRetry(): void {
+  clearTimeout(preferencesRetryTimer);
+  preferencesRetryTimer = undefined;
+  preferencesRetryMs = 1000;
+}
+
+function retryClientPreferencesWrite(): void {
+  if (preferencesRetryTimer !== undefined) return;
+  preferencesRetryTimer = setTimeout(() => {
+    preferencesRetryTimer = undefined;
+    scheduleClientPreferencesSync();
+  }, preferencesRetryMs);
+  preferencesRetryMs = Math.min(preferencesRetryMs * 2, 30_000);
+}
+
+export function observeClientPreferences(next: ClientPreferencesSync | undefined): void {
+  if (next === undefined) {
+    preferencesSync = undefined;
+    resetClientPreferencesRetry();
+    return;
+  }
+  if (
+    preferencesSync?.connected === next.connected &&
+    preferencesSync.pinServer === next.pinServer &&
+    preferencesSync.removedMainServerId === next.removedMainServerId &&
+    preferencesSync.sessionGeneration === next.sessionGeneration &&
+    Equal.equals(preferencesSync?.source, next.source)
+  )
+    return;
+
+  if (
+    preferencesSync?.connected !== next.connected ||
+    preferencesSync?.sessionGeneration !== next.sessionGeneration ||
+    preferencesSync?.source.environmentId !== next.source.environmentId
+  )
+    resetClientPreferencesRetry();
+
+  preferencesSync = next;
+  if (clientSettingsHydrationStatus === "ready") scheduleClientPreferencesSync();
+}
+
+function preferencesSyncForSettings(settings: ClientSettings): ClientPreferencesSync | undefined {
+  const sync = preferencesSync;
+  const pinned = settings.clientPreferencesMainServerId;
+  return sync?.pinServer &&
+    pinned !== undefined &&
+    pinned !== sync.source.environmentId &&
+    pinned !== sync.removedMainServerId
+    ? undefined
+    : sync;
+}
+
+function currentClientPreferences(settings: ClientSettings): ClientSettings {
+  const sync = preferencesSyncForSettings(settings);
+  if (sync === undefined) return settings;
+  const next = reconcileClientPreferences(settings, sync.source);
+  return sync.removedMainServerId !== undefined &&
+    settings.clientPreferencesMainServerId === sync.removedMainServerId
+    ? { ...next, clientPreferencesMainServerId: null }
+    : next;
+}
+
+function enqueueClientPreferencesPersistence<A>(work: () => Promise<A>): Promise<A> {
+  return enqueueClientSettingsPersistence(() =>
+    withBrowserClientSettingsLock(async (readLatest) => {
+      if (readLatest) {
+        const stored = readBrowserClientSettings();
+        if (stored !== null) {
+          const latest = restoreClientPreferences(stored);
+          if (!Equal.equals(latest, getClientSettingsSnapshot())) {
+            replaceClientSettingsSnapshot(latest);
+          }
+        }
+      }
+      return work();
+    }),
+  );
+}
+
+function scheduleClientPreferencesSync(): void {
+  void enqueueClientPreferencesPersistence(async () => {
+    const previous = getClientSettingsSnapshot();
+    const sync = preferencesSyncForSettings(previous);
+    if (sync === undefined) return;
+    let next = currentClientPreferences(previous);
+    const environmentId = sync.source.environmentId;
+    if (
+      sync.pinServer &&
+      environmentId !== null &&
+      next.clientPreferencesMainServerId === undefined
+    ) {
+      next = { ...next, clientPreferencesMainServerId: environmentId };
+    }
+    const canWrite =
+      environmentId !== null &&
+      next.clientPreferencesCache?.environmentId === environmentId &&
+      sync.source.snapshot !== undefined &&
+      sync.connected &&
+      sync.source.access === "writable";
+    if (canWrite) next = prepareClientPreferencesWrite(next, randomUUID);
+    if (next !== previous) {
+      await defaultClientSettingsPersistence(next);
+      replaceClientSettingsSnapshot(next);
+    }
+
+    const sending = next.clientPreferencesCache?.sending;
+    if (
+      !canWrite ||
+      sending === undefined ||
+      preferencesWriteInFlight !== undefined ||
+      preferencesRetryTimer !== undefined ||
+      preferencesSync !== sync
+    )
+      return;
+
+    preferencesWriteInFlight = sending;
+    void sync
+      .write(environmentId, sending)
+      .then((snapshot) =>
+        enqueueClientPreferencesPersistence(async () => {
+          if (preferencesWriteInFlight !== sending) return;
+          preferencesWriteInFlight = undefined;
+          const current = getClientSettingsSnapshot();
+          if (preferencesSyncForSettings(current)?.source.environmentId !== environmentId) {
+            scheduleClientPreferencesSync();
+            return;
+          }
+          if (snapshot === undefined) {
+            if (preferencesSync !== sync) scheduleClientPreferencesSync();
+            else retryClientPreferencesWrite();
+            return;
+          }
+          resetClientPreferencesRetry();
+          const updated = acknowledgeClientPreferences(current, environmentId, sending, snapshot);
+          if (updated !== current) {
+            await defaultClientSettingsPersistence(updated);
+            replaceClientSettingsSnapshot(updated);
+          }
+          scheduleClientPreferencesSync();
+        }),
+      )
+      .catch((error) => {
+        if (preferencesWriteInFlight === sending) preferencesWriteInFlight = undefined;
+        logClientPreferencesFailure(error);
+        retryClientPreferencesWrite();
+      });
+  }).catch(logClientPreferencesFailure);
+}
+
+function logClientPreferencesFailure(error: unknown): void {
+  console.error(`${CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE} preference sync failed`, {
+    ...safeErrorLogAttributes(error),
+  });
+}
 
 function emitClientSettingsChange() {
   for (const listener of clientSettingsListeners) {
@@ -155,12 +340,15 @@ async function hydrateClientSettings(): Promise<void> {
         return;
       }
       if (persistedSettings) {
-        replaceClientSettingsSnapshot({ ...DEFAULT_CLIENT_SETTINGS, ...persistedSettings });
+        replaceClientSettingsSnapshot(
+          restoreClientPreferences({ ...DEFAULT_CLIENT_SETTINGS, ...persistedSettings }),
+        );
       }
       unsubscribeOtherTabClientSettings ??= subscribeBrowserClientSettingsWrites(
         refreshClientSettingsFromOtherTab,
       );
       setClientSettingsHydrationStatus("ready");
+      if (preferencesSync !== undefined) scheduleClientPreferencesSync();
     } catch (error) {
       if (hydrationGeneration === clientSettingsHydrationGeneration) {
         setClientSettingsHydrationStatus("failed");
@@ -187,7 +375,10 @@ function refreshClientSettingsFromOtherTab(): void {
   void enqueueClientSettingsPersistence(async () => {
     const persistedSettings = await ensureLocalApi().persistence.getClientSettings();
     if (persistedSettings) {
-      replaceClientSettingsSnapshot({ ...DEFAULT_CLIENT_SETTINGS, ...persistedSettings });
+      replaceClientSettingsSnapshot(
+        restoreClientPreferences({ ...DEFAULT_CLIENT_SETTINGS, ...persistedSettings }),
+      );
+      if (preferencesSync !== undefined) scheduleClientPreferencesSync();
     }
   }).catch((error) => {
     console.error(`${CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE} refresh failed`, {
@@ -214,14 +405,21 @@ export function persistClientSettingsPatch(
   persist: (settings: ClientSettings) => Promise<void> = defaultClientSettingsPersistence,
 ): Promise<void> {
   // Patches queued before hydration must publish before newer optimistic patches.
+  const syncInUse =
+    preferencesSync?.source.environmentId != null ||
+    getClientSettingsSnapshot().clientPreferencesCache !== undefined;
   const deferPatch =
-    clientSettingsHydrationStatus !== "ready" || deferredClientSettingsPatchCount > 0;
+    syncInUse || clientSettingsHydrationStatus !== "ready" || deferredClientSettingsPatchCount > 0;
   if (deferPatch) {
     deferredClientSettingsPatchCount += 1;
   } else {
     replaceClientSettingsSnapshot({ ...getClientSettingsSnapshot(), ...patch });
   }
-  return enqueueClientSettingsPersistence(async () => {
+  const enqueue =
+    syncInUse && persist === defaultClientSettingsPersistence
+      ? enqueueClientPreferencesPersistence
+      : enqueueClientSettingsPersistence;
+  return enqueue(async () => {
     if (deferPatch) {
       try {
         if (clientSettingsHydrationStatus !== "ready") {
@@ -232,13 +430,22 @@ export function persistClientSettingsPatch(
       }
     }
     // Also reapplies an optimistic patch that a refresh from another tab replaced.
-    const current = getClientSettingsSnapshot();
+    const previous = getClientSettingsSnapshot();
+    const current = currentClientPreferences(previous);
     if (
+      current !== previous ||
       !Object.entries(patch).every(([key, value]) => current[key as keyof ClientSettings] === value)
     ) {
-      replaceClientSettingsSnapshot({ ...current, ...patch });
+      replaceClientSettingsSnapshot(
+        editClientPreferences(
+          current,
+          { ...current, ...patch },
+          preferencesSyncForSettings(current)?.source,
+        ),
+      );
     }
     await persist(getClientSettingsSnapshot());
+    if (preferencesSync !== undefined) scheduleClientPreferencesSync();
   }).catch((error) => {
     console.error(`${CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE} persist failed`, {
       operation: "persist",
@@ -252,16 +459,28 @@ export async function persistClientSettingsUpdate(
   update: (current: ClientSettings) => ClientSettings,
   persist: (settings: ClientSettings) => Promise<void> = defaultClientSettingsPersistence,
 ): Promise<ClientSettings> {
-  return enqueueClientSettingsPersistence(async () => {
+  const enqueue =
+    (preferencesSync?.source.environmentId != null ||
+      getClientSettingsSnapshot().clientPreferencesCache !== undefined) &&
+    persist === defaultClientSettingsPersistence
+      ? enqueueClientPreferencesPersistence
+      : enqueueClientSettingsPersistence;
+  return enqueue(async () => {
     if (clientSettingsHydrationStatus !== "ready") {
       await hydrateClientSettings();
     }
     for (;;) {
-      const current = getClientSettingsSnapshot();
-      const next = update(current);
+      const previous = getClientSettingsSnapshot();
+      const current = currentClientPreferences(previous);
+      const next = editClientPreferences(
+        current,
+        update(current),
+        preferencesSyncForSettings(current)?.source,
+      );
       await persist(next);
-      if (getClientSettingsSnapshot() === current) {
+      if (getClientSettingsSnapshot() === previous) {
         replaceClientSettingsSnapshot(next);
+        if (preferencesSync !== undefined) scheduleClientPreferencesSync();
         return next;
       }
     }
@@ -821,6 +1040,9 @@ export function __resetClientSettingsPersistenceForTests(): void {
   deferredClientSettingsPatchCount = 0;
   unsubscribeOtherTabClientSettings?.();
   unsubscribeOtherTabClientSettings = null;
+  preferencesSync = undefined;
+  preferencesWriteInFlight = undefined;
+  resetClientPreferencesRetry();
   clientSettingsListeners.clear();
   clientSettingsHydrationListeners.clear();
 }
