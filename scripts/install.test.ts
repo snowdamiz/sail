@@ -66,6 +66,88 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("Sail CLI insta
   });
 });
 
+describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("Boat release staging", () => {
+  it.each([
+    { marker: true, executableVersion: "1.2.3", error: undefined },
+    { marker: false, executableVersion: "1.2.3", error: "missing its Sail product marker" },
+    { marker: true, executableVersion: "1.2.2", error: "does not report t3 v1.2.3" },
+  ])(
+    "stages only the exact marked release ($marker, $executableVersion)",
+    async ({ marker, executableVersion, error }) => {
+      const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "sail-stage-"));
+      const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
+      const arch = HostProcess.Architecture.defaultValue();
+      const version = "1.2.3";
+      const home = NodePath.join(root, "home");
+      const target = NodePath.join(home, "runtime/boat-staged", version);
+      const incumbent = NodePath.join(home, "runtime/versions", version, "t3");
+      const selection = NodePath.join(home, "runtime/service-state.json");
+      const settings = NodePath.join(home, "userdata/settings.json");
+      const launcher = NodePath.join(root, "bin/t3");
+      const preserved: ReadonlyArray<readonly [file: string, contents: string]> = [
+        [incumbent, "#!/bin/sh\necho legacy\n"],
+        [selection, '{ "activeVersion": "1.2.3" }\n'],
+        [settings, '{ "linkedEnvironmentsEnabled": true }\n'],
+        [launcher, launcherScript(incumbent)],
+      ];
+      const stem = `t3-${version}-linux-${arch}`;
+      const payload = NodePath.join(root, stem);
+      const executable = `#!/bin/sh\necho 't3 v${executableVersion}'\n`;
+      try {
+        for (const [file, contents] of preserved) {
+          await NodeFSP.mkdir(NodePath.dirname(file), { recursive: true });
+          await NodeFSP.writeFile(file, contents, { mode: 0o755 });
+        }
+        await NodeFSP.mkdir(payload);
+        await NodeFSP.writeFile(NodePath.join(payload, "t3"), executable, { mode: 0o755 });
+        if (marker) await NodeFSP.writeFile(NodePath.join(payload, ".sail-product"), "sail\n");
+        const archive = `${stem}.tar.gz`;
+        await execFile("tar", ["-czf", archive, stem], { cwd: root });
+        const mirror = await startMirror({ dir: root });
+        try {
+          const install = () =>
+            execFile("sh", [NodePath.join(import.meta.dirname, "install.sh"), "--stage-only"], {
+              env: {
+                ...process.env,
+                T3CODE_HOME: home,
+                T3CODE_VERSION: version,
+                T3CODE_INSTALL_BIN_DIR: NodePath.dirname(launcher),
+                T3CODE_RELEASE_BASE_URL: mirror.url,
+              },
+            });
+          if (error !== undefined) {
+            await expect(install()).rejects.toMatchObject({
+              stderr: expect.stringContaining(error),
+            });
+            expect(await NodeFSP.readdir(NodePath.dirname(target))).toEqual([]);
+          } else {
+            const [first, concurrent] = await Promise.all([install(), install()]);
+            expect(first.stdout.trim()).toMatch(/^[a-f0-9]{64}$/);
+            expect(concurrent.stdout).toBe(first.stdout);
+            expect((await install()).stdout).toBe(first.stdout);
+            expect(await NodeFSP.readFile(NodePath.join(target, "t3"), "utf8")).toBe(executable);
+
+            await NodeFSP.writeFile(NodePath.join(payload, "t3"), `${executable}# republished\n`);
+            await execFile("tar", ["-czf", archive, stem], { cwd: root });
+            await expect(install()).rejects.toMatchObject({
+              stderr: expect.stringContaining("a different or incomplete release occupies"),
+            });
+            expect(await NodeFSP.readFile(NodePath.join(target, "t3"), "utf8")).toBe(executable);
+            expect(await NodeFSP.readdir(NodePath.dirname(target))).toEqual([version]);
+          }
+        } finally {
+          await mirror.close();
+        }
+        for (const [file, contents] of preserved) {
+          expect(await NodeFSP.readFile(file, "utf8")).toBe(contents);
+        }
+      } finally {
+        await NodeFSP.rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
 describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer home", () => {
   it("installs a relative home from a directory ending in a newline", async () => {
     const temporaryRoot = await NodeFSP.realpath(

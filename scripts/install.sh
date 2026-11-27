@@ -15,6 +15,9 @@
 # The archive is unpacked into $T3CODE_HOME/runtime/versions/<version>, the
 # same layout `t3 service install` uses, so the service reuses this download
 # instead of fetching the release again.
+#
+# On Linux, pass --stage-only with T3CODE_VERSION to stage a Sail archive under
+# runtime/boat-staged/<version>. Prints the verified archive SHA-256 to stdout.
 set -eu
 
 repo="snowdamiz/sail"
@@ -39,6 +42,13 @@ fail() {
   printf '\nt3 install: %s\n' "$1" >&2
   exit 1
 }
+
+stage_only=false
+case "$#:${1:-}" in
+  0:) ;;
+  1:--stage-only) stage_only=true ;;
+  *) fail "usage: install.sh [--stage-only]" ;;
+esac
 
 # ANSI stays on stderr, so `curl ... | sh` still gets progress.
 interactive=false
@@ -184,7 +194,16 @@ fi
 
 channel="${T3CODE_CHANNEL:-stable}"
 version="${T3CODE_VERSION:-}"
-if [ -z "$version" ]; then
+if "$stage_only"; then
+  [ "$platform" = linux ] || fail "staging Boat releases requires Linux"
+  case "$version" in
+    ''|*[!a-zA-Z0-9.+-]*) fail "staging requires an exact T3CODE_VERSION" ;;
+  esac
+  number='(0|[1-9][0-9]*)'
+  prerelease="($number|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)"
+  printf '%s\n' "$version" | LC_ALL=C grep -Eq "^$number\.$number\.$number(-$prerelease(\.$prerelease)*)?(\+[0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*)?$" ||
+    fail "staging requires an exact T3CODE_VERSION"
+elif [ -z "$version" ]; then
   case "$channel" in
     stable) tag_pattern='v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)' ;;
     nightly | preview) tag_pattern="v\([0-9][^\"]*-${channel}\.[0-9]*\.[0-9]*\)" ;;
@@ -224,10 +243,38 @@ esac
 stem="t3-${version}-${platform}-${arch}"
 archive="${stem}.tar.gz"
 versions_dir="${t3_home}/runtime/versions"
+if "$stage_only"; then
+  # The launcher and runtime pruner only select from runtime/versions.
+  versions_dir="${t3_home}/runtime/boat-staged"
+  [ ! -L "$versions_dir" ] || fail "the Boat staging directory is a symlink"
+fi
 target_dir="${versions_dir}/${version}"
 
+is_sail_archive() {
+  [ -f "$1/.sail-product" ] && [ ! -L "$1/.sail-product" ] &&
+    [ "$(cat "$1/.sail-product")" = sail ]
+}
+
+reports_exact_version() {
+  [ -f "$1/t3" ] && [ ! -L "$1/t3" ] && [ -x "$1/t3" ] &&
+    [ "$("$1/t3" --version)" = "t3 v$version" ]
+}
+
+staged_release_matches() {
+  [ ! -L "$target_dir" ] &&
+    [ "$(cat "$target_dir/.install-complete" 2>/dev/null)" = "$version" ] &&
+    is_sail_archive "$target_dir" &&
+    [ "$(cat "$target_dir/.sail-archive-sha256" 2>/dev/null)" = "$expected" ] &&
+    reports_exact_version "$target_dir"
+}
+
+report_staged_release() {
+  sync -f "$target_dir" || fail "could not sync the staged runtime"
+  printf '%s\n' "$expected"
+}
+
 # A sandbox may already have an upstream CLI at this version.
-if [ -f "${target_dir}/.install-complete" ] && [ "$(cat "${target_dir}/.install-complete")" = "$version" ] &&
+if ! "$stage_only" && [ -f "${target_dir}/.install-complete" ] && [ "$(cat "${target_dir}/.install-complete")" = "$version" ] &&
   { [ "$platform" != linux ] || { [ -f "${target_dir}/.sail-product" ] && [ "$(cat "${target_dir}/.sail-product")" = sail ]; }; }; then
   step "Version ${version} is already downloaded."
 else
@@ -239,7 +286,9 @@ else
   trap 'printf "\n" >&2; exit 143' TERM
 
   if "$interactive"; then printf '\r\033[2K' >&2; fi
-  printf '  %sInstalling%s T3 Code %s%s%s\n\n' "$muted" "$reset" "$bold" "$version" "$reset" >&2
+  action=Installing
+  if "$stage_only"; then action=Staging; fi
+  printf '  %s%s%s T3 Code %s%s%s\n\n' "$muted" "$action" "$reset" "$bold" "$version" "$reset" >&2
   step "Downloading..."
   fetch_status=0
   fetch "${base_url}/v${version}/SHA256SUMS" "${staging}/SHA256SUMS" || fetch_status=$?
@@ -250,6 +299,11 @@ else
   fi
   expected="$(grep " \*\{0,1\}${archive}\$" "${staging}/SHA256SUMS" | cut -d' ' -f1)"
   [ -n "$expected" ] || fail "t3 ${version} has no release archive for ${platform}-${arch}"
+  if "$stage_only" && { [ -e "$target_dir" ] || [ -L "$target_dir" ]; }; then
+    staged_release_matches || fail "a different or incomplete release occupies $target_dir"
+    report_staged_release
+    exit 0
+  fi
   download "${base_url}/v${version}/${archive}" "${staging}/${archive}" || fail "could not download ${archive}"
 
   step "Verifying the download..."
@@ -259,6 +313,17 @@ else
   step "Extracting T3 Code..."
   tar -xzf "${staging}/${archive}" -C "$staging" --strip-components=1
   rm -f "${staging}/${archive}" "${staging}/SHA256SUMS"
+  if "$stage_only"; then
+    is_sail_archive "$staging" || fail "the downloaded archive is missing its Sail product marker"
+    reports_exact_version "$staging" || fail "the downloaded executable does not report t3 v$version"
+    printf '%s\n' "$version" > "$staging/.install-complete"
+    printf '%s\n' "$expected" > "$staging/.sail-archive-sha256"
+    # Both attempts may finish validation. Publish once and verify the winner.
+    mv -nT "$staging" "$target_dir" || fail "could not publish the staged runtime"
+    staged_release_matches || fail "a different or incomplete release occupies $target_dir"
+    report_staged_release
+    exit 0
+  fi
   "${staging}/t3" --version >/dev/null || fail "the downloaded executable does not run"
   printf '%s\n' sail > "${staging}/.sail-product"
   printf '%s\n' "$version" > "${staging}/.install-complete"

@@ -14,6 +14,20 @@ launcher protocol unless impossible, and validate protocol compatibility during 
 Installations use exact versions and stage/preflight before publishing an immutable runtime so
 restarts never depend on npm cache eviction or a moving tag.
 
+## Boat runtime staging
+
+The Linux installer can stage an exact Sail release with `--stage-only`. It verifies the
+archive checksum, the embedded Sail product marker, and the executable's version. It publishes
+under `runtime/boat-staged`, outside the launcher's version selection. A staged release is only
+a candidate. The incumbent continues to serve after a warm wake or restore.
+
+Legacy migration requires a controlled offline window. Settle accepted work before taking the
+service offline, hold the supervisor against restart, and retain the incumbent runtime and a
+backup of the pinned T3 home. Install the verified Sail release with that same home, including
+its settings and link data. Activate once and verify the environment ID and exact runtime
+before recording completion. A stopped-unit observation provides no hold against
+another start.
+
 ## Commit boundary and database rollback
 
 1. Record the pending update durably (atomic rename + fsync) before stopping the old child.
