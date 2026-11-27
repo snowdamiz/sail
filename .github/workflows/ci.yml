@@ -84,7 +84,7 @@ jobs:
         if: matrix.suite == 'root'
         env:
           TMPDIR: /tmp
-        run: vp test run scripts/build-desktop-artifact.test.ts scripts/build-desktop-installers.test.ts scripts/merge-update-manifests.test.ts
+        run: vp test run scripts/build-desktop-artifact.test.ts scripts/build-desktop-installers.test.ts scripts/merge-update-manifests.test.ts scripts/stage-server-runtime.test.ts scripts/build-cli-archive.test.ts
       - name: Run desktop unit tests
         if: matrix.suite == 'desktop'
         run: vp test run apps/desktop/src/updates/MacArchiveUpdater.test.ts apps/desktop/src/app/DesktopAppIdentity.test.ts apps/desktop/src/app/DesktopLinuxUrlHandler.test.ts apps/desktop/src/app/DesktopPreReadyPlatform.test.ts
@@ -98,3 +98,80 @@ jobs:
         if: matrix.suite == 'web'
         working-directory: apps/web
         run: vp test run --project unit src/components/desktopUpdate.logic.test.ts src/components/boats/
+
+  server-image-changes:
+    name: Detect server image changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.filter.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      # A pull_request checkout is the merge commit, so its first parent is the base tip.
+      # git diff --quiet exits 1 on changes; any other failure fails the job instead of skipping.
+      - id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != pull_request ]; then
+            echo changed=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          status=0
+          git diff --quiet HEAD^1 HEAD -- \
+            Dockerfile .dockerignore deploy/docker \
+            'scripts/stage-server-runtime*' scripts/smoke-docker-image.ts \
+            scripts/build-desktop-artifact.ts scripts/apply-web-brand-assets.ts scripts/update-release-package-versions.ts \
+            scripts/lib/cli-external-packages.ts scripts/lib/resolve-catalog.ts scripts/lib/brand-assets.ts \
+            scripts/lib/tagged-source-version.ts scripts/lib/public-config.ts scripts/lib/build-target-arch.ts \
+            scripts/lib/desktop-external-packages.ts scripts/lib/cli-executable-imports.ts scripts/lib/linux-arm64-sea.ts \
+            scripts/lib/cached-tests.ts scripts/lib/third-party-licenses.ts infra/task-cache/src/remoteCache.ts \
+            third-party-licenses.config.json third-party-licenses/spdx \
+            native/libghostty-vt/LICENSE apps/web/src/terminal/ghostty/fonts/LICENSE \
+            apps/web/src/components/files/office/LICENSE.opencode \
+            apps/server/scripts/cli.ts apps/server/scripts/cliErrors.ts \
+            apps/server/src/testUtils/weightedShardSequencer.ts apps/server/src/testUtils/shardWeights.json \
+            vite.config.ts apps/server/vite.config.ts apps/web/vite.config.ts apps/web/vite apps/web/src/branding.logic.ts \
+            'assets/dev/blueprint-web-*' 'assets/prod/t3-black-web-*' 'assets/nightly/nightly-web-*' \
+            package.json scripts/package.json apps/server/package.json apps/web/package.json apps/desktop/package.json \
+            apps/desktop/gnome-extension/bundle.json pnpm-workspace.yaml .pnpmfile.cjs patches \
+            native/resource-monitor/Cargo.toml native/resource-monitor/Cargo.lock \
+            native/sail-boat/Cargo.toml native/sail-boat/Cargo.lock \
+            .github/workflows/ci.yml || status=$?
+          case "$status" in
+            0) echo changed=false >> "$GITHUB_OUTPUT" ;;
+            1) echo changed=true >> "$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
+
+  server-image:
+    name: Server image build & smoke
+    needs: server-image-changes
+    if: needs.server-image-changes.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build the server image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          tags: sail-server:ci
+          cache-from: type=gha,scope=sail-server
+          # Main writes the final image's layers; build stages and PR caches would crowd the repo cache.
+          cache-to: ${{ github.event_name == 'push' && 'type=gha,scope=sail-server,mode=min' || '' }}
+      - name: Smoke the server image
+        run: node scripts/smoke-docker-image.ts --image sail-server:ci
