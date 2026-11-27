@@ -924,11 +924,14 @@ mod tests {
             extract::ws::{Message, WebSocketUpgrade},
             routing::{get, post},
         };
+        use futures_util::{SinkExt, StreamExt};
         use crate::store::Machine;
         use serde_json::{Value, json};
         use std::{fs, os::unix::fs::PermissionsExt};
 
         let (dispatched, mut commands) = mpsc::unbounded_channel();
+        let attempts = Arc::new(Mutex::new(HashSet::new()));
+        let (notices, mut notifications) = mpsc::unbounded_channel();
         let watchdog_status = || async {
             Json(json!({
                 "phase":"active","busy":false,"workingThreads":0,"workingSubagents":0,"cpuBusy":false,
@@ -941,15 +944,34 @@ mod tests {
             .route("/api/auth/session", get(|| async { Json(json!({})) }))
             .route("/activity", post(watchdog_status))
             .route("/status", get(watchdog_status))
-            .route("/ws", get(move |ws: WebSocketUpgrade| async move {
-                ws.on_upgrade(move |mut socket| async move {
-                    let Some(Ok(Message::Text(text))) = socket.recv().await else { return };
-                    let request: Value = serde_json::from_str(&text).unwrap();
-                    dispatched.send(request.clone()).unwrap();
-                    socket.send(Message::Text(json!({
-                        "_tag":"Exit","requestId":request["id"],"exit":{"_tag":"Success","value":null}
-                    }).to_string().into())).await.unwrap();
-                })
+            .route("/ws", get(move |ws: WebSocketUpgrade| {
+                let dispatched = dispatched.clone();
+                let attempts = attempts.clone();
+                async move {
+                    ws.on_upgrade(move |mut socket| async move {
+                        while let Some(Ok(Message::Text(text))) = socket.recv().await {
+                            let request: Value = serde_json::from_str(&text).unwrap();
+                            dispatched.send(request.clone()).unwrap();
+                            let payload = &request["payload"];
+                            let id = payload["commandId"].as_str().unwrap_or_default();
+                            let first = attempts.lock().unwrap().insert(id.to_owned());
+                            if id == "lost-ack" && first {
+                                return;
+                            }
+                            let exit = if id == "retry-maintenance" && first {
+                                json!({"_tag":"Failure","cause":[{"_tag":"Fail","error":{
+                                    "_tag":"OrchestrationV2DispatchCommandError",
+                                    "commandId":id,"commandType":payload["type"],"retryable":true,"message":"maintenance"
+                                }}]})
+                            } else {
+                                json!({"_tag":"Success","value":null})
+                            };
+                            socket.send(Message::Text(json!({
+                                "_tag":"Exit","requestId":request["id"],"exit":exit
+                            }).to_string().into())).await.unwrap();
+                        }
+                    })
+                }
             }));
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -979,7 +1001,7 @@ esac
             let t3 = dir.join("t3");
             fs::write(&t3, "#!/bin/sh\necho 't3 v2.0.0'\n").unwrap();
             fs::set_permissions(&t3, fs::Permissions::from_mode(0o700)).unwrap();
-            let (events, _) = mpsc::unbounded_channel();
+            let events = notices.clone();
             let shared = Arc::new(Shared {
                 boat: Boat::at(boat),
                 t3: T3Desktop::at(t3),
@@ -1009,14 +1031,55 @@ esac
                 connect: false,
                 saved_stop: None,
             };
-            let machine = MachineRuntime::new(shared, record, dir.clone());
-            let command = json!({"type":"message.dispatch","commandId":"queued","threadId":"fixture-thread"});
-            machine.cache.lock().unwrap().deferred_commands.push(command.clone());
+            let machine = Arc::new(MachineRuntime::new(shared, record, dir.clone()));
+            let command = |id: &str| json!({"type":"message.dispatch","commandId":id,"threadId":"fixture-thread"});
+            let initial = if restored { "restore-first" } else { "warm-first" };
+            let retry = if restored { "lost-ack" } else { "retry-maintenance" };
+            let tail = if restored { "restore-tail" } else { "warm-tail" };
+            let originals = vec![command(initial), command(retry), command(tail)];
+            machine.cache.lock().unwrap().deferred_commands = originals.clone();
 
             machine.ensure_awake().await.unwrap();
             let request = commands.try_recv().unwrap();
             assert_eq!(request["tag"], "orchestration.dispatchCommand");
-            assert_eq!(request["payload"], command);
+            assert_eq!(request["payload"], originals[0]);
+            assert_eq!(commands.try_recv().unwrap()["payload"], originals[1]);
+            assert!(commands.try_recv().is_err());
+            assert_eq!(&machine.cache.lock().unwrap().deferred_commands, &originals[1..]);
+            assert_eq!(crate::proxy::cache::Cache::load(&crate::proxy::cache::cache_path(&dir)).deferred_commands, &originals[1..]);
+
+            if !restored {
+                let proxy_machine = machine.clone();
+                let proxy = Router::new().route("/ws", get(move |ws: WebSocketUpgrade| {
+                    let machine = proxy_machine.clone();
+                    async move { ws.on_upgrade(move |socket| crate::proxy::session::run(machine, socket, String::new())) }
+                }));
+                let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+                let addr = format!("ws://{}/ws", listener.local_addr().unwrap());
+                let proxy_task = tokio::spawn(async move { axum::serve(listener, proxy).await.unwrap() });
+                let (mut downstream, _) = tokio_tungstenite::connect_async(addr).await.unwrap();
+                downstream.send(tokio_tungstenite::tungstenite::Message::text(json!({
+                    "_tag":"Request", "id":"new-send", "tag":"orchestration.dispatchCommand",
+                    "payload":command("newer"), "headers":[]
+                }).to_string())).await.unwrap();
+                let response = tokio::time::timeout(Duration::from_secs(2), downstream.next())
+                    .await.unwrap().unwrap().unwrap();
+                let response: Value = serde_json::from_str(response.to_text().unwrap()).unwrap();
+                assert_eq!(response["requestId"], "new-send");
+                let error = &response["exit"]["cause"][0]["error"];
+                assert_eq!(error["_tag"], "OrchestrationV2DispatchCommandError");
+                assert_eq!(error["retryable"], true);
+                assert_eq!(error["commandId"], "newer");
+                assert!(commands.try_recv().is_err());
+                downstream.close(None).await.unwrap();
+                proxy_task.abort();
+            }
+
+            machine.ensure_awake().await.unwrap();
+            assert_eq!(commands.try_recv().unwrap()["payload"], originals[1]);
+            assert_eq!(commands.try_recv().unwrap()["payload"], originals[2]);
+            assert!(commands.try_recv().is_err());
+            assert!(!std::iter::from_fn(|| notifications.try_recv().ok()).any(|event| matches!(event, Event::Notify { .. })));
             let state = view(&machine);
             assert_eq!(state.state, MachineState::Idle);
             assert!(state.detail.contains("Sail upgrade pending"), "{}", state.detail);

@@ -183,6 +183,7 @@ pub struct MachineRuntime {
     pub(crate) waking: tokio::sync::Mutex<()>,
     /// One capture at a time: "sleep now" and the background poll can see the same drain.
     capturing: tokio::sync::Mutex<()>,
+    flushing_deferred: tokio::sync::Mutex<()>,
     last_heartbeat: Mutex<Option<Instant>>,
     /// When the watchdog was seen stopping the machine; cleared once Boat reports it stopped or
     /// the watchdog is active again.
@@ -217,6 +218,7 @@ impl MachineRuntime {
             watchdog: Mutex::new(None),
             waking: tokio::sync::Mutex::new(()),
             capturing: tokio::sync::Mutex::new(()),
+            flushing_deferred: tokio::sync::Mutex::new(()),
             last_heartbeat: Mutex::new(None),
             stop_seen: Mutex::new(None),
             wake_failure: Mutex::new(None),
@@ -582,35 +584,37 @@ impl MachineRuntime {
     }
 
     async fn flush_deferred_commands(&self) {
-        // Left queued until delivered: the run loop retries a failed send.
-        let commands = self.cache.lock().unwrap().deferred_commands.clone();
-        if commands.is_empty() {
-            return;
+        let _flush = self.flushing_deferred.lock().await;
+        if let Err(error) = self.deliver_deferred_commands().await {
+            tracing::warn!("sending deferred commands: {error:#}");
         }
-        let requests = commands
-            .iter()
-            .map(|c| ("orchestration.dispatchCommand".to_owned(), c.clone()))
-            .collect();
-        match upstream::call_many(&self.upstream_url(), &self.upstream_token(), requests).await {
-            Ok(results) => {
-                self.cache.lock().unwrap().deferred_commands.retain(|c| !commands.contains(c));
-                // Sail was told they were accepted: a refused message is said here or nowhere.
-                for (command, result) in commands.iter().zip(results) {
-                    if let Err(e) = result
-                        && command["type"] == "message.dispatch"
-                    {
-                        tracing::warn!("message to {} refused: {e}", self.id());
-                        self.shared.notify(format!("{}: a message was not sent", self.record().name), "Send it again.");
-                    }
-                }
+    }
+
+    async fn deliver_deferred_commands(&self) -> Result<()> {
+        let count = self.cache.lock().unwrap().deferred_commands.len();
+        if count == 0 {
+            return Ok(());
+        }
+        let mut ws = upstream::connect(&self.upstream_url(), &self.upstream_token(), &upstream::rpc_target("")).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        for i in 1..=count {
+            let Some(command) = self.cache.lock().unwrap().deferred_commands.first().cloned() else {
+                break;
+            };
+            let outcome = upstream::dispatch_deferred(&mut ws, &i.to_string(), &command, deadline).await?;
+            if matches!(outcome, upstream::DeferredDispatch::Retry) {
+                break;
             }
-            // Resent on the next try; the server dedupes them by commandId.
-            Err(e) => {
-                tracing::warn!("sending deferred commands: {e:#}");
-                return;
+            self.cache.lock().unwrap().deferred_commands.remove(0);
+            self.save_cache();
+            if let upstream::DeferredDispatch::Rejected(reason) = outcome
+                && command["type"] == "message.dispatch"
+            {
+                tracing::warn!("message to {} refused: {reason}", self.id());
+                self.shared.notify(format!("{}: a message was not sent", self.record().name), "Send it again.");
             }
         }
-        self.save_cache();
+        Ok(())
     }
 
     /// Someone used the machine: it stays awake, and recorded answers may be outdated.
