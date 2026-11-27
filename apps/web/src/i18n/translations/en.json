@@ -12916,5 +12916,19 @@
   "b5d5d4dfc90787f3": "Use {host} as your main server",
   "85ec11530a2789b4": "Open in Sail desktop",
   "c5e7c250e10ee11f": "Use the same preferences on every device",
-  "1a533c38103d6ca8": "Main server"
+  "1a533c38103d6ca8": "Main server",
+  "38eefd72cad079d8": "The sign-in expired. Start again to get a new code.",
+  "4c952d9fd5d93c6a": "Sign-in could not finish. Try again.",
+  "4189d6c508b9c1f1": "Sign-in could not start.",
+  "7ac80fa2840a7e58": "Signing out of Boat…",
+  "ff78528a594ad695": "Sign out of Boat",
+  "1b6314a6a79cc719": "Sign in to Boat",
+  "be2b0a55559f6abc": "Machines bill to your Boat plan.",
+  "f932d120942f1c12": "Waiting for sign-in…",
+  "d2910f24c89a17da": "Enter this code on the sign-in page",
+  "1c1bfb59a9ad8569": "Paste the sign-in code",
+  "25a1c6cf87920b69": "Submit code",
+  "1ec7a2c612524967": "The sign-in request failed. Try again.",
+  "64c07d2cd0e78ac4": "Code sent. If sign-in stalls, try another code.",
+  "334031c5b02772d0": "Cancelling sign-in…"
 }

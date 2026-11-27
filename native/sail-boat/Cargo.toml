@@ -40,6 +40,7 @@ url = "2"
 urlencoding = "2"
 bytes = "1"
 sha2 = "0.10"
+tempfile = "3"
 
 [profile.release]
 codegen-units = 1

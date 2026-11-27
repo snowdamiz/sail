@@ -170,6 +170,7 @@ pub struct App {
     doomed: Mutex<Vec<Doomed>>,
     /// Wakes the reaper for something just given up.
     reaper: Notify,
+    reaper_task: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 impl App {
@@ -212,16 +213,20 @@ impl App {
             retired_ports: Mutex::new(state.retired_ports),
             doomed: Mutex::new(doomed),
             reaper: Notify::new(),
+            reaper_task: Mutex::new(None),
         });
         for record in state.machines {
             app.spawn(app.runtime(record));
         }
-        tokio::spawn(app.clone().reap());
+        *app.reaper_task.lock().unwrap() = Some(tokio::spawn(app.clone().reap()).abort_handle());
         Ok(app)
     }
 
     /// Aborts background machine proxy/polling tasks cleanly during shutdown.
     pub fn shutdown(&self) {
+        if let Some(reaper) = self.reaper_task.lock().unwrap().take() {
+            reaper.abort();
+        }
         self.save();
         for running in self.machines.write().unwrap().drain(..) {
             for task in running.tasks {

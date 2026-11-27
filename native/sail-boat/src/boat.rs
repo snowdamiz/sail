@@ -60,7 +60,6 @@ pub struct Usage {
 }
 
 /// A pending browser sign-in: the page that completes it, and the code that page may ask for.
-#[derive(Clone, Debug)]
 pub struct SignIn {
     pub url: String,
     pub code: Option<String>,
@@ -289,17 +288,40 @@ impl Boat {
         })
     }
 
-    /// Starts a browser sign-in, or picks up the one already pending. Without a terminal the
-    /// CLI opens no browser, so the caller opens the page.
     pub async fn start_sign_in(&self) -> Result<SignIn> {
-        let v = Self::last_json(&self.run(&["onboard"], Duration::from_secs(60)).await?)?;
-        let url = v["url"].as_str().ok_or_else(|| anyhow!("boat onboard gave no sign-in page: {v}"))?;
-        Ok(SignIn { url: url.to_owned(), code: v["userCode"].as_str().map(str::to_owned) })
+        let out = self.account_command(&["onboard"], 60).await?;
+        let v = Self::last_json(&out).map_err(|_| anyhow!("Boat returned an invalid sign-in reply"))?;
+        let url = v["url"].as_str().and_then(crate::machine::signin::https_url)
+            .ok_or_else(|| anyhow!("Boat returned no sign-in page"))?;
+        Ok(SignIn { url, code: v["userCode"].as_str().map(str::to_owned) })
     }
 
-    /// Waits until the started sign-in completes or expires.
-    pub async fn finish_sign_in(&self) -> Result<()> {
-        self.run(&["onboard", "--wait"], Duration::from_secs(900)).await.map(drop)
+    pub async fn finish_sign_in(&self) -> crate::machine::signin::Phase {
+        use crate::machine::signin::Phase;
+        match self.output(&["onboard", "--wait"], Duration::from_secs(920)).await {
+            Ok((true, _, _)) => Phase::Complete,
+            Ok((false, stdout, stderr)) if [&stdout, &stderr].iter().flat_map(|out| out.lines())
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .any(|value| value["code"] == "sign_in_expired") => Phase::Expired,
+            _ => Phase::Failed,
+        }
+    }
+
+    pub async fn sign_out(&self) -> Result<()> {
+        self.account_command(&["logout"], 30).await.map(drop)
+    }
+
+    async fn account_command(&self, args: &[&str], seconds: u64) -> Result<String> {
+        let (ok, stdout, _) = self.output(args, Duration::from_secs(seconds)).await?;
+        anyhow::ensure!(ok, "Boat account command did not finish");
+        Ok(stdout)
+    }
+
+    pub async fn upload_login_code(&self, id: &str, local: &Path, remote_path: &str) -> Result<()> {
+        let to = format!("{id}:{remote_path}");
+        let (ok, _, _) = self.output(&["scp", path_str(local)?, &to], Duration::from_secs(10)).await?;
+        anyhow::ensure!(ok, "Could not send the sign-in code to the machine");
+        Ok(())
     }
 
     /// Copies a local file to `remote_path` on the sandbox.

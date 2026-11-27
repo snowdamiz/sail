@@ -312,6 +312,7 @@ import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
 import * as AgentSessionImporter from "./project/AgentSessionImporter.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import { requestUrl } from "./requestUrl.ts";
+import { deriveAuthClientMetadata } from "./auth/utils.ts";
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
 const isProviderUploadFeedbackError = Schema.is(ProviderUploadFeedbackError);
@@ -1475,6 +1476,7 @@ export const layerWsRpc = (
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
   reportProfiles: ServerBrowser.ProfileReporter,
   settingsClient: ServerSettings.SettingsClient,
+  boatClientOnHost = false,
 ) =>
   Layer.effectContext(
     Effect.gen(function* () {
@@ -3552,7 +3554,8 @@ export const layerWsRpc = (
         [WS_METHODS.deviceDetail]: (input) => deviceService.detail(input),
         [WS_METHODS.deviceAction]: (input) => deviceService.action(input),
         [WS_METHODS.subscribeDeviceState]: (_input) => DeviceService.stateStream(deviceService),
-        [WS_METHODS.boatsInvoke]: (input) => boats.invoke(input),
+        [WS_METHODS.boatsInvoke]: (input) =>
+          boats.invoke(input, { owner: terminalViewerPrefix, onHost: boatClientOnHost }),
         [WS_METHODS.subscribeBoats]: (_input) => boats.events,
         [WS_METHODS.subscribeBoatNotices]: (_input) => boats.notices,
         [WS_METHODS.previewStopLocalServer]: (input) => portDiscovery.stopServer(input),
@@ -3893,6 +3896,11 @@ export const layer = Layer.unwrap(
             "sec-websocket-extensions"
           ];
         }
+        const boatClientOnHost = BoatSupervisor.isBoatClientOnHost(
+          session.subject,
+          request.headers.origin,
+          deriveAuthClientMetadata({ request }).ipAddress,
+        );
         const clientAnalyticsProps = readClientAnalyticsProps(request);
         yield* analytics.recordOwners(readClientOwners(request), "client");
         const reportProfiles = yield* serverBrowser.profileReporter;
@@ -3931,6 +3939,7 @@ export const layer = Layer.unwrap(
               serverBrowser,
               reportProfiles,
               readSettingsClient(url.value),
+              boatClientOnHost,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               // Handler-context reporters see only request defects, not server-wide defects.

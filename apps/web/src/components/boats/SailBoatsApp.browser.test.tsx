@@ -116,7 +116,6 @@ function uiState(overrides: Partial<UiState>): UiState {
   return {
     setup: "ready",
     setupBusy: false,
-    signInAttempt: null,
     account: { identifier: "me@example.com", plan: "Pro" },
     machines: [],
     costs: { today: 0, month: 0, startsToday: 0, startsLimit: 10 },
@@ -188,81 +187,104 @@ it("shows Boat setup in a plain browser tab from the subscribed state", async ()
   await expect.element(screen.getByText("Desktop app required")).not.toBeInTheDocument();
 });
 
-it("shows the sign-in page and code only to the tab whose click answered with them", async () => {
-  const url = "https://auth.localtest.me/boat/device?code=WXYZ-1234";
-  setup({ state: uiState({ setup: "signInBoat" }) });
-  state.replies.setup_action = { data: { attempt: 1 }, openUrl: url, userCode: "WXYZ-1234" };
-  await using screen = await mount();
+it.each([true, false])(
+  "shows the caller's Boat code and only auto-opens on the host (%s)",
+  async (onHost) => {
+    const url = "https://auth.localtest.me/boat/device";
+    setup({ state: uiState({ setup: "signInBoat" }), onHost });
+    state.replies.setup_action = {
+      signIn: { attemptId: "boat-1", onHost, prompt: { kind: "device", url, code: "WXYZ-1234" } },
+    };
+    state.replies.manage_boat_sign_in = { data: "pending" };
+    await using screen = await mount();
 
-  await userEvent.click(screen.getByRole("button", { name: "Sign in to Boat" }));
-  await publish(uiState({ setup: "signInBoat", setupBusy: true, signInAttempt: 1 }));
+    await userEvent.click(screen.getByRole("button", { name: "Sign in to Boat" }));
+    await publish(uiState({ setup: "signInBoat", setupBusy: true }));
 
-  await expect
-    .element(screen.getByRole("link", { name: "Boat's sign-in page" }))
-    .toHaveAttribute("href", url);
-  await expect.element(screen.getByText("WXYZ-1234")).toBeVisible();
-  expect(state.invoked).toEqual([{ command: "setup_action", args: { action: "signInBoat" } }]);
-  expect(state.openExternal).toHaveBeenCalledExactlyOnceWith(url);
+    await expect
+      .element(screen.getByRole("link", { name: "Open sign-in page" }))
+      .toHaveAttribute("href", url);
+    await expect.element(screen.getByText("WXYZ-1234")).toBeVisible();
+    expect(state.openExternal).toHaveBeenCalledTimes(onHost ? 1 : 0);
 
-  await publish(uiState({ setup: "ready" }));
-  await expect.element(screen.getByText("WXYZ-1234")).not.toBeInTheDocument();
-});
+    await publish(uiState({ setup: "ready" }));
+    await expect.element(screen.getByText("WXYZ-1234")).not.toBeInTheDocument();
+  },
+);
 
-it("shows another tab's sign-in as busy, with no link or code until that tab asks", async () => {
-  const url = "https://auth.localtest.me/boat/device?code=WXYZ-1234";
-  setup({ state: uiState({ setup: "signInBoat", setupBusy: true, signInAttempt: 1 }) });
-  state.replies.setup_action = { data: { attempt: 1 }, openUrl: url, userCode: "WXYZ-1234" };
+it("shows another tab's Boat sign-in as busy without showing a link or code", async () => {
+  setup({ state: uiState({ setup: "signInBoat", setupBusy: true }) });
   await using screen = await mount();
 
   await expect.element(screen.getByRole("link")).not.toBeInTheDocument();
-  await expect.element(screen.getByText(/If it asks for a code/)).not.toBeInTheDocument();
-
-  await userEvent.click(screen.getByRole("button", { name: "Show sign-in page" }));
-
-  await expect
-    .element(screen.getByRole("link", { name: "Boat's sign-in page" }))
-    .toHaveAttribute("href", url);
-  await expect.element(screen.getByText("WXYZ-1234")).toBeVisible();
-  await expect.element(screen.getByRole("button", { name: "Waiting for sign-in" })).toBeDisabled();
-  expect(state.invoked).toEqual([{ command: "setup_action", args: { action: "signInBoat" } }]);
-  expect(state.openExternal).toHaveBeenCalledExactlyOnceWith(url);
+  await expect.element(screen.getByRole("button", { name: "Waiting for sign-in…" })).toBeDisabled();
+  expect(state.invoked).toEqual([]);
+  expect(state.openExternal).not.toHaveBeenCalled();
 });
 
-it("drops a sign-in page once its wait ends, so a later attempt never shows an old code", async () => {
-  setup({ state: uiState({ setup: "signInBoat" }) });
+it("clears an expired Boat prompt and offers a fresh attempt", async () => {
+  setup({ state: uiState({ setup: "signInBoat" }), onHost: false });
   state.replies.setup_action = {
-    data: { attempt: 1 },
-    openUrl: "https://auth.localtest.me/boat/device?code=OLD-CODE",
-    userCode: "OLD-CODE",
+    signIn: {
+      attemptId: "expired",
+      onHost: false,
+      prompt: { kind: "device", url: "https://auth.localtest.me/boat/device", code: "OLD-CODE" },
+    },
   };
+  state.replies.manage_boat_sign_in = { data: "expired" };
   await using screen = await mount();
 
   await userEvent.click(screen.getByRole("button", { name: "Sign in to Boat" }));
-  await publish(uiState({ setup: "signInBoat", setupBusy: true, signInAttempt: 1 }));
-  await expect.element(screen.getByText("OLD-CODE")).toBeVisible();
-
-  await publish(uiState({ setup: "signInBoat", setupBusy: false }));
-  await publish(uiState({ setup: "signInBoat", setupBusy: true, signInAttempt: 2 }));
-
+  await expect
+    .element(screen.getByText("The sign-in expired. Start again to get a new code."))
+    .toBeVisible();
   await expect.element(screen.getByText("OLD-CODE")).not.toBeInTheDocument();
-  await expect.element(screen.getByRole("button", { name: "Show sign-in page" })).toBeEnabled();
+  await expect.element(screen.getByRole("button", { name: "Sign in to Boat" })).toBeEnabled();
 });
 
-it("never shows a sign-in page whose attempt already ended, even when its reply comes late", async () => {
-  setup({ state: uiState({ setup: "signInBoat", setupBusy: true, signInAttempt: 2 }) });
-  state.replies.setup_action = {
-    data: { attempt: 1 },
-    openUrl: "https://auth.localtest.me/boat/device?code=OLD-CODE",
-    userCode: "OLD-CODE",
+it("sends a pasted Claude code and cancels from the machine details", async () => {
+  setup({ state: uiState({ machines: [machine({ signedOut: ["Claude"] })] }), onHost: false });
+  state.replies.sign_in_agent = {
+    signIn: {
+      attemptId: "agent-1",
+      onHost: false,
+      prompt: { kind: "paste", url: "https://auth.localtest.me/claude/authorize" },
+    },
   };
+  state.replies.manage_agent_sign_in = { data: "pending" };
   await using screen = await mount();
 
-  await userEvent.click(screen.getByRole("button", { name: "Show sign-in page" }));
+  await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+  await expect.element(screen.getByRole("link", { name: "Open sign-in page" })).toBeVisible();
+  await userEvent.fill(screen.getByLabelText("Paste the sign-in code"), "synthetic-code");
+  await userEvent.click(screen.getByRole("button", { name: "Submit code" }));
+  expect(state.invoked).toContainEqual({
+    command: "manage_agent_sign_in",
+    args: { action: "submit", attemptId: "agent-1", code: "synthetic-code" },
+  });
+  await expect.element(screen.getByLabelText("Paste the sign-in code")).toHaveValue("");
 
-  expect(state.invoked).toEqual([{ command: "setup_action", args: { action: "signInBoat" } }]);
-  await expect.element(screen.getByRole("button", { name: "Show sign-in page" })).toBeEnabled();
-  await expect.element(screen.getByText("OLD-CODE")).not.toBeInTheDocument();
+  state.replies.manage_agent_sign_in = { data: "cancelled" };
+  await userEvent.click(screen.getByRole("button", { name: "Cancel sign-in" }));
+  expect(state.invoked).toContainEqual({
+    command: "manage_agent_sign_in",
+    args: { action: "cancel", attemptId: "agent-1" },
+  });
+  await expect
+    .element(screen.getByRole("link", { name: "Open sign-in page" }))
+    .not.toBeInTheDocument();
   expect(state.openExternal).not.toHaveBeenCalled();
+});
+
+it("signs out from Boat settings and returns to setup", async () => {
+  setup({ state: uiState({}) });
+  await using screen = await mount();
+
+  await userEvent.click(screen.getByRole("button", { name: "Boat settings" }));
+  await userEvent.click(screen.getByRole("button", { name: "Sign out of Boat" }));
+  expect(state.invoked).toContainEqual({ command: "sign_out_boat" });
+  await publish(uiState({ setup: "signInBoat", account: null }));
+  await expect.element(screen.getByRole("button", { name: "Sign in to Boat" })).toBeEnabled();
 });
 
 it("says Boats is not available here instead of starting forever", async () => {

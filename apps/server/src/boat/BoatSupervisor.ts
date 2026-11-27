@@ -5,6 +5,7 @@ import {
   type BoatInvokeInput,
   type BoatInvokeResult,
   BoatNotice,
+  BoatSignIn,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { makeAsyncRotatingFileSink } from "@t3tools/shared/logging";
@@ -31,6 +32,7 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpServer from "effect/http/HttpServer";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { loopbackBindAddress } from "../auth/utils.ts";
 import { resolveEntryPath } from "../cli/invocation.ts";
 import * as ServerConfig from "../config.ts";
 import { forkAccepted, ServerAdmission, withAdmission } from "../serverAdmission.ts";
@@ -48,7 +50,7 @@ const DAEMON_LOG_BACKUPS = 2;
 const RESTART_DELAY_CAP_SECONDS = 60;
 const STAYED_UP = Duration.minutes(1);
 const STATE_READ_TIMEOUT = Duration.seconds(1);
-const BOAT_DAEMON_PROTOCOL_VERSION = 1;
+const BOAT_DAEMON_PROTOCOL_VERSION = 2;
 
 const Handshake = Schema.Struct({
   ready: Schema.Literal(true),
@@ -69,7 +71,7 @@ const CommandReply = Schema.Union([
     ok: Schema.Literal(true),
     data: Schema.optional(Schema.Unknown),
     openUrl: Schema.optional(Schema.NullOr(Schema.String)),
-    userCode: Schema.optional(Schema.NullOr(Schema.String)),
+    signIn: Schema.optional(BoatSignIn),
   }),
   Schema.Struct({ ok: Schema.Literal(false), error: Schema.String }),
 ]);
@@ -204,10 +206,33 @@ const daemonInheritedEnvironment = (
     ),
   );
 
+export function isBoatClientOnHost(
+  subject: string,
+  origin: string | undefined,
+  clientIp: string | undefined,
+): boolean {
+  if (subject === "desktop-bootstrap") return true;
+  const host = URL.parse(origin ?? "")?.hostname.replace(/^\[|\]$/g, "");
+  return (
+    host !== undefined &&
+    loopbackBindAddress(host) !== undefined &&
+    clientIp !== undefined &&
+    loopbackBindAddress(clientIp) !== undefined
+  );
+}
+
+interface BoatClient {
+  readonly owner: string;
+  readonly onHost: boolean;
+}
+
 export class BoatSupervisor extends Context.Service<
   BoatSupervisor,
   {
-    readonly invoke: (input: BoatInvokeInput) => Effect.Effect<BoatInvokeResult, BoatError>;
+    readonly invoke: (
+      input: BoatInvokeInput,
+      client?: BoatClient,
+    ) => Effect.Effect<BoatInvokeResult, BoatError>;
     readonly events: Stream.Stream<BoatEvent>;
     readonly notices: Stream.Stream<BoatNotice>;
   }
@@ -562,12 +587,24 @@ const make = Effect.gen(function* () {
     }
   });
 
-  const send = Effect.fn("BoatSupervisor.send")(function* (daemon: Daemon, input: BoatInvokeInput) {
+  const send = Effect.fn("BoatSupervisor.send")(function* (
+    daemon: Daemon,
+    input: BoatInvokeInput,
+    client: BoatClient | undefined,
+  ) {
     const response = yield* httpClient
       .execute(
         HttpClientRequest.post(`${daemon.baseUrl}/api/command/${input.command}`).pipe(
           authorized(daemon),
           HttpClientRequest.bodyJsonUnsafe(input.args ?? {}),
+          HttpClientRequest.setHeaders(
+            client === undefined
+              ? {}
+              : {
+                  "x-sail-client": client.owner,
+                  "x-sail-client-on-host": client.onHost ? "1" : "0",
+                },
+          ),
         ),
       )
       .pipe(
@@ -590,14 +627,14 @@ const make = Effect.gen(function* () {
     effect.pipe(forkAccepted(serviceScope), Effect.flatMap(Fiber.join));
 
   const invoke = Effect.fn("BoatSupervisor.invoke")(
-    function* (input: BoatInvokeInput) {
+    function* (input: BoatInvokeInput, client?: BoatClient) {
       const daemon = yield* Effect.flatten(ensureStarted);
-      const reply = yield* outlivingCaller(send(daemon, input));
+      const reply = yield* outlivingCaller(send(daemon, input, client));
       if (!reply.ok) return yield* new BoatError({ message: reply.error });
       return {
         data: reply.data ?? null,
+        ...(reply.signIn ? { signIn: reply.signIn } : {}),
         ...(reply.openUrl ? { openUrl: reply.openUrl } : {}),
-        ...(reply.userCode ? { userCode: reply.userCode } : {}),
       } satisfies BoatInvokeResult;
     },
     withAdmission("root"),

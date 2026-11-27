@@ -1,5 +1,6 @@
 use crate::app::{self, App, Costs, MachineView, Setup};
-use crate::boat::{Boat, SignIn};
+use crate::boat::Boat;
+use crate::machine::signin::{Agent, Login, Phase, Prompt};
 use crate::machine::provision::{SizeInfo, SIZES};
 use crate::machine::Event;
 use crate::mcp;
@@ -9,7 +10,7 @@ use anyhow::{Context, Result};
 use axum::body::Bytes;
 use axum::extract::{Path, Request, State};
 use axum::http::header::{AUTHORIZATION, HOST};
-use axum::http::{Method, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -19,16 +20,17 @@ use futures_util::stream::{self, Stream};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 const COSTS_EVERY: Duration = Duration::from_secs(300);
 const EVENT_CHANNEL_CAPACITY: usize = 64;
-const BOAT_DAEMON_PROTOCOL_VERSION: u32 = 1;
+const BOAT_DAEMON_PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Clone, Debug)]
 pub struct DaemonConfig {
@@ -90,7 +92,6 @@ pub struct McpStatus {
 struct SetupState {
     setup: Setup,
     busy: bool,
-    sign_in_attempt: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -105,8 +106,6 @@ pub struct Account {
 pub struct UiState {
     pub setup: Setup,
     pub setup_busy: bool,
-    /// The Boat sign-in waiting now. Its page and code go only to clients that ask for them.
-    pub sign_in_attempt: Option<u64>,
     pub account: Option<Account>,
     pub machines: Vec<MachineView>,
     pub costs: Costs,
@@ -133,14 +132,14 @@ impl StreamEvent {
     }
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Reply {
     data: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     open_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    user_code: Option<String>,
+    sign_in: Option<Value>,
 }
 
 impl Reply {
@@ -154,47 +153,34 @@ impl Reply {
     }
 }
 
-#[derive(Default)]
-struct PendingSignIn(tokio::sync::Mutex<SignIns>);
-
-struct SignIns {
-    last_attempt: u64,
-    pending: Option<(u64, SignIn)>,
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum SignInTarget {
+    Boat,
+    Machine(String),
 }
 
-impl Default for SignIns {
-    /// A random start, so a tab still holding an attempt from an earlier daemon never matches one
-    /// from the next.
-    fn default() -> Self {
-        Self { last_attempt: u64::from(rand::random::<u32>()), pending: None }
-    }
+struct SignInClient {
+    owner: String,
+    on_host: bool,
 }
 
-impl PendingSignIn {
-    async fn get_or_start<F: Future<Output = Result<SignIn>>>(
-        &self,
-        start: impl FnOnce(u64) -> F,
-    ) -> Result<(u64, SignIn)> {
-        let mut sign_ins = self.0.lock().await;
-        if let Some(pending) = sign_ins.pending.as_ref() {
-            return Ok(pending.clone());
-        }
-        sign_ins.last_attempt += 1;
-        let attempt = sign_ins.last_attempt;
-        let sign_in = start(attempt).await?;
-        sign_ins.pending = Some((attempt, sign_in.clone()));
-        Ok((attempt, sign_in))
-    }
-
-    /// Ends the pending sign-in and runs `wrap_up` before any new one can start, so a click in
-    /// between neither gets the ended page nor has its own busy state cleared by this one.
-    async fn finish(&self, wrap_up: impl Future<Output = ()>) {
-        let mut sign_ins = self.0.lock().await;
-        sign_ins.pending = None;
-        wrap_up.await;
-    }
+struct Attempt {
+    id: String,
+    owner: String,
+    phase: watch::Sender<Phase>,
+    cancel: Option<oneshot::Sender<()>>,
+    code: Option<mpsc::Sender<String>>,
 }
 
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
+enum AttemptAction {
+    Status { attempt_id: String },
+    Cancel { attempt_id: String },
+    Submit { attempt_id: String, code: String },
+}
+
+#[derive(Debug)]
 enum CmdErr {
     BadRequest(String),
     Internal(String),
@@ -219,10 +205,10 @@ fn parse_args<T: for<'de> Deserialize<'de>>(name: &str, body: &Bytes) -> std::re
         json!({})
     } else {
         serde_json::from_slice(body)
-            .map_err(|e| CmdErr::BadRequest(format!("invalid JSON body for {name}: {e}")))?
+            .map_err(|_| CmdErr::BadRequest(format!("invalid JSON body for {name}")))?
     };
     serde_json::from_value(value)
-        .map_err(|e| CmdErr::BadRequest(format!("invalid arguments for {name}: {e}")))
+        .map_err(|_| CmdErr::BadRequest(format!("invalid arguments for {name}")))
 }
 
 pub struct Daemon {
@@ -234,7 +220,7 @@ pub struct Daemon {
     token: String,
     data_dir: PathBuf,
     events_tx: broadcast::Sender<StreamEvent>,
-    sign_in: PendingSignIn,
+    sign_ins: tokio::sync::Mutex<HashMap<SignInTarget, Attempt>>,
     /// One `init` at a time: startup and `recheck` must not both construct an `App`.
     init_lock: tokio::sync::Mutex<()>,
     shutdown_tx: watch::Sender<bool>,
@@ -254,7 +240,7 @@ impl Daemon {
             token,
             data_dir,
             events_tx,
-            sign_in: PendingSignIn::default(),
+            sign_ins: tokio::sync::Mutex::default(),
             init_lock: tokio::sync::Mutex::new(()),
             shutdown_tx,
             background_tasks: Mutex::new(Vec::new()),
@@ -279,7 +265,6 @@ impl Daemon {
         UiState {
             setup: setup.setup,
             setup_busy: setup.busy,
-            sign_in_attempt: setup.sign_in_attempt,
             account: self.account.lock().unwrap().clone(),
             machines: app.as_ref().map(|a| a.views()).unwrap_or_default(),
             costs: app.as_ref().map(|a| a.costs()).unwrap_or_default(),
@@ -369,7 +354,7 @@ impl Daemon {
         self.emit_state();
     }
 
-    async fn handle_command(self: Arc<Self>, name: &str, body: Bytes) -> std::result::Result<Reply, CmdErr> {
+    async fn handle_command(self: Arc<Self>, name: &str, body: Bytes, client: Option<SignInClient>) -> std::result::Result<Reply, CmdErr> {
         match name {
             "get_state" => Reply::data(self.state()),
             "create_machine" => {
@@ -475,37 +460,48 @@ impl Daemon {
                 let args: Args = parse_args(name, &body)?;
                 Reply::data(self.app()?.details(&args.id).map_err(err)?)
             }
-            "sign_in_agent" => {
+            "sign_in_agent" | "turn_on_connect" => {
                 #[derive(Deserialize)]
                 struct Args {
                     id: String,
-                    agent: String,
+                    agent: Option<String>,
                 }
                 let args: Args = parse_args(name, &body)?;
-                let agent = crate::machine::signin::Agent::from_name(&args.agent).ok_or_else(|| {
-                    CmdErr::BadRequest(format!("{} has to be signed in from Sail's settings", args.agent))
-                })?;
-                self.app()?
-                    .machine(&args.id)
-                    .map_err(err)?
-                    .sign_in(agent)
-                    .await
-                    .map(|_| Reply::default())
-                    .map_err(err)
+                let client = client.ok_or_else(sign_in_unavailable)?;
+                let login = if name == "sign_in_agent" {
+                    let agent = args.agent.as_deref().and_then(Agent::from_name).ok_or_else(|| {
+                        CmdErr::BadRequest("This agent uses its own sign-in settings".to_owned())
+                    })?;
+                    Login::Agent(agent)
+                } else {
+                    Login::Connect
+                };
+                let machine = self.app()?.machine(&args.id).map_err(err)?;
+                let target = SignInTarget::Machine(machine.id().to_owned());
+                let on_host = client.on_host;
+                self.start_attempt(target, client, login.accepts_code(on_host), move |prompt, code, cancel| async move {
+                    machine.run_login(login, on_host, prompt, code, cancel).await
+                }).await
             }
-            "turn_on_connect" => {
-                #[derive(Deserialize)]
-                struct Args {
-                    id: String,
+            "manage_boat_sign_in" | "manage_agent_sign_in" => {
+                let action = parse_args(name, &body)?;
+                self.manage_attempt(name == "manage_boat_sign_in", client.ok_or_else(sign_in_unavailable)?, action).await
+            }
+            "sign_out_boat" => {
+                let attempts = self.sign_ins.lock().await;
+                if attempts.values().any(|attempt| *attempt.phase.borrow() == Phase::Pending) {
+                    return Err(CmdErr::BadRequest("Finish or cancel the current sign-in first".to_owned()));
                 }
-                let args: Args = parse_args(name, &body)?;
-                self.app()?
-                    .machine(&args.id)
-                    .map_err(err)?
-                    .turn_on_connect()
-                    .await
-                    .map(|_| Reply::default())
-                    .map_err(err)
+                let boat = Boat::locate().ok_or_else(sign_in_unavailable)?;
+                let _setup = self.init_lock.lock().await;
+                self.set_busy(true);
+                let result = boat.sign_out().await;
+                if result.is_ok() {
+                    self.set_signed_out();
+                }
+                self.set_busy(false);
+                result.map_err(err)?;
+                Ok(Reply::default())
             }
             "keep_awake" => {
                 #[derive(Deserialize)]
@@ -570,7 +566,7 @@ impl Daemon {
                     action: String,
                 }
                 let args: Args = parse_args(name, &body)?;
-                self.setup_action(&args.action).await
+                self.setup_action(&args.action, client).await
             }
             "add_mcp" => {
                 #[derive(Deserialize)]
@@ -590,7 +586,7 @@ impl Daemon {
         }
     }
 
-    async fn setup_action(self: &Arc<Self>, action: &str) -> std::result::Result<Reply, CmdErr> {
+    async fn setup_action(self: &Arc<Self>, action: &str, client: Option<SignInClient>) -> std::result::Result<Reply, CmdErr> {
         match action {
             "installBoat" => {
                 self.set_busy(true);
@@ -604,12 +600,38 @@ impl Daemon {
             }
             "signInBoat" => {
                 let boat = Boat::locate().ok_or_else(|| CmdErr::Internal("Boat CLI not found".to_owned()))?;
-                let (attempt, sign_in) = self.sign_in_boat(boat).await.map_err(err)?;
-                return Ok(Reply {
-                    data: json!({ "attempt": attempt }),
-                    open_url: Some(sign_in.url),
-                    user_code: sign_in.code,
-                });
+                let client = client.ok_or_else(sign_in_unavailable)?;
+                let daemon = self.clone();
+                return self.start_attempt(SignInTarget::Boat, client, false, move |prompt, _, mut cancel| async move {
+                    daemon.set_busy(true);
+                    let phase = async {
+                        // Boat can reuse a pending code across daemon restarts. Start from a
+                        // signed-out account with any earlier pending code cleared.
+                        if !boat.account().await.is_ok_and(|account| !account.signed_in)
+                            || boat.sign_out().await.is_err()
+                        {
+                            return Phase::Failed;
+                        }
+                        let Ok(sign_in) = boat.start_sign_in().await else { return Phase::Failed };
+                        let next = match sign_in.code {
+                            Some(code) => Prompt::Device { url: sign_in.url, code },
+                            None => Prompt::Browser { url: sign_in.url },
+                        };
+                        let _ = prompt.send(next);
+                        let phase = tokio::select! {
+                            phase = boat.finish_sign_in() => phase,
+                            _ = &mut cancel => Phase::Cancelled,
+                            _ = tokio::time::sleep(Duration::from_secs(900)) => Phase::Expired,
+                        };
+                        if matches!(phase, Phase::Cancelled | Phase::Expired) && boat.sign_out().await.is_err() {
+                            return Phase::Failed;
+                        }
+                        phase
+                    }.await;
+                    daemon.recheck_setup().await;
+                    daemon.set_busy(false);
+                    phase
+                }).await;
             }
             "installT3" => {}
             "recheck" => {}
@@ -628,38 +650,106 @@ impl Daemon {
         }
     }
 
-    async fn sign_in_boat(self: &Arc<Self>, boat: Boat) -> Result<(u64, SignIn)> {
-        self.sign_in
-            .get_or_start(|attempt| async move {
-                self.set_busy(true);
-                let sign_in = boat.start_sign_in().await.inspect_err(|_| self.set_busy(false))?;
-                self.setup.lock().unwrap().sign_in_attempt = Some(attempt);
-                self.emit_state();
-                let daemon = self.clone();
-                let wait = tokio::spawn(async move {
-                    let finished = boat.finish_sign_in().await;
-                    daemon
-                        .sign_in
-                        .finish(async {
-                            daemon.setup.lock().unwrap().sign_in_attempt = None;
-                            daemon.emit_state();
-                            daemon.recheck_setup().await;
-                            daemon.set_busy(false);
-                            // Boat's output can carry the sign-in code, and notices reach every client.
-                            if finished.is_err() {
-                                tracing::warn!("Boat sign-in did not finish");
-                                daemon.emit_notify("Boat sign-in did not finish", "Sign in to Boat again.");
-                            }
-                        })
-                        .await;
-                });
-                let mut tasks = self.background_tasks.lock().unwrap();
-                tasks.retain(|task| !task.is_finished());
-                tasks.push(wait);
-                Ok(sign_in)
-            })
-            .await
+    fn set_signed_out(&self) {
+        self.setup.lock().unwrap().setup = Setup::SignInBoat;
+        if let Some(app) = self.app.lock().unwrap().take() {
+            app.shutdown();
+        }
+        for task in self.background_tasks.lock().unwrap().drain(..) {
+            task.abort();
+        }
+        *self.account.lock().unwrap() = None;
     }
+
+    async fn start_attempt<F, Run>(
+        self: &Arc<Self>,
+        target: SignInTarget,
+        client: SignInClient,
+        accepts_code: bool,
+        run: Run,
+    ) -> std::result::Result<Reply, CmdErr>
+    where
+        F: Future<Output = Phase> + Send + 'static,
+        Run: FnOnce(oneshot::Sender<Prompt>, mpsc::Receiver<String>, oneshot::Receiver<()>) -> F,
+    {
+        let id = generate_hex_token();
+        let (tx, prompt) = oneshot::channel();
+        let (code, input) = mpsc::channel(1);
+        let (cancel, cancelled) = oneshot::channel();
+        {
+            let mut attempts = self.sign_ins.lock().await;
+            if matches!(target, SignInTarget::Machine(_)) {
+                self.app()?;
+            }
+            if attempts.get(&target).is_some_and(|a| *a.phase.borrow() == Phase::Pending) {
+                return Err(CmdErr::BadRequest("A sign-in is already in progress".to_owned()));
+            }
+            // Keep the last result for each existing target until its next attempt, with
+            // a bound on the number of completed attempts from deleted machines.
+            if attempts.len() >= 256 {
+                attempts.retain(|_, a| *a.phase.borrow() == Phase::Pending);
+            }
+            attempts.insert(target.clone(), Attempt {
+                id: id.clone(),
+                owner: client.owner,
+                phase: watch::channel(Phase::Pending).0,
+                cancel: Some(cancel),
+                code: accepts_code.then_some(code),
+            });
+        }
+        let daemon = self.clone();
+        let job = run(tx, input, cancelled);
+        tokio::spawn(async move {
+            let phase = job.await;
+            let mut attempts = daemon.sign_ins.lock().await;
+            if let Some(attempt) = attempts.get_mut(&target) {
+                attempt.phase.send_replace(phase);
+                attempt.cancel = None;
+                attempt.code = None;
+            }
+        });
+        let prompt = prompt.await.ok();
+        Ok(Reply { sign_in: Some(json!({ "attemptId": id, "prompt": prompt, "onHost": client.on_host })), ..Reply::default() })
+    }
+
+    async fn manage_attempt(
+        &self, boat: bool, client: SignInClient, action: AttemptAction,
+    ) -> std::result::Result<Reply, CmdErr> {
+        let id = match &action {
+            AttemptAction::Status { attempt_id } | AttemptAction::Cancel { attempt_id }
+                | AttemptAction::Submit { attempt_id, .. } => attempt_id,
+        };
+        let mut attempts = self.sign_ins.lock().await;
+        let Some((_, attempt)) = attempts.iter_mut().find(|(target, a)| {
+            matches!(target, SignInTarget::Boat) == boat && a.id == *id && a.owner == client.owner
+        }) else {
+            return Reply::data(Phase::Expired);
+        };
+        match action {
+            AttemptAction::Cancel { .. } => {
+                if let Some(cancel) = attempt.cancel.take() {
+                    attempt.code = None;
+                    let _ = cancel.send(());
+                }
+            }
+            AttemptAction::Submit { code, .. } if *attempt.phase.borrow() == Phase::Pending => {
+                let code = code.trim();
+                if code.is_empty() || code.len() > 2048 || code.chars().any(char::is_control) {
+                    return Err(CmdErr::BadRequest("Enter a valid sign-in code".to_owned()));
+                }
+                let Some(sender) = &attempt.code else {
+                    return Err(CmdErr::BadRequest("This attempt is not accepting a code".to_owned()));
+                };
+                sender.try_send(code.to_owned()).map_err(|_| sign_in_unavailable())?;
+            }
+            _ => {}
+        }
+        Reply::data(*attempt.phase.borrow())
+    }
+}
+
+fn sign_in_unavailable() -> CmdErr {
+    CmdErr::BadRequest("Sign-in is unavailable for this connection".to_owned())
 }
 
 async fn mcp_status() -> McpStatus {
@@ -767,14 +857,17 @@ async fn events_stream(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-async fn run_command(State(daemon): State<Arc<Daemon>>, Path(name): Path<String>, body: Bytes) -> Response {
+async fn run_command(State(daemon): State<Arc<Daemon>>, Path(name): Path<String>, headers: HeaderMap, body: Bytes) -> Response {
     #[derive(Serialize)]
     struct Done {
         ok: bool,
         #[serde(flatten)]
         reply: Reply,
     }
-    match daemon.handle_command(&name, body).await {
+    let client = headers.get("x-sail-client").and_then(|value| value.to_str().ok()).map(|owner| {
+        SignInClient { owner: owner.to_owned(), on_host: headers.get("x-sail-client-on-host").is_some_and(|v| v == "1") }
+    });
+    match daemon.handle_command(&name, body, client).await {
         Ok(reply) => Json(Done { ok: true, reply }).into_response(),
         Err(e) => e.into_response(),
     }
@@ -969,7 +1062,6 @@ pub fn closed(mut input: impl std::io::Read + Send + 'static) -> tokio::sync::on
 mod tests {
     use super::*;
     use futures_util::StreamExt;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     const TOKEN: &str = "test-secret-token-123";
 
@@ -1124,7 +1216,7 @@ mod tests {
     #[tokio::test]
     async fn state_returns_full_ui_contract_payload() {
         let (running, dir) = spawn_test_daemon().await;
-        assert_eq!(serde_json::to_value(&running.handshake).unwrap()["protocolVersion"], 1);
+        assert_eq!(serde_json::to_value(&running.handshake).unwrap()["protocolVersion"], BOAT_DAEMON_PROTOCOL_VERSION);
         let port = running.handshake.port;
         let res = reqwest::Client::new()
             .get(format!("http://127.0.0.1:{port}/api/state"))
@@ -1336,11 +1428,41 @@ esac
         stop_test_daemon(next, dir).await;
     }
 
-    #[test]
-    fn sign_in_attempts_from_two_daemons_do_not_collide() {
-        let first = SignIns::default().last_attempt;
-        let second = SignIns::default().last_attempt;
-        assert_ne!(first, second, "a stale tab must never match the next daemon's attempt");
+    fn signin_client(owner: &str) -> SignInClient {
+        SignInClient { owner: owner.to_owned(), on_host: false }
+    }
+
+    #[tokio::test]
+    async fn signin_is_connection_owned_and_cancel_finishes_before_retry() {
+        let daemon = Daemon::new(TOKEN.to_owned(), test_dir(), 0);
+        let target = SignInTarget::Boat;
+        let (release, released) = oneshot::channel();
+        let reply = daemon.start_attempt(target.clone(), signin_client("first"), false, |prompt, _, cancel| async move {
+            let _ = prompt.send(Prompt::Device { url: "https://auth.example/device".to_owned(), code: "FIXTURE-CODE".to_owned() });
+            cancel.await.unwrap();
+            released.await.unwrap();
+            Phase::Cancelled
+        }).await.unwrap();
+        let own = reply.sign_in.unwrap();
+        let id = own["attemptId"].as_str().unwrap().to_owned();
+        assert_eq!(own["prompt"]["code"], "FIXTURE-CODE");
+        assert!(!daemon.state_json().contains(&id));
+        assert!(!daemon.state_json().contains("FIXTURE-CODE"));
+
+        let cancel = || AttemptAction::Cancel { attempt_id: id.clone() };
+        let mut phase = daemon.sign_ins.lock().await[&target].phase.subscribe();
+        assert_eq!(daemon.manage_attempt(true, signin_client("second"), cancel()).await.unwrap().data, "expired");
+        assert_eq!(*phase.borrow(), Phase::Pending);
+        assert_eq!(daemon.manage_attempt(true, signin_client("first"), cancel()).await.unwrap().data, "pending");
+        assert!(daemon.start_attempt(target.clone(), signin_client("second"), false, |_, _, _| async { Phase::Complete }).await.is_err());
+
+        release.send(()).unwrap();
+        phase.wait_for(|phase| *phase == Phase::Cancelled).await.unwrap();
+        let next = daemon.start_attempt(target.clone(), signin_client("second"), false, |_, _, _| async { Phase::Expired }).await.unwrap();
+        assert_ne!(next.sign_in.unwrap()["attemptId"], id);
+        let mut next_phase = daemon.sign_ins.lock().await[&target].phase.subscribe();
+        next_phase.wait_for(|phase| *phase == Phase::Expired).await.unwrap();
+        assert_eq!(daemon.manage_attempt(true, signin_client("first"), cancel()).await.unwrap().data, "expired");
     }
 
     #[tokio::test]
@@ -1354,75 +1476,6 @@ esac
         );
         drop(writer);
         tokio::time::timeout(Duration::from_secs(5), closed).await.unwrap().unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_pending_boat_sign_in_is_handed_out_until_it_finishes() {
-        let pending = PendingSignIn::default();
-        let starts = AtomicUsize::new(0);
-        let start = |ok: bool| {
-            let starts = &starts;
-            move |_attempt| async move {
-                let n = starts.fetch_add(1, Ordering::SeqCst) + 1;
-                tokio::task::yield_now().await;
-                anyhow::ensure!(ok, "boat onboard failed");
-                Ok(SignIn { url: format!("https://boat.test/device?n={n}"), code: Some(format!("CODE-{n}")) })
-            }
-        };
-
-        let (a, b) = tokio::join!(pending.get_or_start(start(true)), pending.get_or_start(start(true)));
-        let ((a_attempt, a), (b_attempt, b)) = (a.unwrap(), b.unwrap());
-        assert_eq!(starts.load(Ordering::SeqCst), 1, "overlapping clicks start one sign-in");
-        assert_eq!((a.url.as_str(), a.code.as_deref()), ("https://boat.test/device?n=1", Some("CODE-1")));
-        assert_eq!((b_attempt, &b.url, &b.code), (a_attempt, &a.url, &a.code));
-        let (again_attempt, again) = pending.get_or_start(start(true)).await.unwrap();
-        assert_eq!(
-            (again_attempt, &again.url, &again.code),
-            (a_attempt, &a.url, &a.code),
-            "a later click gets the pending page"
-        );
-        assert_eq!(starts.load(Ordering::SeqCst), 1);
-
-        pending.finish(async {}).await;
-        assert!(pending.get_or_start(start(false)).await.is_err());
-        let (next_attempt, next) = pending.get_or_start(start(true)).await.unwrap();
-        assert_eq!(next.url, "https://boat.test/device?n=3", "a finished or failed sign-in is started anew");
-        assert_ne!(next_attempt, a_attempt, "a new sign-in is a new attempt");
-    }
-
-    #[tokio::test]
-    async fn a_click_during_the_wrap_up_waits_and_starts_a_new_sign_in() {
-        let sign_in = |n: u8| SignIn { url: format!("https://boat.test/device?n={n}"), code: Some(format!("CODE-{n}")) };
-        let pending = Arc::new(PendingSignIn::default());
-        pending.get_or_start(|_| async { Ok(sign_in(1)) }).await.unwrap();
-
-        let (in_wrap_up, wrapping) = tokio::sync::oneshot::channel::<()>();
-        let (release, released) = tokio::sync::oneshot::channel::<()>();
-        let ending = tokio::spawn({
-            let pending = pending.clone();
-            async move {
-                pending
-                    .finish(async move {
-                        in_wrap_up.send(()).unwrap();
-                        released.await.unwrap();
-                    })
-                    .await;
-            }
-        });
-        wrapping.await.unwrap();
-
-        let mut click = tokio::spawn({
-            let pending = pending.clone();
-            async move { pending.get_or_start(|_| async { Ok(sign_in(2)) }).await }
-        });
-        assert!(
-            tokio::time::timeout(Duration::from_millis(200), &mut click).await.is_err(),
-            "a click while the ended sign-in wraps up waits for it"
-        );
-        release.send(()).unwrap();
-        ending.await.unwrap();
-        let (_, next) = click.await.unwrap().unwrap();
-        assert_eq!(next.code.as_deref(), Some("CODE-2"), "the click starts a new sign-in, never the ended one");
     }
 
     #[tokio::test]

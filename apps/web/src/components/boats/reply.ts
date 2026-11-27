@@ -1,3 +1,4 @@
+import type { BoatSignIn } from "@t3tools/contracts";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { promptLinkAppPath } from "@t3tools/shared/promptLinks";
 import { readPairingAppLink } from "@t3tools/shared/remote";
@@ -8,7 +9,7 @@ import type { CommandName, CommandResult } from "./types";
 export interface BoatReply<C extends CommandName> {
   readonly data: CommandResult<C>;
   readonly openUrl?: string;
-  readonly userCode?: string;
+  readonly signIn?: BoatSignIn;
 }
 
 export type BoatLink =

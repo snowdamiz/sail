@@ -93,7 +93,11 @@ const commands = {
     return [200, { ok: true, data: null }];
   },
   get_state: () => [200, { ok: true, data: state }],
-  sign_in_agent: () => [200, { ok: true, data: { started: true }, openUrl: "https://boat.example/device", userCode: "WXYZ-1234" }],
+  sign_in_agent: (_args, req) => [200, { ok: true, signIn: {
+    attemptId: req.headers["x-sail-client"],
+    onHost: req.headers["x-sail-client-on-host"] === "1",
+    prompt: { kind: "device", url: "https://boat.example/device", code: "WXYZ-1234" },
+  } }],
   create_machine: () => [409, { ok: false, error: "Sign in to Boat first." }],
   update_settings: () => {
     emit("desktop_action", { type: "activate" });
@@ -102,7 +106,7 @@ const commands = {
   },
 };
 const server = http.createServer((req, res) => {
-  if (${protocolVersion !== 1}) fs.writeFileSync(${JSON.stringify(requestMarkerPath)}, req.url);
+  if (${protocolVersion !== 2 || !reportsTcpAddress}) fs.writeFileSync(${JSON.stringify(requestMarkerPath)}, req.url);
   if (req.headers.authorization !== "Bearer " + token) return reply(res, 401, { ok: false, error: "unauthorized" });
   if (req.method === "GET" && req.url === "/api/events") {
     res.writeHead(200, { "content-type": "text/event-stream" });
@@ -142,7 +146,7 @@ const server = http.createServer((req, res) => {
     }
     const command = commands[name];
     if (!command) return reply(res, 404, { ok: false, error: "unknown command " + name });
-    const [status, payload] = command(JSON.parse(body || "{}"));
+    const [status, payload] = command(JSON.parse(body || "{}"), req);
     reply(res, status, payload);
   });
 });
@@ -273,7 +277,7 @@ const setupWithProtocolVersion = Effect.fnUntraced(function* (
   return { baseDir, port, reports, requestMarkerPath, saveBoatState, supervisor };
 });
 
-const setup = setupWithProtocolVersion(1);
+const setup = setupWithProtocolVersion(2);
 
 const isReady = (event: BoatEvent) => event._tag === "status" && event.status.phase === "ready";
 
@@ -318,9 +322,21 @@ describe("BoatSupervisor", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it("uses callbacks for its own desktop and direct loopback browser", () => {
+    assert.isTrue(BoatSupervisor.isBoatClientOnHost("desktop-bootstrap", undefined, undefined));
+    assert.isTrue(BoatSupervisor.isBoatClientOnHost("pairing-link", "http://[::1]:4311", "::1"));
+    assert.isFalse(
+      BoatSupervisor.isBoatClientOnHost("pairing-link", "https://sail.example", "127.0.0.1"),
+    );
+    assert.isFalse(
+      BoatSupervisor.isBoatClientOnHost("pairing-link", "http://localhost:4311", "192.0.2.10"),
+    );
+    assert.isFalse(BoatSupervisor.isBoatClientOnHost("pairing-link", undefined, "127.0.0.1"));
+  });
+
   it.live.each([
     { protocol: "no version", version: null, reportsTcpAddress: true },
-    { protocol: "a future version", version: 2, reportsTcpAddress: true },
+    { protocol: "a future version", version: 3, reportsTcpAddress: true },
     { protocol: "a changed ready payload", version: 2, reportsTcpAddress: false },
   ])(
     "refuses sail-boatd with $protocol before publishing Boats state",
@@ -352,8 +368,9 @@ describe("BoatSupervisor", () => {
               _tag: "status",
               status: {
                 phase: "error",
-                error:
-                  "sail-boatd uses an incompatible protocol. Install a matching sail-boatd (protocol version 1) and retry.",
+                error: reportsTcpAddress
+                  ? "sail-boatd uses an incompatible protocol. Install a matching sail-boatd (protocol version 2) and retry."
+                  : "sail-boatd reported an invalid startup address or token.",
               },
             },
           ]);
@@ -379,11 +396,17 @@ describe("BoatSupervisor", () => {
           assert.deepEqual(state, { data: { machines: [{ name: "m1" }], pid: started.pid } });
 
           assert.deepEqual(
-            yield* boats.invoke({ command: "sign_in_agent", args: { agent: "x" } }),
+            yield* boats.invoke(
+              { command: "sign_in_agent", args: { agent: "x" } },
+              { owner: "socket-a", onHost: false },
+            ),
             {
-              data: { started: true },
-              openUrl: "https://boat.example/device",
-              userCode: "WXYZ-1234",
+              data: null,
+              signIn: {
+                attemptId: "socket-a",
+                onHost: false,
+                prompt: { kind: "device", url: "https://boat.example/device", code: "WXYZ-1234" },
+              },
             },
           );
           const refused = yield* boats

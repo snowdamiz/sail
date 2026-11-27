@@ -32,6 +32,9 @@ export const BoatCommand = Schema.Literals([
   "resize_machine",
   "keep_awake",
   "sign_in_agent",
+  "manage_agent_sign_in",
+  "manage_boat_sign_in",
+  "sign_out_boat",
   "turn_on_connect",
   "update_settings",
   "setup_action",
@@ -58,6 +61,9 @@ export const BOAT_COMMAND_SCOPES = {
   resize_machine: AuthOrchestrationOperateScope,
   keep_awake: AuthOrchestrationOperateScope,
   sign_in_agent: AuthOrchestrationOperateScope,
+  manage_agent_sign_in: AuthOrchestrationOperateScope,
+  manage_boat_sign_in: AuthEnvironmentMaintainScope,
+  sign_out_boat: AuthEnvironmentMaintainScope,
   turn_on_connect: AuthOrchestrationOperateScope,
   update_settings: AuthOrchestrationOperateScope,
   setup_action: AuthEnvironmentMaintainScope,
@@ -71,14 +77,37 @@ export const BoatInvokeInput = Schema.Struct({
 });
 export type BoatInvokeInput = typeof BoatInvokeInput.Type;
 
-/**
- * `openUrl` and `userCode` go only to the caller that sent the command: a pairing link carries a
- * one-time token, and a Boat sign-in code is the caller's own.
- */
+export const BoatSignInPhase = Schema.Literals([
+  "pending",
+  "complete",
+  "cancelled",
+  "expired",
+  "failed",
+]);
+export type BoatSignInPhase = typeof BoatSignInPhase.Type;
+
+export const BoatSignIn = Schema.Struct({
+  attemptId: Schema.String,
+  onHost: Schema.Boolean,
+  prompt: Schema.NullOr(
+    Schema.Union([
+      Schema.Struct({ kind: Schema.Literal("browser"), url: Schema.String }),
+      Schema.Struct({ kind: Schema.Literal("device"), url: Schema.String, code: Schema.String }),
+      Schema.Struct({ kind: Schema.Literal("paste"), url: Schema.String }),
+    ]),
+  ),
+});
+export type BoatSignIn = typeof BoatSignIn.Type;
+
+export type BoatSignInAction =
+  | { readonly action: "status" | "cancel"; readonly attemptId: string }
+  | { readonly action: "submit"; readonly attemptId: string; readonly code: string };
+
+/** Sign-in prompts and pairing links are returned only to the invoking client. */
 export const BoatInvokeResult = Schema.Struct({
   data: Schema.Unknown,
   openUrl: Schema.optional(Schema.String),
-  userCode: Schema.optional(Schema.String),
+  signIn: Schema.optional(BoatSignIn),
 });
 export type BoatInvokeResult = typeof BoatInvokeResult.Type;
 

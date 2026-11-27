@@ -1,3 +1,4 @@
+import { useGT } from "gt-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { offered, useBoatAccess } from "../access";
 import { useMachineDetails } from "../api";
@@ -38,6 +39,8 @@ interface Props {
   deleteError: string | null;
   /** opened from the row's "Add a project…" or "Add one": start with the project picker open */
   pickProject: boolean;
+  signIn: ReactNode;
+  signingIn: boolean;
   onAction: (a: Action) => void;
   onAddProject: (p: LocalProject) => void;
   onDismissDeleteError: () => void;
@@ -52,6 +55,8 @@ export function MachineDetails({
   pending,
   deleteError,
   pickProject,
+  signIn,
+  signingIn,
   onAction,
   onAddProject,
   onDismissDeleteError,
@@ -81,8 +86,9 @@ export function MachineDetails({
       <div className="view-body details-body">
         <Glance m={m} size={sizeOf(sizes, m.size)} d={d} />
         {gone ? null : <Power m={m} busy={busy} onAction={onAction} />}
-        <Agents m={m} d={d} pending={pending} onAction={onAction} />
-        <Connect m={m} d={d} pending={pending} onAction={onAction} />
+        <Agents m={m} d={d} pending={pending} signingIn={signingIn} onAction={onAction} />
+        {signIn}
+        <Connect m={m} d={d} pending={pending} signingIn={signingIn} onAction={onAction} />
         <Projects m={m} pickProject={pickProject} onAddProject={onAddProject} />
         <MachineMore
           m={m}
@@ -330,21 +336,23 @@ function Agents({
   m,
   d,
   pending,
+  signingIn,
   onAction,
 }: {
   m: MachineView;
   d: Details | null;
   pending: string | null;
+  signingIn: boolean;
   onAction: (a: Action) => void;
 }) {
-  const [signingIn, setSigningIn] = useState<string | null>(null);
+  const gt = useGT();
   const canSignIn = useBoatAccess().can("sign_in_agent");
   return (
     <Section title="agents">
       <ul className="lines">
         {d ? (
           d.agents.map((a) => {
-            const running = signingIn === a.name && pending === signInTo(a.name).busy;
+            const running = pending === signInTo(a.name).busy;
             return (
               <li key={a.name} className="line">
                 <span className="line-main">
@@ -357,19 +365,16 @@ function Agents({
                 ) : m.signedOut.includes(a.name) ? (
                   <button
                     className="btn btn-sm btn-outline"
-                    disabled={!!pending || m.state === "missing" || !canSignIn}
+                    disabled={signingIn || !!pending || m.state === "missing" || !canSignIn}
                     aria-busy={running}
-                    onClick={() => {
-                      setSigningIn(a.name);
-                      onAction(signInTo(a.name));
-                    }}
+                    onClick={() => onAction(signInTo(a.name))}
                   >
                     {running ? (
                       <>
-                        <Dots /> Signing in…
+                        <Dots /> {gt("Signing in…")}
                       </>
                     ) : (
-                      "Sign in"
+                      gt("Sign in")
                     )}
                   </button>
                 ) : (
@@ -391,11 +396,13 @@ function Connect({
   m,
   d,
   pending,
+  signingIn,
   onAction,
 }: {
   m: MachineView;
   d: Details | null;
   pending: string | null;
+  signingIn: boolean;
   onAction: (a: Action) => void;
 }) {
   const running = pending === ACTIONS.connect.busy;
@@ -414,7 +421,7 @@ function Connect({
               ) : (
                 <button
                   className="btn btn-sm btn-outline"
-                  disabled={!!pending || m.state === "missing" || !canConnect}
+                  disabled={signingIn || !!pending || m.state === "missing" || !canConnect}
                   aria-busy={running}
                   onClick={() => onAction(ACTIONS.connect)}
                 >

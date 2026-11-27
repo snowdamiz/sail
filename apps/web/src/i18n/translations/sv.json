@@ -12914,5 +12914,19 @@
   "b5d5d4dfc90787f3": "Använd {host} som huvudserver",
   "85ec11530a2789b4": "Öppna i Sail för dator",
   "c5e7c250e10ee11f": "Använd samma inställningar på alla enheter",
-  "1a533c38103d6ca8": "Huvudserver"
+  "1a533c38103d6ca8": "Huvudserver",
+  "38eefd72cad079d8": "Inloggningen har gått ut. Börja om för att få en ny kod.",
+  "4c952d9fd5d93c6a": "Det gick inte att slutföra inloggningen. Försök igen.",
+  "4189d6c508b9c1f1": "Det gick inte att starta inloggningen.",
+  "7ac80fa2840a7e58": "Loggar ut från Boat…",
+  "ff78528a594ad695": "Logga ut från Boat",
+  "1b6314a6a79cc719": "Logga in på Boat",
+  "be2b0a55559f6abc": "Maskinerna debiteras enligt ditt Boat-abonnemang.",
+  "f932d120942f1c12": "Väntar på inloggning…",
+  "d2910f24c89a17da": "Ange den här koden på inloggningssidan",
+  "1c1bfb59a9ad8569": "Klistra in inloggningskoden",
+  "25a1c6cf87920b69": "Skicka kod",
+  "1ec7a2c612524967": "Inloggningsbegäran misslyckades. Försök igen.",
+  "64c07d2cd0e78ac4": "Koden har skickats. Prova en annan kod om inloggningen inte fortsätter.",
+  "334031c5b02772d0": "Avbryter inloggningen…"
 }

@@ -12902,5 +12902,19 @@
   "b5d5d4dfc90787f3": "Usar {host} como servidor principal",
   "85ec11530a2789b4": "Abrir en Sail para escritorio",
   "c5e7c250e10ee11f": "Usar las mismas preferencias en todos los dispositivos",
-  "1a533c38103d6ca8": "Servidor principal"
+  "1a533c38103d6ca8": "Servidor principal",
+  "38eefd72cad079d8": "La sesión de inicio ha caducado. Vuelve a iniciarla para obtener un código nuevo.",
+  "4c952d9fd5d93c6a": "No se pudo completar el inicio de sesión. Inténtalo de nuevo.",
+  "4189d6c508b9c1f1": "No se pudo iniciar el acceso.",
+  "7ac80fa2840a7e58": "Cerrando sesión en Boat…",
+  "ff78528a594ad695": "Cerrar sesión en Boat",
+  "1b6314a6a79cc719": "Iniciar sesión en Boat",
+  "be2b0a55559f6abc": "Las máquinas se facturan a tu plan de Boat.",
+  "f932d120942f1c12": "Esperando el inicio de sesión…",
+  "d2910f24c89a17da": "Introduce este código en la página de inicio de sesión",
+  "1c1bfb59a9ad8569": "Pega el código de inicio de sesión",
+  "25a1c6cf87920b69": "Enviar código",
+  "1ec7a2c612524967": "Falló la solicitud de inicio de sesión. Inténtalo de nuevo.",
+  "64c07d2cd0e78ac4": "Código enviado. Si el inicio de sesión no avanza, prueba con otro código.",
+  "334031c5b02772d0": "Cancelando el inicio de sesión…"
 }

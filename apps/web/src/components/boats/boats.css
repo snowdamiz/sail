@@ -1671,3 +1671,15 @@ html.dark .sail-boats-scope {
     opacity: 0.45;
   }
 }
+
+.sail-boats-scope .boat-sign-in {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  min-width: 0;
+}
+.sail-boats-scope .boat-sign-in label,
+.sail-boats-scope .boat-sign-in input {
+  width: 100%;
+  min-width: 0;
+}
