@@ -3,7 +3,9 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { AsyncResult, type Atom } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
+import { page } from "vite-plus/test/browser";
 
+import "~/index.css";
 import { act, render, stubGlobal } from "../../../test/render";
 
 const state = vi.hoisted(() => ({
@@ -14,8 +16,13 @@ const state = vi.hoisted(() => ({
   navigate: vi.fn(async (): Promise<void> => undefined),
   openScratchProject: vi.fn(async () => null),
   confirm: vi.fn(async (_message: string) => true),
-  connectPairing: vi.fn(async (_input: { pairingUrl: string }) => ({ _tag: "Success" })),
+  connectPairing: vi.fn(async (_input: { pairingUrl: string }) => ({
+    _tag: "Success",
+    value: "remote",
+  })),
+  setLocalEnvironmentEnabled: vi.fn(async (_enabled: boolean) => undefined),
   localEnvironmentDisabled: false,
+  remoteConnected: true,
 }));
 
 // One connected primary environment that can read pull requests. Its project list and
@@ -31,6 +38,10 @@ vi.mock(import("@tanstack/react-router"), async (original) => ({
 vi.mock(import("../../state/environments"), async (original) => ({
   ...(await original()),
   usePrimaryEnvironmentId: () => "local" as EnvironmentId,
+  useEnvironment: (() => ({
+    connection: { phase: state.remoteConnected ? "connected" : "connecting" },
+    entry: { target: { _tag: "BearerConnectionTarget", connectionId: "remote" } },
+  })) as never,
   usePrimaryEnvironment: (() =>
     state.localEnvironmentDisabled
       ? null
@@ -106,6 +117,7 @@ import {
   selectActiveRightPanelSurface,
   useRightPanelStore,
 } from "../../rightPanelStore";
+import { LocalEnvironmentSetting } from "../settings/LocalEnvironmentSetting";
 import { DesktopWebLinkCoordinator } from "./DesktopWebLinkCoordinator";
 
 const discoverySettled = allReachableShellsLiveAtom as Atom.Writable<boolean>;
@@ -141,12 +153,13 @@ const pullRequestView = {
 };
 
 const pairingUrl = "https://vps.example.com/pair#token=ABC123";
-const pairLink = `t3code://pair?pairingUrl=${encodeURIComponent(pairingUrl)}`;
+const pairLink = `sail://pair?pairingUrl=${encodeURIComponent(pairingUrl)}`;
 
 function setup() {
   vi.clearAllMocks();
   state.confirm.mockResolvedValue(true);
   state.localEnvironmentDisabled = false;
+  state.remoteConnected = true;
   state.projects = [];
   state.routeParams = {};
   state.preview
@@ -164,6 +177,8 @@ async function mount(...urls: string[]) {
   stack.use(
     stubGlobal("desktopBridge", {
       getClientSettings: async () => null,
+      getLocalEnvironmentBootstraps: () => [],
+      setLocalEnvironmentEnabled: state.setLocalEnvironmentEnabled,
       webLinks: {
         onOpen: (listener: (url: string) => void) => {
           deliver = listener;
@@ -289,6 +304,41 @@ it("adds the backend from a pairing link after the user confirms its host", asyn
   expect(state.navigate).not.toHaveBeenCalled();
 });
 
+it("turns off Local environment only after the user chooses the connected server", async () => {
+  setup();
+  await using _coordinator = await mount(pairLink);
+  const useMainServer = page.getByRole("button", {
+    name: "Use vps.example.com as your main server",
+  });
+
+  await expect.element(useMainServer).toBeEnabled();
+  expect(state.setLocalEnvironmentEnabled).not.toHaveBeenCalled();
+
+  await useMainServer.click();
+  expect(state.setLocalEnvironmentEnabled).toHaveBeenCalledExactlyOnceWith(false);
+});
+
+it("keeps the paired server and the local server when the restart is declined", async () => {
+  setup();
+  await using _coordinator = await mount(pairLink);
+
+  await page.getByRole("button", { name: "Keep local environment" }).click();
+  await expect.element(page.getByRole("alertdialog")).not.toBeInTheDocument();
+  expect(state.connectPairing).toHaveBeenCalledExactlyOnceWith({ pairingUrl });
+  expect(state.setLocalEnvironmentEnabled).not.toHaveBeenCalled();
+});
+
+it("keeps the local server while the paired server is still connecting", async () => {
+  setup();
+  state.remoteConnected = false;
+  await using _coordinator = await mount(pairLink);
+
+  await expect
+    .element(page.getByRole("button", { name: "Use vps.example.com as your main server" }))
+    .toBeDisabled();
+  expect(state.setLocalEnvironmentEnabled).not.toHaveBeenCalled();
+});
+
 it("does not spend the pairing token when the user declines", async () => {
   setup();
   const otherPairingUrl = "https://other.example.com/pair#token=XYZ789";
@@ -327,6 +377,21 @@ it("pairs with Local environment disabled, where there is no primary environment
   await vi.waitFor(() =>
     expect(state.connectPairing).toHaveBeenCalledExactlyOnceWith({ pairingUrl }),
   );
+});
+
+it("restores the local server from Environments settings", async () => {
+  setup();
+  state.localEnvironmentDisabled = true;
+  using _bridge = stubGlobal("desktopBridge", {
+    getLocalEnvironmentBootstraps: () => [],
+    setLocalEnvironmentEnabled: state.setLocalEnvironmentEnabled,
+  });
+  await using screen = await render(<LocalEnvironmentSetting />);
+
+  await screen.getByRole("switch", { name: "Local environment" }).click();
+  expect(state.setLocalEnvironmentEnabled).not.toHaveBeenCalled();
+  await page.getByRole("button", { name: "Restart and turn on" }).click();
+  expect(state.setLocalEnvironmentEnabled).toHaveBeenCalledExactlyOnceWith(true);
 });
 
 it("holds a launch PR link with Local environment disabled until discovery settles", async () => {

@@ -1,8 +1,13 @@
+import * as Option from "effect/Option";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
-import { AuthOrchestrationOperateScope, AuthSourceControlWriteScope } from "@t3tools/contracts";
+import {
+  AuthAccessWriteScope,
+  AuthOrchestrationOperateScope,
+  AuthSourceControlWriteScope,
+} from "@t3tools/contracts";
 import { act, render } from "../../test/render";
 import { CommandPalette } from "./CommandPalette";
 import { openCommandPalette } from "../commandPaletteBus";
@@ -83,7 +88,12 @@ vi.mock("../state/environments", async (original) => ({
         environmentId: "local",
         label: "Local",
         connection: { phase: "connected" },
-        entry: { target: { _tag: "PrimaryConnectionTarget" } },
+        entry: {
+          target: {
+            _tag: "PrimaryConnectionTarget",
+            httpBaseUrl: "https://server.example.test/",
+          },
+        },
         serverConfig: {
           environment: { platform: { os: "linux" }, capabilities: { projectCloneTracking: true } },
           settings: { addProjectBaseDirectory: "/workspace/" },
@@ -118,6 +128,7 @@ vi.mock("../state/session", async (original) => ({
   ...(await original<typeof import("../state/session")>()),
   useEnvironmentScope: (_environmentId: unknown, scope: string) => scope !== scopes.denied,
   readEnvironmentScope: () => true,
+  usePreparedConnection: () => Option.none(),
 }));
 vi.mock("../state/filesystem", async (original) => ({
   ...(await original<typeof import("../state/filesystem")>()),
@@ -244,3 +255,23 @@ it("tells screen readers whether a new project will be published", async () => {
   await option.click();
   await expect.element(option).toHaveAttribute("aria-checked", "true");
 });
+
+it.each([
+  { denied: undefined, visible: true },
+  { denied: AuthAccessWriteScope, visible: false },
+])(
+  "offers desktop pairing only to clients that can manage access ($visible)",
+  async ({ denied, visible }) => {
+    setup(denied);
+    await using _screen = await render(<CommandPalette>{null}</CommandPalette>);
+    await act(() => openCommandPalette());
+    const label = "Connect Sail desktop to this server";
+    await page.getByRole("combobox").fill(label);
+    const action = page.getByText(label, { exact: true });
+    if (visible) {
+      await expect.element(action).toBeVisible();
+    } else {
+      await expect.element(action).not.toBeInTheDocument();
+    }
+  },
+);

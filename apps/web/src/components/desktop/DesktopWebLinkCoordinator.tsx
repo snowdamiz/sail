@@ -19,6 +19,7 @@ import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { openFileInPreview, openUrlInPreview } from "../../browser/openFileInPreview";
 import { isPreviewAvailableFor } from "../../browser/previewRuntime";
 import { requestConfirmDialog } from "../../confirmDialog";
+import { isDesktopLocalConnectionTarget } from "../../connection/desktopLocal";
 import { connectPairing } from "../../connection/onboarding";
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
 import { useComposerDraftStore } from "../../composerDraftStore";
@@ -31,11 +32,25 @@ import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { resolveThreadRouteTarget } from "../../threadRoutes";
 import { assetEnvironment } from "../../state/assets";
 import { readProject, readThreadShell } from "../../state/entities";
-import { useEnvironmentHttpBaseUrl, usePrimaryEnvironment } from "../../state/environments";
+import {
+  useEnvironment,
+  useEnvironmentHttpBaseUrl,
+  usePrimaryEnvironment,
+} from "../../state/environments";
 import { previewEnvironment } from "../../state/preview";
 import { allReachableShellsLiveAtom } from "../../state/shell";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../ui/alert-dialog";
+import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 
 /** A link handed over by the OS is a plain click: nothing about it asks for the browser. */
@@ -85,7 +100,12 @@ function threadShowingBrowser(
  * Adds the backend a pairing link names. Any page can open one, so the user confirms its origin
  * before the one-time token is spent.
  */
-export function usePairFromLink() {
+export function usePairFromLink(
+  offerMainServer?: (server: {
+    readonly environmentId: EnvironmentId;
+    readonly host: string;
+  }) => boolean,
+) {
   const gt = useGT();
   const connectPairingEnvironment = useAtomCommand(connectPairing, { reportFailure: false });
   const pairedUrlsRef = useRef(new Set<string>());
@@ -119,12 +139,83 @@ export function usePairFromLink() {
       return;
     }
     pairedUrlsRef.current.add(pairingUrl);
+    if (offerMainServer?.({ environmentId: result.value, host: new URL(origin).host })) return;
     toastManager.add({
       type: "success",
       title: gt("Backend added"),
       description: gt("The environment is saved and will reconnect on app startup."),
     });
   };
+}
+
+function MainServerDialog({
+  server,
+  setLocalEnvironmentEnabled,
+  onClose,
+}: {
+  readonly server: { readonly environmentId: EnvironmentId; readonly host: string };
+  readonly setLocalEnvironmentEnabled: (enabled: boolean) => Promise<void>;
+  readonly onClose: () => void;
+}) {
+  const gt = useGT();
+  const environment = useEnvironment(server.environmentId);
+  const [restarting, setRestarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const canRestart =
+    environment?.connection.phase === "connected" &&
+    !isDesktopLocalConnectionTarget(environment.entry.target);
+
+  const restart = async () => {
+    if (!canRestart || restarting) return;
+    setRestarting(true);
+    setError(null);
+    try {
+      await setLocalEnvironmentEnabled(false);
+    } catch (cause) {
+      setError(thrownErrorMessage(cause, m) ?? gt("Couldn't change this setting."));
+      setRestarting(false);
+    }
+  };
+
+  return (
+    <AlertDialog open onOpenChange={(open) => !open && !restarting && onClose()}>
+      <AlertDialogPopup>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{gt("Backend added")}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {gt(
+              "Sail will restart with Local environment turned off. Local agents and terminals will stop. You can turn Local environment back on in Settings → Environments.",
+            )}
+          </AlertDialogDescription>
+          {!canRestart ? (
+            <p role="status" className="text-sm text-muted-foreground">
+              {gt("Wait for the server to connect before restarting.")}
+            </p>
+          ) : null}
+          {error ? (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          ) : null}
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogClose disabled={restarting} render={<Button variant="outline" />}>
+            {gt("Keep local environment")}
+          </AlertDialogClose>
+          <Button
+            size="sm-multiline"
+            variant="destructive"
+            disabled={!canRestart || restarting}
+            onClick={() => void restart()}
+          >
+            {restarting
+              ? gt("Restarting…")
+              : gt("Use {host} as your main server", { host: server.host })}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogPopup>
+    </AlertDialog>
+  );
 }
 
 export function DesktopWebLinkCoordinator() {
@@ -141,11 +232,26 @@ export function DesktopWebLinkCoordinator() {
     refresh: true,
   });
   const httpBaseUrl = useEnvironmentHttpBaseUrl(primaryEnvironment?.environmentId ?? null);
-  const pairFromLink = usePairFromLink();
+  const [mainServerOffer, setMainServerOffer] = useState<{
+    readonly environmentId: EnvironmentId;
+    readonly host: string;
+  } | null>(null);
+  const setLocalEnvironmentEnabled = window.desktopBridge?.setLocalEnvironmentEnabled;
   const queueRef = useRef(Promise.resolve());
   const webLinks = window.desktopBridge?.webLinks;
   // A sync IPC read; the setting only changes across a relaunch.
   const [localEnvironmentDisabled] = useState(isLocalEnvironmentDisabled);
+  const pairFromLink = usePairFromLink((server) => {
+    if (
+      !setLocalEnvironmentEnabled ||
+      localEnvironmentDisabled ||
+      server.environmentId === primaryEnvironment?.environmentId
+    ) {
+      return false;
+    }
+    setMainServerOffer(server);
+    return true;
+  });
   // With Local environment disabled there is no primary to wait for, so links run against the
   // saved remote environments instead of waiting forever.
   const ready =
@@ -276,5 +382,12 @@ export function DesktopWebLinkCoordinator() {
     };
   }, [ready, webLinks]);
 
-  return null;
+  return mainServerOffer && setLocalEnvironmentEnabled ? (
+    <MainServerDialog
+      key={mainServerOffer.environmentId}
+      server={mainServerOffer}
+      setLocalEnvironmentEnabled={setLocalEnvironmentEnabled}
+      onClose={() => setMainServerOffer(null)}
+    />
+  ) : null;
 }

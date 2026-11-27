@@ -54,6 +54,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
+import { OpenInDesktopButton } from "./OpenInDesktopButton";
 import {
   type ServerClientSessionRecord,
   type ServerPairingLinkRecord,
@@ -72,7 +73,6 @@ import {
   isTailscaleHttpsEndpoint,
   endpointDefaultPreferenceKey,
   resolveAdvertisedEndpointPairingUrl,
-  resolveCurrentOriginPairingUrl,
   isHostedAppPairingUrl,
   endpointShareHint,
 } from "./ConnectionsSettings.logic";
@@ -137,9 +137,7 @@ type PairingLinkListRowProps = {
   pairingLink: ServerPairingLinkRecord;
   credential: string | undefined;
   defaultShareOpen: boolean;
-  /** Whether this page is served by the environment the link pairs with. */
-  servedByEnvironment: boolean;
-  endpointUrl: string | null | undefined;
+  shareBaseUrl: string | null;
   endpoints: ReadonlyArray<AdvertisedEndpoint>;
   defaultEndpointKey: string | null;
   revokingPairingLinkId: string | null;
@@ -151,8 +149,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
   pairingLink,
   credential,
   defaultShareOpen,
-  servedByEnvironment,
-  endpointUrl,
+  shareBaseUrl,
   endpoints,
   defaultEndpointKey,
   revokingPairingLinkId,
@@ -168,11 +165,6 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
   const [qrEndpointId, setQrEndpointId] = useState<string | null>(null);
   const qrPanelId = useId();
 
-  const currentOriginPairingUrl = credential ? resolveCurrentOriginPairingUrl(credential) : null;
-  const hostedPairingUrl =
-    credential && endpointUrl != null && endpointUrl !== ""
-      ? resolveHostedPairingUrl(endpointUrl, credential)
-      : null;
   const endpointPairingUrl = (() => {
     const endpoint = selectPairingEndpoint(endpoints, defaultEndpointKey);
     return endpoint && credential
@@ -207,11 +199,10 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
   })();
   const shareablePairingUrl =
     endpointPairingUrl ??
-    (credential && endpointUrl != null && endpointUrl !== ""
-      ? (hostedPairingUrl ?? resolveDesktopPairingUrl(endpointUrl, credential))
-      : servedByEnvironment
-        ? currentOriginPairingUrl
-        : null);
+    (credential && shareBaseUrl
+      ? (resolveHostedPairingUrl(shareBaseUrl, credential) ??
+        resolveDesktopPairingUrl(shareBaseUrl, credential))
+      : null);
   const [failedCopyValue, setFailedCopyValue] = useState<string | null>(null);
   const revealValue = failedCopyValue ?? shareablePairingUrl ?? credential ?? "";
   const isRevealValueUrl = revealValue !== credential;
@@ -384,6 +375,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
                 ) : null}
               </DialogPanel>
               <DialogFooter variant="bare">
+                {isRevealValueUrl ? <OpenInDesktopButton pairingUrl={revealValue} /> : null}
                 <Button variant="outline" onClick={() => setIsRevealDialogOpen(false)}>
                   <T>Done</T>
                 </Button>
@@ -472,9 +464,12 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
                 <T>Copy link</T>
               </Button>
             </div>
-            <Button size="xs" variant="ghost" onClick={handleCopyCode}>
-              <T>Copy code only</T>
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <OpenInDesktopButton pairingUrl={qrPairingUrl} />
+              <Button size="xs" variant="ghost" onClick={handleCopyCode}>
+                <T>Copy code only</T>
+              </Button>
+            </div>
           </div>
           {canRenderQrForSelection ? (
             <div className="w-fit shrink-0 self-center rounded-xl bg-white p-3 sm:self-start">
@@ -850,8 +845,7 @@ export const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHead
 });
 
 type PairingClientsListProps = {
-  servedByEnvironment: boolean;
-  endpointUrl: string | null | undefined;
+  shareBaseUrl: string | null;
   endpoints: ReadonlyArray<AdvertisedEndpoint>;
   defaultEndpointKey: string | null;
   isLoading: boolean;
@@ -867,8 +861,7 @@ type PairingClientsListProps = {
 };
 
 export const PairingClientsList = memo(function PairingClientsList({
-  servedByEnvironment,
-  endpointUrl,
+  shareBaseUrl,
   endpoints,
   defaultEndpointKey,
   isLoading,
@@ -890,8 +883,7 @@ export const PairingClientsList = memo(function PairingClientsList({
           pairingLink={pairingLink}
           credential={createdPairingCredentials.get(pairingLink.id)}
           defaultShareOpen={pairingLink.id === sharedPairingLinkId}
-          servedByEnvironment={servedByEnvironment}
-          endpointUrl={endpointUrl}
+          shareBaseUrl={shareBaseUrl}
           endpoints={endpoints}
           defaultEndpointKey={defaultEndpointKey}
           revokingPairingLinkId={revokingPairingLinkId}

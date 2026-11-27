@@ -12907,5 +12907,12 @@
   "f6a91589456cca50": "Approved",
   "c92657bb7f2293ff": "Needs approval",
   "f1e5c1be1ac92361": "Approve",
-  "fcb5f3c4d4753326": "This connection cannot approve commands. Use a client that can use the terminal."
+  "fcb5f3c4d4753326": "This connection cannot approve commands. Use a client that can use the terminal.",
+  "7a1b433918538dfc": "Connect Sail desktop to this server",
+  "6d8b403b976513f7": "Open in Sail desktop",
+  "d80543147456cf1c": "Sail will restart with Local environment turned off. Local agents and terminals will stop. You can turn Local environment back on in Settings → Environments.",
+  "dd6dd61c38ce5759": "Wait for the server to connect before restarting.",
+  "6e07680055075423": "Keep local environment",
+  "b5d5d4dfc90787f3": "Use {host} as your main server",
+  "85ec11530a2789b4": "Open in Sail desktop"
 }

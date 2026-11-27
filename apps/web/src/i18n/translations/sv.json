@@ -12905,5 +12905,12 @@
   "f6a91589456cca50": "Godkänt",
   "c92657bb7f2293ff": "Behöver godkännande",
   "f1e5c1be1ac92361": "Godkänn",
-  "fcb5f3c4d4753326": "Den här anslutningen kan inte godkänna kommandon. Använd en klient som får använda terminalen."
+  "fcb5f3c4d4753326": "Den här anslutningen kan inte godkänna kommandon. Använd en klient som får använda terminalen.",
+  "7a1b433918538dfc": "Anslut Sail för dator till den här servern",
+  "6d8b403b976513f7": "Öppna i Sail för dator",
+  "d80543147456cf1c": "Sail startar om med den lokala miljön avstängd. Lokala agenter och terminaler stoppas. Du kan slå på den lokala miljön igen under Inställningar → Miljöer.",
+  "dd6dd61c38ce5759": "Vänta tills servern är ansluten innan du startar om.",
+  "6e07680055075423": "Behåll den lokala miljön",
+  "b5d5d4dfc90787f3": "Använd {host} som huvudserver",
+  "85ec11530a2789b4": "Öppna i Sail för dator"
 }
