@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 const PROVISION_SH: &str = include_str!("provision.sh");
 const WATCHDOG_MJS: &str = include_str!("watchdog.mjs");
-const DEFAULT_CLI_INSTALL_URL: &str = "https://t3.codes/install.sh";
+const CLI_RELEASE_DOWNLOAD_URL: &str = "https://github.com/snowdamiz/sail/releases/download";
 const T3_PORT: u16 = 3773;
 const WATCHDOG_PORT: u16 = 3774;
 
@@ -70,13 +70,11 @@ pub fn snapshot_name(name: &str, machine_id: &str) -> String {
     format!("sail-{name}-{id}")
 }
 
-fn cli_install_url() -> Result<String> {
-    let raw = std::env::var("SAIL_CLI_INSTALL_URL")
-        .ok()
-        .map(|v| v.trim().to_owned())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| DEFAULT_CLI_INSTALL_URL.to_owned());
-    let parsed = url::Url::parse(&raw).context("parsing SAIL_CLI_INSTALL_URL")?;
+fn cli_install_url(version: &str, override_url: Option<&str>) -> Result<String> {
+    let Some(raw) = override_url.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(format!("{CLI_RELEASE_DOWNLOAD_URL}/v{version}/install.sh"));
+    };
+    let parsed = url::Url::parse(raw).context("parsing SAIL_CLI_INSTALL_URL")?;
     if !matches!(parsed.scheme(), "http" | "https") {
         bail!("SAIL_CLI_INSTALL_URL must use http or https");
     }
@@ -93,22 +91,29 @@ pub async fn run(
     watchdog_secret: &str,
     snapshot: &str,
     mint_upstream_token: bool,
+    check_idle: bool,
 ) -> Result<Provisioned> {
     let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
-    let install_url = cli_install_url()?;
+    let version = shell_word(t3_version.unwrap_or("-"))?;
+    let install_url = if t3_version.is_some() {
+        cli_install_url(version, std::env::var("SAIL_CLI_INSTALL_URL").ok().as_deref())?
+    } else {
+        String::new()
+    };
     let script = format!(
         "set -e; d=$(mktemp -d); trap 'rm -rf \"$d\" \"$0\"' EXIT\n\
          echo {p} | base64 -d > \"$d/provision.sh\"; echo {w} | base64 -d > \"$d/watchdog.mjs\"\n\
          install_url=$(echo {u} | base64 -d)\n\
-         SAIL_BOAT_SECRET={s} SAIL_CLI_INSTALL_URL=\"$install_url\" bash \"$d/provision.sh\" {v} {sleep} {snapshot} {mint} {name} {sandbox}\n",
+         SAIL_BOAT_SECRET={s} SAIL_CLI_INSTALL_URL=\"$install_url\" bash \"$d/provision.sh\" {v} {sleep} {snapshot} {mint} {name} {sandbox} {check_idle}\n",
         p = b64(PROVISION_SH),
         w = b64(WATCHDOG_MJS),
         u = b64(&install_url),
-        v = shell_word(t3_version.unwrap_or("-"))?,
+        v = version,
         s = shell_word(watchdog_secret)?,
         sleep = SLEEP_AFTER_SECS,
         snapshot = shell_word(snapshot)?,
         mint = u8::from(mint_upstream_token),
+        check_idle = u8::from(check_idle),
         name = shell_word(name)?,
         sandbox = shell_word(sandbox_id)?,
     );
@@ -162,7 +167,7 @@ pub async fn create(
     created(&id);
     progress("Installing Sail server");
     let secret = random_token();
-    let provisioned = run(boat, &id, name, Some(t3_version), &secret, &snapshot_name(name, &id), true).await?;
+    let provisioned = run(boat, &id, name, Some(t3_version), &secret, &snapshot_name(name, &id), true, false).await?;
     progress("Opening the machine's address");
     let (upstream_url, watchdog_url) = host(boat, &id).await?;
     Ok(Machine {
@@ -192,6 +197,66 @@ pub async fn create(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provision_defaults_to_the_sail_release_installer() {
+        assert_eq!(
+            cli_install_url("1.2.3-preview.1.2", None).unwrap(),
+            "https://github.com/snowdamiz/sail/releases/download/v1.2.3-preview.1.2/install.sh",
+        );
+        assert_eq!(
+            cli_install_url("1.2.3", Some(" http://127.0.0.1:8080/install.sh ")).unwrap(),
+            "http://127.0.0.1:8080/install.sh",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provision_reinstalls_a_matching_cli_without_the_sail_marker() {
+        use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+
+        let home = std::env::temp_dir().join(format!("sail-provision-{}", random_token()));
+        let bin = home.join(".local/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let write_executable = |name, contents| {
+            let path = bin.join(name);
+            fs::write(&path, contents).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        };
+        write_executable("t3", "#!/bin/sh\nprintf 't3 v1.2.3\\n'\n");
+        write_executable("curl", "#!/bin/sh\necho \"fixture installer unavailable: $6\" >&2\nexit 22\n");
+
+        write_executable("sudo", "#!/bin/sh\nexit 99\n");
+        write_executable("systemctl", "#!/bin/sh\nexit 99\n");
+
+        let inherited_path = std::env::var_os("PATH").unwrap_or_default();
+        let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&inherited_path))).unwrap();
+        let output = Command::new("bash")
+            .current_dir(&home)
+            .args(["-c", PROVISION_SH, "provision.sh", "1.2.3", "180", "snapshot", "0", "dev", "sandbox"])
+            .env("HOME", &home)
+            .env("PATH", path)
+            .env("SAIL_BOAT_SECRET", "fixture")
+            .env("SAIL_CLI_INSTALL_URL", "http://127.0.0.1:8080/install.sh")
+            .output();
+        fs::remove_dir_all(home).unwrap();
+
+        let output = output.unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success());
+        assert!(stderr.contains("Sail server install failed"), "{stderr}");
+        assert!(stderr.contains("fixture installer unavailable: http://127.0.0.1:8080/install.sh"), "{stderr}");
+    }
+
+    #[test]
+    fn provision_watchdog_refresh_leaves_the_server_upgrade_pending() {
+        use super::super::provision_is_current;
+
+        assert!(provision_is_current("watchdog:current", "current", true));
+        assert!(!provision_is_current("watchdog:current", "current", false));
+        assert!(provision_is_current("current", "current", false));
+        assert!(!provision_is_current("old", "current", true));
+    }
 
     #[test]
     fn sandbox_and_snapshot_names_use_sail_branding() {

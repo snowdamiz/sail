@@ -62,7 +62,7 @@ impl MachineRuntime {
             .exec_ok(
                 &id,
                 "d=$(mktemp -d); \
-                 (\"$HOME/.local/bin/t3\" up --connect --headless --yes > \"$d/log\" 2>&1; echo $? > \"$d/exit\") \
+                 (\"$HOME/.local/bin/t3\" up --base-dir \"$HOME/.t3\" --connect --headless --yes > \"$d/log\" 2>&1; echo $? > \"$d/exit\") \
                  </dev/null >/dev/null 2>&1 & echo \"$d\"",
                 30,
             )

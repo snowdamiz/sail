@@ -26,7 +26,7 @@ pub struct Machine {
     pub local_port: u16,
     /// T3 server version installed on the machine.
     pub t3_version: String,
-    /// `provision::revision()` of the scripts the machine runs.
+    /// Provisioning revision, prefixed with `watchdog:` if the running server was left alone.
     pub provision_revision: String,
     pub environment_id: String,
     /// Bearer tokens the proxy issued to Sail when it paired.

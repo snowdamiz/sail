@@ -189,11 +189,17 @@ pub struct MachineRuntime {
     stop_seen: Mutex<Option<Instant>>,
     /// The last failed wake: its message and when.
     wake_failure: Mutex<Option<(String, Instant)>>,
+    upgrade_failure: Mutex<Option<String>>,
     /// Saving the snapshot failing, until a save succeeds.
     save_failure: Mutex<Option<disk::SaveFailure>>,
     /// Its T3 projects as last read, and those Sail Boat is adding.
     projects: Mutex<Vec<projects::MachineProject>>,
     adding: Mutex<Vec<projects::MachineProject>>,
+}
+
+// A watchdog-only refresh leaves the server upgrade pending until a safe wake.
+fn provision_is_current(recorded: &str, revision: &str, live: bool) -> bool {
+    recorded == revision || (live && recorded.strip_prefix("watchdog:") == Some(revision))
 }
 
 impl MachineRuntime {
@@ -215,6 +221,7 @@ impl MachineRuntime {
             last_heartbeat: Mutex::new(None),
             stop_seen: Mutex::new(None),
             wake_failure: Mutex::new(None),
+            upgrade_failure: Mutex::new(None),
             save_failure: Mutex::new(None),
             projects: Mutex::new(Vec::new()),
             adding: Mutex::new(Vec::new()),
@@ -291,6 +298,7 @@ impl MachineRuntime {
 
     pub fn last_error(&self) -> Option<String> {
         self.wake_failure.lock().unwrap().as_ref().map(|(e, _)| e.clone())
+            .or_else(|| self.upgrade_failure.lock().unwrap().clone())
     }
 
     /// The machine is about to freeze or frozen: user actions must wait for it and wake it again.
@@ -482,23 +490,37 @@ impl MachineRuntime {
         if self.fetch_descriptor().await.is_none() {
             self.rehost().await?;
         }
-        self.wait_ready(started).await?;
-        if resumed {
-            // T3 serves now and may have started work on its own, or an agent waits on the user;
-            // restarting it would kill that. A restored machine booted fresh from its snapshot:
-            // nothing to kill, and the upgrade drops the snapshot's stale chats.
-            if !restored && self.watchdog_get("/status?fresh").await.is_ok_and(|s| s.busy || s.waiting_threads > 0) {
-                tracing::info!("{id} is busy: T3 upgrade deferred to the next wake");
-            } else if let Err(e) = self.upgrade_if_needed().await {
-                tracing::warn!("upgrading {id}: {e:#}");
+        match self.wait_ready(started).await {
+            Ok(()) if resumed => {
+                self.send_activity(true).await;
+                // A warm resume may still have an agent turn or an approval.
+                let idle = restored || self.watchdog_get("/status?fresh").await.is_ok_and(|s| {
+                    s.phase == WatchdogPhase::Active && !s.agents_unknown && !s.busy && s.waiting_threads == 0 && !s.saving
+                });
+                if idle {
+                    self.kept_awake(self.upgrade_if_needed(!restored)).await.context("upgrading the Sail server")?;
+                } else {
+                    tracing::info!("could not confirm {id} is idle: Sail upgrade deferred to the next wake");
+                }
             }
+            Err(e) => {
+                // An interrupted install can leave no server to answer the readiness probe.
+                let stopped = self.shared.boat
+                    .exec_ok(&self.sandbox_id(), "systemctl --user show --property=ActiveState --value t3code.service", 15)
+                    .await
+                    .is_ok_and(|state| matches!(state.trim(), "failed" | "inactive"));
+                if !stopped || !self.kept_awake(self.upgrade_if_needed(false)).await.context("recovering the Sail server")? {
+                    return Err(e);
+                }
+            }
+            Ok(()) => {}
         }
         // Before Running is published: Sail reconnects then, and must find the messages
         // accepted while asleep ahead of anything it sends next.
         self.on_ready().await;
         self.set_power(Power::Running);
         tracing::info!("{id} awake after {:?}", started.elapsed());
-        self.send_activity(resumed).await;
+        self.send_activity(false).await;
         Ok(())
     }
 
@@ -541,19 +563,21 @@ impl MachineRuntime {
     }
 
     /// Keeps the machine on the desktop app's T3 version and on this app's scripts.
-    pub async fn upgrade_if_needed(&self) -> Result<()> {
+    async fn upgrade_if_needed(&self, check_idle: bool) -> Result<bool> {
         let desktop = self.shared.t3.version().await?;
-        self.upgrade(Some(desktop)).await
+        let result = self.upgrade(Some(desktop), check_idle).await;
+        *self.upgrade_failure.lock().unwrap() = result.as_ref().err().map(|e| format!("Sail server upgrade failed: {e:#}"));
+        result
     }
 
     /// No T3 version: this app's scripts only, T3 neither installed nor restarted, so nobody using
     /// it loses anything; a new T3 version waits for the next wake.
-    async fn upgrade(&self, t3_version: Option<String>) -> Result<()> {
+    async fn upgrade(&self, t3_version: Option<String>, check_idle: bool) -> Result<bool> {
         let revision = provision::revision();
         let record = self.record();
         let new_server = t3_version.as_ref().is_some_and(|v| *v != record.t3_version);
-        if !new_server && revision == record.provision_revision {
-            return Ok(());
+        if !new_server && provision_is_current(&record.provision_revision, &revision, t3_version.is_none()) {
+            return Ok(false);
         }
         tracing::info!(
             "upgrading {} (T3 {}, scripts {revision})",
@@ -568,18 +592,22 @@ impl MachineRuntime {
             &record.watchdog_secret,
             &provision::snapshot_name(&record.name, &record.id),
             false,
+            check_idle,
         )
         .await?;
         let live = t3_version.is_none();
+        if !live {
+            self.wait_ready(Instant::now()).await?;
+        }
         self.update_record(|m| {
             if let Some(v) = t3_version {
                 m.t3_version = v;
             }
-            m.provision_revision = revision;
+            m.provision_revision = if live { format!("watchdog:{revision}") } else { revision };
         });
         // T3 ran on untouched: nothing it served changed.
         if live {
-            return Ok(());
+            return Ok(true);
         }
         {
             let mut cache = self.cache.lock().unwrap();
@@ -593,7 +621,7 @@ impl MachineRuntime {
             threads::sweep(&self.dir, &HashSet::new());
             self.save_cache();
         }
-        self.wait_ready(Instant::now()).await
+        Ok(true)
     }
 
     async fn flush_deferred_commands(&self) {
@@ -1043,7 +1071,7 @@ impl MachineRuntime {
                         let upgrade = s.phase == WatchdogPhase::Active
                             && !s.saving
                             && !s.agents_unknown
-                            && self.record().provision_revision != provision::revision();
+                            && !provision_is_current(&self.record().provision_revision, &provision::revision(), true);
                         self.on_watchdog_status(s).await;
                         if sleep_broken && last_overdue_stop.is_none_or(|t| t.elapsed() >= OVERDUE_STOP_RETRY) {
                             last_overdue_stop = Some(Instant::now());
@@ -1071,7 +1099,7 @@ impl MachineRuntime {
                             last_upgrade = Some(Instant::now());
                             // Not kept awake: that counts as use, so an upgrade failing every
                             // retry would never let it sleep.
-                            if let Err(e) = self.upgrade(None).await {
+                            if let Err(e) = self.upgrade(None, false).await {
                                 tracing::warn!("upgrading {}: {e:#}", self.id());
                             }
                         }

@@ -34,6 +34,8 @@ const DAEMON_ENV = [
   "SAIL_BOAT_TOKEN",
   "SAIL_BOATD_PATH",
   "SAIL_DEEP_LINK_SCHEME",
+  "SAIL_BOAT_BIN",
+  "SAIL_CLI_INSTALL_URL",
   "T3CODE_HOME",
   "T3CODE_DEV_AUTH_TOKEN",
   "Sail_Boat_Token",
@@ -391,6 +393,8 @@ describe("BoatSupervisor", () => {
           Sail_Boat_Token: "mixed-case-token",
           Sail_Mcp_Port: "4242",
           SAIL_DEEP_LINK_SCHEME: "sail-dev",
+          SAIL_BOAT_BIN: "/fake/boat",
+          SAIL_CLI_INSTALL_URL: "http://127.0.0.1:4111/install.sh",
           FAKE_BOAT_HOME: "/tmp/fake-boat-home",
         };
         const layer = devState
@@ -416,6 +420,8 @@ describe("BoatSupervisor", () => {
             SAIL_BOAT_TOKEN: null,
             SAIL_BOATD_PATH: null,
             SAIL_DEEP_LINK_SCHEME: "sail-dev",
+            SAIL_BOAT_BIN: "/fake/boat",
+            SAIL_CLI_INSTALL_URL: "http://127.0.0.1:4111/install.sh",
             T3CODE_HOME: null,
             T3CODE_DEV_AUTH_TOKEN: null,
             Sail_Boat_Token: null,

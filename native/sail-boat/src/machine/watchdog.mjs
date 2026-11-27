@@ -321,7 +321,8 @@ async function checkWorking() {
     signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) throw new Error(`shell snapshot: HTTP ${res.status}`);
-  const threads = (await res.json()).threads ?? [];
+  const { threads } = await res.json();
+  if (!Array.isArray(threads)) throw new Error("shell snapshot: missing threads");
   // A subagent T3 runs as its own thread on this machine counts by its own state: waiting for it
   // holds nothing more, so a child waiting on a person doesn't keep its parent's machine up. A
   // provider's own background agent shows no runs of its own, and one elsewhere isn't seen here:
@@ -669,12 +670,20 @@ const server = NodeHttp.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "127.0.0.1", () =>
-  log(`watchdog on ${PORT}, sleep after ${config.sleepAfterSecs}s`),
-);
 // One tick at a time: a slow T3 check must never finish after a newer tick started a stop.
 async function loop() {
   await tick().catch((e) => log("tick failed", e.message));
   setTimeout(loop, TICK_MS);
 }
-loop();
+if (process.argv[2] === "--check-idle") {
+  const activity = await checkWorking();
+  if (activity.threads || activity.subagents || activity.waiting)
+    throw new Error(
+      "Sail upgrade deferred because the server has active work or pending approvals",
+    );
+} else {
+  server.listen(PORT, "127.0.0.1", () =>
+    log(`watchdog on ${PORT}, sleep after ${config.sleepAfterSecs}s`),
+  );
+  loop();
+}

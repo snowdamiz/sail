@@ -1,56 +1,75 @@
 #!/usr/bin/env bash
 # Runs on a Boat sandbox, as `user`. Idempotent; also used to upgrade a machine. A version of `-`
 # upgrades a running machine live: T3 is left as it runs, neither installed nor restarted.
-#   SAIL_BOAT_SECRET=<watchdog-secret> [SAIL_CLI_INSTALL_URL=<url>] provision.sh <t3-version|-> <sleep-after-secs> <snapshot-name> <mint-upstream-token:0|1> <name> <sandbox-id>
-# Expects watchdog.mjs next to it. Prints one JSON line: {"environmentId", "upstreamToken"?}.
+#   SAIL_BOAT_SECRET=<watchdog-secret> [SAIL_CLI_INSTALL_URL=<url>] provision.sh <t3-version|-> <sleep-after-secs> <snapshot-name> <mint-upstream-token:0|1> <name> <sandbox-id> [<check-idle:0|1>]
+# Versioned runs need the installer URL. Expects watchdog.mjs next to it. Prints one JSON line: {"environmentId", "upstreamToken"?}.
 set -euo pipefail
 
 version="$1" sleep_after="$2" snapshot="$3" mint_upstream="$4" name="$5" sandbox="$6"
+check_idle="${7:-0}"
 secret="$SAIL_BOAT_SECRET"
-install_url="${SAIL_CLI_INSTALL_URL:-https://t3.codes/install.sh}"
+install_url="${SAIL_CLI_INSTALL_URL:-}"
 here="$(cd "$(dirname "$0")" && pwd)"
-t3="$HOME/.local/bin/t3"
+t3_home="$HOME/.t3"
+export SAIL_HOME="$t3_home" T3CODE_HOME="$t3_home" T3CODE_INSTALL_BIN_DIR="$HOME/.local/bin"
+t3="$T3CODE_INSTALL_BIN_DIR/t3"
 boat_dir="$HOME/.sail-boat"
 units="$HOME/.config/systemd/user"
-mkdir -p "$boat_dir" "$units" "$HOME/.t3/userdata"
+mkdir -p "$boat_dir" "$units" "$t3_home/userdata"
 chmod 700 "$boat_dir"
 
-# T3 server pinned to the desktop app's version, as a systemd service that survives resumes.
-# It is restarted only when something it runs on changed: a restart drops every Sail
-# connection, and most upgrades only touch the watchdog. Live, what it reads below takes effect
-# at its next start.
+# Versioned provisioning activates the pinned runtime. A watchdog-only refresh keeps T3 running.
 live=0
 [ "$version" != - ] || live=1
-restart_t3=0
-if [ "$live" = 0 ] && [ "$("$t3" --version 2>/dev/null || true)" != "t3 v$version" ]; then
-  if ! curl -fsSL "$install_url" | T3CODE_VERSION="$version" sh >"$boat_dir/install.log" 2>&1; then
+sail_installed() {
+  [ "$(cat "$t3_home/runtime/versions/$version/.sail-product" 2>/dev/null)" = sail ] &&
+    [ "$("$t3" --version 2>/dev/null)" = "t3 v$version" ]
+}
+install_sail() {
+  local installer="$here/install.sh"
+  curl -fsSL --max-time 60 -o "$installer" "$install_url" || return
+  T3CODE_VERSION="$version" timeout -k 5s 480s sh "$installer" || {
+    local status=$?
+    echo "Sail installer exited with status $status" >&2
+    return "$status"
+  }
+  if ! sail_installed; then
+    echo "Expected Sail server v$version after install" >&2
+    return 1
+  fi
+}
+check_server_idle() {
+  if [ "$check_idle" = 1 ]; then
+    node --no-warnings "$here/watchdog.mjs" --check-idle
+  fi
+}
+check_server_idle
+if [ "$live" = 0 ] && ! sail_installed; then
+  install_log="$boat_dir/install.log"
+  if ! install_sail >"$install_log" 2>&1; then
     echo "Sail server install failed" >&2
-    tail -n 40 "$boat_dir/install.log" >&2
+    tail -n 40 "$install_log" >&2
     exit 1
   fi
-  restart_t3=1
 fi
-settings="$HOME/.t3/userdata/settings.json"
-before="$(cat "$settings" 2>/dev/null || true)"
+settings="$t3_home/userdata/settings.json"
 node -e '
   const fs = require("fs"), f = process.argv[1];
   const s = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : {};
   s.linkedEnvironmentsEnabled = true;
   fs.writeFileSync(f, JSON.stringify(s, null, 2));
 ' "$settings"
-[ "$before" = "$(cat "$settings")" ] || restart_t3=1
 # The machine's name, as other devices show it (T3 Connect, linked environments). T3 reads it
 # from here as it starts; without it, they show the sandbox's hostname.
 machine_info="PRETTY_HOSTNAME=$name"
 if [ "$(cat /etc/machine-info 2>/dev/null || true)" != "$machine_info" ]; then
   echo "$machine_info" | sudo tee /etc/machine-info >/dev/null
-  restart_t3=1
 fi
 if [ "$live" = 0 ]; then
-  "$t3" service install --allow-downgrade >/dev/null
+  check_server_idle
+  "$t3" service install --base-dir "$t3_home" --allow-downgrade >/dev/null
   systemctl --user daemon-reload
-  systemctl --user is-active --quiet t3code.service || restart_t3=1
-  [ "$restart_t3" = 0 ] || systemctl --user restart t3code.service
+  systemctl --user restart t3code.service
 fi
 
 ready=0
@@ -60,7 +79,7 @@ for _ in $(seq 1 120); do
 done
 if [ "$ready" != 1 ]; then
   echo "T3 server did not start" >&2
-  tail -n 40 "$HOME/.t3/userdata/logs/boot-service.log" >&2 || true
+  tail -n 40 "$t3_home/userdata/logs/boot-service.log" >&2 || true
   exit 1
 fi
 
