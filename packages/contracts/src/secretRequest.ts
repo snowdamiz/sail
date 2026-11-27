@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { ThreadId, TrimmedNonEmptyString, TurnItemId } from "./baseSchemas.ts";
-import { SecretReference } from "./secretReference.ts";
+import { SecretProviderId, SecretReference } from "./secretReference.ts";
 
 /** The http(s) page a secret card may open, or null for anything else. */
 export function secretRequestPageUrl(value: string): URL | null {
@@ -20,6 +20,13 @@ export const SecretRequestAnswerInput = Schema.Struct({
   turnItemId: TurnItemId,
   answer: Schema.Union([
     Schema.Struct({ type: Schema.Literal("save"), secret: TrimmedNonEmptyString }),
+    Schema.Struct({
+      type: Schema.Literal("save-to-vault"),
+      secret: TrimmedNonEmptyString,
+      provider: SecretProviderId,
+      vault: TrimmedNonEmptyString.check(Schema.isMaxLength(120), Schema.isPattern(/^[^\r\n]+$/)),
+      label: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+    }),
     /** A request with `fields`: one value per field name. */
     Schema.Struct({
       type: Schema.Literal("save"),
@@ -50,6 +57,10 @@ const SECRET_REQUEST_FAILURE_MESSAGES = {
   agent_stopped: "The agent that asked has stopped, so this secret can't be used.",
   store_failed: "Could not store the secret.",
   reference_unreadable: "Could not read the secret from the secret provider.",
+  vault_save_unconfirmed:
+    "Could not confirm the vault save. Check your password manager before trying again, or answer without saving to the vault.",
+  vault_saved_reference_failed:
+    "The item was saved to your vault, but its project reference could not be saved. Add that reference in Settings before answering again.",
   record_failed: "Saved the secret, but could not update the request.",
   invalid_ref: "That secretRef is not valid.",
   read_failed: "Could not read the secret.",

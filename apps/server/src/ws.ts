@@ -2001,6 +2001,7 @@ export const layerWsRpc = (
           secretProviderSettings: true,
           secretReferences: true,
           secretRequestReferences: true,
+          projectCredentialBookmarks: true,
           featureFlags: {
             secretProviders: featureFlags.secretProviders,
             tanstackSource: featureFlags.tanstackSource,

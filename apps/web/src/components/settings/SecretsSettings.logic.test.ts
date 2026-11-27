@@ -41,6 +41,9 @@ const settings = Schema.decodeSync(ServerSettings)({
     },
   ],
   cloudSpeechCredentials: { openai: personal("op://voice"), xai: "" },
+  projectCredentialBookmarks: {
+    project: { key: { label: "Project key", reference: personal("op://vault/item/field") } },
+  },
 });
 
 it.each([
@@ -53,6 +56,7 @@ it.each([
       "https://hub.test · Management Key",
       "Expo Simulators · Access Token",
       "Simlock Pool · Agent Token",
+      "Project key",
       "Voice · OpenAI",
     ],
   ],

@@ -12958,5 +12958,18 @@
   "c95576eb2a5e4f06": "Passwort festlegen",
   "c446b7021eebe478": "Passwort gespeichert. Passwortbasierte Sitzungen wurden abgemeldet. Gekoppelte Geräte bleiben angemeldet.",
   "092ce0176682d08e": "Passwort konnte nicht gespeichert werden. Versuche es erneut.",
-  "3c7e4ee476de723b": "Die Passwörter stimmen nicht überein."
+  "3c7e4ee476de723b": "Die Passwörter stimmen nicht überein.",
+  "7cf734c3db5b492d": "Im Tresor speichern und verwenden",
+  "5dafe013eec85482": "Geheimnisanbieter",
+  "e440cdbd7c4864fe": "Geheimnisanbieter auswählen",
+  "91bd8f56f79e20fa": "Tresorname oder ID",
+  "1c4bbe47f06280d9": "Name der Zugangsdaten",
+  "7826b824ce59113c": "Gespeicherte Projektreferenzen",
+  "ae9244e2d09cf9cb": "Auch in 1Password für dieses Projekt speichern",
+  "4e0907884f7a8f74": "Ein neuer Eintrag wird im ausgewählten Tresor erstellt. Künftige Anfragen können die gespeicherte Referenz mit deiner Zustimmung verwenden.",
+  "f7b353bae9c7a7ea": "Referenzen für Projektzugangsdaten",
+  "09450761a5fd88a3": "Geheimnisreferenz",
+  "f16ea4e42e6ea489": "Speichere Verweise auf vorhandene Tresoreinträge für dieses Projekt. Die Werte bleiben in deinem Passwortmanager. Bei privaten Anfragen nach Zugangsdaten entscheidest du, ob du eine gespeicherte Referenz verwendest.",
+  "99903ecb8421c8d9": "Referenz speichern",
+  "0ccc25d652c2f6fc": "Füge zuerst einen Geheimnisanbieter für diese Umgebung hinzu."
 }

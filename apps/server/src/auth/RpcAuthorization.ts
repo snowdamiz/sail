@@ -351,7 +351,7 @@ const requiredScopesForRpcCall = (
   // Typed values can use any field names, so the answer's type decides, not its shape.
   if (
     method === WS_METHODS.secretsAnswerRequest &&
-    decodeSecretRequestAnswer(payload).answer.type === "reference"
+    ["reference", "save-to-vault"].includes(decodeSecretRequestAnswer(payload).answer.type)
   ) {
     return [AuthOrchestrationOperateScope, AuthProvidersManageScope];
   }

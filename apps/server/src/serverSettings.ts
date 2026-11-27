@@ -240,6 +240,7 @@ const secretProviderConfigGuards = new Map(
 
 // Rejects a kind this server has not loaded rather than storing a config it cannot check.
 function ensureSecretProviderWritesAllowed(
+  current: ServerSettings,
   patch: ServerSettingsPatch,
   settingsPath: string,
 ): Effect.Effect<void, ServerSettingsError> {
@@ -260,6 +261,25 @@ function ensureSecretProviderWritesAllowed(
           cause: new Error(problem),
         }),
       );
+    }
+  }
+  for (const entries of Object.values(patch.projectCredentialBookmarks ?? {})) {
+    for (const bookmark of Object.values(entries)) {
+      if (bookmark === null) continue;
+      const provider = Object.hasOwn(patch.secretProviders ?? {}, bookmark.reference.provider)
+        ? patch.secretProviders?.[bookmark.reference.provider]
+        : current.secretProviders[bookmark.reference.provider];
+      const definition =
+        provider == null ? undefined : secretProviderDefinitions.find(provider.kind);
+      if (definition === undefined || !definition.isReference(bookmark.reference.reference)) {
+        return Effect.fail(
+          new ServerSettingsError({
+            settingsPath,
+            operation: "write-secret-provider",
+            cause: new Error("Choose a configured secret provider and a valid secret reference."),
+          }),
+        );
+      }
     }
   }
   return Effect.void;
@@ -844,8 +864,11 @@ const make = Effect.gen(function* () {
   const watcherScope = yield* Scope.make("sequential");
   yield* Effect.addFinalizer(() => Scope.close(watcherScope, Exit.void));
 
+  let lastAnnouncedSettings: ServerSettings | undefined;
   const emitChange = (settings: ServerSettings) =>
-    PubSub.publish(changesPubSub, settings).pipe(Effect.asVoid);
+    Effect.sync(() => {
+      lastAnnouncedSettings = settings;
+    }).pipe(Effect.andThen(PubSub.publish(changesPubSub, settings)), Effect.asVoid);
 
   const readConfigExists = fs.exists(settingsPath).pipe(
     Effect.mapError(
@@ -1448,7 +1471,7 @@ const make = Effect.gen(function* () {
   const revalidateAndEmit = writeSemaphore.withPermits(1)(
     Effect.gen(function* () {
       const { settings } = yield* reloadSettings;
-      yield* emitChange(settings);
+      if (!NodeUtil.isDeepStrictEqual(settings, lastAnnouncedSettings)) yield* emitChange(settings);
     }),
   );
 
@@ -1575,7 +1598,7 @@ const make = Effect.gen(function* () {
 
     const startup = Effect.gen(function* () {
       yield* startWatcher;
-      yield* reloadSettings;
+      lastAnnouncedSettings = (yield* reloadSettings).settings;
     });
 
     const startupExit = yield* Effect.exit(startup);
@@ -1594,7 +1617,7 @@ const make = Effect.gen(function* () {
     getSettings: getMaterializedSettings,
     updateSettings: (patch) =>
       updateAndPersistSettings(patch, (current) =>
-        ensureSecretProviderWritesAllowed(patch, settingsPath).pipe(
+        ensureSecretProviderWritesAllowed(current, patch, settingsPath).pipe(
           Effect.as(applyServerSettingsPatch(current, patch)),
         ),
       ),
@@ -1631,7 +1654,7 @@ const make = Effect.gen(function* () {
     updateProviderInstance: (mutation, patch = {}) =>
       updateAndPersistSettings(patch, (current) =>
         Effect.gen(function* () {
-          yield* ensureSecretProviderWritesAllowed(patch, settingsPath);
+          yield* ensureSecretProviderWritesAllowed(current, patch, settingsPath);
           yield* ensureProviderInstanceMutationAllowed(current, mutation, settingsPath);
           const patched = applyServerSettingsPatch(current, patch);
           return applyProviderInstanceMutation(patched, mutation);

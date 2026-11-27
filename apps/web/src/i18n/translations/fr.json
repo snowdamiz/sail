@@ -12958,5 +12958,18 @@
   "c95576eb2a5e4f06": "Définir le mot de passe",
   "c446b7021eebe478": "Mot de passe enregistré. Les sessions ouvertes avec un mot de passe ont été déconnectées. Les appareils associés restent connectés.",
   "092ce0176682d08e": "Impossible d’enregistrer le mot de passe. Réessayez.",
-  "3c7e4ee476de723b": "Les mots de passe ne correspondent pas."
+  "3c7e4ee476de723b": "Les mots de passe ne correspondent pas.",
+  "7cf734c3db5b492d": "Enregistrer dans le coffre et utiliser",
+  "5dafe013eec85482": "Fournisseur de secrets",
+  "e440cdbd7c4864fe": "Sélectionner un fournisseur de secrets",
+  "91bd8f56f79e20fa": "Nom ou ID du coffre",
+  "1c4bbe47f06280d9": "Nom de l’identifiant",
+  "7826b824ce59113c": "Références enregistrées du projet",
+  "ae9244e2d09cf9cb": "Enregistrer aussi dans 1Password pour ce projet",
+  "4e0907884f7a8f74": "Un nouvel élément sera créé dans le coffre choisi. Les demandes ultérieures pourront utiliser sa référence enregistrée avec votre approbation.",
+  "f7b353bae9c7a7ea": "Références des identifiants du projet",
+  "09450761a5fd88a3": "Référence de secret",
+  "f16ea4e42e6ea489": "Enregistrez des références aux éléments existants du coffre pour ce projet. Les valeurs restent dans votre gestionnaire de mots de passe. Vous décidez d’utiliser ou non une référence enregistrée en répondant à une demande privée d’identifiants.",
+  "99903ecb8421c8d9": "Enregistrer la référence",
+  "0ccc25d652c2f6fc": "Ajoutez d’abord un fournisseur de secrets à cet environnement."
 }

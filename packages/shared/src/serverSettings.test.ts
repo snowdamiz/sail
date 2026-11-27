@@ -5,6 +5,8 @@ import {
   ProviderInstanceId,
   SecretProviderId,
   SecretProviderKind,
+  AuthProvidersManageScope,
+  requiredScopesForServerSettingsPatch,
   ServerSettings,
   ServerSettingsPatch,
   UsageLimitSourceId,
@@ -700,6 +702,44 @@ describe("serverSettings helpers", () => {
 
     const removed = applyServerSettingsPatch(added, { secretProviders: { [personal]: null } });
     expect(Object.keys(removed.secretProviders)).toEqual([work]);
+  });
+
+  it("remembers distinct project credential references and removes them without altering other projects", () => {
+    const provider = SecretProviderId.make("project-vault");
+    const a = ProjectId.make("project-a");
+    const b = ProjectId.make("project-b");
+    const configured = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      secretProviders: {
+        [provider]: {
+          kind: SecretProviderKind.make("one_password"),
+          label: "Project vault",
+          config: { account: "test.1password.com" },
+        },
+      },
+    });
+    const bookmark = {
+      label: "Test key",
+      reference: { provider, reference: "op://test-vault/item/field" },
+    };
+    const patch = {
+      projectCredentialBookmarks: { [a]: { one: bookmark }, [b]: { two: bookmark } },
+    };
+    expect(requiredScopesForServerSettingsPatch(patch)).toContain(AuthProvidersManageScope);
+    const saved = applyServerSettingsPatch(configured, patch);
+    const changed = applyServerSettingsPatch(saved, {
+      projectCredentialBookmarks: { [a]: { three: bookmark, one: null } },
+    });
+    expect(changed.projectCredentialBookmarks).toEqual({
+      [a]: { three: bookmark },
+      [b]: { two: bookmark },
+    });
+    const removed = applyServerSettingsPatch(changed, { secretProviders: { [provider]: null } });
+    expect(removed.projectCredentialBookmarks).toEqual({});
+    expect(
+      requiredScopesForServerSettingsPatch({
+        projectCredentialBookmarks: { [a]: { three: null } },
+      }),
+    ).toContain(AuthProvidersManageScope);
   });
 
   it("replaces and removes individual usage prices without clobbering other models", () => {

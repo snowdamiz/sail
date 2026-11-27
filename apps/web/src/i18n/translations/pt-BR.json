@@ -12958,5 +12958,18 @@
   "c95576eb2a5e4f06": "Definir senha",
   "c446b7021eebe478": "Senha salva. As sessões iniciadas com senha foram encerradas. Os dispositivos pareados continuam conectados.",
   "092ce0176682d08e": "Não foi possível salvar a senha. Tente novamente.",
-  "3c7e4ee476de723b": "As senhas não coincidem."
+  "3c7e4ee476de723b": "As senhas não coincidem.",
+  "7cf734c3db5b492d": "Salvar no cofre e usar",
+  "5dafe013eec85482": "Provedor de segredos",
+  "e440cdbd7c4864fe": "Selecione um provedor de segredos",
+  "91bd8f56f79e20fa": "Nome ou ID do cofre",
+  "1c4bbe47f06280d9": "Nome da credencial",
+  "7826b824ce59113c": "Referências salvas do projeto",
+  "ae9244e2d09cf9cb": "Salvar também no 1Password para este projeto",
+  "4e0907884f7a8f74": "Um novo item será criado no cofre escolhido. Solicitações futuras podem usar a referência salva com sua aprovação.",
+  "f7b353bae9c7a7ea": "Referências de credenciais do projeto",
+  "09450761a5fd88a3": "Referência de segredo",
+  "f16ea4e42e6ea489": "Salve referências a itens existentes do cofre para este projeto. Os valores permanecem no gerenciador de senhas. Você decide se usará uma referência salva ao responder a uma solicitação privada de credenciais.",
+  "99903ecb8421c8d9": "Salvar referência",
+  "0ccc25d652c2f6fc": "Adicione primeiro um provedor de segredos neste ambiente."
 }

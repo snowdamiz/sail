@@ -24,7 +24,7 @@ import {
 } from "./baseSchemas.ts";
 import { UsageLimitSourceId } from "./usageLimitSourceId.ts";
 import { UsageModelFilter } from "./usage.ts";
-import { SecretProviderId, SecretProviderSlug } from "./secretReference.ts";
+import { SecretProviderId, SecretProviderSlug, SecretReference } from "./secretReference.ts";
 import { containsSecretReference, SettingsSecretValue } from "./settingsSecretValue.ts";
 import { EnvironmentMachineKind, ThreadEnvMode, WorktreeSubmodules } from "./environment.ts";
 import { KeybindingShortcut } from "./keybindings.ts";
@@ -1234,6 +1234,13 @@ export const SecretProviderConfig = Schema.Struct({
 });
 export type SecretProviderConfig = typeof SecretProviderConfig.Type;
 
+export const ProjectCredentialBookmark = Schema.Struct({
+  label: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+  reference: SecretReference,
+});
+export type ProjectCredentialBookmark = typeof ProjectCredentialBookmark.Type;
+const ProjectCredentialBookmarks = Schema.Record(SecretProviderSlug, ProjectCredentialBookmark);
+
 // Limits that may change later are enforced on writes only, never on the stored envelope. The
 // server also checks the kind and its config against the secret providers it has loaded.
 const SecretProviderConfigWrite = Schema.Struct({
@@ -1823,6 +1830,9 @@ export const ServerSettings = Schema.Struct({
   secretProviders: Schema.Record(SecretProviderId, SecretProviderConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  projectCredentialBookmarks: Schema.Record(ProjectId, ProjectCredentialBookmarks).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
 
   usageHistoryRetentionDays: UsageHistoryRetentionDays.pipe(
     Schema.withDecodingDefault(Effect.succeed(92)),
@@ -2225,6 +2235,12 @@ export const ServerSettingsPatch = Schema.Struct({
   secretProviders: Schema.optionalKey(
     Schema.Record(SecretProviderId, Schema.NullOr(SecretProviderConfigWrite)),
   ),
+  projectCredentialBookmarks: Schema.optionalKey(
+    Schema.Record(
+      ProjectId,
+      Schema.Record(SecretProviderSlug, Schema.NullOr(ProjectCredentialBookmark)),
+    ),
+  ),
 
   usageHistoryRetentionDays: Schema.optionalKey(UsageHistoryRetentionDays),
 
@@ -2269,7 +2285,8 @@ export function requiredScopesForServerSettingsPatch(
       key === "providerInstances" ||
       key === "usageLimitSources" ||
       key === "textGenerators" ||
-      key === "secretProviders"
+      key === "secretProviders" ||
+      key === "projectCredentialBookmarks"
     ) {
       changesProviders = true;
     } else {

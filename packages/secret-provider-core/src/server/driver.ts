@@ -13,9 +13,19 @@ export type SecretProviderDriverServices =
   | FileSystem.FileSystem
   | SecureRandom.SecureRandom;
 
+export interface SecretProviderItemInput {
+  readonly vault: string;
+  readonly label: string;
+  readonly value: string;
+}
+
 export interface SecretProviderDriver {
   readonly kind: SecretProviderKind;
   readonly definition: SecretProviderDefinition;
+  readonly saveItem?: (
+    config: unknown,
+    input: SecretProviderItemInput,
+  ) => Effect.Effect<string | undefined, never, SecretProviderDriverServices>;
   /**
    * Values in input order; `undefined` marks a reference that could not be read. `config` has
    * decoded with the definition's `configSchema` and every reference passed its `isReference`.
@@ -29,15 +39,26 @@ export interface SecretProviderDriver {
 export const defineSecretProviderDriver = <Config>(driver: {
   readonly kind: SecretProviderKind;
   readonly definition: SecretProviderDefinition<Config>;
+  readonly saveItem?: (
+    config: Config,
+    input: SecretProviderItemInput,
+  ) => Effect.Effect<string | undefined, never, SecretProviderDriverServices>;
   readonly read: (
     config: Config,
     references: ReadonlyArray<string>,
   ) => Effect.Effect<ReadonlyArray<string | undefined>, never, SecretProviderDriverServices>;
 }): SecretProviderDriver => {
   const isConfig = Schema.is(driver.definition.configSchema);
+  const saveItem = driver.saveItem;
   return {
     kind: driver.kind,
     definition: driver.definition,
+    ...(saveItem === undefined
+      ? {}
+      : {
+          saveItem: (config: unknown, input: SecretProviderItemInput) =>
+            isConfig(config) ? saveItem(config, input) : Effect.undefined,
+        }),
     read: (config, references) =>
       isConfig(config)
         ? driver.read(config, references)

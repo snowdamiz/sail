@@ -6,6 +6,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { ChildProcess } from "effect/process";
 
 import { definition, type OnePasswordAccount } from "../shared/definition.ts";
@@ -88,9 +89,73 @@ const recover = <A, E extends { readonly _tag: string }, R>(
     ),
   );
 
+const CreatedItem = Schema.Struct({
+  id: Schema.String,
+  vault: Schema.Struct({ id: Schema.String }),
+});
+const decodeCreatedItem = Schema.decodeUnknownOption(Schema.fromJsonString(CreatedItem));
+const encodeItemTemplate = Schema.encodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      category: Schema.Literal("PASSWORD"),
+      title: Schema.String,
+      fields: Schema.Array(
+        Schema.Struct({
+          id: Schema.Literal("password"),
+          label: Schema.Literal("password"),
+          type: Schema.Literal("CONCEALED"),
+          purpose: Schema.Literal("PASSWORD"),
+          value: Schema.String,
+        }),
+      ),
+    }),
+  ),
+);
+
 export const driver = defineSecretProviderDriver({
   kind: definition.kind,
   definition,
+  saveItem: Effect.fn("OnePasswordDriver.saveItem")(function* ({ account }, input) {
+    const result = yield* Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const template = yield* fileSystem.makeTempFileScoped({ prefix: "t3code-op-create-" });
+      yield* fileSystem.chmod(template, 0o600);
+      yield* fileSystem.writeFileString(
+        template,
+        yield* encodeItemTemplate({
+          category: "PASSWORD",
+          title: input.label,
+          fields: [
+            {
+              id: "password",
+              label: "password",
+              type: "CONCEALED",
+              purpose: "PASSWORD",
+              value: input.value,
+            },
+          ],
+        }),
+      );
+      const saved = yield* runOnePassword([
+        "item",
+        "create",
+        `--account=${account}`,
+        `--vault=${input.vault}`,
+        `--template=${template}`,
+        "--format=json",
+      ]);
+      if (saved.code !== 0) return undefined;
+      const item = decodeCreatedItem(saved.stdout);
+      if (Option.isNone(item)) return undefined;
+      const reference = `op://${item.value.vault.id}/${item.value.id}/password`;
+      return definition.isReference(reference) ? reference : undefined;
+    }).pipe(
+      Effect.scoped,
+      Effect.catch(() => Effect.undefined),
+      Effect.timeoutOption(READ_TIMEOUT),
+    );
+    return Option.getOrUndefined(result);
+  }),
   read: Effect.fn("OnePasswordDriver.read")(function* ({ account }, references) {
     // One deadline covers the batch and the fallback; a reference not read by then is unreadable.
     const values: Array<string | undefined> = references.map(() => undefined);

@@ -32,6 +32,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "./SecretRequests.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 
 const threadId = ThreadId.make("thread-orchestrator");
 const turnItemId = TurnItemId.make("turn-item:secret-request:1");
@@ -43,7 +44,11 @@ const FAKE_KIND = SecretProviderKind.make("fake");
 const vault = SecretProviderId.make("vault");
 /** Reads `fake://` references from `values` while unlocked, as a password manager would. */
 const fakeVault = () => {
-  const state = { unlocked: true, values: new Map([["fake://github/token", "ghp_from_vault"]]) };
+  const state = {
+    unlocked: true,
+    values: new Map([["fake://github/token", "ghp_from_vault"]]),
+    created: 0,
+  };
   const driver = defineSecretProviderDriver({
     kind: FAKE_KIND,
     definition: defineSecretProvider({
@@ -54,6 +59,14 @@ const fakeVault = () => {
       referencePlaceholder: "fake://item",
       invalidReferenceMessage: "Use fake://item.",
     }),
+    saveItem: (_config, input) =>
+      Effect.sync(() => {
+        state.created += 1;
+        if (!state.unlocked) return undefined;
+        const reference = `fake://${input.vault}/${state.created}`;
+        state.values.set(reference, input.value);
+        return reference;
+      }),
     read: (_config, references) =>
       Effect.sync(() =>
         references.map((reference) => (state.unlocked ? state.values.get(reference) : undefined)),
@@ -71,6 +84,7 @@ const fakeVault = () => {
 const withService = <A, E>(
   body: (input: {
     readonly service: SecretRequests.SecretRequests["Service"];
+    readonly settings: ServerSettingsService["Service"];
     readonly stored: Map<string, Uint8Array>;
     readonly dispatched: Array<OrchestrationV2ServerCommand>;
   }) => Effect.Effect<A, E>,
@@ -97,6 +111,9 @@ const withService = <A, E>(
       NodeCrypto.layer,
       NodeServices.layer,
       options.resolver ?? fakeVault().layer,
+      ServerSettingsService.layerTest({
+        secretProviders: { [vault]: { kind: FAKE_KIND, label: "Vault", config: {} } },
+      }),
       Layer.succeed(
         ServerSecretStore.ServerSecretStore,
         ServerSecretStore.ServerSecretStore.of({
@@ -182,8 +199,9 @@ const withService = <A, E>(
     );
     return yield* Effect.gen(function* () {
       const service = yield* SecretRequests.SecretRequests;
-      return yield* body({ service, stored, dispatched });
-    }).pipe(Effect.provide(SecretRequests.layer.pipe(Layer.provide(layerDependencies))));
+      const settings = yield* ServerSettingsService;
+      return yield* body({ service, settings, stored, dispatched });
+    }).pipe(Effect.provide(SecretRequests.layer.pipe(Layer.provideMerge(layerDependencies))));
   });
 
 const singleFile = (saved: { readonly file: string } | { readonly files: unknown }) =>
@@ -193,6 +211,80 @@ const valuesOf = (stored: Map<string, Uint8Array>) =>
   Array.from(stored.entries())
     .filter(([name]) => name !== "secret-request-salt")
     .map(([, bytes]) => new TextDecoder().decode(bytes));
+
+it.effect("an owner can explicitly save a new vault item and keep its project reference", () => {
+  const fixture = fakeVault();
+  return withService(
+    ({ service, settings, dispatched }) =>
+      Effect.gen(function* () {
+        yield* service.answer({
+          threadId,
+          turnItemId,
+          answer: {
+            type: "save-to-vault",
+            secret: "synthetic-private-value",
+            provider: vault,
+            vault: "project",
+            label: "Test key",
+          },
+        });
+        assert.equal(fixture.state.created, 1);
+        assert.equal(fixture.state.values.get("fake://project/1"), "synthetic-private-value");
+        const current = yield* settings.getSettings;
+        assert.deepStrictEqual(Object.values(current.projectCredentialBookmarks[projectId] ?? {}), [
+          { label: "Test key", reference: { provider: vault, reference: "fake://project/1" } },
+        ]);
+        assert.notInclude(JSON.stringify(current), "synthetic-private-value");
+        assert.notInclude(JSON.stringify(dispatched), "synthetic-private-value");
+        const ref = Option.getOrThrow(yield* service.savedRef({ threadId, turnItemId }));
+        assert.equal(yield* service.consume({ ref, projectId }), "synthetic-private-value");
+      }),
+    { resolver: fixture.layer },
+  );
+});
+
+it.effect(
+  "an unconfirmed vault write leaves the request pending and does not repeat the write",
+  () => {
+    const fixture = fakeVault();
+    fixture.state.unlocked = false;
+    return withService(
+      ({ service, settings, dispatched }) =>
+        Effect.gen(function* () {
+          const input = {
+            threadId,
+            turnItemId,
+            answer: {
+              type: "save-to-vault" as const,
+              secret: "synthetic-private-value",
+              provider: vault,
+              vault: "project",
+              label: "Test key",
+            },
+          };
+          assert.equal(
+            (yield* service.answer(input).pipe(Effect.flip)).reason,
+            "vault_save_unconfirmed",
+          );
+          assert.equal(
+            (yield* service.answer(input).pipe(Effect.flip)).reason,
+            "vault_save_unconfirmed",
+          );
+          assert.equal(fixture.state.created, 1);
+          assert.deepStrictEqual((yield* settings.getSettings).projectCredentialBookmarks, {});
+          assert.equal(dispatched.length, 0);
+          yield* service.answer({
+            threadId,
+            turnItemId,
+            answer: { type: "save", secret: "synthetic-private-value" },
+          });
+          const ref = Option.getOrThrow(yield* service.savedRef({ threadId, turnItemId }));
+          assert.equal(yield* service.consume({ ref, projectId }), "synthetic-private-value");
+        }),
+      { resolver: fixture.layer },
+    );
+  },
+);
 
 it.effect("a saved answer becomes a one-use ref, and the thread only learns it was saved", () =>
   withService(({ service, stored, dispatched }) =>

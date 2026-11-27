@@ -12953,5 +12953,18 @@
   "c95576eb2a5e4f06": "Establecer contraseña",
   "c446b7021eebe478": "Contraseña guardada. Se han cerrado las sesiones iniciadas con contraseña. Los dispositivos vinculados siguen conectados.",
   "092ce0176682d08e": "No se pudo guardar la contraseña. Inténtalo de nuevo.",
-  "3c7e4ee476de723b": "Las contraseñas no coinciden."
+  "3c7e4ee476de723b": "Las contraseñas no coinciden.",
+  "7cf734c3db5b492d": "Guardar en la bóveda y usar",
+  "5dafe013eec85482": "Proveedor de secretos",
+  "e440cdbd7c4864fe": "Selecciona un proveedor de secretos",
+  "91bd8f56f79e20fa": "Nombre o ID de la bóveda",
+  "1c4bbe47f06280d9": "Nombre de la credencial",
+  "7826b824ce59113c": "Referencias guardadas del proyecto",
+  "ae9244e2d09cf9cb": "Guardar también en 1Password para este proyecto",
+  "4e0907884f7a8f74": "Se crea un elemento en la bóveda seleccionada. Las solicitudes futuras pueden usar la referencia guardada con tu aprobación.",
+  "f7b353bae9c7a7ea": "Referencias de credenciales del proyecto",
+  "09450761a5fd88a3": "Referencia de secreto",
+  "f16ea4e42e6ea489": "Guarda referencias a elementos existentes de la bóveda para este proyecto. Los valores permanecen en tu gestor de contraseñas. Tú decides si quieres usar una referencia guardada al responder a una solicitud privada de credenciales.",
+  "99903ecb8421c8d9": "Guardar referencia",
+  "0ccc25d652c2f6fc": "Añade primero un proveedor de secretos en este entorno."
 }

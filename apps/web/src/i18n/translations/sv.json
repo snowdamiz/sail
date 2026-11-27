@@ -12965,5 +12965,18 @@
   "c95576eb2a5e4f06": "Ange lösenord",
   "c446b7021eebe478": "Lösenordet har sparats. Sessioner som använder lösenord har loggats ut. Parkopplade enheter är fortfarande inloggade.",
   "092ce0176682d08e": "Det gick inte att spara lösenordet. Försök igen.",
-  "3c7e4ee476de723b": "Lösenorden matchar inte."
+  "3c7e4ee476de723b": "Lösenorden matchar inte.",
+  "7cf734c3db5b492d": "Spara i valvet och använd",
+  "5dafe013eec85482": "Hemlighetsleverantör",
+  "e440cdbd7c4864fe": "Välj en hemlighetsleverantör",
+  "91bd8f56f79e20fa": "Valvnamn eller ID",
+  "1c4bbe47f06280d9": "Namn på autentiseringsuppgift",
+  "7826b824ce59113c": "Sparade projektreferenser",
+  "ae9244e2d09cf9cb": "Spara även i 1Password för det här projektet",
+  "4e0907884f7a8f74": "Det skapar ett nytt objekt i det valda valvet. Framtida förfrågningar kan använda den sparade referensen med ditt godkännande.",
+  "f7b353bae9c7a7ea": "Referenser till projektets autentiseringsuppgifter",
+  "09450761a5fd88a3": "Hemlighetsreferens",
+  "f16ea4e42e6ea489": "Spara referenser till befintliga valvobjekt för det här projektet. Värdena finns kvar i lösenordshanteraren. Du väljer om du vill använda en sparad referens när du svarar på en privat begäran om autentiseringsuppgifter.",
+  "99903ecb8421c8d9": "Spara referens",
+  "0ccc25d652c2f6fc": "Lägg först till en hemlighetsleverantör i den här miljön."
 }

@@ -26,6 +26,7 @@ type SecretUseSettings = Pick<
   | "easDeviceHosts"
   | "simlockDeviceHosts"
   | "cloudSpeechCredentials"
+  | "projectCredentialBookmarks"
 >;
 
 interface SecretProviderUse {
@@ -112,6 +113,13 @@ export function secretProviderUses(
     ),
     ...settings.simlockDeviceHosts.flatMap((host) =>
       uses({ settingsSchema: SimlockDeviceHostConfig }, `simlock:${host.id}`, host.label, host),
+    ),
+    ...Object.entries(settings.projectCredentialBookmarks).flatMap(([projectId, bookmarks]) =>
+      Object.entries(bookmarks).flatMap(([id, bookmark]) =>
+        bookmark.reference.provider === providerId
+          ? [{ id: `project-credential:${projectId}:${id}`, label: bookmark.label }]
+          : [],
+      ),
     ),
     ...CloudSpeechProvider.literals.flatMap((provider) => {
       const credential = settings.cloudSpeechCredentials[provider];

@@ -17,6 +17,7 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
+import { ProjectCredentialBookmarksSettings } from "./ProjectCredentialBookmarksSettings";
 import { SecretProviderDialog } from "./SecretProviderDialog";
 import { classifySecretProvider } from "./SecretProviderDialog.logic";
 import { secretProviderUses } from "./SecretsSettings.logic";
@@ -37,7 +38,7 @@ const SECRET_PROVIDER_KINDS: Readonly<
 
 export function SecretsSettingsPanel() {
   const setting = useSearchableSetting();
-  const { scope, environment } = useSettingsScope();
+  const { scope, environment, targets, target } = useSettingsScope();
   const connected = environment?.connection.phase === "connected";
   return (
     <SettingsPageContainer>
@@ -67,6 +68,17 @@ export function SecretsSettingsPanel() {
           </p>
         </SettingsSection>
       )}
+      {connected &&
+      targets.length === 1 &&
+      target?.projectId &&
+      target.environmentId === environment.environmentId &&
+      (scope.kind === "project" || scope.kind === "checkout") ? (
+        <ProjectCredentialBookmarksSettings
+          key={`${environment.environmentId}:${target.projectId}`}
+          environmentId={environment.environmentId}
+          projectId={target.projectId}
+        />
+      ) : null}
     </SettingsPageContainer>
   );
 }

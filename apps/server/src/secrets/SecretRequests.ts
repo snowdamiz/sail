@@ -30,6 +30,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 
@@ -108,6 +109,7 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const resolver = yield* SecretResolver.SecretResolver;
+  const settings = yield* ServerSettingsService;
   // Beside the store's own files so the same owner-only directory and cleanup rules apply.
   const filesDir = store.directory === undefined ? undefined : path.join(store.directory, "files");
 
@@ -189,6 +191,40 @@ const make = Effect.gen(function* () {
           ? [[undefined, yield* readReference(input.answer.reference)] as const]
           : (answerValues(item, input.answer) ??
             (yield* new SecretRequestError({ reason: "fields_mismatch" })));
+    if (input.answer.type === "save-to-vault") {
+      if (item.fields !== undefined || resolver.saveItem === undefined) {
+        return yield* new SecretRequestError({ reason: "fields_mismatch" });
+      }
+      const attempt = yield* refFor(input.threadId, item.id, "vault-save-attempt");
+      const savedAt = yield* Clock.currentTimeMillis;
+      const marker = yield* encodeStored({
+        projectId: records.thread.projectId,
+        value: "vault-save-attempt",
+        savedAt,
+      }).pipe(Effect.orDie);
+      // Do not repeat the external write after an interrupted or ambiguous save. The regular one-time answer remains usable.
+      yield* store
+        .create(storeName(attempt), new TextEncoder().encode(marker))
+        .pipe(Effect.mapError(() => new SecretRequestError({ reason: "vault_save_unconfirmed" })));
+      const reference = yield* resolver.saveItem(input.answer.provider, {
+        vault: input.answer.vault,
+        label: input.answer.label,
+        value: input.answer.secret,
+      });
+      if (reference === undefined)
+        return yield* new SecretRequestError({ reason: "vault_save_unconfirmed" });
+      yield* settings
+        .updateSettings({
+          projectCredentialBookmarks: {
+            [records.thread.projectId]: {
+              [attempt.slice(SECRET_REF_PREFIX.length)]: { label: input.answer.label, reference },
+            },
+          },
+        })
+        .pipe(
+          Effect.mapError(() => new SecretRequestError({ reason: "vault_saved_reference_failed" })),
+        );
+    }
     if (values !== undefined) {
       const savedAt = yield* Clock.currentTimeMillis;
       // Cleared when interrupted too, or a retry would keep these values beside its own.

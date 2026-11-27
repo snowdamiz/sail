@@ -25,6 +25,7 @@ import {
   type SecretProviderId,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
+import * as Option from "effect/Option";
 import { hasFeatureFlag } from "@t3tools/client-runtime/state/server";
 import { T, useGT, useMessages, Var } from "gt-react";
 import {
@@ -41,8 +42,12 @@ import { flushSync } from "react-dom";
 
 import { serverEnvironment } from "../../state/server";
 import { useEnvironmentScope } from "../../state/session";
+import { useEnvironmentThread } from "../../state/threads";
+import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Input } from "../ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
 import { SecretSourceSelect } from "../settings/SecretSourceInput";
@@ -96,9 +101,11 @@ function PendingSecretRequestForm(props: {
 }) {
   const { item } = props;
   const messages = useMessages();
+  const gt = useGT();
   const formId = useId();
   const errorId = useId();
   const privacyId = useId();
+  const vaultCheckLabelId = useId();
   const answer = useAtomCommand(serverEnvironment.answerSecretRequest, {
     label: "answer secret request",
     // The failure cause holds the request; keep it out of the console.
@@ -109,6 +116,26 @@ function PendingSecretRequestForm(props: {
   // A reference answers one value, so a card with fields is always typed.
   const configuredSources = useSecretRequestSources(props.environmentId);
   const sources = multiple ? NO_SOURCES : configuredSources;
+  const projectId = Option.getOrUndefined(
+    useEnvironmentThread(props.environmentId, item.threadId).data,
+  )?.thread.projectId;
+  const bookmarks = useEnvironmentSettings(props.environmentId, (settings) =>
+    projectId === undefined ? {} : (settings.projectCredentialBookmarks[projectId] ?? {}),
+  );
+  const availableBookmarks = Object.entries(bookmarks).filter(([, bookmark]) =>
+    sources.some(
+      (entry) =>
+        entry.id === bookmark.reference.provider && entry.isReference(bookmark.reference.reference),
+    ),
+  );
+  const vaultSaveSupported = useAtomValue(
+    serverEnvironment.configValueAtom(props.environmentId),
+    (config) => config?.projectCredentialBookmarks === true,
+  );
+  const [saveToVault, setSaveToVault] = useState(false);
+  const [vaultProvider, setVaultProvider] = useState<SecretProviderId | null>(null);
+  const [vault, setVault] = useState("");
+  const [vaultLabel, setVaultLabel] = useState(item.label.slice(0, 100));
   const [sourceId, setSourceId] = useState<SecretProviderId | null>(null);
   const source = sources.find((candidate) => candidate.id === sourceId) ?? null;
   const [values, setValues] = useState<Readonly<Record<string, string>>>({});
@@ -120,9 +147,17 @@ function PendingSecretRequestForm(props: {
   const inputs = secretRequestInputs(item, messages);
   const inputId = (index: number) => `${formId}-${index}`;
   const describedBy = error !== null ? `${privacyId} ${errorId}` : privacyId;
+  const vaultModeAvailable =
+    vaultSaveSupported && !multiple && sources.length > 0 && source === null;
+  const vaultMode = vaultModeAvailable && saveToVault;
+  const typedReply: SecretRequestReply | null = vaultMode
+    ? vaultProvider === null || !sources.some((entry) => entry.id === vaultProvider)
+      ? null
+      : { type: "save-to-vault", values, provider: vaultProvider, vault, label: vaultLabel }
+    : { type: "save", values };
   const canSave =
     source === null
-      ? secretRequestAnswerInput(item, { type: "save", values }) !== null
+      ? typedReply !== null && secretRequestAnswerInput(item, typedReply) !== null
       : reference.trim().length > 0;
 
   const send = async (reply: SecretRequestReply) => {
@@ -144,6 +179,7 @@ function PendingSecretRequestForm(props: {
       return;
     }
     setValues(typed);
+    if (reply.type === "save-to-vault") setSaveToVault(false);
     if (!isAtomCommandInterrupted(result)) {
       pipe(
         squashAtomCommandFailure(result),
@@ -156,7 +192,7 @@ function PendingSecretRequestForm(props: {
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (source === null) {
-      void send({ type: "save", values });
+      if (typedReply !== null) void send(typedReply);
     } else if (secretRequestReference(source, reference) === undefined) {
       setError(source.invalidReferenceMessage);
     } else {
@@ -181,7 +217,7 @@ function PendingSecretRequestForm(props: {
   );
   const saveButton = (
     <Button type="submit" disabled={submitting || !canSave}>
-      <T>Save securely</T>
+      {vaultMode ? gt("Save to vault and use") : <T>Save securely</T>}
     </Button>
   );
 
@@ -232,6 +268,29 @@ function PendingSecretRequestForm(props: {
           ) : null}
         </div>
       ) : null}
+      {availableBookmarks.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-muted-foreground">
+            <T>Saved project references</T>
+          </span>
+          {availableBookmarks.map(([id, bookmark]) => (
+            <Button
+              key={id}
+              type="button"
+              size="xs"
+              variant="outline"
+              disabled={submitting}
+              onClick={() => {
+                setSourceId(bookmark.reference.provider);
+                setReference(bookmark.reference.reference);
+                setError(null);
+              }}
+            >
+              {bookmark.label}
+            </Button>
+          ))}
+        </div>
+      ) : null}
       {multiple ? (
         <div className="flex min-w-0 flex-col gap-2.5">{inputs.map(field)}</div>
       ) : (
@@ -274,6 +333,67 @@ function PendingSecretRequestForm(props: {
           {saveButton}
         </div>
       )}
+      {vaultModeAvailable ? (
+        <div className="flex flex-col gap-2">
+          <label className="flex items-center gap-2 text-xs">
+            <Checkbox
+              checked={saveToVault}
+              aria-labelledby={vaultCheckLabelId}
+              disabled={submitting}
+              onCheckedChange={(checked) => setSaveToVault(checked === true)}
+            />
+            <span id={vaultCheckLabelId}>
+              <T>Also save in 1Password for this project</T>
+            </span>
+          </label>
+          {vaultMode ? (
+            <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
+              <Select
+                value={vaultProvider}
+                onValueChange={(id) =>
+                  setVaultProvider(sources.find((entry) => entry.id === id)?.id ?? null)
+                }
+              >
+                <SelectTrigger size="sm" aria-label={gt("Secret provider")} disabled={submitting}>
+                  <SelectValue>
+                    {sources.find((entry) => entry.id === vaultProvider)?.label ??
+                      gt("Select a secret provider")}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup>
+                  {sources.map((entry) => (
+                    <SelectItem key={entry.id} value={entry.id}>
+                      {entry.label}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+              <Input
+                aria-label={gt("Vault name or ID")}
+                placeholder={gt("Vault name or ID")}
+                value={vault}
+                disabled={submitting}
+                maxLength={120}
+                onChange={(event) => setVault(event.currentTarget.value)}
+              />
+              <Input
+                aria-label={gt("Credential name")}
+                placeholder={gt("Credential name")}
+                value={vaultLabel}
+                disabled={submitting}
+                maxLength={100}
+                onChange={(event) => setVaultLabel(event.currentTarget.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                <T>
+                  This creates a new item in the chosen vault. Future requests can use its saved
+                  reference with your approval.
+                </T>
+              </p>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {error !== null ? (
         <p id={errorId} role="alert" className="text-xs text-destructive">
           {error}

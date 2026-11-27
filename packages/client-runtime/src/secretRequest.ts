@@ -254,6 +254,13 @@ export const secretRequestValue = (values: Readonly<Record<string, string>>, key
 export type SecretRequestReply =
   /** Keyed by `SecretRequestInput.key`. */
   | { readonly type: "save"; readonly values: Readonly<Record<string, string>> }
+  | {
+      readonly type: "save-to-vault";
+      readonly values: Readonly<Record<string, string>>;
+      readonly provider: SecretProviderId;
+      readonly vault: string;
+      readonly label: string;
+    }
   /** Single-value cards only: the server reads it through `source`. */
   | { readonly type: "reference"; readonly source: SecretRequestSource; readonly reference: string }
   | { readonly type: "decline" };
@@ -276,6 +283,29 @@ export function secretRequestAnswerInput(
     (input) => [input.key, secretRequestValue(answer.values, input.key).trim()] as const,
   );
   if (entries.some(([, value]) => value.length === 0)) return null;
+  if (answer.type === "save-to-vault") {
+    const vault = answer.vault.trim();
+    const label = answer.label.trim();
+    if (
+      item.fields !== undefined ||
+      !vault ||
+      vault.length > 120 ||
+      /[\r\n]/.test(vault) ||
+      !label ||
+      label.length > 100
+    )
+      return null;
+    return {
+      ...base,
+      answer: {
+        type: "save-to-vault",
+        secret: entries[0]?.[1] ?? "",
+        provider: answer.provider,
+        vault,
+        label,
+      },
+    };
+  }
   if (item.fields === undefined) {
     return { ...base, answer: { type: "save", secret: entries[0]?.[1] ?? "" } };
   }

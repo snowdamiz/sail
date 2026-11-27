@@ -152,6 +152,33 @@ describe("secretRequestSources", () => {
     expect(secretRequestSources({ secretRequestReferences: true }, {})).toEqual([]);
   });
 
+  it("asks for explicit vault and provider choices before sending a new item save", () => {
+    const item = {
+      id: TurnItemId.make("item-1"),
+      threadId: ThreadId.make("thread-1"),
+      label: "Test key",
+    };
+    const reply = {
+      type: "save-to-vault" as const,
+      values: { "": "synthetic-value" },
+      provider: onePassword,
+      vault: "Project vault",
+      label: "Test key",
+    };
+    expect(secretRequestAnswerInput(item, { ...reply, vault: "" })).toBeNull();
+    expect(secretRequestAnswerInput(item, reply)?.answer).toEqual({
+      type: "save-to-vault",
+      secret: "synthetic-value",
+      provider: onePassword,
+      vault: "Project vault",
+      label: "Test key",
+    });
+    expect(secretRequestAnswerInput(item, { type: "save", values: reply.values })?.answer).toEqual({
+      type: "save",
+      secret: "synthetic-value",
+    });
+  });
+
   it("answers with a reference only in the provider's syntax", () => {
     const [source] = secretRequestSources({ secretRequestReferences: true }, providers);
     if (source === undefined) throw new Error("expected a source");

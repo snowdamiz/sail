@@ -9,7 +9,11 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
-import type { SecretProviderDriver, SecretProviderDriverServices } from "./driver.ts";
+import type {
+  SecretProviderDriver,
+  SecretProviderDriverServices,
+  SecretProviderItemInput,
+} from "./driver.ts";
 
 export class SecretResolver extends Context.Service<
   SecretResolver,
@@ -27,6 +31,10 @@ export class SecretResolver extends Context.Service<
     readonly invalidate: (references?: ReadonlyArray<SecretReference>) => Effect.Effect<void>;
     /** The name the user gave a secret provider, or its id when it has none or is gone. */
     readonly label: (provider: SecretReference["provider"]) => Effect.Effect<string>;
+    readonly saveItem?: (
+      provider: SecretReference["provider"],
+      input: SecretProviderItemInput,
+    ) => Effect.Effect<SecretReference | undefined>;
   }
 >()("@t3tools/secret-provider-core/server/SecretResolver") {}
 
@@ -163,7 +171,23 @@ export const make = Effect.fn("SecretResolver.make")(function* (options: {
       ),
     );
 
-  return SecretResolver.of({ read, invalidate, label });
+  const saveItem = Effect.fn("SecretResolver.saveItem")(function* (
+    providerId: SecretReference["provider"],
+    input: SecretProviderItemInput,
+  ) {
+    const providers = yield* options.secretProviders;
+    const provider = providers[providerId];
+    const entry = provider === undefined ? undefined : driversByKind.get(provider.kind);
+    if (provider === undefined || entry?.driver.saveItem === undefined) return undefined;
+    const config = entry.decodeConfig(provider.config);
+    if (Option.isNone(config)) return undefined;
+    const reference = yield* entry.driver.saveItem(config.value, input);
+    return reference !== undefined && entry.driver.definition.isReference(reference)
+      ? { provider: providerId, reference }
+      : undefined;
+  }, Effect.provideContext(context));
+
+  return SecretResolver.of({ read, invalidate, label, saveItem });
 });
 
 export const layer = (options: Parameters<typeof make>[0]) =>

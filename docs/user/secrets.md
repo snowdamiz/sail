@@ -63,3 +63,11 @@ The value never appears in the conversation. Most requests keep it from the agen
 passes it to the tool that needs it. When an agent has to run a command with the value, the card
 says so instead: the value goes into a private file that the agent's commands can read for about 24
 hours.
+
+## Reuse a project credential
+
+Select a project checkout in **Settings → Secrets**. Under **Project credential references**, save a name and a reference to an existing vault item. The password manager still holds the value. When an agent requests one value for that project, choose a saved reference and approve the request. Remove a reference in Settings to stop offering it on future cards; this does not delete the vault item.
+
+For a single-value private request, you can also choose **Also save in 1Password for this project**. Select a configured account, enter the vault name or ID and an item name, then select **Save to vault and use**. The account needs write access to that vault. Sail creates a new vault item, saves its reference for this project checkout, and answers the request. Ordinary answers do not create vault items. If a save cannot be confirmed, check your vault before trying again or answer without saving to it.
+
+References belong to the project checkout on this environment. A fresh Boat still needs its own authorized connection to 1Password. Sail does not copy the account's authentication token to other machines or automatically answer credential requests.

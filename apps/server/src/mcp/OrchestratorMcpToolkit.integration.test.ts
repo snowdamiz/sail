@@ -283,6 +283,7 @@ describe("orchestrator MCP toolkit", () => {
         ),
         Layer.provideMerge(
           SecretRequests.layer.pipe(
+            Layer.provide(ServerSettings.layerTest()),
             Layer.provide(layerMemorySecretStore),
             Layer.provide(Layer.mock(SecretResolver.SecretResolver)({})),
             Layer.provide(layerOrchestration),

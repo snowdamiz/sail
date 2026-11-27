@@ -405,6 +405,7 @@ export function applyServerSettingsPatch(
     usageLimitSources: usageLimitSourcesPatch,
     textGenerators: textGeneratorsPatch,
     secretProviders: secretProvidersPatch,
+    projectCredentialBookmarks: projectCredentialBookmarksPatch,
     sourceControlHosts: sourceControlHostsPatch,
     usagePriceOverrides: usagePriceOverridesPatch,
     usageModelAliases: usageModelAliasesPatch,
@@ -415,6 +416,31 @@ export function applyServerSettingsPatch(
     projectScriptOverrides: _legacyScripts,
     ...patchForMerge
   } = patch;
+  const nextSecretProviders =
+    secretProvidersPatch === undefined
+      ? current.secretProviders
+      : mergeSettingsEntries(current.secretProviders, secretProvidersPatch);
+  const projectCredentialBookmarks = new Map(Object.entries(current.projectCredentialBookmarks));
+  for (const [projectId, entries] of Object.entries(projectCredentialBookmarksPatch ?? {})) {
+    projectCredentialBookmarks.set(
+      projectId,
+      mergeSettingsEntries(projectCredentialBookmarks.get(projectId) ?? {}, entries),
+    );
+  }
+  const retainedCredentialBookmarks = Object.fromEntries(
+    Array.from(
+      projectCredentialBookmarks,
+      ([projectId, entries]) =>
+        [
+          projectId,
+          Object.fromEntries(
+            Object.entries(entries).filter(([, bookmark]) =>
+              Object.hasOwn(nextSecretProviders, bookmark.reference.provider),
+            ),
+          ),
+        ] as const,
+    ).filter(([, entries]) => Object.keys(entries).length > 0),
+  );
   const currentBackgroundActivity = normalizeServerBackgroundActivitySettings(current);
   const backgroundActivityPatch =
     backgroundActivityProfile !== undefined
@@ -647,9 +673,8 @@ export function applyServerSettingsPatch(
     ...(textGeneratorsPatch !== undefined
       ? { textGenerators: mergeSettingsEntries(current.textGenerators, textGeneratorsPatch) }
       : {}),
-    ...(secretProvidersPatch !== undefined
-      ? { secretProviders: mergeSettingsEntries(current.secretProviders, secretProvidersPatch) }
-      : {}),
+    secretProviders: nextSecretProviders,
+    projectCredentialBookmarks: retainedCredentialBookmarks,
     ...(usagePriceOverridesPatch !== undefined
       ? {
           usagePriceOverrides: mergeSettingsEntries(

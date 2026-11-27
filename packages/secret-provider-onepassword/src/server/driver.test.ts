@@ -76,6 +76,41 @@ const injectFrom =
   };
 
 describe("1Password driver", () => {
+  it.effect("creates an explicitly supplied item from an owner-only temporary template", () => {
+    let path: string | undefined;
+    const fixture = fakeOp((args) => {
+      path = args.find((arg) => arg.startsWith("--template="))?.slice("--template=".length);
+      if (path === undefined) throw new Error("Expected template");
+      assert.equal(NodeFS.statSync(path).mode & 0o777, 0o600);
+      assert.deepInclude(JSON.parse(NodeFS.readFileSync(path, "utf8")), {
+        category: "PASSWORD",
+        title: "Test key",
+      });
+      assert.equal(
+        JSON.parse(NodeFS.readFileSync(path, "utf8")).fields[0].value,
+        "synthetic-value",
+      );
+      assert.isFalse(args.some((arg) => arg.includes("synthetic-value")));
+      return {
+        stdout: JSON.stringify({
+          id: "item-id",
+          vault: { id: "vault-id" },
+          fields: [{ value: "synthetic-value" }],
+        }),
+      };
+    });
+    return Effect.gen(function* () {
+      if (!driver.saveItem) throw new Error("Expected an item writer");
+      const reference = yield* driver.saveItem(
+        { account },
+        { vault: "Test vault", label: "Test key", value: "synthetic-value" },
+      );
+      assert.equal(reference, "op://vault-id/item-id/password");
+      assert.isDefined(path);
+      assert.isFalse(path !== undefined && NodeFS.existsSync(path));
+    }).pipe(Effect.provide(fixture.layer));
+  });
+
   it.effect("reads one reference from the account", () => {
     const op = fakeOp(() => ({ stdout: "sk-live" }));
     return Effect.gen(function* () {

@@ -835,6 +835,18 @@ it.effect("answering a secret request with a reference needs provider management
         Effect.flip,
       ),
     ).toMatchObject({ requiredPermission: AuthProvidersManageScope });
+    const vaultSave = {
+      type: "save-to-vault" as const,
+      provider: SecretProviderId.make("personal"),
+      vault: "project",
+      label: "Test key",
+      secret: "synthetic-value",
+    };
+    expect(
+      yield* operate[WS_METHODS.secretsAnswerRequest]({ ...request, answer: vaultSave }).pipe(
+        Effect.flip,
+      ),
+    ).toMatchObject({ requiredPermission: AuthProvidersManageScope });
     expect(handled).toEqual([]);
     // Typed values stay with the scope that runs the thread, whatever the fields are called.
     yield* operate[WS_METHODS.secretsAnswerRequest]({
