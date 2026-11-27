@@ -1,3 +1,4 @@
+import { useGT } from "gt-react";
 import type { MachineState, MachineView, Size } from "./types";
 
 const TAGS: Record<MachineState, string> = {
@@ -79,6 +80,26 @@ export function primaryAction(m: MachineView, paired: boolean): Action | null {
     default:
       return null; // transitional: the boat + detail line say what's happening
   }
+}
+
+export function useMachineActionLabel() {
+  const gt = useGT();
+  return (action: MenuItem) => {
+    switch (action.label) {
+      case ACTIONS.pair.label:
+        return gt("Add to Sail");
+      case ACTIONS.repair.label:
+        return gt("Add to Sail again");
+      case ACTIONS.open.label:
+        return gt("Open last thread in Sail");
+      case ACTIONS.wake.label:
+        return gt("Wake now");
+      case ACTIONS.retry.label:
+        return gt("Try waking");
+      default:
+        return action.label;
+    }
+  };
 }
 
 /** "Stay awake for…" choices, in minutes. */

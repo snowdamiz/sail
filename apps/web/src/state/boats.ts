@@ -4,7 +4,9 @@ import { Atom } from "effect/reactivity";
 
 import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
+import { clientHostEnvironmentAtom } from "./clientHostEnvironment";
 import { clientPreferencesServerAtom } from "./clientPreferences";
+import { peerLinkEnvironment } from "./peerLinks";
 import { localEnvironmentIdAtom } from "./primaryEnvironment";
 
 export const boatsEnvironment = createBoatsEnvironmentAtoms(connectionAtomRuntime);
@@ -35,8 +37,12 @@ export const boatCommandsAllowedAtom = Atom.family((environmentId: EnvironmentId
   Atom.make(
     (get): ReadonlySet<BoatCommand> =>
       new Set(
-        BOAT_COMMANDS.filter((command) =>
-          get(boatsEnvironment.invoke.permissionAtom(environmentId, { command })),
+        BOAT_COMMANDS.filter(
+          (command) =>
+            get(boatsEnvironment.invoke.permissionAtom(environmentId, { command })) &&
+            (command !== "pair_machine" ||
+              get(clientHostEnvironmentAtom(environmentId)) ||
+              get(peerLinkEnvironment.pairClient.permissionAtom(environmentId))),
         ),
       ),
   ),

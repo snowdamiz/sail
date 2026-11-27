@@ -1,6 +1,6 @@
 import { useGT } from "gt-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { offered, useBoatAccess } from "../access";
+import { useBoatAccess } from "../access";
 import type { MachineView, Size } from "../types";
 import {
   ACTIONS,
@@ -10,6 +10,7 @@ import {
   primaryAction,
   seedOf,
   signInTo,
+  useMachineActionLabel,
   type Action,
   type MenuItem,
 } from "../machine";
@@ -47,10 +48,12 @@ export function MachineRow({
   const gt = useGT();
   const key = machineKey(m);
   const access = useBoatAccess();
+  const actionLabel = useMachineActionLabel();
   const paired = access.isPaired(m.environmentId);
-  const primary = offered(access, primaryAction(m, paired));
+  const primary: Action | null =
+    !access.onHost && paired && m.state === "asleep" ? ACTIONS.wake : primaryAction(m, paired);
   const detail = useDetail(m);
-  const extra = menuActions(m, sizes, paired).filter((a) => "kind" in a || offered(access, a));
+  const extra = menuActions(m, sizes, paired).filter((a) => a !== primary);
   const [armed, arm] = useArmed(); // two-step confirm for the primary "Remove"
   // "Add a project…" picks from Sail's projects in the details view
   const menuAction = (a: MenuItem) => ("kind" in a ? onOpen?.(true) : onAction(a));
@@ -101,7 +104,7 @@ export function MachineRow({
             disabled={!access.can(primary.cmd)}
             onClick={runPrimary}
           >
-            {armed ? "Confirm" : primary.label}
+            {armed ? "Confirm" : actionLabel(primary)}
           </button>
         ) : null}
         {m.id && !pending ? <RowMenu machine={m} actions={extra} onAction={menuAction} /> : null}
@@ -170,6 +173,7 @@ function RowMenu({
   onAction: (a: MenuItem) => void;
 }) {
   const access = useBoatAccess();
+  const actionLabel = useMachineActionLabel();
   const [open, setOpen] = useState(false);
   const [confirm, setConfirm] = useState(false);
   // anchored to the button's edge, opening toward the side with more room; scrolls if neither fits
@@ -269,7 +273,7 @@ function RowMenu({
               disabled={!access.can("kind" in a ? "add_project" : a.cmd)}
               onClick={() => choose(a)}
             >
-              {a.label}
+              {actionLabel(a)}
             </button>
           ))}
           <div className="menu-sep" />

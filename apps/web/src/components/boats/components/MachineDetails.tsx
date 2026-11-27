@@ -1,6 +1,6 @@
 import { useGT } from "gt-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { offered, useBoatAccess } from "../access";
+import { useBoatAccess } from "../access";
 import { useMachineDetails } from "../api";
 import type { MachineDetails as Details, LocalProject, MachineView, Size } from "../types";
 import {
@@ -21,6 +21,7 @@ import {
   signInTo,
   sizeOf,
   timeLeft,
+  useMachineActionLabel,
   type Action,
 } from "../machine";
 import { AgentName } from "./AgentLogos";
@@ -67,15 +68,12 @@ export function MachineDetails({
   const busy = !!pending;
   const gone = m.state === "missing";
   const access = useBoatAccess();
+  const actionLabel = useMachineActionLabel();
   const paired = access.isPaired(m.environmentId);
-  const primary = offered<Action>(
-    access,
-    primaryAction(m, paired) ?? (paired ? ACTIONS.open : ACTIONS.pair),
-  );
+  const primary: Action = primaryAction(m, paired) ?? (paired ? ACTIONS.open : ACTIONS.pair);
   const [primaryArmed, armPrimary] = useArmed();
 
   const runPrimary = () => {
-    if (!primary) return;
     if (primary.cmd === "delete_machine") armPrimary(() => onAction(primary));
     else onAction(primary);
   };
@@ -112,35 +110,27 @@ export function MachineDetails({
           )}
         </p>
       </div>
-      {primary ? (
-        <div className="view-foot details-foot">
-          <button
-            className={`btn btn-lg ${primaryArmed ? "btn-danger" : primary.solid ? "btn-solid" : "btn-outline"}`}
-            disabled={busy || !access.can(primary.cmd)}
-            aria-busy={busy}
-            onClick={runPrimary}
-          >
-            {pending ? (
-              <>
-                <Dots /> {pending}
-              </>
-            ) : primaryArmed ? (
-              "Confirm"
-            ) : (
-              <>
-                {primary.label}
-                {primary.cmd === "open_machine" ? <Icon name="open" size={10} /> : null}
-              </>
-            )}
-          </button>
-        </div>
-      ) : pending ? (
-        <div className="view-foot details-foot">
-          <p className="caption">
-            <Dots /> {pending}
-          </p>
-        </div>
-      ) : null}
+      <div className="view-foot details-foot">
+        <button
+          className={`btn btn-lg ${primaryArmed ? "btn-danger" : primary.solid ? "btn-solid" : "btn-outline"}`}
+          disabled={busy || !access.can(primary.cmd)}
+          aria-busy={busy}
+          onClick={runPrimary}
+        >
+          {pending ? (
+            <>
+              <Dots /> {pending}
+            </>
+          ) : primaryArmed ? (
+            "Confirm"
+          ) : (
+            <>
+              {actionLabel(primary)}
+              {primary.cmd === "open_machine" ? <Icon name="open" size={10} /> : null}
+            </>
+          )}
+        </button>
+      </div>
     </div>
   );
 }
@@ -227,6 +217,7 @@ function Power({
   onAction: (a: Action) => void;
 }) {
   const power = powerAction(m);
+  const actionLabel = useMachineActionLabel();
   const access = useBoatAccess();
   const canKeepAwake = access.can("keep_awake");
   // optimistic, so the switch moves on click; the next state is the source of truth
@@ -265,7 +256,7 @@ function Power({
           disabled={busy || !power || !access.can(power.cmd)}
           onClick={() => power && onAction(power)}
         >
-          {(power ?? ACTIONS.sleep).label}
+          {actionLabel(power ?? ACTIONS.sleep)}
         </button>
         {on ? <StayAwake m={m} busy={busy} onAction={onAction} /> : null}
       </div>

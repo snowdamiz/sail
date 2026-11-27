@@ -31,7 +31,9 @@ const state = vi.hoisted(() => ({
   replies: {} as Partial<Record<string, unknown>>,
   invoked: [] as BoatInvokeInput[],
   invokedOn: [] as EnvironmentId[],
+  retryNow: vi.fn(),
   openExternal: vi.fn(async (_url: string) => undefined),
+  pairFromLink: vi.fn(async (_url: string) => undefined),
 }));
 
 vi.mock(import("../../state/boats"), async (original) => ({
@@ -75,6 +77,10 @@ vi.mock(import("../../connection/catalog"), async (original) => {
     environmentCatalog: {
       ...environmentCatalog,
       catalogValueAtom,
+      retryNow: {
+        ...environmentCatalog.retryNow,
+        run: (_registry, environmentId) => Effect.sync(() => state.retryNow(environmentId)),
+      },
       setEnabled: {
         ...environmentCatalog.setEnabled,
         run: (registry, { environmentId, enabled }) =>
@@ -93,6 +99,11 @@ vi.mock(import("../../connection/catalog"), async (original) => {
 vi.mock(import("../../localApi"), async (original) => ({
   ...(await original()),
   readLocalApi: (() => ({ shell: { openExternal: state.openExternal } })) as never,
+}));
+
+vi.mock(import("../desktop/DesktopWebLinkCoordinator"), async (original) => ({
+  ...(await original()),
+  usePairFromLink: () => state.pairFromLink,
 }));
 
 import { SailBoatsApp } from "./SailBoatsApp";
@@ -203,6 +214,8 @@ function setup(input: {
   state.invoked = [];
   state.invokedOn = [];
   state.openExternal.mockClear();
+  state.pairFromLink.mockClear();
+  state.retryNow.mockClear();
 }
 
 function mount() {
@@ -453,17 +466,28 @@ it("disables setup actions for a client without the maintain grant", async () =>
   await expect.element(screen.getByRole("button", { name: "Install Boat CLI" })).toBeDisabled();
 });
 
-it("hides Open and Add to Sail for a client that is not on the server's host", async () => {
-  setup({
-    state: uiState({
-      machines: [
-        machine({ id: "m-1", name: "skiff", paired: false }),
-        machine({ id: "m-2", name: "dory", paired: true, environmentId: DORY_ENVIRONMENT }),
-      ],
-    }),
-    onHost: false,
-    machineEnvironment: DORY_ENVIRONMENT,
+it("lets a remote client add, wake, and open Boat machines", async () => {
+  const skiff = EnvironmentId.make("skiff-env");
+  const remoteState = uiState({
+    machines: [
+      machine({ id: "m-1", name: "skiff", paired: false, environmentId: skiff }),
+      machine({
+        id: "m-2",
+        name: "dory",
+        state: "asleep",
+        paired: true,
+        environmentId: DORY_ENVIRONMENT,
+      }),
+    ],
   });
+  setup({
+    state: uiState({}),
+    machineEnvironment: DORY_ENVIRONMENT,
+    servers: [{ environmentId: FLY_ENVIRONMENT, label: "Fly", state: remoteState }],
+  });
+  const pairingUrl = "https://skiff.boat.example/pair#token=fixture";
+  state.replies.pair_machine = { data: null, openUrl: pairingUrl };
+  state.replies.latest_thread = { data: "thread-1" };
   state.replies.get_machine_details = {
     data: {
       id: "m-2",
@@ -478,21 +502,31 @@ it("hides Open and Add to Sail for a client that is not on the server's host", a
   };
   await using screen = await mount();
 
+  await userEvent.click(screen.getByRole("combobox", { name: "Boats server" }));
+  await userEvent.click(page.getByRole("option", { name: "Fly" }));
   await expect.element(screen.getByRole("button", { name: "Details for skiff" })).toBeVisible();
-  await expect.element(screen.getByRole("button", { name: "Add to Sail" })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Add to Sail", exact: true }));
+  await vi.waitFor(() => expect(state.pairFromLink).toHaveBeenCalledWith(pairingUrl, skiff));
+  expect(state.openExternal).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: "Wake now" }));
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({ command: "wake_machine", args: { id: "m-2" } }),
+  );
+  await vi.waitFor(() => expect(state.retryNow).toHaveBeenCalledWith(DORY_ENVIRONMENT));
   await userEvent.click(screen.getByRole("button", { name: "More for dory" }));
-  await expect.element(screen.getByRole("menuitem", { name: "Sleep now" })).toBeVisible();
-  await expect
-    .element(screen.getByRole("menuitem", { name: "Add to Sail again" }))
-    .not.toBeInTheDocument();
+  await expect.element(screen.getByRole("menuitem", { name: "Add to Sail again" })).toBeVisible();
   await userEvent.keyboard("{Escape}");
 
   await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
   await expect.element(screen.getByText("Sail 1.0.0")).toBeVisible();
-  await expect
-    .element(screen.getByRole("button", { name: /Open .*in Sail/ }))
-    .not.toBeInTheDocument();
-  expect(state.invoked.map((input) => input.command)).not.toContain("latest_thread");
+  await userEvent.click(screen.getByRole("button", { name: "Open last thread in Sail" }));
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({
+      command: "open_machine",
+      args: { id: "m-2", thread: "thread-1" },
+    }),
+  );
+  expect(new Set(state.invokedOn)).toEqual(new Set([FLY_ENVIRONMENT]));
 });
 
 it("restarts a failed daemon from Retry without reloading the page", async () => {

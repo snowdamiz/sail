@@ -12931,6 +12931,12 @@
   "1ec7a2c612524967": "The sign-in request failed. Try again.",
   "64c07d2cd0e78ac4": "Code sent. If sign-in stalls, try another code.",
   "334031c5b02772d0": "Cancelling sign-in…",
+  "cc6bbdb04e0b2428": "Waking…",
+  "131380a6faac90a7": "Accept \"{name}\" to pair it with Sail",
+  "0b7dce533f3cd22e": "Add to Sail",
+  "a14cfd2c600f9cf5": "Add to Sail again",
+  "567966179e5aecce": "Open last thread in Sail",
+  "5178f00af5c11b61": "Try waking",
   "d6c672884cc6a076": "Boats server",
   "82e4ac5a54ebd8d3": "Select a server",
   "8e5ef13e0ab5ed30": "Connect to the server that manages your Boat machines, then choose it here."

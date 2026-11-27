@@ -2,7 +2,7 @@
 //! can work on it (`delegate_task`, the thread tools) with nothing to set up. The link goes
 //! through the proxy, like Sail itself: a linked machine always answers and wakes when used.
 
-use super::MachineRuntime;
+use super::{MachineRuntime, Power};
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::json;
@@ -20,6 +20,10 @@ impl MachineRuntime {
     /// Links the running machine, unless it is linked for a while yet or the user keeps linked
     /// environments off in Sail.
     pub async fn ensure_linked(&self) -> Result<()> {
+        let _guard = self.waking.lock().await;
+        if self.power() != Power::Running {
+            return Ok(());
+        }
         let t3 = &self.shared.t3;
         if !t3.links_enabled() {
             return Ok(());
