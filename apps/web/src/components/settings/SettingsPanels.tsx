@@ -1,4 +1,8 @@
-import { clientPreferencesServerAtom } from "~/state/clientPreferences";
+import {
+  clientPreferencesServerAtom,
+  clientPreferencesServerChoicesAtom,
+  pinClientPreferencesServer,
+} from "~/state/clientPreferences";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { m as resolveMessage } from "~/i18n/messages";
 import { useAtomValue } from "@effect/atom-react";
@@ -9,6 +13,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import {
   type DesktopUpdateChannel,
+  type EnvironmentId,
   IDLE_COMPACTION_MODES,
   type IdleCompactionMode,
   globalIdleCompaction,
@@ -849,6 +854,7 @@ export function GeneralSettingsPanel() {
   const setting = useSearchableSetting();
   const settings = useScopedSettings();
   const preferenceServer = useAtomValue(clientPreferencesServerAtom);
+  const preferenceServers = useAtomValue(clientPreferencesServerChoicesAtom);
   const updateSettings = useUpdateScopedSettings();
   const lastEnabledProjectGroupingMode = useRef<SidebarProjectGroupingMode>(
     readLastEnabledProjectGroupingMode(),
@@ -1137,6 +1143,33 @@ export function GeneralSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection id="display" title={gt("Display")}>
+        {preferenceServer === null && preferenceServers.length > 0 ? (
+          <SettingsRow
+            title={gt("Main server")}
+            control={
+              <Select<EnvironmentId>
+                value={null}
+                onValueChange={(environmentId) => {
+                  if (environmentId === null) return;
+                  void pinClientPreferencesServer(environmentId).catch(() =>
+                    toastManager.add({ type: "error", title: gt("Setting not saved") }),
+                  );
+                }}
+              >
+                <SelectTrigger aria-label={gt("Main server")}>
+                  <SelectValue placeholder={gt("Select")} />
+                </SelectTrigger>
+                <SelectPopup>
+                  {preferenceServers.map(({ environmentId, label }) => (
+                    <SelectItem key={environmentId} value={environmentId}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            }
+          />
+        ) : null}
         <SettingsRow
           {...setting("sync-client-preferences")}
           control={

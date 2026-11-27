@@ -99,6 +99,7 @@ interface ClientPreferencesSync {
   readonly connected: boolean;
   readonly sessionGeneration: number;
   readonly pinServer: boolean;
+  readonly removedMainServerId: EnvironmentId | undefined;
   readonly write: (
     environmentId: EnvironmentId,
     write: ClientPreferencesWrite,
@@ -125,10 +126,16 @@ function retryClientPreferencesWrite(): void {
   preferencesRetryMs = Math.min(preferencesRetryMs * 2, 30_000);
 }
 
-export function observeClientPreferences(next: ClientPreferencesSync): void {
+export function observeClientPreferences(next: ClientPreferencesSync | undefined): void {
+  if (next === undefined) {
+    preferencesSync = undefined;
+    resetClientPreferencesRetry();
+    return;
+  }
   if (
     preferencesSync?.connected === next.connected &&
     preferencesSync.pinServer === next.pinServer &&
+    preferencesSync.removedMainServerId === next.removedMainServerId &&
     preferencesSync.sessionGeneration === next.sessionGeneration &&
     Equal.equals(preferencesSync?.source, next.source)
   )
@@ -145,10 +152,25 @@ export function observeClientPreferences(next: ClientPreferencesSync): void {
   if (clientSettingsHydrationStatus === "ready") scheduleClientPreferencesSync();
 }
 
+function preferencesSyncForSettings(settings: ClientSettings): ClientPreferencesSync | undefined {
+  const sync = preferencesSync;
+  const pinned = settings.clientPreferencesMainServerId;
+  return sync?.pinServer &&
+    pinned !== undefined &&
+    pinned !== sync.source.environmentId &&
+    pinned !== sync.removedMainServerId
+    ? undefined
+    : sync;
+}
+
 function currentClientPreferences(settings: ClientSettings): ClientSettings {
-  return preferencesSync === undefined
-    ? settings
-    : reconcileClientPreferences(settings, preferencesSync.source);
+  const sync = preferencesSyncForSettings(settings);
+  if (sync === undefined) return settings;
+  const next = reconcileClientPreferences(settings, sync.source);
+  return sync.removedMainServerId !== undefined &&
+    settings.clientPreferencesMainServerId === sync.removedMainServerId
+    ? { ...next, clientPreferencesMainServerId: null }
+    : next;
 }
 
 function enqueueClientPreferencesPersistence<A>(work: () => Promise<A>): Promise<A> {
@@ -170,9 +192,9 @@ function enqueueClientPreferencesPersistence<A>(work: () => Promise<A>): Promise
 
 function scheduleClientPreferencesSync(): void {
   void enqueueClientPreferencesPersistence(async () => {
-    const sync = preferencesSync;
-    if (sync === undefined) return;
     const previous = getClientSettingsSnapshot();
+    const sync = preferencesSyncForSettings(previous);
+    if (sync === undefined) return;
     let next = currentClientPreferences(previous);
     const environmentId = sync.source.environmentId;
     if (
@@ -184,6 +206,7 @@ function scheduleClientPreferencesSync(): void {
     }
     const canWrite =
       environmentId !== null &&
+      next.clientPreferencesCache?.environmentId === environmentId &&
       sync.source.snapshot !== undefined &&
       sync.connected &&
       sync.source.access === "writable";
@@ -211,7 +234,7 @@ function scheduleClientPreferencesSync(): void {
           if (preferencesWriteInFlight !== sending) return;
           preferencesWriteInFlight = undefined;
           const current = getClientSettingsSnapshot();
-          if (preferencesSync?.source.environmentId !== environmentId) {
+          if (preferencesSyncForSettings(current)?.source.environmentId !== environmentId) {
             scheduleClientPreferencesSync();
             return;
           }
@@ -414,7 +437,11 @@ export function persistClientSettingsPatch(
       !Object.entries(patch).every(([key, value]) => current[key as keyof ClientSettings] === value)
     ) {
       replaceClientSettingsSnapshot(
-        editClientPreferences(current, { ...current, ...patch }, preferencesSync?.source),
+        editClientPreferences(
+          current,
+          { ...current, ...patch },
+          preferencesSyncForSettings(current)?.source,
+        ),
       );
     }
     await persist(getClientSettingsSnapshot());
@@ -445,7 +472,11 @@ export async function persistClientSettingsUpdate(
     for (;;) {
       const previous = getClientSettingsSnapshot();
       const current = currentClientPreferences(previous);
-      const next = editClientPreferences(current, update(current), preferencesSync?.source);
+      const next = editClientPreferences(
+        current,
+        update(current),
+        preferencesSyncForSettings(current)?.source,
+      );
       await persist(next);
       if (getClientSettingsSnapshot() === previous) {
         replaceClientSettingsSnapshot(next);

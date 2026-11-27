@@ -5,7 +5,7 @@ import { selectClientPreferencesServer } from "@t3tools/client-runtime/state/sha
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { AVAILABLE_CONNECTION_STATE } from "@t3tools/client-runtime/connection";
-import { sessionDeniesScope } from "@t3tools/client-runtime/state/session";
+import * as Option from "effect/Option";
 
 import { environmentCatalog } from "../connection/catalog";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
@@ -27,11 +27,35 @@ import { environmentSession, sessionHasScope } from "./session";
 
 const preferenceBindingAtom = Atom.make<{
   readonly hydrated: boolean;
-  readonly pinned: EnvironmentId | undefined;
+  readonly pinned: EnvironmentId | null | undefined;
 }>({ hydrated: false, pinned: undefined }).pipe(Atom.keepAlive);
 
+const savedPreferenceServersAtom = Atom.make((get) =>
+  Array.from(get(environmentCatalog.catalogValueAtom).entries).flatMap(([environmentId, entry]) =>
+    isDesktopLocalConnectionTarget(entry.target)
+      ? []
+      : [{ environmentId, label: entry.target.label }],
+  ),
+);
+
+const canChooseMainServer = () => (isElectron ? isLocalEnvironmentDisabled() : isHostedStaticApp());
+
+export const clientPreferencesServerChoicesAtom = Atom.make((get) =>
+  canChooseMainServer() ? get(savedPreferenceServersAtom) : [],
+);
+
+const observedPreferencePinAtom = Atom.make((get) => {
+  const { pinned } = get(preferenceBindingAtom);
+  const observed = Option.getOrUndefined(get.self<EnvironmentId | undefined>());
+  if (pinned == null) return undefined;
+  return observed === pinned ||
+    get(savedPreferenceServersAtom).some(({ environmentId }) => environmentId === pinned)
+    ? pinned
+    : undefined;
+}).pipe(Atom.keepAlive);
+
 export const clientPreferencesServerAtom = Atom.make((get) => {
-  if (isElectron && !isLocalEnvironmentDisabled()) return null;
+  if (isElectron && !canChooseMainServer()) return null;
   const binding = get(preferenceBindingAtom);
   if (!binding.hydrated) return undefined;
   const catalog = get(environmentCatalog.catalogValueAtom);
@@ -42,10 +66,9 @@ export const clientPreferencesServerAtom = Atom.make((get) => {
     ready: catalog.isReady,
     primary,
     pinned: binding.pinned,
+    pinWasRegistered: get(observedPreferencePinAtom) !== undefined,
     inferSingle: isHostedStaticApp() && !isElectron,
-    candidates: Array.from(catalog.entries)
-      .filter(([, entry]) => !isDesktopLocalConnectionTarget(entry.target))
-      .map(([environmentId]) => environmentId),
+    candidates: get(savedPreferenceServersAtom).map(({ environmentId }) => environmentId),
   });
 });
 
@@ -57,7 +80,8 @@ const preferencesSourceAtom = Atom.make((get) => {
       source: { environmentId, snapshot: undefined, access: "unknown" },
       connected: false,
       sessionGeneration: 0,
-      pinServer: false,
+      pinServer: canChooseMainServer(),
+      removedMainServerId: canChooseMainServer() ? get(observedPreferencePinAtom) : undefined,
     } as const;
   }
   const session = get(environmentSession.sessionStateAtom(environmentId));
@@ -73,13 +97,14 @@ const preferencesSourceAtom = Atom.make((get) => {
       snapshot,
       access: sessionHasScope(session, AuthSettingsWriteScope)
         ? "writable"
-        : sessionDeniesScope(session, AuthSettingsWriteScope)
+        : session._tag === "Success" && session.value.authenticated
           ? "read-only"
           : "unknown",
     },
     connected,
     sessionGeneration: get(environmentCatalog.sessionGenerationAtom(environmentId)),
-    pinServer: isElectron || isHostedStaticApp(),
+    pinServer: canChooseMainServer(),
+    removedMainServerId: undefined,
   } as const;
 });
 
@@ -92,6 +117,7 @@ async function writeClientPreferences(environmentId: EnvironmentId, write: Clien
     { environmentId, input },
     {
       reportFailure: false,
+      signal: AbortSignal.timeout(15_000),
     },
   );
   return result._tag === "Success" ? result.value.clientPreferences : undefined;
@@ -118,10 +144,10 @@ export function startClientPreferencesSync(): void {
   updateBinding();
   appAtomRegistry.subscribe(
     preferencesSourceAtom,
-    (value) => {
-      if (value !== undefined)
-        observeClientPreferences({ ...value, write: writeClientPreferences });
-    },
+    (value) =>
+      observeClientPreferences(
+        value === undefined ? undefined : { ...value, write: writeClientPreferences },
+      ),
     { immediate: true },
   );
 }

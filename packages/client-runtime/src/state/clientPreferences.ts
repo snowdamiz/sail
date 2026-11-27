@@ -20,15 +20,18 @@ export interface ClientPreferencesSource {
 }
 
 export function selectClientPreferencesServer(input: {
-  readonly pinned: EnvironmentId | undefined;
+  readonly pinned: EnvironmentId | null | undefined;
+  readonly pinWasRegistered: boolean;
   readonly primary: EnvironmentId | null;
   readonly candidates: ReadonlyArray<EnvironmentId>;
   readonly ready: boolean;
   readonly inferSingle: boolean;
 }): EnvironmentId | null | undefined {
   if (!input.ready) return undefined;
+  if (input.pinned === null) return null;
   if (input.pinned !== undefined) {
-    return input.candidates.includes(input.pinned) ? input.pinned : null;
+    if (input.candidates.includes(input.pinned)) return input.pinned;
+    return input.pinWasRegistered ? null : undefined;
   }
   if (input.primary !== null) return input.primary;
   return input.inferSingle && input.candidates.length === 1 ? (input.candidates[0] ?? null) : null;
@@ -119,7 +122,7 @@ export function editClientPreferences(
   );
   if (Object.keys(changes).length === 0) return next;
 
-  const environmentId = source?.environmentId;
+  const environmentId = source === undefined ? existing?.environmentId : source.environmentId;
   if (environmentId == null) return next;
   const cache =
     existing?.environmentId === environmentId

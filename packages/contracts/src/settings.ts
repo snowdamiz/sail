@@ -799,7 +799,7 @@ export type ClientPreferencesCache = typeof ClientPreferencesCache.Type;
 export const ClientSettingsSchema = Schema.Struct({
   ...ClientSettingsFields.fields,
   syncClientPreferences: Schema.optionalKey(Schema.Boolean),
-  clientPreferencesMainServerId: Schema.optionalKey(EnvironmentId),
+  clientPreferencesMainServerId: Schema.optionalKey(Schema.NullOr(EnvironmentId)),
   clientPreferencesCache: Schema.optionalKey(ClientPreferencesCache),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;

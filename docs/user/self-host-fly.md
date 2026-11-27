@@ -53,7 +53,8 @@ server. See [Remote access](./remote-access.md) for more about device access.
 When the browser and Sail Desktop use the same main server, settings such as
 code font size and diff layout follow you between them. Edits made offline sync
 when you reconnect. Browser viewport and desktop quit confirmation stay on
-each device.
+each device. If you upgraded with Sail Desktop's Local environment already off,
+choose your saved server under **Settings → General → Main server**.
 
 Turn off **Use the same preferences on every device** under **Settings → General**
 to keep future edits on that device. Turning sync off or removing the main

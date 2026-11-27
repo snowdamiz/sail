@@ -119,6 +119,40 @@ describe("main server client preferences", () => {
     expect(prepareClientPreferencesWrite(readOnly, () => firstId)).toBe(readOnly);
   });
 
+  it("stages edits against the restored binding before the catalog resolves", () => {
+    const synced = reconcileClientPreferences(DEFAULT_CLIENT_SETTINGS, source());
+    const edited = editClientPreferences(synced, { ...synced, fontSizeCode: 18 }, undefined);
+    const stored = clientSettingsForStorage(encodeSettings(edited));
+    expect(restoreClientPreferences(decodeSettings(stored)).fontSizeCode).toBe(18);
+    expect(edited.clientPreferencesCache?.pending).toEqual({ fontSizeCode: 18 });
+  });
+
+  it("leaves a pin unresolved in a tab that has never seen its registration", () => {
+    expect(
+      selectClientPreferencesServer({
+        ready: true,
+        pinWasRegistered: false,
+        inferSingle: true,
+        candidates: [other],
+        pinned: main,
+        primary: null,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("keeps a removed binding detached even when another tab still lists the server", () => {
+    expect(
+      selectClientPreferencesServer({
+        ready: true,
+        pinWasRegistered: false,
+        inferSingle: true,
+        candidates: [main],
+        pinned: null,
+        primary: null,
+      }),
+    ).toBeNull();
+  });
+
   it("keeps read-only edits local while applying other live fields", () => {
     const readOnly = { ...source(), access: "read-only" } as const;
     const synced = reconcileClientPreferences(DEFAULT_CLIENT_SETTINGS, readOnly);
@@ -156,6 +190,7 @@ describe("main server client preferences", () => {
     expect(
       selectClientPreferencesServer({
         ready: true,
+        pinWasRegistered: true,
         inferSingle: false,
         candidates: [other],
         pinned: undefined,
@@ -165,6 +200,7 @@ describe("main server client preferences", () => {
     expect(
       selectClientPreferencesServer({
         ready: false,
+        pinWasRegistered: false,
         inferSingle: false,
         candidates: [],
         pinned: main,
@@ -174,6 +210,7 @@ describe("main server client preferences", () => {
     expect(
       selectClientPreferencesServer({
         ready: true,
+        pinWasRegistered: true,
         inferSingle: false,
         candidates: [other, main],
         pinned: main,
@@ -183,6 +220,7 @@ describe("main server client preferences", () => {
     expect(
       selectClientPreferencesServer({
         ready: true,
+        pinWasRegistered: true,
         inferSingle: false,
         candidates: [other],
         pinned: main,

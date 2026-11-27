@@ -264,7 +264,13 @@ describe("main server preference persistence", () => {
           secondStarted.resolve();
           return { revision: 3, values: { fontSizeCode: 18, wordWrap: false } };
         });
-      const sync = { source, sessionGeneration: 0, pinServer: false, write };
+      const sync = {
+        source,
+        sessionGeneration: 0,
+        pinServer: false,
+        removedMainServerId: undefined,
+        write,
+      };
       observeClientPreferences({ ...sync, connected: false });
       await persistClientSettingsPatch({ fontSizeCode: 18 });
       expect(write).not.toHaveBeenCalled();
