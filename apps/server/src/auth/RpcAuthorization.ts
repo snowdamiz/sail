@@ -86,6 +86,8 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.providerAuthRemoveMethod]: AuthProvidersManageScope,
   [WS_METHODS.providerAuthLogout]: AuthProvidersManageScope,
   [WS_METHODS.providerAuthSubscribe]: AuthProvidersManageScope,
+  [WS_METHODS.providerAuthExportBundle]: AuthProvidersManageScope,
+  [WS_METHODS.providerAuthImportBundle]: AuthProvidersManageScope,
   [WS_METHODS.providerInstallStart]: AuthProvidersManageScope,
   [WS_METHODS.providerInstallCancel]: AuthProvidersManageScope,
   [WS_METHODS.providerInstallSubscribe]: AuthOrchestrationReadScope,
@@ -362,7 +364,9 @@ const requiredScopesForRpcCall = (
   }
   if (
     method === WS_METHODS.secretsSaveProjectCredential ||
-    method === WS_METHODS.secretsImportPortableProviders
+    method === WS_METHODS.secretsImportPortableProviders ||
+    method === WS_METHODS.providerAuthExportBundle ||
+    method === WS_METHODS.providerAuthImportBundle
   ) {
     return [AuthSettingsWriteScope, AuthProvidersManageScope];
   }

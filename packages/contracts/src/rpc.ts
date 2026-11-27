@@ -47,6 +47,13 @@ import {
   ChatGptHandoffInput,
   ChatGptHandoffState,
 } from "./providerSetup.ts";
+import {
+  ProviderAuthExportBundleInput,
+  ProviderAuthExportBundleResult,
+  ProviderAuthImportBundleInput,
+  ProviderAuthImportBundleResult,
+  ProviderAuthSyncError,
+} from "./providerAuthSync.ts";
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
@@ -554,6 +561,8 @@ export const WS_METHODS = {
   providerAuthRemoveMethod: "provider.auth.removeMethod",
   providerAuthLogout: "provider.auth.logout",
   providerAuthSubscribe: "provider.auth.subscribe",
+  providerAuthExportBundle: "provider.auth.exportBundle",
+  providerAuthImportBundle: "provider.auth.importBundle",
   providerInstallStart: "provider.install.start",
   providerInstallCancel: "provider.install.cancel",
   providerInstallSubscribe: "provider.install.subscribe",
@@ -2526,6 +2535,18 @@ const WsSecretsImportPortableProvidersRpc = Rpc.make(WS_METHODS.secretsImportPor
   error: Schema.Union([SecretRequestError, EnvironmentAuthorizationError]),
 });
 
+const WsProviderAuthExportBundleRpc = Rpc.make(WS_METHODS.providerAuthExportBundle, {
+  payload: ProviderAuthExportBundleInput,
+  success: ProviderAuthExportBundleResult,
+  error: Schema.Union([ProviderAuthSyncError, EnvironmentAuthorizationError]),
+});
+
+const WsProviderAuthImportBundleRpc = Rpc.make(WS_METHODS.providerAuthImportBundle, {
+  payload: ProviderAuthImportBundleInput,
+  success: ProviderAuthImportBundleResult,
+  error: Schema.Union([ProviderAuthSyncError, EnvironmentAuthorizationError]),
+});
+
 const WsAgentFeedbackAnswerRequestRpc = Rpc.make(WS_METHODS.agentFeedbackAnswerRequest, {
   payload: AgentFeedbackAnswerInput,
   error: Schema.Union([AgentFeedbackRequestError, EnvironmentAuthorizationError]),
@@ -2673,6 +2694,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsSecretsSaveProjectCredentialRpc,
   WsSecretsExportPortableProvidersRpc,
   WsSecretsImportPortableProvidersRpc,
+  WsProviderAuthExportBundleRpc,
+  WsProviderAuthImportBundleRpc,
   WsAgentFeedbackAnswerRequestRpc,
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,

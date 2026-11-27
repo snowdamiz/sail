@@ -42,6 +42,7 @@ import { startThemeBackground } from "./themeBackground";
 import { readLocalStorageValue, subscribeLocalStorageKey } from "./hooks/useLocalStorage";
 import { startClientPreferencesSync } from "./state/clientPreferences";
 import { startSecretProviderSync } from "./state/secretProviderSync";
+import { startProviderAuthSync } from "./state/providerAuthSync";
 import { startHostEnvironmentLookup } from "./state/primaryEnvironment";
 import {
   getClientSettings,
@@ -278,6 +279,7 @@ export function startAppServices(): AppRouter {
 
   startClientPreferencesSync();
   startSecretProviderSync();
+  startProviderAuthSync();
   startClientAppearance();
   startI18n();
   startDocumentTitle(router);

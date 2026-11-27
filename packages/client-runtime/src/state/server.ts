@@ -2047,6 +2047,14 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:secrets:import-portable-providers",
       tag: WS_METHODS.secretsImportPortableProviders,
     }),
+    exportProviderAuthBundle: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:provider-auth:export-bundle",
+      tag: WS_METHODS.providerAuthExportBundle,
+    }),
+    importProviderAuthBundle: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:provider-auth:import-bundle",
+      tag: WS_METHODS.providerAuthImportBundle,
+    }),
     answerFeedbackRequest: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:agent-feedback:answer-request",
       tag: WS_METHODS.agentFeedbackAnswerRequest,
