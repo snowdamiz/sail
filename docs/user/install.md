@@ -3,6 +3,8 @@
 T3 Code runs coding agents on your computer and lets you control them from its
 desktop, web, or mobile app. Set up the machine where the agents will work first.
 
+To host Sail on a cloud Machine, see [Run a Sail server on Fly.io](./self-host-fly.md).
+
 ## Requirements
 
 You need an installed, authenticated provider before starting a thread. You can

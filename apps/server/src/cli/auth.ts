@@ -167,6 +167,10 @@ const pairingCreateCommand = Command.make("create", {
   baseUrl: baseUrlFlag,
   requireRunning: requireRunningFlag,
   json: jsonFlag,
+  qr: Flag.Boolean("qr").pipe(
+    Flag.withDescription("Include a terminal QR code for the pairing URL."),
+    Flag.withDefault(false),
+  ),
 }).pipe(
   Command.withDescription("Issue a new client pairing token."),
   Command.withHandler((flags) =>
@@ -205,6 +209,12 @@ const pairingCreateCommand = Command.make("create", {
         : recordedUrl === undefined
           ? undefined
           : yield* recordedPublicUrl(recordedUrl, config.baseDir);
+      if (flags.qr && baseUrl === undefined) {
+        return yield* notMinted(
+          "A QR code needs a public pairing URL",
+          "Pass --base-url or start the server with --public-url.",
+        );
+      }
       const label = Option.getOrElse(flags.label, () => "").trim();
       const request = {
         scopes: flags.scopes,
@@ -233,6 +243,7 @@ const pairingCreateCommand = Command.make("create", {
       yield* Console.log(
         formatIssuedPairingCredential(issued, {
           json: flags.json,
+          qr: flags.qr,
           ...(baseUrl === undefined ? {} : { baseUrl }),
         }),
       );
