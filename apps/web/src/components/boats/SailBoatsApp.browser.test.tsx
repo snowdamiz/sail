@@ -1,6 +1,7 @@
 import { RegistryContext } from "@effect/atom-react";
 import {
   BearerConnectionTarget,
+  PrimaryConnectionTarget,
   type ConnectionCatalogEntry,
 } from "@t3tools/client-runtime/connection";
 import type { BoatsView } from "@t3tools/client-runtime/state/boats";
@@ -15,7 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
-import { userEvent } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 
 import { act, render } from "../../../test/render";
 import { environmentCatalog } from "../../connection/catalog";
@@ -24,21 +25,28 @@ import type { MachineView, UiState } from "./types";
 const state = vi.hoisted(() => ({
   registry: null as unknown as AtomRegistry.AtomRegistry,
   view: null as unknown as Atom.Writable<AsyncResult.AsyncResult<BoatsView>>,
+  remoteViews: new Map<EnvironmentId, Atom.Atom<AsyncResult.AsyncResult<BoatsView>>>(),
   allowed: null as unknown as Atom.Atom<ReadonlySet<string>>,
   onHost: null as unknown as Atom.Atom<boolean>,
   replies: {} as Partial<Record<string, unknown>>,
   invoked: [] as BoatInvokeInput[],
+  invokedOn: [] as EnvironmentId[],
   openExternal: vi.fn(async (_url: string) => undefined),
-  environmentId: "env-1" as string | null,
 }));
 
-vi.mock(import("../../state/boats"), () => ({
+vi.mock(import("../../state/boats"), async (original) => ({
+  ...(await original()),
   boatsEnvironment: {
-    view: (() => state.view) as never,
+    view: (({ environmentId }: { environmentId: EnvironmentId }) =>
+      state.remoteViews.get(environmentId) ?? state.view) as never,
     invoke: {
       label: "boats:invoke",
-      run: ((_registry: unknown, { input }: { input: BoatInvokeInput }) =>
+      run: ((
+        _registry: unknown,
+        { environmentId, input }: { environmentId: EnvironmentId; input: BoatInvokeInput },
+      ) =>
         Effect.sync(() => {
+          state.invokedOn.push(environmentId);
           state.invoked.push(input);
           return state.replies[input.command] ?? { data: null };
         })) as never,
@@ -46,9 +54,16 @@ vi.mock(import("../../state/boats"), () => ({
   },
   boatCommandsAllowedAtom: (() => state.allowed) as never,
 }));
-vi.mock(import("../../state/clientHostEnvironment"), () => ({
-  clientHostEnvironmentAtom: (() => state.onHost) as never,
-}));
+vi.mock(import("../../state/clientHostEnvironment"), async () => {
+  const { Atom } = await import("effect/reactivity");
+  const offHost = Atom.make(false);
+  return {
+    clientHostEnvironmentAtom: ((environmentId: EnvironmentId | null) =>
+      environmentId !== null && environmentId === LOCAL_ENVIRONMENT
+        ? state.onHost
+        : offHost) as never,
+  };
+});
 vi.mock(import("../../connection/catalog"), async (original) => {
   const { environmentCatalog } = await original();
   const { Atom } = await import("effect/reactivity");
@@ -75,11 +90,6 @@ vi.mock(import("../../connection/catalog"), async (original) => {
     },
   };
 });
-vi.mock(import("../../state/environments"), async (original) => ({
-  ...(await original()),
-  useLocalEnvironmentId: (() => state.environmentId) as never,
-  readLocalEnvironmentId: (() => state.environmentId) as never,
-}));
 vi.mock(import("../../localApi"), async (original) => ({
   ...(await original()),
   readLocalApi: (() => ({ shell: { openExternal: state.openExternal } })) as never,
@@ -92,6 +102,8 @@ const READ_COMMANDS = ALL_COMMANDS.filter(
   (command) => BOAT_COMMAND_SCOPES[command] === "orchestration:read",
 );
 const DORY_ENVIRONMENT = EnvironmentId.make("dory-env");
+const LOCAL_ENVIRONMENT = EnvironmentId.make("env-1");
+const FLY_ENVIRONMENT = EnvironmentId.make("fly-env");
 
 function machine(overrides: Partial<MachineView>): MachineView {
   return {
@@ -132,8 +144,26 @@ function setup(input: {
   readonly onHost?: boolean;
   readonly machineEnvironment?: EnvironmentId;
   readonly machineEnabled?: boolean;
+  readonly local?: boolean;
+  readonly servers?: ReadonlyArray<{
+    environmentId: EnvironmentId;
+    label: string;
+    state: UiState;
+  }>;
 }) {
   const entries = new Map<EnvironmentId, ConnectionCatalogEntry>();
+  if (input.local !== false) {
+    entries.set(LOCAL_ENVIRONMENT, {
+      target: new PrimaryConnectionTarget({
+        environmentId: LOCAL_ENVIRONMENT,
+        label: "Local",
+        httpBaseUrl: "http://localhost",
+        wsBaseUrl: "ws://localhost",
+      }),
+      profile: Option.none(),
+      enabled: true,
+    });
+  }
   if (input.machineEnvironment !== undefined) {
     entries.set(input.machineEnvironment, {
       target: new BearerConnectionTarget({
@@ -145,6 +175,23 @@ function setup(input: {
       enabled: input.machineEnabled ?? true,
     });
   }
+  state.remoteViews.clear();
+  for (const { environmentId, label, state: serverState } of input.servers ?? []) {
+    entries.set(environmentId, {
+      target: new BearerConnectionTarget({ environmentId, label, connectionId: environmentId }),
+      profile: Option.none(),
+      enabled: true,
+    });
+    state.remoteViews.set(
+      environmentId,
+      Atom.make(
+        AsyncResult.success<BoatsView>({
+          status: { phase: "ready", error: null },
+          state: serverState,
+        }),
+      ),
+    );
+  }
   state.registry = AtomRegistry.make({
     initialValues: [[environmentCatalog.catalogValueAtom, { isReady: true, entries }]],
   });
@@ -154,8 +201,8 @@ function setup(input: {
   state.onHost = Atom.make(input.onHost ?? true);
   state.replies = {};
   state.invoked = [];
+  state.invokedOn = [];
   state.openExternal.mockClear();
-  state.environmentId = "env-1";
 }
 
 function mount() {
@@ -191,7 +238,14 @@ it.each([true, false])(
   "shows the caller's Boat code and only auto-opens on the host (%s)",
   async (onHost) => {
     const url = "https://auth.localtest.me/boat/device";
-    setup({ state: uiState({ setup: "signInBoat" }), onHost });
+    const signInState = uiState({ setup: "signInBoat" });
+    const environmentId = onHost ? LOCAL_ENVIRONMENT : FLY_ENVIRONMENT;
+    setup({
+      state: signInState,
+      onHost,
+      local: onHost,
+      servers: onHost ? [] : [{ environmentId, label: "Fly", state: signInState }],
+    });
     state.replies.setup_action = {
       signIn: { attemptId: "boat-1", onHost, prompt: { kind: "device", url, code: "WXYZ-1234" } },
     };
@@ -199,16 +253,25 @@ it.each([true, false])(
     await using screen = await mount();
 
     await userEvent.click(screen.getByRole("button", { name: "Sign in to Boat" }));
-    await publish(uiState({ setup: "signInBoat", setupBusy: true }));
-
+    if (onHost) await publish(uiState({ setup: "signInBoat", setupBusy: true }));
     await expect
       .element(screen.getByRole("link", { name: "Open sign-in page" }))
       .toHaveAttribute("href", url);
     await expect.element(screen.getByText("WXYZ-1234")).toBeVisible();
     expect(state.openExternal).toHaveBeenCalledTimes(onHost ? 1 : 0);
 
-    await publish(uiState({ setup: "ready" }));
+    if (onHost) {
+      await publish(uiState({ setup: "ready" }));
+    } else {
+      state.replies.manage_boat_sign_in = { data: "cancelled" };
+      await userEvent.click(screen.getByRole("button", { name: "Cancel sign-in" }));
+      expect(state.invoked).toContainEqual({
+        command: "manage_boat_sign_in",
+        args: { action: "cancel", attemptId: "boat-1" },
+      });
+    }
     await expect.element(screen.getByText("WXYZ-1234")).not.toBeInTheDocument();
+    expect(new Set(state.invokedOn)).toEqual(new Set([environmentId]));
   },
 );
 
@@ -288,13 +351,78 @@ it("signs out from Boat settings and returns to setup", async () => {
 });
 
 it("says Boats is not available here instead of starting forever", async () => {
-  setup({ state: uiState({}) });
-  state.environmentId = null;
+  setup({ state: uiState({}), local: false });
   await using screen = await mount();
 
   await expect
     .element(screen.getByRole("heading", { name: "Boats isn't available here" }))
     .toBeVisible();
+});
+
+it("runs Boat sign-in and its follow-up commands on the saved server chosen in Boats", async () => {
+  setup({
+    state: uiState({}),
+    servers: [
+      { environmentId: FLY_ENVIRONMENT, label: "Fly", state: uiState({ setup: "signInBoat" }) },
+    ],
+  });
+  const url = "https://auth.localtest.me/boat/device";
+  state.replies.setup_action = {
+    signIn: {
+      attemptId: "fly-1",
+      onHost: false,
+      prompt: { kind: "device", url, code: "FLY-CODE" },
+    },
+  };
+  state.replies.manage_boat_sign_in = { data: "pending" };
+  await using screen = await mount();
+
+  await expect.element(screen.getByRole("button", { name: "Boat settings" })).toBeVisible();
+  const select = screen.getByRole("combobox", { name: "Boats server" });
+  await expect.element(select).toHaveTextContent("Local");
+  await userEvent.click(select);
+  await userEvent.click(page.getByRole("option", { name: "Fly" }));
+  await expect.element(select).toHaveTextContent("Fly");
+  await userEvent.click(screen.getByRole("button", { name: "Sign in to Boat" }));
+  await expect.element(screen.getByText("FLY-CODE")).toBeVisible();
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({
+      command: "manage_boat_sign_in",
+      args: { action: "status", attemptId: "fly-1" },
+    }),
+  );
+  expect(new Set(state.invokedOn)).toEqual(new Set([FLY_ENVIRONMENT]));
+  expect(state.openExternal).not.toHaveBeenCalled();
+
+  await userEvent.click(select);
+  await userEvent.click(page.getByRole("option", { name: "Local" }));
+  await expect.element(screen.getByText("FLY-CODE")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Boat settings" }));
+  await userEvent.click(screen.getByRole("button", { name: "Sign out of Boat" }));
+  expect(state.invoked.at(-1)).toEqual({ command: "sign_out_boat" });
+  expect(state.invokedOn.at(-1)).toBe(LOCAL_ENVIRONMENT);
+});
+
+it("waits for a choice when several remote servers have no default", async () => {
+  const signInState = uiState({ setup: "signInBoat" });
+  setup({
+    state: uiState({}),
+    local: false,
+    servers: [
+      { environmentId: DORY_ENVIRONMENT, label: "Dory", state: uiState({}) },
+      { environmentId: FLY_ENVIRONMENT, label: "Fly", state: signInState },
+    ],
+  });
+  await using screen = await mount();
+
+  const select = screen.getByRole("combobox", { name: "Boats server" });
+  await expect.element(select).toHaveTextContent("Select a server");
+  await expect
+    .element(screen.getByRole("button", { name: "Boat settings" }))
+    .not.toBeInTheDocument();
+  await userEvent.click(select);
+  await userEvent.click(page.getByRole("option", { name: "Fly" }));
+  await expect.element(screen.getByRole("button", { name: "Sign in to Boat" })).toBeVisible();
 });
 
 it("renders state but disables every action for a client that can only read", async () => {

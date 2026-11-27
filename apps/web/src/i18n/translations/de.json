@@ -12921,5 +12921,8 @@
   "25a1c6cf87920b69": "Code senden",
   "1ec7a2c612524967": "Die Anmeldeanfrage ist fehlgeschlagen. Versuchen Sie es erneut.",
   "64c07d2cd0e78ac4": "Code gesendet. Falls die Anmeldung nicht weitergeht, versuchen Sie es mit einem anderen Code.",
-  "334031c5b02772d0": "Anmeldung wird abgebrochen…"
+  "334031c5b02772d0": "Anmeldung wird abgebrochen…",
+  "d6c672884cc6a076": "Boats-Server",
+  "82e4ac5a54ebd8d3": "Server auswählen",
+  "8e5ef13e0ab5ed30": "Stelle eine Verbindung zu dem Server her, der deine Boat-Maschinen verwaltet, und wähle ihn dann hier aus."
 }

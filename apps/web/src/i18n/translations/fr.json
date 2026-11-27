@@ -12921,5 +12921,8 @@
   "25a1c6cf87920b69": "Envoyer le code",
   "1ec7a2c612524967": "La demande de connexion a échoué. Réessayez.",
   "64c07d2cd0e78ac4": "Code envoyé. Si la connexion reste bloquée, essayez un autre code.",
-  "334031c5b02772d0": "Annulation de la connexion…"
+  "334031c5b02772d0": "Annulation de la connexion…",
+  "d6c672884cc6a076": "Serveur Boats",
+  "82e4ac5a54ebd8d3": "Sélectionner un serveur",
+  "8e5ef13e0ab5ed30": "Connectez-vous au serveur qui gère vos machines Boat, puis sélectionnez-le ici."
 }

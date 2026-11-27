@@ -12916,5 +12916,8 @@
   "25a1c6cf87920b69": "Enviar código",
   "1ec7a2c612524967": "Falló la solicitud de inicio de sesión. Inténtalo de nuevo.",
   "64c07d2cd0e78ac4": "Código enviado. Si el inicio de sesión no avanza, prueba con otro código.",
-  "334031c5b02772d0": "Cancelando el inicio de sesión…"
+  "334031c5b02772d0": "Cancelando el inicio de sesión…",
+  "d6c672884cc6a076": "Servidor de Boats",
+  "82e4ac5a54ebd8d3": "Selecciona un servidor",
+  "8e5ef13e0ab5ed30": "Conéctate al servidor que administra tus máquinas de Boat y selecciónalo aquí."
 }

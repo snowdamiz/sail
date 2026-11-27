@@ -1,18 +1,23 @@
-import { RegistryContext, useAtomValue } from "@effect/atom-react";
+import { RegistryContext, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { BoatSignIn, BoatSignInPhase } from "@t3tools/contracts";
+import type { BoatSignIn, BoatSignInPhase, EnvironmentId } from "@t3tools/contracts";
 import { msg, useGT } from "gt-react";
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import { environmentCatalog } from "~/connection/catalog";
 import { m as message } from "~/i18n/messages";
-import { boatCommandsAllowedAtom } from "~/state/boats";
+import {
+  boatCommandsAllowedAtom,
+  boatServerChoicesAtom,
+  boatServerIdAtom,
+  boatServerSelectionAtom,
+} from "~/state/boats";
 import { clientHostEnvironmentAtom } from "~/state/clientHostEnvironment";
-import { useLocalEnvironmentId } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { SailBrandMark } from "../SailBrandMark";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { type BoatAccess, BoatAccessContext, useBoatAccess } from "./access";
-import { call, useBoatsPage, useFollowBoatLink } from "./api";
+import { useBoatCall, useBoatsPage, useFollowBoatLink } from "./api";
 import "./boats.css";
 import { Costs } from "./components/Costs";
 import { Icon } from "./components/Icons";
@@ -58,6 +63,7 @@ function Setup({
   onError: (t: string) => void;
 }) {
   const gt = useGT();
+  const call = useBoatCall();
   const [signIn, setSignIn] = useState<BoatSignIn | null>(null);
   const [requesting, setRequesting] = useState(false);
   const finish = useCallback(
@@ -120,6 +126,7 @@ function Ready({
   toast: (t: string, tone?: "error" | "info") => void;
 }) {
   const access = useBoatAccess();
+  const call = useBoatCall();
   const gt = useGT();
   const registry = useContext(RegistryContext);
   const setEnabled = useAtomCommand(environmentCatalog.setEnabled, { reportFailure: false });
@@ -402,12 +409,20 @@ function Ready({
 }
 
 export function SailBoatsApp() {
-  const environmentId = useLocalEnvironmentId();
+  const environmentId = useAtomValue(boatServerIdAtom);
+  return <BoatsForServer key={environmentId} environmentId={environmentId} />;
+}
+
+function BoatsForServer({ environmentId }: { readonly environmentId: EnvironmentId | null }) {
+  const gt = useGT();
   const { page, retry } = useBoatsPage(environmentId);
   const allowed = useAtomValue(boatCommandsAllowedAtom(environmentId));
   const onHost = useAtomValue(clientHostEnvironmentAtom(environmentId));
   const { entries } = useAtomValue(environmentCatalog.catalogValueAtom);
+  const selectServer = useAtomSet(boatServerSelectionAtom);
+  const servers = useAtomValue(boatServerChoicesAtom);
   const access: BoatAccess = {
+    environmentId,
     can: (command) => allowed.has(command),
     isPaired: (id) => {
       const entry = id === null ? undefined : entries.get(id);
@@ -435,6 +450,29 @@ export function SailBoatsApp() {
     <BoatAccessContext value={access}>
       <div className="sail-boats-scope" data-testid="sail-boats-workspace">
         <div className="app">
+          {servers.length > 1 || (environmentId === null && servers.length > 0) ? (
+            <div className="flex justify-end p-2">
+              <Select<EnvironmentId>
+                value={environmentId}
+                onValueChange={selectServer}
+                items={servers.map(({ target }) => ({
+                  value: target.environmentId,
+                  label: target.label,
+                }))}
+              >
+                <SelectTrigger aria-label={gt("Boats server")}>
+                  <SelectValue placeholder={gt("Select a server")} />
+                </SelectTrigger>
+                <SelectPopup>
+                  {servers.map(({ target }) => (
+                    <SelectItem key={target.environmentId} value={target.environmentId}>
+                      {target.label}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            </div>
+          ) : null}
           {page.kind === "ready" ? (
             <Ready state={page.state} follow={follow} toast={toast} />
           ) : page.kind === "setup" ? (
@@ -448,8 +486,9 @@ export function SailBoatsApp() {
                 <div className="empty">
                   <h1 className="display">Boats isn't available here</h1>
                   <p className="lede">
-                    Boats runs on the server that serves this app, and this app has none. Open Boats
-                    from that server's own web page, or from Sail desktop with its local server on.
+                    {gt(
+                      "Connect to the server that manages your Boat machines, then choose it here.",
+                    )}
                   </p>
                 </div>
               </div>

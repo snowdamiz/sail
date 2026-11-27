@@ -1,4 +1,4 @@
-import { useAtomMount } from "@effect/atom-react";
+import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import { createEnvironmentRpcSubscriptionAtomFamily } from "@t3tools/client-runtime/state/runtime";
 import { AuthOrchestrationReadScope, WS_METHODS } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -6,7 +6,7 @@ import * as Stream from "effect/Stream";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "~/connection/runtime";
-import { useLocalEnvironmentId } from "~/state/environments";
+import { boatServerIdAtom } from "~/state/boats";
 import { useEnvironmentScope } from "~/state/session";
 import { toastManager } from "../ui/toast";
 
@@ -24,7 +24,7 @@ const NO_BOAT_NOTICES = Atom.make(AsyncResult.initial()).pipe(
 );
 
 export function BoatNoticeToasts() {
-  const environmentId = useLocalEnvironmentId();
+  const environmentId = useAtomValue(boatServerIdAtom);
   const canRead = useEnvironmentScope(environmentId, AuthOrchestrationReadScope);
   useAtomMount(
     environmentId !== null && canRead

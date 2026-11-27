@@ -2,22 +2,22 @@ import type { BoatsView } from "@t3tools/client-runtime/state/boats";
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useRouter } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { readLocalApi } from "~/localApi";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { boatsEnvironment } from "~/state/boats";
-import { readLocalEnvironmentId } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { usePairFromLink } from "../desktop/DesktopWebLinkCoordinator";
+import { useBoatAccess } from "./access";
 import { type BoatLink, type BoatReply, classifyBoatLink, errorText } from "./reply";
 import type { CommandArgs, CommandName, MachineDetails, UiState } from "./types";
 
-export async function call<C extends CommandName>(
+async function call<C extends CommandName>(
+  environmentId: EnvironmentId | null,
   command: C,
   args: CommandArgs<C>,
 ): Promise<BoatReply<C>> {
-  const environmentId = readLocalEnvironmentId();
   if (environmentId === null) throw new Error("This app is not connected to a server.");
   const result = await runAtomCommand(
     appAtomRegistry,
@@ -27,6 +27,14 @@ export async function call<C extends CommandName>(
   );
   if (result._tag === "Failure") throw squashAtomCommandFailure(result);
   return result.value as BoatReply<C>;
+}
+
+export function useBoatCall() {
+  const { environmentId } = useBoatAccess();
+  return useCallback(
+    <C extends CommandName>(command: C, args: CommandArgs<C>) => call(environmentId, command, args),
+    [environmentId],
+  );
 }
 
 export type BoatsPage =
@@ -53,7 +61,7 @@ export function useBoatsPage(environmentId: EnvironmentId | null) {
     environmentId === null ? { kind: "noServer" } : boatsPage(query.data, query.error);
   const retry = () =>
     page.kind === "offline" && page.daemon
-      ? call("get_state", undefined).then(() => undefined)
+      ? call(environmentId, "get_state", undefined).then(() => undefined)
       : Promise.resolve(query.refresh());
   return { page, retry };
 }
@@ -92,6 +100,7 @@ export function useMachineDetails(
   version: unknown,
   onError: (text: string) => void,
 ): MachineDetails | null {
+  const call = useBoatCall();
   const [details, setDetails] = useState<MachineDetails | null>(null);
   const failing = useRef(false);
   const latest = useRef(0);
@@ -110,7 +119,7 @@ export function useMachineDetails(
         onError(errorText(e));
       },
     );
-  }, [id, version, onError]);
+  }, [call, id, version, onError]);
 
   return details?.id === id ? details : null;
 }

@@ -12930,5 +12930,8 @@
   "25a1c6cf87920b69": "Submit code",
   "1ec7a2c612524967": "The sign-in request failed. Try again.",
   "64c07d2cd0e78ac4": "Code sent. If sign-in stalls, try another code.",
-  "334031c5b02772d0": "Cancelling sign-in…"
+  "334031c5b02772d0": "Cancelling sign-in…",
+  "d6c672884cc6a076": "Boats server",
+  "82e4ac5a54ebd8d3": "Select a server",
+  "8e5ef13e0ab5ed30": "Connect to the server that manages your Boat machines, then choose it here."
 }

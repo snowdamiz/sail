@@ -3,7 +3,7 @@ import { useGT } from "gt-react";
 import { useEffect, useState } from "react";
 
 import { useBoatAccess } from "../access";
-import { call } from "../api";
+import { useBoatCall } from "../api";
 import { Dots } from "./common";
 
 type SignInCommand = "manage_agent_sign_in" | "manage_boat_sign_in";
@@ -18,6 +18,7 @@ export function SignInPanel({
   onFinish: (phase: BoatSignInPhase) => void;
 }) {
   const gt = useGT();
+  const call = useBoatCall();
   const canManage = useBoatAccess().can(command);
   const [code, setCode] = useState("");
   const [action, setAction] = useState<"submit" | "cancel" | null>(null);
@@ -48,7 +49,7 @@ export function SignInPanel({
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [attemptId, canManage, command, onFinish]);
+  }, [attemptId, call, canManage, command, onFinish]);
 
   const act = (input: BoatSignInAction) => {
     setAction(input.action === "submit" ? "submit" : "cancel");
