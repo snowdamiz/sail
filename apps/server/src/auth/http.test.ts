@@ -41,6 +41,8 @@ const layerConfig = Layer.effect(
     return {
       ...config,
       mode: "web",
+      ownerPasswordEnabled: true,
+      publicUrl: new URL("https://sail.example"),
       devUrl: new URL("http://127.0.0.1:5173"),
       devAuthToken: Redacted.make(DEV_TOKEN),
     } satisfies ServerConfig.ServerConfig["Service"];
@@ -217,6 +219,44 @@ const withDevSessionRoutes = (
       (environment) => Effect.promise(() => environment.dispose()),
     );
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
+
+it.effect(
+  "sets a password after pairing and issues a standard browser cookie for password sign-in",
+  () =>
+    withDevSessionRoutes(async (request, devCookie) => {
+      const minted = await request("/api/auth/pairing-token", {}, { cookie: devCookie });
+      const { credential } = (await minted.json()) as { credential: string };
+      const paired = await request("/api/auth/browser-session", { credential });
+      expect(paired.status).toBe(200);
+      const ownerCookie = paired.headers.getSetCookie()[0]?.split(";", 1)[0] ?? "";
+      const password = "sample-browser-password";
+      const publicOrigin = {
+        host: "sail.example",
+        origin: "https://sail.example",
+        "x-forwarded-proto": "https",
+      };
+      const enrolled = await request(
+        "/api/auth/owner-password",
+        { password },
+        { cookie: ownerCookie, ...publicOrigin },
+      );
+      expect(enrolled.status).toBe(200);
+      expect(await enrolled.json()).toMatchObject({ ownerPassword: "configured" });
+      const signedIn = await request(
+        "/api/auth/owner-password/session",
+        { password },
+        publicOrigin,
+      );
+      expect(signedIn.status).toBe(200);
+      expect(await signedIn.json()).toMatchObject({
+        authenticated: true,
+        sessionMethod: "browser-session-cookie",
+      });
+      expect(signedIn.headers.getSetCookie()).toEqual([
+        expect.stringMatching(/^t3_session_.*HttpOnly.*Secure/i),
+      ]);
+    }),
+);
 
 it.effect("tells a browser that a pairing link was already used", () =>
   withDevSessionRoutes(async (request, devCookie) => {

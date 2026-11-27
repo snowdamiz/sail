@@ -5,6 +5,8 @@ export {
   resolveInitialServerAuthGateState,
   stripPairingTokenFromUrl,
   submitServerAuthCredential,
+  submitOwnerPassword,
+  updateOwnerPassword,
   takePairingTokenFromUrl,
   type ServerClientSessionRecord,
   type ServerPairingLinkRecord,

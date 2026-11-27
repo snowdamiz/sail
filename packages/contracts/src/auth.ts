@@ -188,10 +188,45 @@ export const ServerAuthDescriptor = Schema.Struct({
   bootstrapMethods: Schema.Array(ServerAuthBootstrapMethod),
   sessionMethods: Schema.Array(ServerAuthSessionMethod),
   sessionCookieName: TrimmedNonEmptyString,
+  ownerPassword: Schema.optionalKey(Schema.Literals(["unset", "configured"])),
   /** Older servers omit this and authorize self-updates with orchestration:operate. */
   serverUpdateScope: Schema.optionalKey(Schema.Literal(AuthEnvironmentMaintainScope)),
 });
 export type ServerAuthDescriptor = typeof ServerAuthDescriptor.Type;
+
+// The stored v1 verifier grants exactly these permissions; do not extend this list when
+// AuthStandardClientScopes grows.
+export const AuthOwnerPasswordV1Scopes = [
+  AuthOrchestrationReadScope,
+  AuthOrchestrationOperateScope,
+  AuthSettingsWriteScope,
+  AuthProvidersManageScope,
+  AuthEnvironmentMaintainScope,
+  AuthPreviewOperateScope,
+  AuthDiagnosticsReadScope,
+  AuthTerminalReadScope,
+  AuthTerminalOperateScope,
+  AuthSourceControlWriteScope,
+  AuthFilesystemReadScope,
+  AuthFilesystemWriteScope,
+  AuthRelayReadScope,
+  AuthAccessReadScope,
+  AuthAccessWriteScope,
+  AuthRelayWriteScope,
+] as const;
+
+export const AuthOwnerPasswordMinLength = 15;
+export const AuthOwnerPasswordMaxLength = 256;
+
+export function isValidOwnerPassword(password: string): boolean {
+  if (password.length > AuthOwnerPasswordMaxLength * 2) return false;
+  const length = Array.from(password).length;
+  return length >= AuthOwnerPasswordMinLength && length <= AuthOwnerPasswordMaxLength;
+}
+
+export const AuthOwnerPasswordRequest = Schema.Struct({
+  password: Schema.RedactedFromValue(Schema.String),
+});
 
 export const AuthBrowserSessionRequest = Schema.Struct({
   credential: TrimmedNonEmptyString,

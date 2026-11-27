@@ -12,6 +12,8 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import {
   AuthAccessTokenResult,
   AuthBrowserSessionRequest,
+  AuthOwnerPasswordRequest,
+  ServerAuthDescriptor,
   AuthBrowserSessionResult,
   AuthCreatePairingCredentialInput,
   AuthMcpApprovalDecisionRequest,
@@ -632,6 +634,20 @@ class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
       success: AuthBrowserSessionResult,
       error: EnvironmentSessionCreationErrors,
     }),
+  )
+  .add(
+    HttpApiEndpoint.post("ownerPasswordSession", "/api/auth/owner-password/session", {
+      payload: AuthOwnerPasswordRequest,
+      success: AuthBrowserSessionResult,
+      error: EnvironmentSessionCreationErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("setOwnerPassword", "/api/auth/owner-password", {
+      payload: AuthOwnerPasswordRequest,
+      success: ServerAuthDescriptor,
+      error: [...EnvironmentSessionCreationErrors, EnvironmentScopeRequiredError],
+    }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.post("token", "/oauth/token", {

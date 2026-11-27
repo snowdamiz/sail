@@ -1,5 +1,7 @@
 import {
   EnvironmentAuthInvalidError,
+  AuthStandardClientScopes,
+  authScopeResponse,
   type AuthBrowserSessionResult,
   type AuthCreatePairingCredentialInput,
   type AuthSessionState,
@@ -133,6 +135,54 @@ describe("resolveInitialServerAuthGateState", () => {
     vi.unstubAllEnvs();
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it.each(["unset", "configured"] as const)(
+    "guides a newly paired owner to password setup only when status is %s",
+    async (ownerPassword) => {
+      const auth = { ...LOOPBACK_AUTH, ownerPassword };
+      const session = {
+        ...authenticatedSession(auth),
+        ...authScopeResponse(AuthStandardClientScopes),
+      };
+      const nextSession = sequence(unauthenticatedSession(auth), session);
+      await installAuthApi({
+        session: nextSession,
+        browserSession: () =>
+          Effect.succeed({
+            ...browserSession(AuthStandardClientScopes),
+            ...authScopeResponse(AuthStandardClientScopes),
+          }),
+      });
+      installTestBrowser("http://localhost/#token=pairing-token");
+      const { resolveInitialServerAuthGateState } = await import("./environments/primary");
+      expect(await resolveInitialServerAuthGateState()).toEqual(
+        ownerPassword === "unset"
+          ? { status: "authenticated", offerOwnerPasswordSetup: true }
+          : { status: "authenticated" },
+      );
+      expect(await resolveInitialServerAuthGateState()).toEqual({ status: "authenticated" });
+    },
+  );
+
+  it("guides an owner using the explicit pairing page to password setup", async () => {
+    const auth = { ...LOOPBACK_AUTH, ownerPassword: "unset" } as const;
+    await installAuthApi({
+      session: sequence(unauthenticatedSession(auth), {
+        ...authenticatedSession(auth),
+        ...authScopeResponse(AuthStandardClientScopes),
+      }),
+      browserSession: () =>
+        Effect.succeed({
+          ...browserSession(AuthStandardClientScopes),
+          ...authScopeResponse(AuthStandardClientScopes),
+        }),
+    });
+    installTestBrowser("http://localhost/pair#token=pairing-token");
+    const { resolveInitialServerAuthGateState, submitServerAuthCredential } =
+      await import("./environments/primary");
+    expect(await resolveInitialServerAuthGateState()).toEqual({ status: "requires-auth", auth });
+    expect(await submitServerAuthCredential("pairing-token")).toBe(true);
   });
 
   it("reuses an in-flight silent bootstrap attempt", async () => {

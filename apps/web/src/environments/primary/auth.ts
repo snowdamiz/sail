@@ -9,12 +9,15 @@ import type {
   AuthSessionState,
 } from "@t3tools/contracts";
 import {
+  AuthOwnerPasswordV1Scopes,
+  sessionGrantsScope,
   EnvironmentHttpCommonError,
   EnvironmentPairingFailureReason,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
 } from "@t3tools/contracts";
 import type { EnvironmentHttpCommonError as EnvironmentHttpCommonErrorType } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { HttpClientError } from "effect/http";
 
@@ -148,7 +151,7 @@ export interface ServerClientSessionRecord {
 }
 
 type ServerAuthGateState =
-  | { status: "authenticated" }
+  | { status: "authenticated"; offerOwnerPasswordSetup?: true }
   | {
       status: "requires-auth";
       auth: AuthSessionState["auth"];
@@ -329,6 +332,14 @@ function isTransportError(error: unknown): boolean {
   return HttpClientError.isHttpClientError(error) && error.reason._tag === "TransportError";
 }
 
+function offerOwnerPasswordSetup(session: AuthSessionState): boolean {
+  return (
+    session.auth.ownerPassword === "unset" &&
+    session.sessionMethod === "browser-session-cookie" &&
+    AuthOwnerPasswordV1Scopes.every((scope) => sessionGrantsScope(session, scope))
+  );
+}
+
 async function bootstrapServerAuth(urlCredential: string | null): Promise<ServerAuthGateState> {
   const currentSession = await fetchSessionState();
   if (currentSession.authenticated && !urlCredential) {
@@ -345,8 +356,10 @@ async function bootstrapServerAuth(urlCredential: string | null): Promise<Server
 
   try {
     await exchangeBootstrapCredential(bootstrapCredential);
-    await waitForAuthenticatedSessionAfterBootstrap();
-    return { status: "authenticated" };
+    const session = await waitForAuthenticatedSessionAfterBootstrap();
+    return offerOwnerPasswordSetup(session)
+      ? { status: "authenticated", offerOwnerPasswordSetup: true }
+      : { status: "authenticated" };
   } catch (error) {
     return {
       status: "requires-auth",
@@ -356,7 +369,36 @@ async function bootstrapServerAuth(urlCredential: string | null): Promise<Server
   }
 }
 
-export async function submitServerAuthCredential(credential: string): Promise<void> {
+export async function submitOwnerPassword(password: string): Promise<void> {
+  await runPrimaryHttp(
+    PrimaryEnvironmentHttpClient.pipe(
+      Effect.flatMap((client) =>
+        client.auth.ownerPasswordSession({
+          payload: { password: Redacted.make(password) },
+        }),
+      ),
+    ),
+  );
+  await waitForAuthenticatedSessionAfterBootstrap();
+  resolvedAuthenticatedGateState = { status: "authenticated" };
+  bootstrapPromise = null;
+  explicitPairingRequested = false;
+}
+
+export async function updateOwnerPassword(password: string): Promise<boolean> {
+  await runPrimaryHttp(
+    PrimaryEnvironmentHttpClient.pipe(
+      Effect.flatMap((client) =>
+        client.auth.setOwnerPassword({
+          payload: { password: Redacted.make(password) },
+        }),
+      ),
+    ),
+  );
+  return (await fetchSessionState()).authenticated;
+}
+
+export async function submitServerAuthCredential(credential: string): Promise<boolean> {
   const trimmedCredential = credential.trim();
   if (!trimmedCredential) {
     throw new PrimaryEnvironmentPairingCredentialRequiredError({
@@ -366,11 +408,12 @@ export async function submitServerAuthCredential(credential: string): Promise<vo
 
   resolvedAuthenticatedGateState = null;
   await exchangeBootstrapCredential(trimmedCredential);
-  await waitForAuthenticatedSessionAfterBootstrap();
+  const session = await waitForAuthenticatedSessionAfterBootstrap();
   resolvedAuthenticatedGateState = { status: "authenticated" };
   bootstrapPromise = null;
   explicitPairingRequested = false;
   stripPairingTokenFromUrl();
+  return offerOwnerPasswordSetup(session);
 }
 
 export async function resolveInitialServerAuthGateState(): Promise<ServerAuthGateState> {
@@ -411,7 +454,7 @@ export async function resolveInitialServerAuthGateState(): Promise<ServerAuthGat
   return nextPromise
     .then((result) => {
       if (bootstrapPromise === nextPromise && result.status === "authenticated") {
-        resolvedAuthenticatedGateState = result;
+        resolvedAuthenticatedGateState = { status: "authenticated" };
       }
       return result;
     })

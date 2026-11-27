@@ -599,12 +599,14 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         SAIL_PUBLIC_URL: "https://sail.example",
         T3CODE_PUBLIC_URL: "not-a-url",
         SAIL_STARTUP_PAIRING: "off",
+        SAIL_OWNER_PASSWORD: "true",
       };
       const staleEnv = { SAIL_PUBLIC_URL: "https://old.example/app", SAIL_STARTUP_PAIRING: "x" };
 
       const fromEnv = yield* resolve(none, env);
       assert.equal(fromEnv.publicUrl?.origin, "https://sail.example");
       assert.equal(fromEnv.startupPairing, "off");
+      assert.equal(fromEnv.ownerPasswordEnabled, true);
       const fromFlags = yield* resolve(
         {
           publicUrl: Option.some(new URL("https://flag.example")),
@@ -626,6 +628,14 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       const fromLegacy = yield* resolve(none, { T3CODE_PUBLIC_URL: "https://t3.example" });
       assert.equal(fromLegacy.publicUrl?.origin, "https://t3.example");
       assert.equal(fromLegacy.startupPairing, "on");
+      assert.equal(fromLegacy.ownerPasswordEnabled, undefined);
+      const noPublicUrl = yield* resolve(none, { SAIL_OWNER_PASSWORD: "true" });
+      assert.equal(noPublicUrl.ownerPasswordEnabled, undefined);
+      const insecurePublicUrl = yield* resolve(none, {
+        SAIL_OWNER_PASSWORD: "true",
+        SAIL_PUBLIC_URL: "http://localhost:8080",
+      });
+      assert.equal(insecurePublicUrl.ownerPasswordEnabled, undefined);
       const trailingSlash = yield* resolve(none, { SAIL_PUBLIC_URL: "https://demo.fly.dev/" });
       assert.equal(trailingSlash.publicUrl?.origin, "https://demo.fly.dev");
       for (const rejected of [
@@ -662,11 +672,16 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         });
 
         const remote = yield* fromDesktopBootstrap.pipe(
-          withEnv({ SAIL_PUBLIC_URL: "https://remote.fly.dev", SAIL_STARTUP_PAIRING: "off" }),
+          withEnv({
+            SAIL_PUBLIC_URL: "https://remote.fly.dev",
+            SAIL_STARTUP_PAIRING: "off",
+            SAIL_OWNER_PASSWORD: "true",
+          }),
         );
         assert.equal(remote.mode, "desktop");
         assert.equal(remote.publicUrl, undefined);
         assert.equal(remote.startupPairing, "on");
+        assert.equal(remote.ownerPasswordEnabled, undefined);
         for (const env of [
           { SAIL_PUBLIC_URL: "not-a-url" },
           { SAIL_PUBLIC_URL: "   " },

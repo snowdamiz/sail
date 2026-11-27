@@ -2,6 +2,7 @@
 SAIL_HOME = "/data/sail"
 T3CODE_HOME = "/data/sail"
 SAIL_STARTUP_PAIRING = "off"
+SAIL_OWNER_PASSWORD = "true"
 
 [[mounts]]
 source = "sail_data"

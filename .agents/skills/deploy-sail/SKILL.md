@@ -10,3 +10,5 @@ Use [the Fly deployment guide](../../../docs/user/self-host-fly.md) for prerequi
 - Use `--dry-run` when the user asks for a preview.
 - If the script reports a Fly authentication failure, stop and ask the user to run `fly auth login` in their own terminal. Resume after they confirm.
 - When the script returns two links, hand both back privately to the requesting user. Label the `sail://` link for desktop and the HTTPS link for a browser or phone. Each link works once. Keep the output, including the QR code, out of shared logs, screenshots, and reports.
+
+- The owner’s first HTTPS pairing opens Settings → Sharing & access to set a 15–256 character browser sign-in password. They can use `--pair` again to recover access and change it. Never ask for their password.

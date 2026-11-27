@@ -3,6 +3,7 @@ import {
   AuthAccessTokenType,
   AuthAccessWriteScope,
   AuthStandardClientScopes,
+  AuthOwnerPasswordV1Scopes,
   AuthGrantScope,
   EnvironmentAuthInvalidError,
   type EnvironmentAuthInvalidReason,
@@ -406,6 +407,50 @@ export const layer = HttpApiBuilder.group(
           ),
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
             failEnvironmentAuthInternal("browser_session_issuance_failed", error),
+          ),
+        ),
+      )
+      .handle(
+        "ownerPasswordSession",
+        Effect.fn("environment.auth.ownerPasswordSession")(
+          function* (args) {
+            yield* appendCredentialResponseHeaders;
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            const result = yield* serverAuth.createOwnerPasswordSession(
+              args.payload.password,
+              request,
+              deriveAuthClientMetadata({ request }),
+            );
+            yield* appendSessionCookie(
+              request,
+              sessions.cookieName,
+              result.sessionToken,
+              result.response.expiresAt,
+            );
+            return result.response;
+          },
+          Effect.catchIf(EnvironmentAuth.isServerAuthCredentialError, () =>
+            failEnvironmentAuthInvalid("invalid_credential"),
+          ),
+          Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
+            failEnvironmentAuthInternal("browser_session_issuance_failed", error),
+          ),
+        ),
+      )
+      .handle(
+        "setOwnerPassword",
+        Effect.fn("environment.auth.setOwnerPassword")(
+          function* (args) {
+            for (const scope of AuthOwnerPasswordV1Scopes) yield* requireEnvironmentScope(scope);
+            yield* appendCredentialResponseHeaders;
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            return yield* serverAuth.setOwnerPassword(args.payload.password, request);
+          },
+          Effect.catchIf(EnvironmentAuth.isServerAuthCredentialError, () =>
+            failEnvironmentAuthInvalid("invalid_credential"),
+          ),
+          Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
+            failEnvironmentAuthInternal("internal_error", error),
           ),
         ),
       )

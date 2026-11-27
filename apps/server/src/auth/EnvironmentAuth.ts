@@ -1,3 +1,6 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect has no scrypt password derivation API.
+import * as NodeCrypto from "node:crypto";
+import * as Clock from "effect/Clock";
 import { ServerMaintenanceBusy, withAdmission } from "../serverAdmission.ts";
 import {
   AuthAccessTokenType,
@@ -6,6 +9,8 @@ import {
   AuthOrchestrationOperateScope,
   AuthAdministrativeClientScopes,
   AuthStandardClientScopes,
+  isValidOwnerPassword,
+  AuthOwnerPasswordV1Scopes,
   type AuthAccessTokenResult,
   type AuthBrowserSessionResult,
   type AuthClientMetadata,
@@ -520,6 +525,18 @@ export class EnvironmentAuth extends Context.Service<
       },
       ServerAuthInvalidCredentialError | ServerAuthInternalError
     >;
+    readonly createOwnerPasswordSession: (
+      password: Redacted.Redacted<string>,
+      request: HttpServerRequest.HttpServerRequest,
+      requestMetadata: AuthClientMetadata,
+    ) => Effect.Effect<
+      BootstrapExchangeResult,
+      ServerAuthInvalidCredentialError | ServerAuthInternalError
+    >;
+    readonly setOwnerPassword: (
+      password: Redacted.Redacted<string>,
+      request: HttpServerRequest.HttpServerRequest,
+    ) => Effect.Effect<ServerAuthDescriptor, ServerAuthCredentialError | ServerAuthInternalError>;
     readonly exchangeBootstrapCredentialForAccessToken: (
       credential: string,
       requestedScopes: ReadonlyArray<AuthEnvironmentScope> | undefined,
@@ -841,6 +858,46 @@ export const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const managedPolicy = yield* ManagedPolicy.ManagedPolicy;
   const devAuth = resolveReusableDevAuth(config);
+  const passwordOrigin =
+    config.mode === "web" &&
+    config.ownerPasswordEnabled === true &&
+    config.publicUrl?.protocol === "https:"
+      ? config.publicUrl.origin
+      : undefined;
+  const passwordEnabled = passwordOrigin !== undefined;
+  const isPasswordOrigin = (request: HttpServerRequest.HttpServerRequest) =>
+    passwordOrigin !== undefined &&
+    Option.exists(requestUrl(request), (url) => url.origin === passwordOrigin);
+  const isPasswordPostOrigin = (request: HttpServerRequest.HttpServerRequest) =>
+    isPasswordOrigin(request) && request.headers.origin === passwordOrigin;
+  const passwordSecretName = "owner-password-scrypt-v1";
+  let passwordVerifier = passwordEnabled
+    ? yield* secretStore.get(passwordSecretName)
+    : Option.none<Uint8Array>();
+  const passwordLock = yield* Semaphore.make(1);
+  let nextPasswordAttempt = 0;
+  const getDescriptor = (): ServerAuthDescriptor =>
+    passwordEnabled
+      ? { ...descriptor, ownerPassword: Option.isSome(passwordVerifier) ? "configured" : "unset" }
+      : descriptor;
+  const derivePassword = (password: Redacted.Redacted<string>, salt: Uint8Array) =>
+    Effect.tryPromise({
+      try: () =>
+        new Promise<Buffer>((resolve, reject) => {
+          NodeCrypto.scrypt(
+            Redacted.value(password),
+            salt,
+            32,
+            { N: 32768, r: 8, p: 3, maxmem: 64 * 1024 * 1024 },
+            (error, key) => (error ? reject(error) : resolve(key)),
+          );
+        }),
+      catch: () =>
+        new ServerAuthSessionCredentialValidationError({ cause: "Password derivation failed." }),
+    }).pipe(Effect.uninterruptible);
+  const rejectPassword = () => new ServerAuthInvalidCredentialError({});
+  const validPassword = (password: Redacted.Redacted<string>) =>
+    isValidOwnerPassword(Redacted.value(password));
 
   const authenticateToken = (
     token: string,
@@ -951,7 +1008,7 @@ export const make = Effect.gen(function* () {
         (session) =>
           ({
             authenticated: true,
-            auth: descriptor,
+            auth: isPasswordOrigin(request) ? getDescriptor() : descriptor,
             ...authScopeResponse(session.scopes),
             sessionMethod: session.method,
             ...(session.expiresAt ? { expiresAt: DateTime.toUtc(session.expiresAt) } : {}),
@@ -960,7 +1017,7 @@ export const make = Effect.gen(function* () {
       Effect.catchIf(isServerAuthCredentialError, () =>
         Effect.succeed({
           authenticated: false,
-          auth: descriptor,
+          auth: isPasswordOrigin(request) ? getDescriptor() : descriptor,
         } satisfies AuthSessionState),
       ),
       Effect.withSpan("EnvironmentAuth.getSessionState"),
@@ -986,6 +1043,111 @@ export const make = Effect.gen(function* () {
             ),
       ),
       connectTrustLock.withPermits(1),
+    );
+
+  const setOwnerPassword: EnvironmentAuth["Service"]["setOwnerPassword"] = Effect.fn(
+    "EnvironmentAuth.setOwnerPassword",
+  )(function* (password, request) {
+    if (
+      !isPasswordPostOrigin(request) ||
+      !validPassword(password) ||
+      !ManagedLimits.allowsRemoteClients(managedPolicy)
+    ) {
+      return yield* rejectPassword();
+    }
+    return yield* passwordLock.withPermits(1)(
+      Effect.gen(function* () {
+        const session = yield* authenticateRequest(request);
+        if (
+          session.method !== "browser-session-cookie" ||
+          !AuthOwnerPasswordV1Scopes.every((scope) => session.scopes.includes(scope))
+        ) {
+          return yield* rejectPassword();
+        }
+        const salt = NodeCrypto.randomBytes(16);
+        const key = yield* derivePassword(password, salt);
+        const verifier = Buffer.concat([salt, key]);
+        const activeSessions = yield* sessions
+          .listActive()
+          .pipe(Effect.mapError((cause) => new ServerAuthSessionsListError({ cause })));
+        yield* Effect.forEach(
+          activeSessions.filter(
+            (session) =>
+              session.subject === LINK_PAIRED_SUBJECTS.password &&
+              session.method === "browser-session-cookie",
+          ),
+          (session) =>
+            sessions
+              .revoke(session.sessionId)
+              .pipe(Effect.mapError((cause) => new ServerAuthSessionRevocationError({ cause }))),
+          { discard: true },
+        );
+        yield* secretStore
+          .set(passwordSecretName, verifier)
+          .pipe(
+            Effect.mapError((cause) => new ServerAuthSessionCredentialValidationError({ cause })),
+          );
+        passwordVerifier = Option.some(verifier);
+        return getDescriptor();
+      }).pipe(Effect.uninterruptible),
+    );
+  });
+
+  const createOwnerPasswordSession: EnvironmentAuth["Service"]["createOwnerPasswordSession"] =
+    Effect.fn("EnvironmentAuth.createOwnerPasswordSession")(
+      function* (password, request, requestMetadata) {
+        if (
+          !isPasswordPostOrigin(request) ||
+          !validPassword(password) ||
+          !ManagedLimits.allowsRemoteClients(managedPolicy)
+        ) {
+          return yield* rejectPassword();
+        }
+        const revocationsAtStart = yield* Ref.get(otherSessionRevocations);
+        const result = yield* passwordLock.withPermitsIfAvailable(1)(
+          Effect.gen(function* () {
+            const now = yield* Clock.currentTimeMillis;
+            if (
+              now < nextPasswordAttempt ||
+              Option.isNone(passwordVerifier) ||
+              passwordVerifier.value.byteLength !== 48
+            ) {
+              return yield* rejectPassword();
+            }
+            nextPasswordAttempt = now + 1000;
+            const verifier = passwordVerifier.value;
+            const key = yield* derivePassword(password, verifier.subarray(0, 16));
+            if (!NodeCrypto.timingSafeEqual(key, verifier.subarray(16)))
+              return yield* rejectPassword();
+            const session = yield* issueUnlessOthersRevokedSince(
+              revocationsAtStart,
+              sessions
+                .issue({
+                  method: "browser-session-cookie",
+                  subject: LINK_PAIRED_SUBJECTS.password,
+                  scopes: AuthOwnerPasswordV1Scopes,
+                  client: requestMetadata,
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new ServerAuthAuthenticatedSessionIssueError({ cause }),
+                  ),
+                ),
+            );
+            return {
+              response: {
+                authenticated: true,
+                ...authScopeResponse(session.scopes),
+                sessionMethod: session.method,
+                expiresAt: DateTime.toUtc(session.expiresAt),
+              },
+              sessionToken: session.token,
+            } satisfies BootstrapExchangeResult;
+          }),
+        );
+        if (Option.isNone(result)) return yield* rejectPassword();
+        return result.value;
+      },
     );
 
   const createBrowserSession: EnvironmentAuth["Service"]["createBrowserSession"] = Effect.fn(
@@ -1788,10 +1950,12 @@ export const make = Effect.gen(function* () {
 
   return EnvironmentAuth.of({
     getDescriptor: Effect.fn("EnvironmentAuth.getDescriptor")(function () {
-      return Effect.succeed(descriptor);
+      return Effect.succeed(getDescriptor());
     }),
     getSessionState,
     createBrowserSession: admitMutation(createBrowserSession),
+    createOwnerPasswordSession: admitMutation(createOwnerPasswordSession),
+    setOwnerPassword: admitMutation(setOwnerPassword),
     exchangeBootstrapCredentialForAccessToken: admitMutation(
       exchangeBootstrapCredentialForAccessToken,
     ),
@@ -1839,7 +2003,11 @@ const mcpApprovalLevel = (subject: string): AuthMcpClientAccess | undefined => {
 };
 
 /** Subjects of sessions and links a pairing link created, keyed by how the client paired. */
-const LINK_PAIRED_SUBJECTS = { link: "one-time-token", connect: CLOUD_CONNECT_SUBJECT } as const;
+const LINK_PAIRED_SUBJECTS = {
+  link: "one-time-token",
+  connect: CLOUD_CONNECT_SUBJECT,
+  password: "owner-password",
+} as const;
 
 /**
  * Revokes sessions and unused links from pairing the policy no longer allows, so a policy rolled
@@ -1856,7 +2024,10 @@ const revokePairedClientsThePolicyDisallows = Effect.fn(
 ) {
   const remoteAllowed = ManagedLimits.allowsRemoteClients(policy);
   const disallowed = new Set<string>();
-  if (!remoteAllowed) disallowed.add(LINK_PAIRED_SUBJECTS.link);
+  if (!remoteAllowed) {
+    disallowed.add(LINK_PAIRED_SUBJECTS.link);
+    disallowed.add(LINK_PAIRED_SUBJECTS.password);
+  }
   if (!ManagedLimits.allowsConnect(policy)) disallowed.add(LINK_PAIRED_SUBJECTS.connect);
   if (disallowed.size === 0) return;
   const sessions = (yield* stores.sessions.listActive()).filter(

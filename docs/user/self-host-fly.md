@@ -29,6 +29,20 @@ An image name without a slash uses your local Docker daemon. Use `--build` to
 build the checkout on Fly's remote builder. Add `--dry-run` to preview your
 command without contacting Fly or GitHub.
 
+## Browser password
+
+If no password has been set, the initial HTTPS pairing link opens
+**Settings → Sharing & access**, where you can set a browser sign-in password
+of 15–256 characters or continue using Sail without one. Use the server's
+configured HTTPS address on future browsers and sign in with the password.
+
+If you forget it, request fresh pairing links using the command under
+[Add another device](#add-another-device), open the HTTPS link, and change the
+password in Sharing & access. Changing your password signs out all browsers
+that previously signed in using the password, including this browser if it
+used that password. Independently paired devices stay signed in. Desktop and
+mobile still use pairing links.
+
 ## Sign in to providers
 
 Open the in-app terminal on your Fly environment and sign in where your

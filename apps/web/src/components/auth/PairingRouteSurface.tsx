@@ -9,6 +9,7 @@ import {
   peekPairingTokenFromUrl,
   stripPairingTokenFromUrl,
   submitServerAuthCredential,
+  submitOwnerPassword,
 } from "../../environments/primary";
 import { readHostedPairingRequest } from "../../hostedPairing";
 import { resolveRemotePairingTarget } from "@t3tools/shared/remote";
@@ -37,12 +38,16 @@ export function PairingRouteSurface({
 }: {
   auth: AuthSessionState["auth"];
   initialErrorMessage?: string;
-  onAuthenticated: () => void;
+  onAuthenticated: (offerSetup?: boolean) => void;
 }) {
   const gt = useGT();
   const messages = useMessages();
   const [autoPairToken] = useState(peekPairingTokenFromUrl);
   const [credential, setCredential] = useState(autoPairToken ?? "");
+  const [usePassword, setUsePassword] = useState(
+    auth.ownerPassword === "configured" && !autoPairToken,
+  );
+  const [password, setPassword] = useState("");
   const [errorMessage, setErrorMessage] = useState(initialErrorMessage ?? "");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const autoSubmitAttemptedRef = useRef(false);
@@ -51,26 +56,42 @@ export function PairingRouteSurface({
     setIsSubmitting(true);
     setErrorMessage("");
 
-    const submitError = await submitServerAuthCredential(nextCredential).then(
-      () => null,
-      (error) => errorMessageFromUnknown(error),
+    const result = await submitServerAuthCredential(nextCredential).then(
+      (offerSetup) => ({ kind: "success" as const, offerSetup }),
+      (error) => ({ kind: "error" as const, message: errorMessageFromUnknown(error) }),
     );
 
     setIsSubmitting(false);
 
-    if (submitError) {
-      setErrorMessage(submitError);
+    if (result.kind === "error") {
+      setErrorMessage(result.message);
       return;
     }
 
     startTransition(() => {
-      onAuthenticated();
+      onAuthenticated(result.offerSetup);
     });
   };
 
   const handleSubmit = async (event?: React.SubmitEvent<HTMLFormElement>) => {
     event?.preventDefault();
-    await submitCredential(credential);
+    if (!usePassword) {
+      await submitCredential(credential);
+      return;
+    }
+    setIsSubmitting(true);
+    setErrorMessage("");
+    const signedIn = await submitOwnerPassword(password).then(
+      () => true,
+      () => false,
+    );
+    setIsSubmitting(false);
+    if (!signedIn) {
+      setErrorMessage(gt("Could not sign in. Check your password or use a pairing link."));
+      return;
+    }
+    setPassword("");
+    startTransition(() => onAuthenticated());
   };
 
   const autoSubmit = useEffectEvent((token: string) => {
@@ -91,29 +112,50 @@ export function PairingRouteSurface({
   return (
     <StandalonePage>
       <StandalonePageHeader
-        title={gt("Pair with this environment")}
-        description={describeAuthGate(auth.bootstrapMethods, messages)}
+        title={usePassword ? gt("Sign in to Sail") : gt("Pair with this environment")}
+        description={
+          usePassword
+            ? gt("Enter your server password to continue.")
+            : describeAuthGate(auth.bootstrapMethods, messages)
+        }
       />
 
       <form className="mt-6 space-y-4" onSubmit={(event) => void handleSubmit(event)}>
-        <div className="space-y-2">
-          <label className="text-sm font-medium" htmlFor="pairing-token">
-            <T>Pairing token</T>
-          </label>
-          <Input
-            id="pairing-token"
-            autoCapitalize="none"
-            autoComplete="off"
-            autoCorrect="off"
-            disabled={isSubmitting}
-            nativeInput
-            onChange={(event) => setCredential(event.currentTarget.value)}
-            placeholder={gt("Paste a one-time token or pairing secret")}
-            spellCheck={false}
-            value={credential}
-          />
-        </div>
-
+        {usePassword ? (
+          <div className="space-y-2">
+            <label className="text-sm font-medium" htmlFor="owner-password">
+              <T>Password</T>
+            </label>
+            <Input
+              id="owner-password"
+              type="password"
+              autoComplete="current-password"
+              disabled={isSubmitting}
+              nativeInput
+              value={password}
+              onChange={(event) => setPassword(event.currentTarget.value)}
+              required
+            />
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <label className="text-sm font-medium" htmlFor="pairing-token">
+              <T>Pairing token</T>
+            </label>
+            <Input
+              id="pairing-token"
+              autoCapitalize="none"
+              autoComplete="off"
+              autoCorrect="off"
+              disabled={isSubmitting}
+              nativeInput
+              onChange={(event) => setCredential(event.currentTarget.value)}
+              placeholder={gt("Paste a one-time token or pairing secret")}
+              spellCheck={false}
+              value={credential}
+            />
+          </div>
+        )}
         {errorMessage ? (
           <Alert variant="error">
             <AlertDescription>{errorMessage}</AlertDescription>
@@ -122,7 +164,13 @@ export function PairingRouteSurface({
 
         <div className="flex flex-wrap gap-2">
           <Button disabled={isSubmitting} size="sm" type="submit">
-            {isSubmitting ? gt("Pairing...") : gt("Continue")}
+            {usePassword
+              ? isSubmitting
+                ? gt("Signing in…")
+                : gt("Sign in")
+              : isSubmitting
+                ? gt("Pairing...")
+                : gt("Continue")}
           </Button>
           <Button
             disabled={isSubmitting}
@@ -135,9 +183,26 @@ export function PairingRouteSurface({
         </div>
       </form>
 
-      <div className="mt-6 rounded-lg border border-border/70 bg-background/55 px-3 py-3 text-xs leading-relaxed text-muted-foreground">
-        {describeSupportedMethods(auth.bootstrapMethods, messages)}
-      </div>
+      {auth.ownerPassword === "configured" ? (
+        <Button
+          className="mt-4"
+          variant="outline"
+          size="sm"
+          disabled={isSubmitting}
+          onClick={() => {
+            setUsePassword(!usePassword);
+            setPassword("");
+            setErrorMessage("");
+          }}
+        >
+          {usePassword ? gt("Use a pairing link instead") : gt("Use password instead")}
+        </Button>
+      ) : null}
+      {!usePassword ? (
+        <div className="mt-6 rounded-lg border border-border/70 bg-background/55 px-3 py-3 text-xs leading-relaxed text-muted-foreground">
+          {describeSupportedMethods(auth.bootstrapMethods, messages)}
+        </div>
+      ) : null}
     </StandalonePage>
   );
 }

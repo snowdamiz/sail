@@ -96,6 +96,9 @@ export const Route = createRootRoute({
     if (authGateState.status === "authenticated") {
       // Idempotent, so every navigation can ask for it.
       void configureClientTracing();
+      if (authGateState.offerOwnerPasswordSetup && location.pathname !== "/settings/access") {
+        throw redirect({ to: "/settings/access", replace: true });
+      }
     }
     if (
       authGateState.status === "authenticated" &&

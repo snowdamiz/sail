@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   authScopeResponse,
   AuthAdministrativeClientScopes,
+  AuthStandardClientScopes,
   connectDeviceVerificationCode,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
@@ -11,6 +12,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
@@ -41,11 +43,11 @@ const layerServerConfig = (overrides?: Partial<ServerConfig.ServerConfig["Servic
 
 const layerEnvironmentAuth = (overrides?: Partial<ServerConfig.ServerConfig["Service"]>) =>
   EnvironmentAuth.layer.pipe(
-    Layer.provide(ManagedPolicy.layerTest()),
+    Layer.provideMerge(ManagedPolicy.layerTest()),
     Layer.provideMerge(SqlitePersistence.layerMemory),
-    Layer.provide(ServerSecretStore.layer),
+    Layer.provideMerge(ServerSecretStore.layer),
     Layer.provide(ServerEnvironment.layerIdentity),
-    Layer.provide(layerServerConfig(overrides)),
+    Layer.provideMerge(layerServerConfig(overrides)),
   );
 
 const makeCookieRequest = (
@@ -83,6 +85,101 @@ const requestMetadata = {
 it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
   "EnvironmentAuth.layer",
   (it) => {
+    it.effect(
+      "pairs, sets a browser password, restores it on restart and recovers by pairing",
+      () =>
+        Effect.gen(function* () {
+          const auth = yield* EnvironmentAuth.EnvironmentAuth;
+          const sessions = yield* SessionStore.SessionStore;
+          const password = Redacted.make("a".repeat(15));
+          const replacement = Redacted.make("b".repeat(256));
+          const origin = "https://sail.example";
+          const cookieRequest = (token: string) =>
+            HttpServerRequest.fromWeb(
+              new Request(origin, {
+                headers: {
+                  host: "sail.example",
+                  origin,
+                  cookie: `${sessions.cookieName}=${token}`,
+                },
+              }),
+            );
+          const anonymous = cookieRequest("");
+          const pairing = yield* auth.issuePairingCredential();
+          const owner = yield* auth.createBrowserSession(pairing.credential, requestMetadata);
+          const ownerRequest = cookieRequest(owner.sessionToken);
+          expect((yield* auth.getDescriptor()).ownerPassword).toBe("unset");
+          expect(
+            (yield* Effect.flip(auth.setOwnerPassword(Redacted.make("a".repeat(14)), ownerRequest)))
+              ._tag,
+          ).toBe("ServerAuthInvalidCredentialError");
+          expect((yield* auth.setOwnerPassword(password, ownerRequest)).ownerPassword).toBe(
+            "configured",
+          );
+
+          const restarted = yield* EnvironmentAuth.make;
+          expect((yield* restarted.getSessionState(anonymous)).auth.ownerPassword).toBe(
+            "configured",
+          );
+          const signedIn = yield* restarted.createOwnerPasswordSession(
+            password,
+            anonymous,
+            requestMetadata,
+          );
+          const signedInRequest = cookieRequest(signedIn.sessionToken);
+          const session = yield* restarted.authenticateHttpRequest(signedInRequest);
+          expect(session.method).toBe("browser-session-cookie");
+          expect(session.scopes).toEqual(AuthStandardClientScopes);
+          yield* TestClock.adjust("1 second");
+          const secondSignIn = yield* restarted.createOwnerPasswordSession(
+            password,
+            anonymous,
+            requestMetadata,
+          );
+
+          const recoveryLink = yield* restarted.issuePairingCredential();
+          const recovered = yield* restarted.createBrowserSession(
+            recoveryLink.credential,
+            requestMetadata,
+          );
+          yield* restarted.setOwnerPassword(replacement, cookieRequest(recovered.sessionToken));
+          expect((yield* restarted.getSessionState(signedInRequest)).authenticated).toBe(false);
+          expect(
+            (yield* restarted.getSessionState(cookieRequest(secondSignIn.sessionToken)))
+              .authenticated,
+          ).toBe(false);
+          expect((yield* restarted.getSessionState(ownerRequest)).authenticated).toBe(true);
+          expect(
+            (yield* restarted.getSessionState(cookieRequest(recovered.sessionToken))).authenticated,
+          ).toBe(true);
+          yield* TestClock.adjust("1 second");
+          expect(
+            (yield* Effect.flip(
+              restarted.createOwnerPasswordSession(password, anonymous, requestMetadata),
+            ))._tag,
+          ).toBe("ServerAuthInvalidCredentialError");
+          yield* TestClock.adjust("1 second");
+          const newSession = yield* restarted.createOwnerPasswordSession(
+            replacement,
+            anonymous,
+            requestMetadata,
+          );
+          const newRequest = cookieRequest(newSession.sessionToken);
+          expect((yield* restarted.getSessionState(newRequest)).authenticated).toBe(true);
+          yield* restarted.setOwnerPassword(password, newRequest);
+          expect((yield* restarted.getSessionState(newRequest)).authenticated).toBe(false);
+          expect((yield* restarted.getSessionState(ownerRequest)).authenticated).toBe(true);
+        }).pipe(
+          Effect.provide(
+            layerEnvironmentAuth({
+              mode: "web",
+              ownerPasswordEnabled: true,
+              publicUrl: new URL("https://sail.example"),
+            }),
+          ),
+        ),
+    );
+
     it.effect("uses the reusable dev cookie without overriding a normal scoped cookie", () =>
       Effect.gen(function* () {
         const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;

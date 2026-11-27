@@ -101,6 +101,8 @@ export async function installEnvironmentHttpTest(scenario: EnvironmentHttpTestSc
                 );
               }),
             )
+            .handle("ownerPasswordSession", () => unexpectedEndpoint("auth.ownerPasswordSession"))
+            .handle("setOwnerPassword", () => unexpectedEndpoint("auth.setOwnerPassword"))
             .handle("token", () => unexpectedEndpoint("auth.token"))
             .handle("webSocketTicket", () => unexpectedEndpoint("auth.webSocketTicket"))
             .handle("webSocketTicketFor", () => unexpectedEndpoint("auth.webSocketTicketFor"))

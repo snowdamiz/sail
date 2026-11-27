@@ -621,6 +621,11 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     noBrowser,
     startupPresentation,
     startupPairing,
+    ...(servesWebPairing &&
+    publicUrl?.protocol === "https:" &&
+    (yield* Config.Boolean("SAIL_OWNER_PASSWORD").pipe(Config.withDefault(false)))
+      ? { ownerPasswordEnabled: true }
+      : {}),
     desktopBootstrapToken,
     ...(desktopBootstrapSecret === undefined ? {} : { desktopBootstrapSecret }),
     ...(desktopReadinessSecret === undefined ? {} : { desktopReadinessSecret }),

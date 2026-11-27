@@ -12961,5 +12961,19 @@
   "ac80a1944c1d1b97": "Notices for dependencies, assets, and optional tools used by Sail.",
   "402105ade374898f": "Sail home",
   "5ef9294f9d1c61d6": "Boats",
-  "f71b09879b8b3741": "Signing in…"
+  "f71b09879b8b3741": "Signing in…",
+  "7e10d19676566cec": "Could not sign in. Check your password or use a pairing link.",
+  "43ca6de2e08b8cc5": "Sign in to Sail",
+  "e179042951b16ea3": "Enter your server password to continue.",
+  "ea885fcba901d721": "Use a pairing link instead",
+  "f39e30892c7f3f89": "Use password instead",
+  "81f4dd9973774d67": "Password",
+  "b9e6dd92efeb5b72": "Browser sign-in password",
+  "ac2f7cf622abeaeb": "Sign in from future browsers without a pairing link. Use a password of 15–256 characters. Changing it signs out password-based sessions, but not paired devices. Pairing links still work for recovery.",
+  "a07f0a8f902e9972": "New password",
+  "274c47f07d8687c8": "Confirm password",
+  "07c1162f1cfdff2f": "Change password",
+  "c95576eb2a5e4f06": "Set password",
+  "c446b7021eebe478": "Password saved. Password-based sessions have been signed out. Paired devices remain signed in.",
+  "092ce0176682d08e": "Could not save password. Try again."
 }

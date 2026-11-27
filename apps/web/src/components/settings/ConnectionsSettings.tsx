@@ -11,6 +11,7 @@ import { T, useGT, useMessages, Var } from "gt-react";
 import {
   AuthAccessReadScope,
   AuthAccessWriteScope,
+  AuthOwnerPasswordV1Scopes,
   AuthEnvironmentMaintainScope,
   AuthRelayReadScope,
   AuthRelayWriteScope,
@@ -43,6 +44,7 @@ import {
 } from "./ConnectionsSettings.logic";
 import { settingsScopeEnvironmentLabel } from "./settingsScopeAxis";
 import { useAccessEnvironment } from "./useAccessEnvironment";
+import { OwnerPasswordSettings } from "./OwnerPasswordSettings";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 import { ManagedByOrganization } from "../ManagedPolicy";
 import { LocalEnvironmentSetting } from "./LocalEnvironmentSetting";
@@ -1343,6 +1345,17 @@ function ConnectionsSettingsContent({
               ) : null
             }
           >
+            {isPrimaryAccess &&
+            !desktopBridge &&
+            accessSessionState.data?.auth.ownerPassword &&
+            accessSessionState.data.authenticated &&
+            accessSessionState.data.sessionMethod === "browser-session-cookie" &&
+            AuthOwnerPasswordV1Scopes.every((scope) => currentSessionScopes?.includes(scope)) ? (
+              <OwnerPasswordSettings
+                environmentId={accessEnvironmentId}
+                configured={accessSessionState.data.auth.ownerPassword === "configured"}
+              />
+            ) : null}
             {accessServerConfig?.managedPolicy ? (
               <div className="px-3 py-2 sm:px-4">
                 <ManagedByOrganization policy={accessServerConfig.managedPolicy} />
