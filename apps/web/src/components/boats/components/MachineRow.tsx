@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { offered, useBoatAccess } from "../access";
 import type { MachineView, Size } from "../types";
 import {
   ACTIONS,
@@ -41,9 +42,11 @@ export function MachineRow({
   onOpen,
 }: Props) {
   const key = machineKey(m);
-  const primary = primaryAction(m);
+  const access = useBoatAccess();
+  const paired = access.isPaired(m.environmentId);
+  const primary = offered(access, primaryAction(m, paired));
   const detail = useDetail(m);
-  const extra = menuActions(m, sizes);
+  const extra = menuActions(m, sizes, paired).filter((a) => "kind" in a || offered(access, a));
   const [armed, arm] = useArmed(); // two-step confirm for the primary "Remove"
   // "Add a project…" picks from Sail's projects in the details view
   const menuAction = (a: MenuItem) => ("kind" in a ? onOpen?.(true) : onAction(a));
@@ -91,6 +94,7 @@ export function MachineRow({
         ) : primary ? (
           <button
             className={`btn btn-sm ${armed ? "btn-danger" : primary.solid ? "btn-solid" : "btn-outline"}`}
+            disabled={!access.can(primary.cmd)}
             onClick={runPrimary}
           >
             {armed ? "Confirm" : primary.label}
@@ -116,17 +120,21 @@ export function MachineRow({
             <button
               key={agent}
               className="btn btn-link"
-              disabled={!!pending}
+              disabled={!!pending || !access.can("sign_in_agent")}
               onClick={() => onAction(signInTo(agent))}
             >
               {m.signedOut.length > 1 ? <AgentName name={agent} /> : "Sign in"}
             </button>
           ))}
         </div>
-      ) : needsProject(m) && onOpen ? (
+      ) : needsProject(m, paired) && onOpen ? (
         <div className="row-note">
           <span className="row-note-text">No projects yet</span>
-          <button className="btn btn-link" onClick={() => onOpen(true)}>
+          <button
+            className="btn btn-link"
+            disabled={!access.can("add_project")}
+            onClick={() => onOpen(true)}
+          >
             Add one
           </button>
         </div>
@@ -157,6 +165,7 @@ function RowMenu({
   actions: MenuItem[];
   onAction: (a: MenuItem) => void;
 }) {
+  const access = useBoatAccess();
   const [open, setOpen] = useState(false);
   const [confirm, setConfirm] = useState(false);
   // anchored to the button's edge, opening toward the side with more room; scrolls if neither fits
@@ -249,7 +258,13 @@ function RowMenu({
         >
           <div className="menu-label">{machine.name}</div>
           {actions.map((a) => (
-            <button key={a.label} role="menuitem" className="menu-item" onClick={() => choose(a)}>
+            <button
+              key={a.label}
+              role="menuitem"
+              className="menu-item"
+              disabled={!access.can("kind" in a ? "add_project" : a.cmd)}
+              onClick={() => choose(a)}
+            >
               {a.label}
             </button>
           ))}
@@ -257,6 +272,7 @@ function RowMenu({
           <button
             role="menuitem"
             className={`menu-item danger${confirm ? " is-armed" : ""}`}
+            disabled={!access.can("delete_machine")}
             onClick={() => (confirm ? choose(ACTIONS.del) : setConfirm(true))}
           >
             {confirm ? "Click again to delete forever" : "Delete machine…"}

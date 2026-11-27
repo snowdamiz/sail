@@ -98,7 +98,7 @@ impl MachineRuntime {
         result
     }
 
-    /// Returns the files that could not be copied, with their reason.
+    /// Returns the files that could not be copied; the log says why.
     async fn clone_project(&self, project: &Project, files: Vec<(String, String)>) -> Result<Vec<String>> {
         let (url, token) = (self.upstream_url(), self.upstream_token());
         let config = upstream::call(&url, &token, "server.getConfig", json!({})).await?;
@@ -151,7 +151,8 @@ impl MachineRuntime {
             )
             .await;
             if let Err(e) = written {
-                failed.push(format!("{path}: {e:#}"));
+                tracing::warn!("writing {path} on {}: {e:#}", self.id());
+                failed.push(path);
             }
         }
         Ok(failed)

@@ -75,6 +75,7 @@ import {
   MessageSquareIcon,
   PaletteIcon,
   RotateCcwIcon,
+  SailboatIcon,
   SettingsIcon,
   MonitorIcon,
   PinIcon,
@@ -1801,6 +1802,17 @@ function OpenCommandPaletteDialog(props: {
       },
     });
   }
+
+  actionItems.push({
+    kind: "action",
+    value: "action:boats",
+    searchTerms: ["boats", "boat", "machines", "cloud", "sandbox", "sail"],
+    title: gt("Open Boats"),
+    icon: <SailboatIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/boats" });
+    },
+  });
 
   actionItems.push({
     kind: "action",

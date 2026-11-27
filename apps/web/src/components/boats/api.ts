@@ -1,106 +1,86 @@
-import type { DesktopBoatStatus } from "@t3tools/contracts";
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { CommandArgs, CommandName, CommandResult, MachineDetails, UiState } from "./types";
+import type { BoatsView } from "@t3tools/client-runtime/state/boats";
+import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import type { EnvironmentId } from "@t3tools/contracts";
+import { useRouter } from "@tanstack/react-router";
+import { useEffect, useRef, useState } from "react";
 
-function getBoatBridge() {
-  if (typeof window === "undefined") return null;
-  return window.desktopBridge?.boat ?? null;
-}
-
-export function hasDesktopBoatBridge(): boolean {
-  return getBoatBridge() !== null;
-}
+import { readLocalApi } from "~/localApi";
+import { appAtomRegistry } from "~/rpc/atomRegistry";
+import { boatsEnvironment } from "~/state/boats";
+import { readLocalEnvironmentId } from "~/state/environments";
+import { useEnvironmentQuery } from "~/state/query";
+import { usePairFromLink } from "../desktop/DesktopWebLinkCoordinator";
+import { type BoatLink, type BoatReply, classifyBoatLink, errorText } from "./reply";
+import type { CommandArgs, CommandName, MachineDetails, UiState } from "./types";
 
 export async function call<C extends CommandName>(
-  cmd: C,
+  command: C,
   args: CommandArgs<C>,
-): Promise<CommandResult<C>> {
-  const bridge = getBoatBridge();
-  if (!bridge) {
-    throw new Error("Sail Boats requires the Sail desktop app.");
+): Promise<BoatReply<C>> {
+  const environmentId = readLocalEnvironmentId();
+  if (environmentId === null) throw new Error("This app is not connected to a server.");
+  const result = await runAtomCommand(
+    appAtomRegistry,
+    boatsEnvironment.invoke,
+    { environmentId, input: args === undefined ? { command } : { command, args } },
+    { reportFailure: false },
+  );
+  if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+  return result.value as BoatReply<C>;
+}
+
+export type BoatsPage =
+  | { readonly kind: "noServer" }
+  | { readonly kind: "starting" }
+  | { readonly kind: "offline"; readonly message: string; readonly daemon: boolean }
+  | { readonly kind: "setup" | "ready"; readonly state: UiState };
+
+function boatsPage(view: BoatsView | null, error: string | null): BoatsPage {
+  if (error !== null) return { kind: "offline", message: error, daemon: false };
+  if (view?.status?.phase === "error") {
+    return { kind: "offline", message: view.status.error ?? "Boat daemon error", daemon: true };
   }
-  return (await bridge.invoke(cmd, args)) as CommandResult<C>;
+  const state = (view?.state ?? null) as UiState | null;
+  if (state === null) return { kind: "starting" };
+  return state.setup === "ready" ? { kind: "ready", state } : { kind: "setup", state };
 }
 
-/** Rejections are strings per contract; normalise anything else. */
-export function errorText(e: unknown): string {
-  if (typeof e === "string") return e;
-  if (e instanceof Error) return e.message;
-  return "Something went wrong";
+export function useBoatsPage(environmentId: EnvironmentId | null) {
+  const query = useEnvironmentQuery(
+    environmentId === null ? null : boatsEnvironment.view({ environmentId, input: {} }),
+  );
+  const page: BoatsPage =
+    environmentId === null ? { kind: "noServer" } : boatsPage(query.data, query.error);
+  const retry = () =>
+    page.kind === "offline" && page.daemon
+      ? call("get_state", undefined).then(() => undefined)
+      : Promise.resolve(query.refresh());
+  return { page, retry };
 }
 
-export function useBoatDaemonStatus(): DesktopBoatStatus | null {
-  const [status, setStatus] = useState<DesktopBoatStatus | null>(null);
-
-  useEffect(() => {
-    const bridge = getBoatBridge();
-    if (!bridge) return;
-    let alive = true;
-    const unsubscribe = bridge.onStatus((next) => {
-      if (alive) setStatus(next);
-    });
-    void bridge.getStatus().then(
-      (next) => {
-        if (alive) setStatus(next);
-      },
-      () => undefined,
-    );
-    return () => {
-      alive = false;
-      unsubscribe();
-    };
-  }, []);
-
-  return status;
-}
-
-export function useUiState(): {
-  state: UiState | null;
-  loadError: string | null;
-  retry: () => void;
-} {
-  const [state, setState] = useState<UiState | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [attempt, setAttempt] = useState(0);
-
-  useEffect(() => {
-    const bridge = getBoatBridge();
-    if (!bridge) {
-      setLoadError("Sail Boats requires the Sail desktop app.");
-      return;
+export function useFollowBoatLink(onHost: boolean) {
+  const router = useRouter();
+  const pairFromLink = usePairFromLink();
+  return (openUrl: string | undefined): BoatLink => {
+    const link = classifyBoatLink(openUrl, onHost);
+    switch (link.kind) {
+      case "pairing":
+        void pairFromLink(link.pairingUrl);
+        break;
+      case "app":
+        void router.navigate({ href: link.href });
+        break;
+      case "browser":
+        // The page shows the link too, for a browser that blocks a tab opened after a reply.
+        void readLocalApi()
+          ?.shell.openExternal(link.url)
+          .catch(() => undefined);
+        break;
+      case "ignored":
+        break;
     }
-
-    let alive = true;
-    const unsubscribe = bridge.onState((next) => {
-      if (!alive || !next || typeof next !== "object") return;
-      setLoadError(null);
-      setState(next as UiState);
-    });
-
-    void bridge.invoke("get_state", undefined).then(
-      (s) => {
-        if (!alive) return;
-        setLoadError(null);
-        setState(s as UiState);
-      },
-      (e) => {
-        if (!alive) return;
-        setLoadError(errorText(e));
-      },
-    );
-
-    return () => {
-      alive = false;
-      unsubscribe();
-    };
-  }, [attempt]);
-
-  const retry = useCallback(() => {
-    setLoadError(null);
-    setAttempt((n) => n + 1);
-  }, []);
-
-  return { state, loadError, retry };
+    return link;
+  };
 }
 
 /**
@@ -119,10 +99,10 @@ export function useMachineDetails(
   useEffect(() => {
     const req = ++latest.current;
     void call("get_machine_details", { id }).then(
-      (d) => {
+      ({ data }) => {
         if (req !== latest.current) return;
         failing.current = false;
-        setDetails(d);
+        setDetails(data);
       },
       (e) => {
         if (req !== latest.current || failing.current) return;
@@ -133,20 +113,4 @@ export function useMachineDetails(
   }, [id, version, onError]);
 
   return details?.id === id ? details : null;
-}
-
-/** The machine's latest thread id, looked up once per machine; null when it has none. */
-export function useLatestThread(id: string): string | null {
-  const [latest, setLatest] = useState<{ id: string; thread: string | null } | null>(null);
-  useEffect(() => {
-    let live = true;
-    void call("latest_thread", { id }).then(
-      (thread) => live && setLatest({ id, thread }),
-      () => live && setLatest({ id, thread: null }),
-    );
-    return () => {
-      live = false;
-    };
-  }, [id]);
-  return latest?.id === id ? latest.thread : null;
 }

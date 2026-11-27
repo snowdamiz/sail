@@ -64,6 +64,7 @@ pub enum MachineState {
 #[serde(rename_all = "camelCase")]
 pub struct MachineView {
     pub id: String,
+    pub environment_id: Option<String>,
     pub name: String,
     pub size: String,
     pub state: MachineState,
@@ -445,7 +446,6 @@ impl App {
         self.shared.changed();
     }
 
-    /// Creates a machine, then adds this computer's Sail projects `projects` (ids) to it.
     pub async fn create_machine(self: &Arc<Self>, name: &str, size: &str, projects: Vec<String>) -> Result<Arc<MachineRuntime>> {
         if !valid_name(name) {
             bail!("machine names are 1-32 lowercase letters, digits or dashes, starting with a letter or digit");
@@ -494,15 +494,19 @@ impl App {
         let (app, m) = (self.clone(), machine.clone());
         tokio::spawn(async move {
             for id in projects {
-                if let Err(e) = app.add_project(&m, &id).await {
-                    app.shared.notify(format!("A project didn't reach {}", m.record().name), format!("{e:#}"));
+                let added = match app.resolve_project(&id).await {
+                    Ok(project) => app.add_resolved_project(&m, &project).await.map_err(|e| (Some(project.title), e)),
+                    Err(e) => Err((None, e)),
+                };
+                if let Err((title, e)) = added {
+                    tracing::warn!("adding {id} to {}: {e:#}", m.id());
+                    app.shared.notify(
+                        format!("{} didn't reach {}", title.as_deref().unwrap_or("A project"), m.record().name),
+                        "Adding it again from Boats shows why.",
+                    );
                 }
             }
         });
-        // The machine exists either way; its row still offers "Add to Sail".
-        if let Err(e) = self.pair(&machine) {
-            self.shared.notify(format!("Couldn't open Sail for {name}"), format!("{e:#}; use Add to Sail"));
-        }
         Ok(machine)
     }
 
@@ -515,36 +519,39 @@ impl App {
     /// Sail's "Add to another machine" does: cloned from its remote, with its env files. Resolves
     /// once cloned.
     pub async fn add_project(&self, machine: &MachineRuntime, project: &str) -> Result<crate::projects::Project> {
-        let project = self
-            .local_projects()
+        let project = self.resolve_project(project).await?;
+        self.add_resolved_project(machine, &project).await?;
+        Ok(project)
+    }
+
+    async fn resolve_project(&self, project: &str) -> Result<crate::projects::Project> {
+        self.local_projects()
             .await?
             .into_iter()
             .find(|p| p.id == project || p.path == project || p.title.eq_ignore_ascii_case(project))
-            .ok_or_else(|| anyhow!("no project {project} with a git remote"))?;
-        let (files, mut failed) = self.shared.t3.files_to_copy(&project).await?;
-        failed.extend(machine.add_project(&project, files).await?);
+            .ok_or_else(|| anyhow!("no project {project} with a git remote"))
+    }
+
+    async fn add_resolved_project(&self, machine: &MachineRuntime, project: &crate::projects::Project) -> Result<()> {
+        let (files, mut failed) = self.shared.t3.files_to_copy(project).await?;
+        failed.extend(machine.add_project(project, files).await?);
         if !failed.is_empty() {
             self.shared.notify(
                 format!("Some of {}'s files didn't reach {}", project.title, machine.record().name),
                 failed.join("\n"),
             );
         }
-        Ok(project)
+        Ok(())
     }
 
-    /// Opens Sail's own "add backend" confirmation for this machine.
-    pub fn pair(&self, machine: &MachineRuntime) -> Result<()> {
+    pub fn pair_link(&self, machine: &MachineRuntime) -> String {
         let code = machine.auth.new_pairing_code();
         let pairing_url = format!("http://localhost:{}/pair#token={code}", machine.record().local_port);
-        let scheme = crate::t3desktop::deep_link_scheme();
-        self.shared
-            .t3
-            .open_url(&format!("{scheme}://pair?pairingUrl={}", urlencoding::encode(&pairing_url)))
+        crate::t3desktop::pair_link(&pairing_url)
     }
 
     /// Refuses while work runs on the machine, unless `discard`. Sail offers no way to remove
-    /// a backend from outside, so a paired machine ends with Sail in front and a note on what
-    /// to remove there.
+    /// a backend from outside, so a paired machine ends with a note on what to remove there.
     pub async fn delete_machine(&self, machine: &MachineRuntime, discard: bool) -> Result<()> {
         // Boat can't report a deleted sandbox's usage: the last chance to count its tail.
         let (day, month) = periods();
@@ -586,7 +593,6 @@ impl App {
                 format!("Remove {} from Sail", record.name),
                 "Sail still lists it. Remove it there under Settings → Environments.",
             );
-            let _ = self.shared.t3.activate();
         }
         Ok(())
     }
@@ -596,6 +602,7 @@ impl App {
         for c in self.creating.lock().unwrap().iter() {
             views.push(MachineView {
                 id: String::new(),
+                environment_id: None,
                 name: c.name.clone(),
                 size: String::new(),
                 state: MachineState::Creating,
@@ -759,17 +766,12 @@ impl App {
         })
     }
 
-    /// Brings Sail forward on `thread`, or just to the front; an unpaired machine gets the
-    /// "add backend" dialog instead.
-    pub fn open_in_t3(&self, machine: &MachineRuntime, thread: Option<&str>) -> Result<()> {
+    pub fn open_in_t3(&self, machine: &MachineRuntime, thread: Option<&str>) -> Option<String> {
         let record = machine.record();
         if record.client_tokens.is_empty() {
-            return self.pair(machine);
+            return Some(self.pair_link(machine));
         }
-        match thread {
-            Some(thread) => self.shared.t3.open_thread(&record.environment_id, thread),
-            None => self.shared.t3.activate(),
-        }
+        thread.map(|thread| crate::t3desktop::thread_link(&record.environment_id, thread))
     }
 }
 
@@ -817,6 +819,7 @@ fn view(m: &MachineRuntime) -> MachineView {
     let running_watchdog = watchdog.as_ref().filter(|_| m.power() == Power::Running);
     MachineView {
         id: r.id.clone(),
+        environment_id: Some(r.environment_id),
         name: r.name.clone(),
         size: r.size.clone(),
         state,
@@ -863,21 +866,20 @@ fn human_secs(s: u64) -> String {
     }
 }
 
-/// Fallback OS URL opener when running without a connected Electron desktop event consumer.
 pub fn open_url(url: &str) -> Result<()> {
     let status = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(url).status()?
+        std::process::Command::new("open").arg(url).stdin(std::process::Stdio::null()).status()?
     } else if cfg!(target_os = "linux") {
-        match std::process::Command::new("gio").args(["open", url]).status() {
+        match std::process::Command::new("gio").args(["open", url]).stdin(std::process::Stdio::null()).status() {
             Ok(s) if s.success() => s,
-            _ => std::process::Command::new("xdg-open").arg(url).status()?,
+            _ => std::process::Command::new("xdg-open").arg(url).stdin(std::process::Stdio::null()).status()?,
         }
     } else {
         // No shell: `cmd /C start` would run anything after a `&` in the URL.
-        std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).status()?
+        std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).stdin(std::process::Stdio::null()).status()?
     };
     if !status.success() {
-        bail!("could not open {url}");
+        bail!("could not open the link on this computer");
     }
     Ok(())
 }

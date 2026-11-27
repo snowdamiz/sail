@@ -45,7 +45,6 @@ import * as DesktopAssets from "./app/DesktopAssets.ts";
 import * as DesktopPrimaryPaste from "./app/DesktopPrimaryPaste.ts";
 import * as DesktopBackendConfiguration from "./backend/DesktopBackendConfiguration.ts";
 import * as DesktopBackendPool from "./backend/DesktopBackendPool.ts";
-import * as DesktopBoatSupervisor from "./boat/DesktopBoatSupervisor.ts";
 import * as DesktopLocalEnvironmentAuth from "./backend/DesktopLocalEnvironmentAuth.ts";
 import * as DesktopNetworkInterfaces from "./backend/DesktopNetworkInterfaces.ts";
 import * as DesktopEnvironment from "./app/DesktopEnvironment.ts";
@@ -242,8 +241,7 @@ const layerDesktopClerk = DesktopClerk.layer.pipe(
   Layer.provideMerge(ElectronApp.layer),
 );
 
-const layerDesktopApplicationRuntime = DesktopBoatSupervisor.layer.pipe(
-  Layer.provideMerge(layerDesktopApplication),
+const layerDesktopApplicationRuntime = layerDesktopApplication.pipe(
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   Layer.provideMerge(NodeHttpClient.layerUndici),
   Layer.provideMerge(NetService.layer),

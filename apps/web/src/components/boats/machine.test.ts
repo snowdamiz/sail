@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
-import { errorText } from "./api";
+import { classifyBoatLink, errorText } from "./reply";
 import {
+  ACTIONS,
   cleanName,
   duration,
   machineKey,
   menuActions,
-  openIn,
   primaryAction,
   stateTag,
   suggestName,
@@ -15,6 +15,7 @@ import type { MachineView, Size } from "./types";
 function makeMachine(overrides: Partial<MachineView> = {}): MachineView {
   return {
     id: "m-1",
+    environmentId: null,
     name: "harbor",
     state: "idle",
     detail: "",
@@ -46,13 +47,12 @@ describe("Sail Boats helpers", () => {
     const unpaired = makeMachine({ state: "idle", paired: false });
     expect(machineKey(unpaired)).toBe("m-1");
     expect(stateTag(unpaired.state)).toBe("idle");
-    expect(primaryAction(unpaired)?.label).toBe("Add to Sail");
-    expect(openIn(null).label).toBe("Open in Sail");
-    expect(openIn("t-1").label).toBe("Open last thread in Sail");
+    expect(primaryAction(unpaired, false)?.label).toBe("Add to Sail");
+    expect(ACTIONS.open.label).toBe("Open last thread in Sail");
 
     const paired = makeMachine({ state: "asleep", paired: true });
-    expect(primaryAction(paired)).toBeNull();
-    const menu = menuActions(paired, SIZES);
+    expect(primaryAction(paired, true)).toBeNull();
+    const menu = menuActions(paired, SIZES, true);
     expect(menu.some((item) => "cmd" in item && item.cmd === "wake_machine")).toBe(true);
     expect(menu.some((item) => "cmd" in item && item.label === "Add to Sail again")).toBe(true);
     expect(menu.some((item) => "cmd" in item && item.label === "Resize to large")).toBe(true);
@@ -64,5 +64,21 @@ describe("Sail Boats helpers", () => {
     expect(cleanName("My Boat_01!")).toBe("my-boat-01");
     expect(suggestName(["skiff"])).toBe("dinghy");
     expect(duration(7500)).toBe("2h 5m");
+  });
+
+  it("sends a reply's link to pairing, an app route, or the browser", () => {
+    const pairingUrl = "http://localhost:47732/pair#token=abc";
+    const pairLink = `sail-dev://pair?pairingUrl=${encodeURIComponent(pairingUrl)}`;
+    expect(classifyBoatLink(pairLink, true)).toEqual({ kind: "pairing", pairingUrl });
+    expect(classifyBoatLink(pairLink, false)).toEqual({ kind: "ignored" });
+    expect(classifyBoatLink("sail://threads/env-1/thread-1", false)).toEqual({
+      kind: "app",
+      href: "/env-1/thread-1",
+    });
+    const signIn = "https://auth.localtest.me/boat/device?code=ABCD";
+    expect(classifyBoatLink(signIn, false)).toEqual({ kind: "browser", url: signIn });
+    expect(classifyBoatLink("http://localhost:47732/", true)).toEqual({ kind: "ignored" });
+    expect(classifyBoatLink("sail://", true)).toEqual({ kind: "ignored" });
+    expect(classifyBoatLink(undefined, true)).toEqual({ kind: "ignored" });
   });
 });

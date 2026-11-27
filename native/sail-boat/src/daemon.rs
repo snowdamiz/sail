@@ -1,8 +1,5 @@
-//! Headless HTTP + SSE control daemon (`sail-boatd`) that bridges the Sail Electron main process
-//! with the Sail Boat Rust engine and MCP server.
-
 use crate::app::{self, App, Costs, MachineView, Setup};
-use crate::boat::Boat;
+use crate::boat::{Boat, SignIn};
 use crate::machine::provision::{SizeInfo, SIZES};
 use crate::machine::Event;
 use crate::mcp;
@@ -24,7 +21,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::convert::Infallible;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -32,6 +28,7 @@ use tokio::task::JoinHandle;
 
 const COSTS_EVERY: Duration = Duration::from_secs(300);
 const EVENT_CHANNEL_CAPACITY: usize = 64;
+const BOAT_DAEMON_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Clone, Debug)]
 pub struct DaemonConfig {
@@ -39,6 +36,8 @@ pub struct DaemonConfig {
     pub mcp_port: u16,
     pub token: String,
     pub data_dir: PathBuf,
+    /// How long to wait for a daemon a dead server left behind to let go of the data dir.
+    pub lock_wait: Duration,
 }
 
 impl DaemonConfig {
@@ -57,7 +56,7 @@ impl DaemonConfig {
             .filter(|v| !v.is_empty())
             .unwrap_or_else(generate_hex_token);
         let data_dir = t3desktop::data_dir()?;
-        Ok(Self { control_port, mcp_port, token, data_dir })
+        Ok(Self { control_port, mcp_port, token, data_dir, lock_wait: Duration::from_secs(10) })
     }
 }
 
@@ -73,6 +72,7 @@ pub fn generate_hex_token() -> String {
 #[serde(rename_all = "camelCase")]
 pub struct Handshake {
     pub ready: bool,
+    pub protocol_version: u32,
     pub port: u16,
     pub token: String,
     pub mcp_port: u16,
@@ -90,8 +90,7 @@ pub struct McpStatus {
 struct SetupState {
     setup: Setup,
     busy: bool,
-    /// The code Boat's sign-in page may ask for while a sign-in is pending.
-    sign_in_code: Option<String>,
+    sign_in_attempt: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -106,7 +105,8 @@ pub struct Account {
 pub struct UiState {
     pub setup: Setup,
     pub setup_busy: bool,
-    pub sign_in_code: Option<String>,
+    /// The Boat sign-in waiting now. Its page and code go only to clients that ask for them.
+    pub sign_in_attempt: Option<u64>,
     pub account: Option<Account>,
     pub machines: Vec<MachineView>,
     pub costs: Costs,
@@ -117,11 +117,11 @@ pub struct UiState {
     pub version: &'static str,
 }
 
+/// Sent to every client, so a link or code a command produces goes only in its `Reply`.
 #[derive(Clone, Debug)]
 enum StreamEvent {
     State(String),
     Notify(String),
-    DesktopAction(String),
 }
 
 impl StreamEvent {
@@ -129,25 +129,69 @@ impl StreamEvent {
         match self {
             Self::State(data) => SseEvent::default().event("state").data(data),
             Self::Notify(data) => SseEvent::default().event("notify").data(data),
-            Self::DesktopAction(data) => SseEvent::default().event("desktop_action").data(data),
         }
     }
 }
 
-/// Tracks live SSE desktop consumers so desktop actions route through SSE while Electron is
-/// attached and fall back to OS open otherwise.
-struct DesktopConsumerGuard(Arc<AtomicUsize>);
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Reply {
+    data: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    open_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_code: Option<String>,
+}
 
-impl DesktopConsumerGuard {
-    fn acquire(counter: Arc<AtomicUsize>) -> Self {
-        counter.fetch_add(1, Ordering::Relaxed);
-        Self(counter)
+impl Reply {
+    fn data(data: impl Serialize) -> std::result::Result<Self, CmdErr> {
+        let data = serde_json::to_value(data).map_err(|e| CmdErr::Internal(e.to_string()))?;
+        Ok(Self { data, ..Self::default() })
+    }
+
+    fn open(url: Option<String>) -> Self {
+        Self { open_url: url, ..Self::default() }
     }
 }
 
-impl Drop for DesktopConsumerGuard {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
+#[derive(Default)]
+struct PendingSignIn(tokio::sync::Mutex<SignIns>);
+
+struct SignIns {
+    last_attempt: u64,
+    pending: Option<(u64, SignIn)>,
+}
+
+impl Default for SignIns {
+    /// A random start, so a tab still holding an attempt from an earlier daemon never matches one
+    /// from the next.
+    fn default() -> Self {
+        Self { last_attempt: u64::from(rand::random::<u32>()), pending: None }
+    }
+}
+
+impl PendingSignIn {
+    async fn get_or_start<F: Future<Output = Result<SignIn>>>(
+        &self,
+        start: impl FnOnce(u64) -> F,
+    ) -> Result<(u64, SignIn)> {
+        let mut sign_ins = self.0.lock().await;
+        if let Some(pending) = sign_ins.pending.as_ref() {
+            return Ok(pending.clone());
+        }
+        sign_ins.last_attempt += 1;
+        let attempt = sign_ins.last_attempt;
+        let sign_in = start(attempt).await?;
+        sign_ins.pending = Some((attempt, sign_in.clone()));
+        Ok((attempt, sign_in))
+    }
+
+    /// Ends the pending sign-in and runs `wrap_up` before any new one can start, so a click in
+    /// between neither gets the ended page nor has its own busy state cleared by this one.
+    async fn finish(&self, wrap_up: impl Future<Output = ()>) {
+        let mut sign_ins = self.0.lock().await;
+        sign_ins.pending = None;
+        wrap_up.await;
     }
 }
 
@@ -190,7 +234,7 @@ pub struct Daemon {
     token: String,
     data_dir: PathBuf,
     events_tx: broadcast::Sender<StreamEvent>,
-    desktop_consumers: Arc<AtomicUsize>,
+    sign_in: PendingSignIn,
     /// One `init` at a time: startup and `recheck` must not both construct an `App`.
     init_lock: tokio::sync::Mutex<()>,
     shutdown_tx: watch::Sender<bool>,
@@ -210,7 +254,7 @@ impl Daemon {
             token,
             data_dir,
             events_tx,
-            desktop_consumers: Arc::new(AtomicUsize::new(0)),
+            sign_in: PendingSignIn::default(),
             init_lock: tokio::sync::Mutex::new(()),
             shutdown_tx,
             background_tasks: Mutex::new(Vec::new()),
@@ -235,7 +279,7 @@ impl Daemon {
         UiState {
             setup: setup.setup,
             setup_busy: setup.busy,
-            sign_in_code: setup.sign_in_code,
+            sign_in_attempt: setup.sign_in_attempt,
             account: self.account.lock().unwrap().clone(),
             machines: app.as_ref().map(|a| a.views()).unwrap_or_default(),
             costs: app.as_ref().map(|a| a.costs()).unwrap_or_default(),
@@ -260,16 +304,9 @@ impl Daemon {
         let _ = self.events_tx.send(StreamEvent::Notify(payload));
     }
 
-    fn emit_desktop_action(&self, action: Value) {
-        let _ = self.events_tx.send(StreamEvent::DesktopAction(action.to_string()));
-    }
-
-    fn open_url(&self, url: &str) -> anyhow::Result<()> {
-        if self.desktop_consumers.load(Ordering::Relaxed) > 0 {
-            self.emit_desktop_action(json!({ "type": "openUrl", "url": url }));
-            return Ok(());
-        }
-        app::open_url(url)
+    fn set_busy(&self, busy: bool) {
+        self.setup.lock().unwrap().busy = busy;
+        self.emit_state();
     }
 
     pub fn request_shutdown(&self) {
@@ -302,7 +339,6 @@ impl Daemon {
         }
         if let (Setup::Ready, Some(boat), Some(t3)) = (setup, boat, t3) {
             let (tx, rx) = mpsc::unbounded_channel();
-            let t3 = t3.with_desktop_events(tx.clone(), self.desktop_consumers.clone());
             match App::new(boat, t3, self.data_dir.clone(), tx) {
                 Ok(app) => {
                     *self.app.lock().unwrap() = Some(app.clone());
@@ -312,7 +348,10 @@ impl Daemon {
                     let daemon = self.clone();
                     tasks.push(tokio::spawn(async move { daemon.refresh_mcp().await }));
                 }
-                Err(e) => self.emit_notify("Sail Boat could not start", &format!("{e:#}")),
+                Err(e) => {
+                    tracing::error!("starting Sail Boat: {e:#}");
+                    self.emit_notify("Sail Boat could not start", "Its saved state could not be read.");
+                }
             }
         }
         self.emit_state();
@@ -330,9 +369,9 @@ impl Daemon {
         self.emit_state();
     }
 
-    async fn handle_command(self: Arc<Self>, name: &str, body: Bytes) -> std::result::Result<Value, CmdErr> {
+    async fn handle_command(self: Arc<Self>, name: &str, body: Bytes) -> std::result::Result<Reply, CmdErr> {
         match name {
-            "get_state" => Ok(serde_json::to_value(self.state()).map_err(|e| CmdErr::Internal(e.to_string()))?),
+            "get_state" => Reply::data(self.state()),
             "create_machine" => {
                 #[derive(Deserialize)]
                 #[serde(rename_all = "camelCase")]
@@ -343,15 +382,12 @@ impl Daemon {
                     projects: Vec<String>,
                 }
                 let args: Args = parse_args(name, &body)?;
-                self.app()?
-                    .create_machine(&args.name, &args.size, args.projects)
-                    .await
-                    .map(|_| Value::Null)
-                    .map_err(err)
+                let app = self.app()?;
+                let machine = app.create_machine(&args.name, &args.size, args.projects).await.map_err(err)?;
+                Ok(Reply::open(Some(app.pair_link(&machine))))
             }
             "local_projects" => {
-                let projects = self.app()?.local_projects().await.map_err(err)?;
-                serde_json::to_value(projects).map_err(|e| CmdErr::Internal(e.to_string()))
+                Reply::data(self.app()?.local_projects().await.map_err(err)?)
             }
             "add_project" => {
                 #[derive(Deserialize)]
@@ -366,7 +402,7 @@ impl Daemon {
                 let machine = app.machine(&args.id).map_err(err)?;
                 app.add_project(&machine, &args.project_id)
                     .await
-                    .map(|_| Value::Null)
+                    .map(|_| Reply::default())
                     .map_err(err)
             }
             "wake_machine" => {
@@ -380,7 +416,7 @@ impl Daemon {
                     .map_err(err)?
                     .ensure_awake()
                     .await
-                    .map(|_| Value::Null)
+                    .map(|_| Reply::default())
                     .map_err(err)
             }
             "sleep_machine" => {
@@ -394,7 +430,7 @@ impl Daemon {
                     .map_err(err)?
                     .sleep_now()
                     .await
-                    .map(|_| Value::Null)
+                    .map(|_| Reply::default())
                     .map_err(err)
             }
             "open_machine" => {
@@ -407,9 +443,11 @@ impl Daemon {
                 let args: Args = parse_args(name, &body)?;
                 let app = self.app()?;
                 let machine = app.machine(&args.id).map_err(err)?;
-                app.open_in_t3(&machine, args.thread.as_deref())
-                    .map(|_| Value::Null)
-                    .map_err(err)
+                let url = match args.thread {
+                    Some(thread) => Some(t3desktop::thread_link(&machine.record().environment_id, &thread)),
+                    None => app.open_in_t3(&machine, None),
+                };
+                Ok(Reply::open(url))
             }
             "pair_machine" => {
                 #[derive(Deserialize)]
@@ -419,7 +457,7 @@ impl Daemon {
                 let args: Args = parse_args(name, &body)?;
                 let app = self.app()?;
                 let machine = app.machine(&args.id).map_err(err)?;
-                app.pair(&machine).map(|_| Value::Null).map_err(err)
+                Ok(Reply::open(Some(app.pair_link(&machine))))
             }
             "latest_thread" => {
                 #[derive(Deserialize)]
@@ -427,8 +465,7 @@ impl Daemon {
                     id: String,
                 }
                 let args: Args = parse_args(name, &body)?;
-                let thread = self.app()?.machine(&args.id).map_err(err)?.latest_thread().await;
-                serde_json::to_value(thread).map_err(|e| CmdErr::Internal(e.to_string()))
+                Reply::data(self.app()?.machine(&args.id).map_err(err)?.latest_thread().await)
             }
             "get_machine_details" => {
                 #[derive(Deserialize)]
@@ -436,8 +473,7 @@ impl Daemon {
                     id: String,
                 }
                 let args: Args = parse_args(name, &body)?;
-                let details = self.app()?.details(&args.id).map_err(err)?;
-                serde_json::to_value(details).map_err(|e| CmdErr::Internal(e.to_string()))
+                Reply::data(self.app()?.details(&args.id).map_err(err)?)
             }
             "sign_in_agent" => {
                 #[derive(Deserialize)]
@@ -454,7 +490,7 @@ impl Daemon {
                     .map_err(err)?
                     .sign_in(agent)
                     .await
-                    .map(|_| Value::Null)
+                    .map(|_| Reply::default())
                     .map_err(err)
             }
             "turn_on_connect" => {
@@ -468,7 +504,7 @@ impl Daemon {
                     .map_err(err)?
                     .turn_on_connect()
                     .await
-                    .map(|_| Value::Null)
+                    .map(|_| Reply::default())
                     .map_err(err)
             }
             "keep_awake" => {
@@ -484,7 +520,7 @@ impl Daemon {
                     .map_err(err)?
                     .keep_awake(args.minutes)
                     .await
-                    .map(|_| Value::Null)
+                    .map(|_| Reply::default())
                     .map_err(err)
             }
             "resize_machine" => {
@@ -499,7 +535,7 @@ impl Daemon {
                     .map_err(err)?
                     .resize(&args.size)
                     .await
-                    .map(|_| Value::Null)
+                    .map(|_| Reply::default())
                     .map_err(err)
             }
             "delete_machine" => {
@@ -514,7 +550,7 @@ impl Daemon {
                 let machine = app.machine(&args.id).map_err(err)?;
                 app.delete_machine(&machine, args.discard)
                     .await
-                    .map(|_| Value::Null)
+                    .map(|_| Reply::default())
                     .map_err(err)
             }
             "update_settings" => {
@@ -526,7 +562,7 @@ impl Daemon {
                 let app = self.app()?;
                 app.update_settings(args.settings);
                 self.emit_state();
-                Ok(Value::Null)
+                Ok(Reply::default())
             }
             "setup_action" => {
                 #[derive(Deserialize)]
@@ -534,8 +570,7 @@ impl Daemon {
                     action: String,
                 }
                 let args: Args = parse_args(name, &body)?;
-                self.setup_action(&args.action).await?;
-                Ok(Value::Null)
+                self.setup_action(&args.action).await
             }
             "add_mcp" => {
                 #[derive(Deserialize)]
@@ -545,56 +580,85 @@ impl Daemon {
                 let args: Args = parse_args(name, &body)?;
                 let result = mcp::register(args.client, self.mcp_port).await.map_err(err);
                 self.refresh_mcp().await;
-                result.map(|_| Value::Null)
+                result.map(|_| Reply::default())
             }
             "shutdown" | "quit_app" => {
                 self.request_shutdown();
-                Ok(Value::Null)
+                Ok(Reply::default())
             }
             other => Err(CmdErr::BadRequest(format!("unknown command {other}"))),
         }
     }
 
-    async fn setup_action(self: &Arc<Self>, action: &str) -> std::result::Result<(), CmdErr> {
-        let set_busy = |busy: bool| {
-            self.setup.lock().unwrap().busy = busy;
-            self.emit_state();
-        };
+    async fn setup_action(self: &Arc<Self>, action: &str) -> std::result::Result<Reply, CmdErr> {
         match action {
             "installBoat" => {
-                set_busy(true);
+                self.set_busy(true);
                 let result = install_boat().await;
-                set_busy(false);
+                if result.is_ok() {
+                    self.recheck_setup().await;
+                }
+                self.set_busy(false);
                 result.map_err(err)?;
+                return Ok(Reply::default());
             }
             "signInBoat" => {
                 let boat = Boat::locate().ok_or_else(|| CmdErr::Internal("Boat CLI not found".to_owned()))?;
-                set_busy(true);
-                let result = self.sign_in_boat(&boat).await;
-                self.setup.lock().unwrap().sign_in_code = None;
-                set_busy(false);
-                result.map_err(err)?;
+                let (attempt, sign_in) = self.sign_in_boat(boat).await.map_err(err)?;
+                return Ok(Reply {
+                    data: json!({ "attempt": attempt }),
+                    open_url: Some(sign_in.url),
+                    user_code: sign_in.code,
+                });
             }
             "installT3" => {}
             "recheck" => {}
             other => return Err(CmdErr::BadRequest(format!("unknown setup action {other}"))),
         }
+        self.recheck_setup().await;
+        Ok(Reply::default())
+    }
+
+    async fn recheck_setup(self: &Arc<Self>) {
         if self.app.lock().unwrap().is_none() {
             self.init().await;
         } else if let Ok(app) = self.app() {
             self.refresh_account(&app.shared.boat).await;
             self.emit_state();
         }
-        Ok(())
     }
 
-    /// Boat's browser sign-in: opens its page, publishes the code the page may ask for, and waits.
-    async fn sign_in_boat(&self, boat: &Boat) -> Result<()> {
-        let sign_in = boat.start_sign_in().await?;
-        self.setup.lock().unwrap().sign_in_code = sign_in.code;
-        self.emit_state();
-        self.open_url(&sign_in.url)?;
-        boat.finish_sign_in().await
+    async fn sign_in_boat(self: &Arc<Self>, boat: Boat) -> Result<(u64, SignIn)> {
+        self.sign_in
+            .get_or_start(|attempt| async move {
+                self.set_busy(true);
+                let sign_in = boat.start_sign_in().await.inspect_err(|_| self.set_busy(false))?;
+                self.setup.lock().unwrap().sign_in_attempt = Some(attempt);
+                self.emit_state();
+                let daemon = self.clone();
+                let wait = tokio::spawn(async move {
+                    let finished = boat.finish_sign_in().await;
+                    daemon
+                        .sign_in
+                        .finish(async {
+                            daemon.setup.lock().unwrap().sign_in_attempt = None;
+                            daemon.emit_state();
+                            daemon.recheck_setup().await;
+                            daemon.set_busy(false);
+                            // Boat's output can carry the sign-in code, and notices reach every client.
+                            if finished.is_err() {
+                                tracing::warn!("Boat sign-in did not finish");
+                                daemon.emit_notify("Boat sign-in did not finish", "Sign in to Boat again.");
+                            }
+                        })
+                        .await;
+                });
+                let mut tasks = self.background_tasks.lock().unwrap();
+                tasks.retain(|task| !task.is_finished());
+                tasks.push(wait);
+                Ok(sign_in)
+            })
+            .await
     }
 }
 
@@ -628,8 +692,6 @@ async fn event_loop(daemon: Arc<Daemon>, app: Arc<App>, mut rx: mpsc::UnboundedR
             Event::Persist => app.save(),
             Event::Changed => daemon.emit_state(),
             Event::Notify { title, body } => daemon.emit_notify(&title, &body),
-            Event::OpenUrl { url } => daemon.emit_desktop_action(json!({ "type": "openUrl", "url": url })),
-            Event::Activate => daemon.emit_desktop_action(json!({ "type": "activate" })),
         }
     }
 }
@@ -671,18 +733,17 @@ async fn get_state(State(daemon): State<Arc<Daemon>>) -> impl IntoResponse {
 async fn events_stream(
     State(daemon): State<Arc<Daemon>>,
 ) -> Sse<impl Stream<Item = std::result::Result<SseEvent, Infallible>>> {
-    let guard = DesktopConsumerGuard::acquire(daemon.desktop_consumers.clone());
     let rx = daemon.events_tx.subscribe();
     let shutdown = daemon.subscribe_shutdown();
     let initial = StreamEvent::State(daemon.state_json());
     let stream = stream::unfold(
-        (daemon, rx, shutdown, Some(initial), guard),
-        |(daemon, mut rx, mut shutdown, mut pending, guard)| async move {
+        (daemon, rx, shutdown, Some(initial)),
+        |(daemon, mut rx, mut shutdown, mut pending)| async move {
             if *shutdown.borrow() {
                 return None;
             }
             if let Some(first) = pending.take() {
-                return Some((Ok(first.into_sse()), (daemon, rx, shutdown, None, guard)));
+                return Some((Ok(first.into_sse()), (daemon, rx, shutdown, None)));
             }
             loop {
                 tokio::select! {
@@ -692,10 +753,10 @@ async fn events_stream(
                         }
                     }
                     msg = rx.recv() => match msg {
-                        Ok(ev) => return Some((Ok(ev.into_sse()), (daemon, rx, shutdown, None, guard))),
+                        Ok(ev) => return Some((Ok(ev.into_sse()), (daemon, rx, shutdown, None))),
                         Err(broadcast::error::RecvError::Lagged(_)) => {
                             let resync = StreamEvent::State(daemon.state_json());
-                            return Some((Ok(resync.into_sse()), (daemon, rx, shutdown, None, guard)));
+                            return Some((Ok(resync.into_sse()), (daemon, rx, shutdown, None)));
                         }
                         Err(broadcast::error::RecvError::Closed) => return None,
                     }
@@ -707,8 +768,14 @@ async fn events_stream(
 }
 
 async fn run_command(State(daemon): State<Arc<Daemon>>, Path(name): Path<String>, body: Bytes) -> Response {
+    #[derive(Serialize)]
+    struct Done {
+        ok: bool,
+        #[serde(flatten)]
+        reply: Reply,
+    }
     match daemon.handle_command(&name, body).await {
-        Ok(data) => Json(json!({ "ok": true, "data": data })).into_response(),
+        Ok(reply) => Json(Done { ok: true, reply }).into_response(),
         Err(e) => e.into_response(),
     }
 }
@@ -765,6 +832,7 @@ pub struct RunningDaemon {
     pub handshake: Handshake,
     pub daemon: Arc<Daemon>,
     tasks: Vec<JoinHandle<()>>,
+    _data_dir_lock: DataDirLock,
 }
 
 impl RunningDaemon {
@@ -784,6 +852,7 @@ impl RunningDaemon {
 /// Binds the control API and MCP listeners, spawns their servers and startup setup check, and
 /// returns the handshake ready to print to stdout.
 pub async fn start(config: DaemonConfig) -> Result<RunningDaemon> {
+    let data_dir_lock = lock_data_dir(&config.data_dir, config.lock_wait).await?;
     let control_listener = tokio::net::TcpListener::bind(("127.0.0.1", config.control_port))
         .await
         .with_context(|| format!("binding control port {}", config.control_port))?;
@@ -799,7 +868,13 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon> {
     };
 
     let daemon = Daemon::new(config.token.clone(), config.data_dir, mcp_port);
-    let handshake = Handshake { ready: true, port: control_port, token: config.token, mcp_port };
+    let handshake = Handshake {
+        ready: true,
+        protocol_version: BOAT_DAEMON_PROTOCOL_VERSION,
+        port: control_port,
+        token: config.token,
+        mcp_port,
+    };
 
     let control_shutdown = wait_shutdown(daemon.subscribe_shutdown());
     let control_router = router(daemon.clone());
@@ -825,23 +900,167 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon> {
         init_daemon.init().await;
     });
 
-    Ok(RunningDaemon { handshake, daemon, tasks: vec![control_task, mcp_task, init_task] })
+    Ok(RunningDaemon {
+        handshake,
+        daemon,
+        tasks: vec![control_task, mcp_task, init_task],
+        _data_dir_lock: data_dir_lock,
+    })
+}
+
+/// Closing the lock's file alone keeps the lock while a process forked at that moment still
+/// shares the file, so dropping this lets go explicitly.
+struct DataDirLock(std::fs::File);
+
+impl Drop for DataDirLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+/// Two daemons on one data dir would each reap, sleep and save the same machines. One a dead
+/// server left behind lets go once it has shut down, so a new one waits up to `wait` for it.
+async fn lock_data_dir(dir: &std::path::Path, wait: Duration) -> Result<DataDirLock> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let path = dir.join("daemon.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(DataDirLock(file)),
+            Err(std::fs::TryLockError::WouldBlock) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                anyhow::bail!("another sail-boatd is using {}", dir.display())
+            }
+            Err(std::fs::TryLockError::Error(e)) => {
+                return Err(e).with_context(|| format!("locking {}", path.display()));
+            }
+        }
+    }
+}
+
+/// Resolves once `input` reaches end of file. Read on a plain thread: a blocked read there never
+/// holds up the process exiting.
+pub fn closed(mut input: impl std::io::Read + Send + 'static) -> tokio::sync::oneshot::Receiver<()> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 256];
+        loop {
+            match input.read(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        let _ = tx.send(());
+    });
+    rx
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use futures_util::StreamExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const TOKEN: &str = "test-secret-token-123";
+
+    fn test_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("sail-boat-daemon-test-{:016x}", rand::random::<u64>()))
+    }
 
     async fn spawn_test_daemon() -> (RunningDaemon, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("sail-boat-daemon-test-{:016x}", rand::random::<u64>()));
+        let dir = test_dir();
         let config = DaemonConfig {
             control_port: 0,
             mcp_port: 0,
-            token: "test-secret-token-123".to_owned(),
+            token: TOKEN.to_owned(),
             data_dir: dir.clone(),
+            lock_wait: Duration::ZERO,
         };
         (start(config).await.unwrap(), dir)
+    }
+
+    /// Saves one machine, `dev` on sandbox `bx_dev`, in `dir`'s state file.
+    fn save_dev_machine(dir: &std::path::Path) {
+        let local_port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+        let machine = crate::store::Machine {
+            id: "bx_dev".into(),
+            sandbox_id: "bx_dev".into(),
+            name: "dev".into(),
+            size: "small".into(),
+            upstream_url: "http://127.0.0.1:9".into(),
+            upstream_token: "upstream".into(),
+            watchdog_url: "http://127.0.0.1:9".into(),
+            watchdog_secret: "watchdog".into(),
+            local_port,
+            t3_version: "0.0.0".into(),
+            provision_revision: String::new(),
+            environment_id: "env-dev".into(),
+            client_tokens: Vec::new(),
+            link_tokens: Vec::new(),
+            created_at: 0,
+            next_due_at: None,
+            connect: false,
+            saved_stop: None,
+        };
+        let state = crate::store::State { machines: vec![machine], ..Default::default() };
+        crate::store::Store::new(dir).save(&state).unwrap();
+    }
+
+    async fn daemon_with_machine() -> (Arc<App>, u16, PathBuf) {
+        let dir = test_dir();
+        save_dev_machine(&dir);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let t3 = t3desktop::T3Desktop::at(dir.join("no-sail"));
+        let app = App::new(Boat::at(dir.join("no-boat")), t3, dir.clone(), tx).unwrap();
+        let daemon = Daemon::new(TOKEN.to_owned(), dir.clone(), 0);
+        *daemon.app.lock().unwrap() = Some(app.clone());
+        tokio::spawn(event_loop(daemon.clone(), app.clone(), rx));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, router(daemon)).await });
+        (app, port, dir)
+    }
+
+    async fn command(port: u16, name: &str, args: Value) -> Value {
+        let res = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{port}/api/command/{name}"))
+            .bearer_auth(TOKEN)
+            .json(&args)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "{name}");
+        res.json().await.unwrap()
+    }
+
+    fn pairing_code(link: &Value, local_port: u16) -> String {
+        let link = url::Url::parse(link.as_str().unwrap()).unwrap();
+        assert_eq!(link.scheme(), t3desktop::deep_link_scheme(), "{link}");
+        assert_eq!(link.host_str(), Some("pair"), "{link}");
+        let pairing = link.query_pairs().find(|(k, _)| k == "pairingUrl").unwrap().1;
+        let code = pairing.strip_prefix(&format!("http://localhost:{local_port}/pair#token="));
+        code.unwrap_or_else(|| panic!("not a pairing URL: {pairing}")).to_owned()
+    }
+
+    async fn read_events_until(stream: &mut (impl Stream<Item = reqwest::Result<Bytes>> + Unpin), buf: &mut String, seen: &str) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !buf.contains(seen) {
+                let chunk = stream.next().await.expect("stream ended").unwrap();
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("no {seen} in: {buf}"));
     }
 
     async fn stop_test_daemon(running: RunningDaemon, dir: PathBuf) {
@@ -903,6 +1122,7 @@ mod tests {
     #[tokio::test]
     async fn state_returns_full_ui_contract_payload() {
         let (running, dir) = spawn_test_daemon().await;
+        assert_eq!(serde_json::to_value(&running.handshake).unwrap()["protocolVersion"], 1);
         let port = running.handshake.port;
         let res = reqwest::Client::new()
             .get(format!("http://127.0.0.1:{port}/api/state"))
@@ -914,6 +1134,8 @@ mod tests {
         let body: Value = res.json().await.unwrap();
         assert!(body["setup"].is_string());
         assert!(body["setupBusy"].is_boolean());
+        assert!(body.get("signInCode").is_none(), "the sign-in code goes only to the client that started it");
+        assert!(body["signInAttempt"].is_null());
         assert!(body["machines"].is_array());
         assert!(body["costs"].is_object());
         assert!(body["settings"].is_object());
@@ -958,47 +1180,247 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sse_events_routes_desktop_actions_and_notifications_while_connected() {
-        let (running, dir) = spawn_test_daemon().await;
-        let port = running.handshake.port;
+    async fn link_commands_return_the_link_to_their_caller() {
+        let (app, port, dir) = daemon_with_machine().await;
+        let machine = app.machine("dev").unwrap();
+        let local_port = machine.record().local_port;
+
+        let paired = command(port, "pair_machine", json!({ "id": "dev" })).await;
+        assert_eq!((&paired["ok"], &paired["data"], paired.get("userCode")), (&json!(true), &Value::Null, None));
+        let code = pairing_code(&paired["openUrl"], local_port);
+        assert!(machine.auth.redeem_pairing_code(&code), "the link carries the machine's live pairing code");
+
+        let unpaired = command(port, "open_machine", json!({ "id": "dev" })).await;
+        let code = pairing_code(&unpaired["openUrl"], local_port);
+        assert!(machine.auth.redeem_pairing_code(&code), "an unpaired machine opens its pair link");
+
+        let thread = command(port, "open_machine", json!({ "id": "dev", "thread": "thread-1" })).await;
+        assert_eq!(thread["openUrl"], format!("{}://threads/env-dev/thread-1", t3desktop::deep_link_scheme()));
+        machine.update_record(|r| r.client_tokens.push("sail-client".into()));
+
+        let state = command(port, "get_state", json!({})).await;
+        assert_eq!(state["data"]["machines"][0]["environmentId"], "env-dev");
+        assert_eq!(state["data"]["machines"][0]["paired"], true);
+        let second_client = command(port, "pair_machine", json!({ "id": "dev" })).await;
+        let code = pairing_code(&second_client["openUrl"], local_port);
+        assert!(machine.auth.redeem_pairing_code(&code), "a second client gets its own pairing link");
+
+        let front = command(port, "open_machine", json!({ "id": "dev" })).await;
+        assert_eq!(front, json!({ "ok": true, "data": null }), "no thread: the caller is already in front");
+
+        app.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn sse_events_stream_notifications_but_never_a_link() {
+        let (app, port, dir) = daemon_with_machine().await;
         let res = reqwest::Client::new()
             .get(format!("http://127.0.0.1:{port}/api/events"))
-            .header(AUTHORIZATION, format!("Bearer {}", running.handshake.token))
+            .bearer_auth(TOKEN)
             .send()
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-
         let mut stream = res.bytes_stream();
         let mut buf = String::new();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while let Some(chunk) = stream.next().await {
-                buf.push_str(&String::from_utf8_lossy(&chunk.unwrap()));
-                if buf.contains("event: state") && buf.contains("\n\n") {
-                    break;
+        read_events_until(&mut stream, &mut buf, "event: state").await;
+
+        let paired = command(port, "pair_machine", json!({ "id": "dev" })).await;
+        app.machine("dev").unwrap().update_record(|r| r.client_tokens.push("sail-client".into()));
+        let thread = command(port, "open_machine", json!({ "id": "dev", "thread": "thread-1" })).await;
+        app.shared.notify("Sail Boat", "Machine ready");
+        read_events_until(&mut stream, &mut buf, "Machine ready").await;
+
+        let events: Vec<&str> = buf.lines().filter_map(|l| l.strip_prefix("event: ")).collect();
+        assert!(events.iter().all(|e| matches!(*e, "state" | "notify")), "{events:?}");
+        for link in [&paired["openUrl"], &thread["openUrl"]] {
+            let link = link.as_str().unwrap();
+            assert!(!buf.contains(link), "{link} went to every client: {buf}");
+        }
+        assert!(!buf.contains("pairingUrl") && !buf.contains("://threads/"), "a link went to every client: {buf}");
+
+        drop(stream);
+        app.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Every client of the server shows a notice, so a failed wake leaves Boat's output to the
+    /// machine's row on the Boats page.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_wake_notice_leaves_out_what_boat_said() {
+        use std::os::unix::fs::PermissionsExt;
+        const BOAT: &str = r#"#!/bin/sh
+shift
+case "$1" in
+  info) echo '{"sandbox":{"id":"bx_dev","state":"stopped"}}' ;;
+  resume) echo 'quota exceeded, see https://boat.example/billing?token=boat-output' >&2; exit 1 ;;
+  *) exit 1 ;;
+esac
+"#;
+        let dir = test_dir();
+        save_dev_machine(&dir);
+        let bin = dir.join("boat");
+        std::fs::write(&bin, BOAT).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let app = App::new(Boat::at(bin), t3desktop::T3Desktop::at(dir.join("no-sail")), dir.clone(), tx).unwrap();
+        let machine = app.machine("dev").unwrap();
+
+        let woke = machine.ensure_awake().await;
+        assert!(woke.is_err_and(|e| format!("{e:#}").contains("boat-output")), "the caller that asked sees why");
+        let body = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match rx.recv().await.expect("the app's events") {
+                    Event::Notify { title, body } if title == "dev could not wake" => break body,
+                    _ => {}
                 }
             }
         })
         .await
-        .unwrap();
+        .expect("a notice for the failed wake");
+        assert_eq!(body, "Boats shows why.");
+        assert!(machine.last_error().unwrap_or_default().contains("boat-output"), "the Boats page keeps the reason");
 
-        running.daemon.open_url("sail://pair?pairingUrl=http%3A%2F%2F127.0.0.1%3A47732").unwrap();
-        running.daemon.emit_notify("Sail Boat", "Machine ready");
+        app.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while let Some(chunk) = stream.next().await {
-                buf.push_str(&String::from_utf8_lossy(&chunk.unwrap()));
-                if buf.contains("event: desktop_action") && buf.contains("event: notify") {
-                    break;
-                }
+    #[tokio::test]
+    async fn a_second_daemon_on_the_same_data_dir_refuses_to_start() {
+        let (first, dir) = spawn_test_daemon().await;
+        let config = DaemonConfig {
+            control_port: 0,
+            mcp_port: 0,
+            token: TOKEN.to_owned(),
+            data_dir: dir.clone(),
+            lock_wait: Duration::ZERO,
+        };
+        let refused = start(config).await.err().expect("a second daemon must not start on a locked data dir");
+        assert!(format!("{refused:#}").contains("another sail-boatd is using"), "{refused:#}");
+
+        let forked_meanwhile = first._data_dir_lock.0.try_clone().unwrap();
+        first.shutdown().await;
+        let config = DaemonConfig {
+            control_port: 0,
+            mcp_port: 0,
+            token: TOKEN.to_owned(),
+            data_dir: dir.clone(),
+            lock_wait: Duration::ZERO,
+        };
+        let next = start(config).await.expect("the data dir is free once its daemon is gone");
+        drop(forked_meanwhile);
+        stop_test_daemon(next, dir).await;
+    }
+
+    #[tokio::test]
+    async fn a_second_daemon_waits_for_the_first_to_let_go() {
+        let (first, dir) = spawn_test_daemon().await;
+        let config = DaemonConfig {
+            control_port: 0,
+            mcp_port: 0,
+            token: TOKEN.to_owned(),
+            data_dir: dir.clone(),
+            lock_wait: Duration::from_secs(10),
+        };
+        let mut second = tokio::spawn(start(config));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), &mut second).await.is_err(),
+            "the second daemon waits while the first holds the data dir"
+        );
+        first.shutdown().await;
+        let next = second.await.unwrap().expect("the second daemon starts once the first lets go");
+        stop_test_daemon(next, dir).await;
+    }
+
+    #[test]
+    fn sign_in_attempts_from_two_daemons_do_not_collide() {
+        let first = SignIns::default().last_attempt;
+        let second = SignIns::default().last_attempt;
+        assert_ne!(first, second, "a stale tab must never match the next daemon's attempt");
+    }
+
+    #[tokio::test]
+    async fn closed_resolves_when_the_parent_closes_its_end() {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let mut closed = closed(reader);
+        std::io::Write::write_all(&mut writer, b"still here").unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut closed).await.is_err(),
+            "input that is still open keeps the daemon running"
+        );
+        drop(writer);
+        tokio::time::timeout(Duration::from_secs(5), closed).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_pending_boat_sign_in_is_handed_out_until_it_finishes() {
+        let pending = PendingSignIn::default();
+        let starts = AtomicUsize::new(0);
+        let start = |ok: bool| {
+            let starts = &starts;
+            move |_attempt| async move {
+                let n = starts.fetch_add(1, Ordering::SeqCst) + 1;
+                tokio::task::yield_now().await;
+                anyhow::ensure!(ok, "boat onboard failed");
+                Ok(SignIn { url: format!("https://boat.test/device?n={n}"), code: Some(format!("CODE-{n}")) })
             }
-        })
-        .await
-        .unwrap();
-        assert!(buf.contains("sail://pair?pairingUrl="), "missing openUrl action in SSE stream: {buf}");
-        assert!(buf.contains("Machine ready"), "missing notify payload in SSE stream: {buf}");
+        };
 
-        stop_test_daemon(running, dir).await;
+        let (a, b) = tokio::join!(pending.get_or_start(start(true)), pending.get_or_start(start(true)));
+        let ((a_attempt, a), (b_attempt, b)) = (a.unwrap(), b.unwrap());
+        assert_eq!(starts.load(Ordering::SeqCst), 1, "overlapping clicks start one sign-in");
+        assert_eq!((a.url.as_str(), a.code.as_deref()), ("https://boat.test/device?n=1", Some("CODE-1")));
+        assert_eq!((b_attempt, &b.url, &b.code), (a_attempt, &a.url, &a.code));
+        let (again_attempt, again) = pending.get_or_start(start(true)).await.unwrap();
+        assert_eq!(
+            (again_attempt, &again.url, &again.code),
+            (a_attempt, &a.url, &a.code),
+            "a later click gets the pending page"
+        );
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+
+        pending.finish(async {}).await;
+        assert!(pending.get_or_start(start(false)).await.is_err());
+        let (next_attempt, next) = pending.get_or_start(start(true)).await.unwrap();
+        assert_eq!(next.url, "https://boat.test/device?n=3", "a finished or failed sign-in is started anew");
+        assert_ne!(next_attempt, a_attempt, "a new sign-in is a new attempt");
+    }
+
+    #[tokio::test]
+    async fn a_click_during_the_wrap_up_waits_and_starts_a_new_sign_in() {
+        let sign_in = |n: u8| SignIn { url: format!("https://boat.test/device?n={n}"), code: Some(format!("CODE-{n}")) };
+        let pending = Arc::new(PendingSignIn::default());
+        pending.get_or_start(|_| async { Ok(sign_in(1)) }).await.unwrap();
+
+        let (in_wrap_up, wrapping) = tokio::sync::oneshot::channel::<()>();
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let ending = tokio::spawn({
+            let pending = pending.clone();
+            async move {
+                pending
+                    .finish(async move {
+                        in_wrap_up.send(()).unwrap();
+                        released.await.unwrap();
+                    })
+                    .await;
+            }
+        });
+        wrapping.await.unwrap();
+
+        let mut click = tokio::spawn({
+            let pending = pending.clone();
+            async move { pending.get_or_start(|_| async { Ok(sign_in(2)) }).await }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut click).await.is_err(),
+            "a click while the ended sign-in wraps up waits for it"
+        );
+        release.send(()).unwrap();
+        ending.await.unwrap();
+        let (_, next) = click.await.unwrap().unwrap();
+        assert_eq!(next.code.as_deref(), Some("CODE-2"), "the click starts a new sign-in, never the ended one");
     }
 
     #[tokio::test]

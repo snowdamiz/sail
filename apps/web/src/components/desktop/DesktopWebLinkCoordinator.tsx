@@ -81,38 +81,14 @@ function threadShowingBrowser(
   return surface?.kind === "preview" ? threadRef : null;
 }
 
-export function DesktopWebLinkCoordinator() {
-  const router = useRouter();
+/**
+ * Adds the backend a pairing link names. Any page can open one, so the user confirms its origin
+ * before the one-time token is spent.
+ */
+export function usePairFromLink() {
   const gt = useGT();
-  const primaryEnvironment = usePrimaryEnvironment();
-  const openPullRequestsInApp = useClientSettings((settings) => settings.pullRequestLinksOpenInApp);
-  const openChangeRequest = useOpenChangeRequestLink();
-  const { scratchEnvironmentId, openScratchProject } = useScratchProject();
-  const openThread = useNewThreadHandler();
-  const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
-  const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
-    reportFailure: false,
-    refresh: true,
-  });
   const connectPairingEnvironment = useAtomCommand(connectPairing, { reportFailure: false });
-  const httpBaseUrl = useEnvironmentHttpBaseUrl(primaryEnvironment?.environmentId ?? null);
-  const queueRef = useRef(Promise.resolve());
   const pairedUrlsRef = useRef(new Set<string>());
-  const webLinks = window.desktopBridge?.webLinks;
-  // A sync IPC read; the setting only changes across a relaunch.
-  const [localEnvironmentDisabled] = useState(isLocalEnvironmentDisabled);
-  // With Local environment disabled there is no primary to wait for, so links run against the
-  // saved remote environments instead of waiting forever.
-  const ready =
-    webLinks !== undefined &&
-    (localEnvironmentDisabled ||
-      (primaryEnvironment?.connection.phase === "connected" &&
-        primaryEnvironment.serverConfig !== null));
-
-  const reportFailure = (url: string, description = url) =>
-    toastManager.add(
-      stackedThreadToast({ type: "error", title: gt("Could not open the link"), description }),
-    );
 
   const reportPairingFailure = (error: unknown) =>
     toastManager.add(
@@ -123,8 +99,7 @@ export function DesktopWebLinkCoordinator() {
       }),
     );
 
-  // Any page can open a pairing link, so the user confirms the host before its one-time token is spent.
-  const pairFromLink = async (pairingUrl: string) => {
+  return async (pairingUrl: string) => {
     // A repeated click would only ask again and then fail on the spent one-time token.
     if (pairedUrlsRef.current.has(pairingUrl)) return;
     // The origin keeps the scheme visible, so a plain HTTP backend is not mistaken for HTTPS.
@@ -150,6 +125,39 @@ export function DesktopWebLinkCoordinator() {
       description: gt("The environment is saved and will reconnect on app startup."),
     });
   };
+}
+
+export function DesktopWebLinkCoordinator() {
+  const router = useRouter();
+  const gt = useGT();
+  const primaryEnvironment = usePrimaryEnvironment();
+  const openPullRequestsInApp = useClientSettings((settings) => settings.pullRequestLinksOpenInApp);
+  const openChangeRequest = useOpenChangeRequestLink();
+  const { scratchEnvironmentId, openScratchProject } = useScratchProject();
+  const openThread = useNewThreadHandler();
+  const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
+  const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
+    reportFailure: false,
+    refresh: true,
+  });
+  const httpBaseUrl = useEnvironmentHttpBaseUrl(primaryEnvironment?.environmentId ?? null);
+  const pairFromLink = usePairFromLink();
+  const queueRef = useRef(Promise.resolve());
+  const webLinks = window.desktopBridge?.webLinks;
+  // A sync IPC read; the setting only changes across a relaunch.
+  const [localEnvironmentDisabled] = useState(isLocalEnvironmentDisabled);
+  // With Local environment disabled there is no primary to wait for, so links run against the
+  // saved remote environments instead of waiting forever.
+  const ready =
+    webLinks !== undefined &&
+    (localEnvironmentDisabled ||
+      (primaryEnvironment?.connection.phase === "connected" &&
+        primaryEnvironment.serverConfig !== null));
+
+  const reportFailure = (url: string, description = url) =>
+    toastManager.add(
+      stackedThreadToast({ type: "error", title: gt("Could not open the link"), description }),
+    );
 
   const startThread = async (url: string): Promise<ScopedThreadRef | null> => {
     const environmentId = scratchEnvironmentId(primaryEnvironment?.environmentId ?? null);

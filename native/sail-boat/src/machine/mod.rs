@@ -142,8 +142,6 @@ pub enum Event {
     /// A machine record changed and must be saved.
     Persist,
     Notify { title: String, body: String },
-    OpenUrl { url: String },
-    Activate,
 }
 
 /// What every machine shares: the user's CLIs, settings and the app's event channel.
@@ -167,12 +165,6 @@ impl Shared {
     }
     pub fn notify(&self, title: impl Into<String>, body: impl Into<String>) {
         let _ = self.events.send(Event::Notify { title: title.into(), body: body.into() });
-    }
-    pub fn open_url(&self, url: impl Into<String>) {
-        let _ = self.events.send(Event::OpenUrl { url: url.into() });
-    }
-    pub fn activate(&self) {
-        let _ = self.events.send(Event::Activate);
     }
 }
 
@@ -439,8 +431,9 @@ impl MachineRuntime {
             Ok(()) => *self.wake_failure.lock().unwrap() = None,
             Err(e) => {
                 let msg = format!("{e:#}");
+                tracing::warn!("waking {}: {msg}", self.id());
                 if !was_failing {
-                    self.shared.notify(format!("{} could not wake", self.record().name), msg.clone());
+                    self.shared.notify(format!("{} could not wake", self.record().name), "Boats shows why.");
                 }
                 *self.wake_failure.lock().unwrap() = Some((msg, Instant::now()));
                 let _ = self.refresh_power().await;
@@ -622,7 +615,7 @@ impl MachineRuntime {
                         && command["type"] == "message.dispatch"
                     {
                         tracing::warn!("message to {} refused: {e}", self.id());
-                        self.shared.notify(format!("{}: a message was not sent", self.record().name), e);
+                        self.shared.notify(format!("{}: a message was not sent", self.record().name), "Send it again.");
                     }
                 }
             }
@@ -988,8 +981,8 @@ impl MachineRuntime {
                 // running that long, the machine is restored from its snapshot instead.
                 last_keep_alive = Some(Instant::now());
                 tracing::info!("keep-alive wake for {}", self.id());
-                if let Err(e) = self.ensure_awake().await {
-                    tracing::warn!("keep-alive wake for {}: {e:#}", self.id());
+                if self.ensure_awake().await.is_err() {
+                    tracing::warn!("keep-alive wake for {} failed", self.id());
                 }
             }
             let due = self.scheduled_wake().is_some_and(|due| chrono::Utc::now() >= due - DUE_LEAD);
@@ -998,8 +991,8 @@ impl MachineRuntime {
             {
                 last_due_wake = Some(Instant::now());
                 tracing::info!("waking {} for work due", self.id());
-                if let Err(e) = self.ensure_awake().await {
-                    tracing::warn!("waking {} for work due: {e:#}", self.id());
+                if self.ensure_awake().await.is_err() {
+                    tracing::warn!("waking {} for work due failed", self.id());
                 }
             }
             if let Some((sandbox, stop)) = self.begin_save() {
@@ -1067,7 +1060,10 @@ impl MachineRuntime {
                                 Err(e) => {
                                     tracing::warn!("stopping {}: {e:#}", self.id());
                                     if !std::mem::replace(&mut overdue_stop_failed, true) {
-                                        self.shared.notify(format!("{} won't go to sleep", self.record().name), format!("{e:#}"));
+                                        self.shared.notify(
+                                            format!("{} won't go to sleep", self.record().name),
+                                            "Boat would not stop it, so it may keep running. Sail keeps trying.",
+                                        );
                                     }
                                 }
                             }

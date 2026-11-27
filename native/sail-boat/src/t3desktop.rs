@@ -2,17 +2,14 @@
 //! that open it, the environments linked into its server, and that server's own API, read the
 //! way a Sail client reads it.
 
-use crate::machine::Event;
 use crate::process::command;
 use crate::projects::{self, Project};
 use crate::proxy::upstream;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
 
 const DEFAULT_BUNDLE_ID: &str = "com.sail.desktop";
 const DEFAULT_DEEP_LINK_SCHEME: &str = "sail";
@@ -56,6 +53,26 @@ pub fn app_bundle_id() -> String {
     non_empty_env("SAIL_APP_BUNDLE_ID").unwrap_or_else(|| DEFAULT_BUNDLE_ID.to_owned())
 }
 
+pub fn pair_link(pairing_url: &str) -> String {
+    format!("{}://pair?pairingUrl={}", deep_link_scheme(), urlencoding::encode(pairing_url))
+}
+
+pub fn thread_link(environment_id: &str, thread_id: &str) -> String {
+    format!("{}://threads/{environment_id}/{thread_id}", deep_link_scheme())
+}
+
+pub fn activate() -> Result<()> {
+    if cfg!(target_os = "macos") {
+        let status = std::process::Command::new("open").args(["-b", &app_bundle_id()]).stdin(std::process::Stdio::null()).status()?;
+        if !status.success() {
+            bail!("could not open Sail");
+        }
+        Ok(())
+    } else {
+        crate::app::open_url(&format!("{}://", deep_link_scheme()))
+    }
+}
+
 /// Candidate home directories for settings/runtime lookup: explicit home first, plus `~/.t3`
 /// only when neither `SAIL_HOME` nor `T3CODE_HOME` was explicitly configured.
 fn candidate_homes() -> Result<Vec<PathBuf>> {
@@ -83,21 +100,11 @@ pub struct T3Desktop {
     token_file: Option<PathBuf>,
     /// Held across read-or-issue so overlapping calls share one session.
     token: Arc<tokio::sync::Mutex<Option<String>>>,
-    /// Optional daemon event channel for delivering URL/activate actions to Electron.
-    events: Option<mpsc::UnboundedSender<Event>>,
-    /// Number of active desktop event consumers (SSE clients).
-    desktop_consumers: Option<Arc<AtomicUsize>>,
 }
 
 impl T3Desktop {
     fn from_cli(cli: PathBuf) -> Self {
-        Self {
-            cli,
-            token_file: None,
-            token: Arc::default(),
-            events: None,
-            desktop_consumers: None,
-        }
+        Self { cli, token_file: None, token: Arc::default() }
     }
 
     pub fn locate() -> Option<Self> {
@@ -130,24 +137,8 @@ impl T3Desktop {
         self
     }
 
-    /// Routes desktop URL/activate actions over the daemon event bus whenever a desktop event
-    /// consumer (Electron) is connected, falling back to OS open otherwise.
-    pub fn with_desktop_events(
-        mut self,
-        events: mpsc::UnboundedSender<Event>,
-        desktop_consumers: Arc<AtomicUsize>,
-    ) -> Self {
-        self.events = Some(events);
-        self.desktop_consumers = Some(desktop_consumers);
-        self
-    }
-
-    fn has_desktop_consumer(&self) -> bool {
-        self.events.is_some()
-            && self
-                .desktop_consumers
-                .as_ref()
-                .is_some_and(|count| count.load(Ordering::Relaxed) > 0)
+    pub fn open_url(&self, url: &str) -> Result<()> {
+        crate::app::open_url(url)
     }
 
     /// e.g. `0.1.10-nightly.20261114.4669`.
@@ -217,41 +208,6 @@ impl T3Desktop {
         Ok(())
     }
 
-    /// Opens a URL (deep link or browser URL): emits `Event::OpenUrl` to Electron when a desktop
-    /// event consumer is connected, falling back to OS open otherwise.
-    pub fn open_url(&self, url: &str) -> Result<()> {
-        if self.has_desktop_consumer() {
-            if let Some(tx) = &self.events {
-                if tx.send(Event::OpenUrl { url: url.to_owned() }).is_ok() {
-                    return Ok(());
-                }
-            }
-        }
-        crate::app::open_url(url)
-    }
-
-    /// Brings the desktop app to the front. Emits `Event::Activate` to Electron when connected,
-    /// falling back to macOS bundle activation or a bare deep link otherwise.
-    pub fn activate(&self) -> Result<()> {
-        if self.has_desktop_consumer() {
-            if let Some(tx) = &self.events {
-                if tx.send(Event::Activate).is_ok() {
-                    return Ok(());
-                }
-            }
-        }
-        if cfg!(target_os = "macos") {
-            let bundle_id = app_bundle_id();
-            let status = std::process::Command::new("open").args(["-b", &bundle_id]).status()?;
-            if !status.success() {
-                bail!("could not open Sail");
-            }
-            Ok(())
-        } else {
-            crate::app::open_url(&format!("{}://", deep_link_scheme()))
-        }
-    }
-
     /// The desktop app's projects that can go to another machine: those with a git remote,
     /// pinned first, then most recently used. Asks for the trimmed snapshot T3's own client
     /// loads: every project, without the thousands of old threads (MBs, seconds) this ignores.
@@ -276,7 +232,8 @@ impl T3Desktop {
     }
 
     /// The ignored files Sail's "Add to another machine" dialog selects by default for
-    /// `project`, with their contents. A file that can't be read is left out with its reason.
+    /// `project`, with their contents. A file that can't be read or is too large is left out and
+    /// named in the second list; the log says why.
     pub async fn files_to_copy(&self, project: &Project) -> Result<(Vec<(String, String)>, Vec<String>)> {
         let listed = self.call("projects.listIgnoredFiles", json!({ "cwd": project.path })).await?;
         let mut files = Vec::new();
@@ -287,9 +244,15 @@ impl T3Desktop {
                 continue;
             }
             match self.call("projects.readFile", json!({ "cwd": project.path, "relativePath": path })).await {
-                Ok(read) if read["truncated"] == true => failed.push(format!("{path}: too large to copy")),
+                Ok(read) if read["truncated"] == true => {
+                    tracing::warn!("{path} in {} is too large to copy", project.path);
+                    failed.push(path.to_owned());
+                }
                 Ok(read) => files.push((path.to_owned(), read["contents"].as_str().unwrap_or_default().to_owned())),
-                Err(e) => failed.push(format!("{path}: {e:#}")),
+                Err(e) => {
+                    tracing::warn!("reading {path} in {}: {e:#}", project.path);
+                    failed.push(path.to_owned());
+                }
             }
         }
         Ok((files, failed))
@@ -344,11 +307,6 @@ impl T3Desktop {
         Ok(token)
     }
 
-    /// Opens one of an environment's threads in the desktop app.
-    pub fn open_thread(&self, environment_id: &str, thread_id: &str) -> Result<()> {
-        let scheme = deep_link_scheme();
-        self.open_url(&format!("{scheme}://threads/{environment_id}/{thread_id}"))
-    }
 }
 
 /// The desktop server turned the session down.
@@ -385,27 +343,6 @@ fn local_origin() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn desktop_events_are_emitted_when_consumer_is_connected() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let consumers = Arc::new(AtomicUsize::new(1));
-        let desktop = T3Desktop::at(PathBuf::from("/nonexistent/t3")).with_desktop_events(tx, consumers);
-
-        desktop.open_url("sail://pair?pairingUrl=http%3A%2F%2Flocalhost%3A47732%2Fpair%23token%3Dabc").unwrap();
-        desktop.open_thread("env-1", "thread-2").unwrap();
-        desktop.activate().unwrap();
-
-        match rx.try_recv().unwrap() {
-            Event::OpenUrl { url } => assert!(url.starts_with("sail://pair?pairingUrl="), "{url}"),
-            other => panic!("unexpected event: {other:?}"),
-        }
-        match rx.try_recv().unwrap() {
-            Event::OpenUrl { url } => assert!(url.ends_with("://threads/env-1/thread-2"), "{url}"),
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(rx.try_recv().unwrap(), Event::Activate));
-    }
 
     /// Against the running desktop app, with Sail Boat's own session file:
     /// `cargo test reads_the_desktop_projects -- --ignored --nocapture`.

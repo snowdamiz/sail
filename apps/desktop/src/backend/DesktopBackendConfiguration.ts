@@ -31,6 +31,7 @@ import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopServerExposure from "./DesktopServerExposure.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
+import { getDesktopScheme } from "../electron/ElectronProtocol.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "../wsl/DesktopWslServerTree.ts";
 
@@ -207,6 +208,28 @@ const resolveResourceMonitorPath = Effect.fn(
 
   return Option.none<string>();
 });
+
+function boatDaemonBinaryName(platform: NodeJS.Platform): string {
+  return platform === "win32" ? "sail-boatd.exe" : "sail-boatd";
+}
+
+const resolveBoatDaemonPath = Effect.fn("desktop.backendConfiguration.resolveBoatDaemonPath")(
+  function* () {
+    const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const override = (yield* HostProcess.Environment).SAIL_BOATD_PATH?.trim();
+    if (override) return Option.some(override);
+    if (!environment.isPackaged) return Option.none<string>();
+    const packaged = environment.path.join(
+      environment.resourcesPath,
+      "sail-boat",
+      boatDaemonBinaryName(environment.platform),
+    );
+    return (yield* fileSystem.exists(packaged).pipe(Effect.orElseSucceed(() => false)))
+      ? Option.some(packaged)
+      : Option.none<string>();
+  },
+);
 
 const readPersistedBackendObservabilitySettings = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -527,6 +550,7 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
   function* (
     input: SharedBootstrapInput & {
       readonly resourceMonitorPath: Option.Option<string>;
+      readonly boatDaemonPath: Option.Option<string>;
       readonly cliPath: Option.Option<string>;
       readonly shellEnvironmentPrepared: boolean;
       readonly desktopAppUpdate: boolean;
@@ -580,6 +604,9 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
         T3CODE_DESKTOP_SHELL_DISCOVERY_PENDING: "1",
         T3CODE_CLI_PATH: Option.getOrUndefined(input.cliPath),
         [DESKTOP_HOST_SCOPE_ENV]: input.hostScope,
+        SAIL_BOATD_PATH: Option.getOrUndefined(input.boatDaemonPath),
+        SAIL_DEEP_LINK_SCHEME: getDesktopScheme(environment.isDevelopment),
+        SAIL_APP_BUNDLE_ID: environment.isDevelopment ? "com.sail.desktop.dev" : "com.sail.desktop",
       },
       extendEnv: true,
       bootstrap,
@@ -868,6 +895,10 @@ export const make = Effect.gen(function* () {
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
     );
+    const boatDaemonPath = yield* resolveBoatDaemonPath().pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
+    );
     const cliPath = yield* DesktopCliShim.install.pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
@@ -876,6 +907,7 @@ export const make = Effect.gen(function* () {
     return yield* resolvePrimaryStartConfig({
       ...shared,
       resourceMonitorPath,
+      boatDaemonPath,
       cliPath,
       shellEnvironmentPrepared,
       desktopAppUpdate: yield* Ref.get(desktopState.canInstallUpdates),

@@ -7,7 +7,6 @@ import {
   appleSpeechPrepare,
   appleSpeechTranscribe,
 } from "./methods/appleSpeech.ts";
-import { getBoatStatus, invokeBoatCommand } from "./methods/boat.ts";
 import * as DesktopIpc from "./DesktopIpc.ts";
 import { installNotificationBadge } from "./methods/notificationBadge.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
@@ -185,8 +184,6 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(installCliCommand);
   yield* ipc.handle(uninstallCliCommand);
   yield* ipc.handle(addCliCommandToPath);
-  yield* ipc.handle(getBoatStatus);
-  yield* ipc.handle(invokeBoatCommand);
   for (const previewMethod of PreviewIpc.methods) {
     // Explicit types preserve the error/service union of these heterogeneous preview methods.
     yield* ipc.handle<

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { useMachineDetails, useLatestThread } from "../api";
+import { offered, useBoatAccess } from "../access";
+import { useMachineDetails } from "../api";
 import type { MachineDetails as Details, LocalProject, MachineView, Size } from "../types";
 import {
   ACTIONS,
@@ -11,7 +12,6 @@ import {
   machineKey,
   money,
   powerAction,
-  openIn,
   primaryAction,
   resizeHint,
   resizeTo,
@@ -61,12 +61,19 @@ export function MachineDetails({
   const d = useMachineDetails(m.id, version, onError);
   const busy = !!pending;
   const gone = m.state === "missing";
-  const latestThread = useLatestThread(m.id);
-  const primary = primaryAction(m) ?? (m.paired ? openIn(latestThread) : ACTIONS.pair);
+  const access = useBoatAccess();
+  const paired = access.isPaired(m.environmentId);
+  const primary = offered<Action>(
+    access,
+    primaryAction(m, paired) ?? (paired ? ACTIONS.open : ACTIONS.pair),
+  );
   const [primaryArmed, armPrimary] = useArmed();
 
-  const runPrimary = () =>
-    primary.cmd === "delete_machine" ? armPrimary(() => onAction(primary)) : onAction(primary);
+  const runPrimary = () => {
+    if (!primary) return;
+    if (primary.cmd === "delete_machine") armPrimary(() => onAction(primary));
+    else onAction(primary);
+  };
 
   return (
     <div className={`view details state-${m.state}`}>
@@ -99,29 +106,35 @@ export function MachineDetails({
           )}
         </p>
       </div>
-      <div className="view-foot details-foot">
-        <button
-          className={`btn btn-lg ${primaryArmed ? "btn-danger" : primary.solid ? "btn-solid" : "btn-outline"}`}
-          disabled={busy}
-          aria-busy={busy}
-          onClick={runPrimary}
-        >
-          {pending ? (
-            <>
-              <Dots /> {pending}
-            </>
-          ) : primaryArmed ? (
-            "Confirm"
-          ) : (
-            <>
-              {primary.label}
-              {primary.cmd === "open_machine" && !primary.solid ? (
-                <Icon name="open" size={10} />
-              ) : null}
-            </>
-          )}
-        </button>
-      </div>
+      {primary ? (
+        <div className="view-foot details-foot">
+          <button
+            className={`btn btn-lg ${primaryArmed ? "btn-danger" : primary.solid ? "btn-solid" : "btn-outline"}`}
+            disabled={busy || !access.can(primary.cmd)}
+            aria-busy={busy}
+            onClick={runPrimary}
+          >
+            {pending ? (
+              <>
+                <Dots /> {pending}
+              </>
+            ) : primaryArmed ? (
+              "Confirm"
+            ) : (
+              <>
+                {primary.label}
+                {primary.cmd === "open_machine" ? <Icon name="open" size={10} /> : null}
+              </>
+            )}
+          </button>
+        </div>
+      ) : pending ? (
+        <div className="view-foot details-foot">
+          <p className="caption">
+            <Dots /> {pending}
+          </p>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -208,6 +221,8 @@ function Power({
   onAction: (a: Action) => void;
 }) {
   const power = powerAction(m);
+  const access = useBoatAccess();
+  const canKeepAwake = access.can("keep_awake");
   // optimistic, so the switch moves on click; the next state is the source of truth
   const [want, setWant] = useState<boolean | null>(null);
   useEffect(() => {
@@ -231,7 +246,7 @@ function Power({
           role="switch"
           className="switch"
           checked={on}
-          disabled={busy}
+          disabled={busy || !canKeepAwake}
           onChange={(e) => {
             setWant(e.target.checked);
             onAction(autoSleep(e.target.checked));
@@ -241,7 +256,7 @@ function Power({
       <div className="power-row">
         <button
           className="btn btn-sm btn-quiet"
-          disabled={busy || !power}
+          disabled={busy || !power || !access.can(power.cmd)}
           onClick={() => power && onAction(power)}
         >
           {(power ?? ACTIONS.sleep).label}
@@ -266,13 +281,15 @@ function StayAwake({
   const close = useCallback(() => setOpen(false), []);
   useEscape(open, close);
   const left = useSecsLeft(m.keepAwakeUntil);
+  const canKeepAwake = useBoatAccess().can("keep_awake");
+  const locked = busy || !canKeepAwake;
 
   if (m.keepAwakeUntil !== null) {
     return (
       <div className="stay-awake is-on" role="status">
         <i className="state-dot" aria-hidden />
         <span className="stay-awake-left">Awake · {timeLeft(left)} left</span>
-        <button className="btn btn-link" disabled={busy} onClick={() => onAction(keepAwake(0))}>
+        <button className="btn btn-link" disabled={locked} onClick={() => onAction(keepAwake(0))}>
           Stop
         </button>
       </div>
@@ -283,7 +300,7 @@ function StayAwake({
       <button
         className={`btn btn-sm btn-quiet stay-awake-btn${open ? " is-open" : ""}`}
         aria-expanded={open}
-        disabled={busy}
+        disabled={locked}
         onClick={() => setOpen((o) => !o)}
       >
         Stay awake for…
@@ -321,6 +338,7 @@ function Agents({
   onAction: (a: Action) => void;
 }) {
   const [signingIn, setSigningIn] = useState<string | null>(null);
+  const canSignIn = useBoatAccess().can("sign_in_agent");
   return (
     <Section title="agents">
       <ul className="lines">
@@ -339,7 +357,7 @@ function Agents({
                 ) : m.signedOut.includes(a.name) ? (
                   <button
                     className="btn btn-sm btn-outline"
-                    disabled={!!pending || m.state === "missing"}
+                    disabled={!!pending || m.state === "missing" || !canSignIn}
                     aria-busy={running}
                     onClick={() => {
                       setSigningIn(a.name);
@@ -381,6 +399,7 @@ function Connect({
   onAction: (a: Action) => void;
 }) {
   const running = pending === ACTIONS.connect.busy;
+  const canConnect = useBoatAccess().can("turn_on_connect");
   return (
     <Section title="other devices">
       <ul className="lines">
@@ -395,7 +414,7 @@ function Connect({
               ) : (
                 <button
                   className="btn btn-sm btn-outline"
-                  disabled={!!pending || m.state === "missing"}
+                  disabled={!!pending || m.state === "missing" || !canConnect}
                   aria-busy={running}
                   onClick={() => onAction(ACTIONS.connect)}
                 >
@@ -487,6 +506,7 @@ function MachineMore({
 }) {
   const ref = useRef<HTMLDetailsElement>(null);
   const [deleteArmed, armDelete] = useArmed();
+  const access = useBoatAccess();
   const size = sizeOf(sizes, m.size);
   const gone = m.state === "missing";
 
@@ -516,7 +536,7 @@ function MachineMore({
                   role="radio"
                   aria-checked={s.id === m.size}
                   className={s.id === m.size ? "is-on" : undefined}
-                  disabled={busy}
+                  disabled={busy || !access.can("resize_machine")}
                   onClick={() => s.id !== m.size && onAction(resizeTo(s.id))}
                 >
                   {s.id}
@@ -531,7 +551,7 @@ function MachineMore({
         <div className="more-group">
           <button
             className={`btn btn-sm ${deleteArmed ? "btn-danger" : "btn-quiet is-danger"} delete-btn`}
-            disabled={busy}
+            disabled={busy || !access.can("delete_machine")}
             onClick={() => armDelete(() => onAction(ACTIONS.del))}
           >
             {deleteArmed ? "Click again to delete forever" : "Delete machine…"}

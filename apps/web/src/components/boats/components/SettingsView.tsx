@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useBoatAccess } from "../access";
 import type { McpClient, Settings, UiState } from "../types";
 import { AgentName, AgentNames } from "./AgentLogos";
 import { Icon } from "./Icons";
@@ -19,6 +20,7 @@ interface Props {
 }
 
 export function SettingsView({ state, onSave, onAddMcp, onBack }: Props) {
+  const access = useBoatAccess();
   // optimistic copy; the next "state" event is the source of truth
   const [s, setS] = useState(state.settings);
   useEffect(() => setS(state.settings), [state.settings]);
@@ -56,6 +58,7 @@ export function SettingsView({ state, onSave, onAddMcp, onBack }: Props) {
             role="switch"
             className="switch"
             checked={s.startAtLogin}
+            disabled={!access.can("update_settings")}
             onChange={(e) => change({ startAtLogin: e.target.checked })}
           />
         </label>
@@ -79,7 +82,7 @@ export function SettingsView({ state, onSave, onAddMcp, onBack }: Props) {
                   key={c.id}
                   type="button"
                   className="btn btn-sm btn-outline"
-                  disabled={added === null || adding !== null}
+                  disabled={added === null || adding !== null || !access.can("add_mcp")}
                   aria-busy={adding === c.id}
                   onClick={() => add(c.id)}
                 >
@@ -100,7 +103,7 @@ export function SettingsView({ state, onSave, onAddMcp, onBack }: Props) {
             {missing.length ? (
               <>
                 <AgentNames names={missing} /> {missing.length === 1 ? "isn't" : "aren't"} installed
-                on this computer
+                on this server
               </>
             ) : (
               "Their agents can then create, wake and send work to machines"

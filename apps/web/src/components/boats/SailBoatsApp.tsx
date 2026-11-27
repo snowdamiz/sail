@@ -1,6 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { msg } from "gt-react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+
+import { environmentCatalog } from "~/connection/catalog";
+import { m as message } from "~/i18n/messages";
+import { boatCommandsAllowedAtom } from "~/state/boats";
+import { clientHostEnvironmentAtom } from "~/state/clientHostEnvironment";
+import { useLocalEnvironmentId } from "~/state/environments";
+import { useAtomCommand } from "~/state/use-atom-command";
 import { SailBrandMark } from "../SailBrandMark";
-import { call, errorText, hasDesktopBoatBridge, useBoatDaemonStatus, useUiState } from "./api";
+import { type BoatAccess, BoatAccessContext, useBoatAccess } from "./access";
+import { call, useBoatsPage, useFollowBoatLink } from "./api";
 import "./boats.css";
 import { Costs } from "./components/Costs";
 import { Icon } from "./components/Icons";
@@ -9,12 +20,15 @@ import { MachineRow } from "./components/MachineRow";
 import { NewMachine } from "./components/NewMachine";
 import { Ocean, type OceanBoat } from "./components/Ocean";
 import { SettingsView } from "./components/SettingsView";
-import { SetupView } from "./components/SetupView";
+import { type SignInPrompt, SetupView } from "./components/SetupView";
 import { Dots } from "./components/common";
 import { machineKey, type Action } from "./machine";
+import { classifyBoatLink, errorText, type BoatLink } from "./reply";
 import type { LocalProject, MachineView, McpClient, SetupAction, UiState } from "./types";
 
 type View = "list" | "new" | "settings" | `machine:${string}`;
+
+type FollowLink = (openUrl: string | undefined) => BoatLink;
 
 const canOpen = (m: MachineView) => !!m.id && m.state !== "creating";
 
@@ -32,9 +46,56 @@ function Brand() {
   );
 }
 
-function Setup({ state, onError }: { state: UiState; onError: (t: string) => void }) {
-  const act = (action: SetupAction) =>
-    void call("setup_action", { action }).catch((e) => onError(errorText(e)));
+function Setup({
+  state,
+  follow,
+  onError,
+}: {
+  state: UiState;
+  follow: FollowLink;
+  onError: (t: string) => void;
+}) {
+  const { onHost } = useBoatAccess();
+  const [signIn, setSignIn] = useState<{
+    openUrl: string | undefined;
+    userCode: string | null;
+    attempt: number;
+  } | null>(null);
+  const [requesting, setRequesting] = useState(false);
+  const agreedSignIn =
+    signIn !== null && state.setup === "signInBoat" && signIn.attempt === state.signInAttempt
+      ? signIn
+      : null;
+  const link = agreedSignIn === null ? null : classifyBoatLink(agreedSignIn.openUrl, onHost);
+  const pending: SignInPrompt | null =
+    agreedSignIn !== null && link?.kind === "browser"
+      ? { url: link.url, userCode: agreedSignIn.userCode }
+      : null;
+
+  const openedAttempt = useRef<number | null>(null);
+  useEffect(() => {
+    if (agreedSignIn === null || openedAttempt.current === agreedSignIn.attempt) return;
+    openedAttempt.current = agreedSignIn.attempt;
+    follow(agreedSignIn.openUrl);
+  }, [agreedSignIn, follow]);
+
+  const act = (action: SetupAction) => {
+    setRequesting(true);
+    void call("setup_action", { action })
+      .then(
+        (reply) => {
+          if (action === "signInBoat" && reply.data !== null)
+            setSignIn({
+              openUrl: reply.openUrl,
+              userCode: reply.userCode ?? null,
+              attempt: reply.data.attempt,
+            });
+          else follow(reply.openUrl);
+        },
+        (e) => onError(errorText(e)),
+      )
+      .finally(() => setRequesting(false));
+  };
   return (
     <>
       <Ocean boats={[{ key: "setup", name: "Sail", state: "creating" }]}>
@@ -43,7 +104,9 @@ function Setup({ state, onError }: { state: UiState; onError: (t: string) => voi
       <SetupView
         setup={state.setup}
         busy={state.setupBusy}
-        signInCode={state.signInCode}
+        signInWaiting={state.signInAttempt !== null}
+        signIn={pending}
+        requesting={requesting}
         onAction={act}
       />
     </>
@@ -52,11 +115,16 @@ function Setup({ state, onError }: { state: UiState; onError: (t: string) => voi
 
 function Ready({
   state,
+  follow,
   toast,
 }: {
   state: UiState;
+  follow: FollowLink;
   toast: (t: string, tone?: "error" | "info") => void;
 }) {
+  const access = useBoatAccess();
+  const registry = useContext(RegistryContext);
+  const setEnabled = useAtomCommand(environmentCatalog.setEnabled, { reportFailure: false });
   const [view, setView] = useState<View>("list");
   const [pickProject, setPickProject] = useState(false);
   const [hover, setHover] = useState<string | null>(null);
@@ -115,7 +183,10 @@ function Ready({
   const act = (m: MachineView, a: Action) =>
     track(m, a.busy, async () => {
       const key = machineKey(m);
-      const acceptHint = () => toast(`Accept "${m.name}" to pair it with Sail`, "info");
+      const pairIfAsked = (openUrl: string | undefined) => {
+        if (follow(openUrl).kind === "pairing")
+          toast(`Accept "${m.name}" to pair it with Sail`, "info");
+      };
       switch (a.cmd) {
         case "delete_machine":
           setDeleteErrors((d) => without(d, key));
@@ -140,26 +211,48 @@ function Ready({
         case "resize_machine":
           await call("resize_machine", { id: m.id, size: a.size });
           return;
-        case "open_machine":
-          await call(
-            "open_machine",
-            a.thread !== undefined ? { id: m.id, thread: a.thread } : { id: m.id },
-          );
-          if (!m.paired) acceptHint();
+        case "open_machine": {
+          const { data: thread } = await call("latest_thread", { id: m.id });
+          if (thread === null) {
+            toast(message(msg("No thread available to open.")), "info");
+            return;
+          }
+          const reply = await call("open_machine", { id: m.id, thread });
+          pairIfAsked(reply.openUrl);
           return;
+        }
+        case "pair_machine": {
+          const id = m.environmentId;
+          if (id !== null) {
+            const entry = registry.get(environmentCatalog.catalogValueAtom).entries.get(id);
+            if (entry?.enabled === false && entry.unsupportedReason === undefined) {
+              const result = await setEnabled({ environmentId: id, enabled: true });
+              if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+              return;
+            }
+          }
+          pairIfAsked((await call("pair_machine", { id: m.id })).openUrl);
+          return;
+        }
         default:
-          await call(a.cmd, { id: m.id });
-          if (a.cmd === "pair_machine") acceptHint();
+          pairIfAsked((await call(a.cmd, { id: m.id })).openUrl);
       }
     });
 
   const addMcp = (client: McpClient) =>
-    call("add_mcp", { client }).catch((e) => toast(errorText(e)));
+    call("add_mcp", { client }).then(
+      () => undefined,
+      (e) => toast(errorText(e)),
+    );
 
   const create = (name: string, size: string, projects: string[]) => {
     setView("list");
-    void call("create_machine", { name, size, projects }).catch((e) => toast(errorText(e)));
+    void call("create_machine", { name, size, projects }).then(
+      (reply) => void follow(reply.openUrl),
+      (e) => toast(errorText(e)),
+    );
   };
+  const canCreate = access.can("create_machine");
 
   return (
     <>
@@ -215,7 +308,12 @@ function Ready({
                 A machine is a cloud computer your Sail agents work on. It sleeps when nobody's
                 working, and sleeping is free.
               </p>
-              <button type="button" className="btn btn-solid btn-lg" onClick={() => setView("new")}>
+              <button
+                type="button"
+                className="btn btn-solid btn-lg"
+                disabled={!canCreate}
+                onClick={() => setView("new")}
+              >
                 <Icon name="plus" /> New machine
               </button>
             </div>
@@ -228,6 +326,7 @@ function Ready({
                 <button
                   type="button"
                   className="btn btn-sm btn-solid"
+                  disabled={!canCreate}
                   onClick={() => setView("new")}
                 >
                   <Icon name="plus" size={12} /> New machine
@@ -261,9 +360,20 @@ function Ready({
 }
 
 export function SailBoatsApp() {
-  const desktopAvailable = hasDesktopBoatBridge();
-  const daemonStatus = useBoatDaemonStatus();
-  const { state, loadError, retry } = useUiState();
+  const environmentId = useLocalEnvironmentId();
+  const { page, retry } = useBoatsPage(environmentId);
+  const allowed = useAtomValue(boatCommandsAllowedAtom(environmentId));
+  const onHost = useAtomValue(clientHostEnvironmentAtom(environmentId));
+  const { entries } = useAtomValue(environmentCatalog.catalogValueAtom);
+  const access: BoatAccess = {
+    can: (command) => allowed.has(command),
+    isPaired: (id) => {
+      const entry = id === null ? undefined : entries.get(id);
+      return entry?.enabled === true && entry.unsupportedReason === undefined;
+    },
+    onHost,
+  };
+  const follow = useFollowBoatLink(onHost);
   const [notice, setNotice] = useState<{ text: string; tone: "error" | "info" } | null>(null);
   const timer = useRef<number | null>(null);
 
@@ -279,69 +389,69 @@ export function SailBoatsApp() {
     };
   }, []);
 
-  const effectiveError =
-    loadError ??
-    (daemonStatus?.phase === "error" ? (daemonStatus.error ?? "Boat daemon error") : null);
-
   return (
-    <div className="sail-boats-scope" data-testid="sail-boats-workspace">
-      <div className="app">
-        {!desktopAvailable ? (
-          <>
-            <Ocean boats={[{ key: "desktop", name: "Sail", state: "asleep" }]}>
-              <Brand />
-            </Ocean>
-            <div className="view center">
-              <div className="empty">
-                <h1 className="display">Desktop app required</h1>
-                <p className="lede">
-                  Cloud boats are managed by the built-in Sail Boat daemon inside the Sail desktop
-                  app.
+    <BoatAccessContext value={access}>
+      <div className="sail-boats-scope" data-testid="sail-boats-workspace">
+        <div className="app">
+          {page.kind === "ready" ? (
+            <Ready state={page.state} follow={follow} toast={toast} />
+          ) : page.kind === "setup" ? (
+            <Setup state={page.state} follow={follow} onError={toast} />
+          ) : page.kind === "noServer" ? (
+            <>
+              <Ocean boats={[{ key: "none", name: "Sail", state: "asleep" }]}>
+                <Brand />
+              </Ocean>
+              <div className="view center">
+                <div className="empty">
+                  <h1 className="display">Boats isn't available here</h1>
+                  <p className="lede">
+                    Boats runs on the server that serves this app, and this app has none. Open Boats
+                    from that server's own web page, or from Sail desktop with its local server on.
+                  </p>
+                </div>
+              </div>
+            </>
+          ) : page.kind === "offline" ? (
+            <>
+              <Ocean boats={[{ key: "err", name: "Sail", state: "error" }]}>
+                <Brand />
+              </Ocean>
+              <div className="view center">
+                <div className="empty">
+                  <h1 className="display">Boat daemon offline</h1>
+                  <p className="lede">{page.message}</p>
+                  <button
+                    type="button"
+                    className="btn btn-solid"
+                    onClick={() => void retry().catch((e) => toast(errorText(e)))}
+                  >
+                    Retry
+                  </button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <Ocean boats={[{ key: "boot", name: "Sail", state: "creating" }]}>
+                <Brand />
+              </Ocean>
+              <div className="view center">
+                <p className="caption">
+                  <Dots /> starting Sail Boats
                 </p>
               </div>
-            </div>
-          </>
-        ) : state ? (
-          state.setup === "ready" ? (
-            <Ready state={state} toast={toast} />
-          ) : (
-            <Setup state={state} onError={toast} />
-          )
-        ) : effectiveError ? (
-          <>
-            <Ocean boats={[{ key: "err", name: "Sail", state: "error" }]}>
-              <Brand />
-            </Ocean>
-            <div className="view center">
-              <div className="empty">
-                <h1 className="display">Boat daemon offline</h1>
-                <p className="lede">{effectiveError}</p>
-                <button type="button" className="btn btn-solid" onClick={retry}>
-                  Retry
-                </button>
-              </div>
-            </div>
-          </>
-        ) : (
-          <>
-            <Ocean boats={[{ key: "boot", name: "Sail", state: "creating" }]}>
-              <Brand />
-            </Ocean>
-            <div className="view center">
-              <p className="caption">
-                <Dots /> starting Sail Boats
-              </p>
-            </div>
-          </>
-        )}
+            </>
+          )}
 
-        {notice ? (
-          <div className="toast" role="alert" onClick={() => setNotice(null)}>
-            <Icon name={notice.tone === "error" ? "alert" : "check"} size={14} />
-            <span>{notice.text}</span>
-          </div>
-        ) : null}
+          {notice ? (
+            <div className="toast" role="alert" onClick={() => setNotice(null)}>
+              <Icon name={notice.tone === "error" ? "alert" : "check"} size={14} />
+              <span>{notice.text}</span>
+            </div>
+          ) : null}
+        </div>
       </div>
-    </div>
+    </BoatAccessContext>
   );
 }

@@ -480,6 +480,72 @@ it.effect.each([WS_METHODS.subscribeVcsBranch, WS_METHODS.subscribeVcsStatus] as
     }),
 );
 
+it.effect("reads Boats with read scope and gates Boat commands by what they change", () =>
+  Effect.gen(function* () {
+    const tested = [
+      WS_METHODS.boatsInvoke,
+      WS_METHODS.subscribeBoats,
+      WS_METHODS.subscribeBoatNotices,
+    ] as const;
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof tested)[number]> =>
+          !(tested as ReadonlyArray<string>).includes(tag),
+      ),
+    );
+    const ran: string[] = [];
+    const handlers = Layer.mergeAll(
+      group.toLayerHandler(WS_METHODS.boatsInvoke, ({ command }) =>
+        Effect.sync(() => {
+          ran.push(command);
+          return { data: null };
+        }),
+      ),
+      group.toLayerHandler(WS_METHODS.subscribeBoats, () =>
+        Stream.make({ _tag: "status" as const, status: { phase: "ready" as const, error: null } }),
+      ),
+      group.toLayerHandler(WS_METHODS.subscribeBoatNotices, () =>
+        Stream.make({ title: "Sail Boat", body: "Machine ready" }),
+      ),
+    );
+    const clientWith = (...scopes: Parameters<typeof RpcAuthorization.layer>[0]) =>
+      RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.merge(handlers, RpcAuthorization.layer(scopes))),
+      );
+
+    const reader = yield* clientWith(AuthOrchestrationReadScope);
+    expect(yield* Stream.runCollect(reader[WS_METHODS.subscribeBoats]({}))).toEqual([
+      { _tag: "status", status: { phase: "ready", error: null } },
+    ]);
+    expect(yield* Stream.runCollect(reader[WS_METHODS.subscribeBoatNotices]({}))).toEqual([
+      { title: "Sail Boat", body: "Machine ready" },
+    ]);
+    const outsider = yield* clientWith();
+    expect(
+      yield* Stream.runCollect(outsider[WS_METHODS.subscribeBoatNotices]({})).pipe(Effect.flip),
+    ).toMatchObject({ requiredPermission: AuthOrchestrationReadScope });
+    yield* reader[WS_METHODS.boatsInvoke]({ command: "get_state" });
+    expect(
+      yield* reader[WS_METHODS.boatsInvoke]({ command: "create_machine", args: {} }).pipe(
+        Effect.flip,
+      ),
+    ).toMatchObject({ requiredPermission: AuthOrchestrationOperateScope });
+
+    const operator = yield* clientWith(AuthOrchestrationReadScope, AuthOrchestrationOperateScope);
+    yield* operator[WS_METHODS.boatsInvoke]({ command: "create_machine", args: {} });
+    for (const command of ["setup_action", "add_mcp"] as const) {
+      expect(
+        yield* operator[WS_METHODS.boatsInvoke]({ command, args: {} }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthEnvironmentMaintainScope });
+    }
+
+    const maintainer = yield* clientWith(AuthEnvironmentMaintainScope);
+    yield* maintainer[WS_METHODS.boatsInvoke]({ command: "setup_action", args: {} });
+    yield* maintainer[WS_METHODS.boatsInvoke]({ command: "add_mcp", args: {} });
+    expect(ran).toEqual(["get_state", "create_machine", "setup_action", "add_mcp"]);
+  }).pipe(Effect.scoped),
+);
+
 describe("settings mutation authorization", () => {
   const group = WsRpcGroup.omit(
     ...[...WsRpcGroup.requests.keys()].filter(

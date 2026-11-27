@@ -140,7 +140,8 @@ function normalizeHostname(hostname: string): string {
 }
 
 export function isLoopbackHostname(hostname: string): boolean {
-  return LOOPBACK_HOSTNAMES.has(normalizeHostname(hostname));
+  const normalized = normalizeHostname(hostname).replace(/\.$/, "");
+  return LOOPBACK_HOSTNAMES.has(normalized) || normalized.endsWith(".localhost");
 }
 
 function resolveHttpRequestBaseUrl(primaryTarget: PrimaryEnvironmentTarget): string {

@@ -299,6 +299,10 @@
       "types": "./src/state/presentation.ts",
       "default": "./src/state/presentation.ts"
     },
+    "./state/boats": {
+      "types": "./src/state/boats.ts",
+      "default": "./src/state/boats.ts"
+    },
     "./state/device": {
       "types": "./src/state/device.ts",
       "default": "./src/state/device.ts"

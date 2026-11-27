@@ -58,8 +58,18 @@ it("recognizes the desktop host service and direct browser loopback, excluding r
   expect(isClientHostEnvironment(REMOTE, "service", target("https://remote.example"), false)).toBe(
     false,
   );
-  expect(isClientHostEnvironment(PRIMARY, null, target("http://localhost:3000"), false)).toBe(true);
-  expect(isClientHostEnvironment(PRIMARY, null, target("http://127.0.0.1:3000"), false)).toBe(true);
+  for (const hostname of ["localhost", "lane.localhost", "lane.localhost.", "127.0.0.1", "[::1]"]) {
+    expect(
+      isClientHostEnvironment(PRIMARY, null, target(`http://${hostname}:3000`), false),
+      hostname,
+    ).toBe(true);
+  }
+  for (const hostname of ["notlocalhost", "lane.localhost.example"]) {
+    expect(
+      isClientHostEnvironment(PRIMARY, null, target(`http://${hostname}:3000`), false),
+      hostname,
+    ).toBe(false);
+  }
   expect(isClientHostEnvironment(PRIMARY, null, target("https://remote.example"), true)).toBe(true);
   expect(isClientHostEnvironment(REMOTE, null, null, true)).toBe(false);
   for (const target of [

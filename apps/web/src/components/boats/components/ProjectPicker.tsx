@@ -7,7 +7,9 @@ import {
   type HTMLAttributes,
   type ReactNode,
 } from "react";
-import { call, errorText } from "../api";
+import { useBoatAccess } from "../access";
+import { call } from "../api";
+import { errorText } from "../reply";
 import type { LocalProject, MachineView } from "../types";
 import { PICK_PROJECT, hasRepo, homePath } from "../machine";
 import { useEscape } from "./common";
@@ -23,6 +25,7 @@ export function ProjectPicker({
   initialOpen: boolean;
   onAdd: (p: LocalProject) => void;
 }) {
+  const canAdd = useBoatAccess().can("add_project");
   const [open, setOpen] = useState(initialOpen);
   const button = useRef<HTMLButtonElement>(null);
   const close = useCallback(() => {
@@ -37,6 +40,7 @@ export function ProjectPicker({
         type="button"
         className="line-add"
         aria-expanded={open}
+        disabled={!canAdd}
         onClick={() => setOpen((o) => !o)}
       >
         <Icon name="plus" size={10} />
@@ -174,7 +178,7 @@ export function useLocalProjects(): LocalProjects {
   useEffect(() => {
     let live = true;
     call("local_projects", undefined).then(
-      (p) => live && setList(p),
+      ({ data }) => live && setList(data),
       (e) => live && setError(errorText(e)),
     );
     return () => {
