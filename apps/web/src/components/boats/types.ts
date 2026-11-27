@@ -1,4 +1,9 @@
-import type { BoatCommand, EnvironmentId } from "@t3tools/contracts";
+import type {
+  BoatSignInAction,
+  BoatSignInPhase,
+  BoatCommand,
+  EnvironmentId,
+} from "@t3tools/contracts";
 
 // Mirrors docs/ui-contract.md exactly.
 
@@ -68,7 +73,6 @@ export interface UiState {
   setup: Setup;
   setupBusy: boolean;
   /** the Boat sign-in waiting now; its page and code go only to tabs that ask for them */
-  signInAttempt: number | null;
   account: { identifier: string | null; plan: string | null } | null;
   machines: MachineView[];
   costs: { today: number; month: number; startsToday: number; startsLimit: number };
@@ -114,7 +118,10 @@ export type Commands = Covering<
     get_machine_details: [{ id: string }, MachineDetails];
     add_mcp: [{ client: McpClient }, void];
     update_settings: [{ settings: Settings }, void];
-    setup_action: [{ action: SetupAction }, { attempt: number } | null]; // attempt: signInBoat
+    setup_action: [{ action: SetupAction }, void];
+    manage_boat_sign_in: [BoatSignInAction, BoatSignInPhase];
+    manage_agent_sign_in: [BoatSignInAction, BoatSignInPhase];
+    sign_out_boat: [undefined, void];
   }
 >;
 

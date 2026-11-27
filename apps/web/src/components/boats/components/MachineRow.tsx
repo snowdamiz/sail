@@ -1,3 +1,4 @@
+import { useGT } from "gt-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { offered, useBoatAccess } from "../access";
 import type { MachineView, Size } from "../types";
@@ -22,6 +23,7 @@ interface Props {
   sizes: Size[];
   /** label of the command currently running for this machine */
   pending: string | null;
+  signingIn: boolean;
   /** why the last delete was refused (work still running) */
   deleteError: string | null;
   onAction: (a: Action) => void;
@@ -35,12 +37,14 @@ export function MachineRow({
   machine: m,
   sizes,
   pending,
+  signingIn,
   deleteError,
   onAction,
   onDismissDeleteError,
   onHover,
   onOpen,
 }: Props) {
+  const gt = useGT();
   const key = machineKey(m);
   const access = useBoatAccess();
   const paired = access.isPaired(m.environmentId);
@@ -120,10 +124,10 @@ export function MachineRow({
             <button
               key={agent}
               className="btn btn-link"
-              disabled={!!pending || !access.can("sign_in_agent")}
+              disabled={signingIn || !!pending || !access.can("sign_in_agent")}
               onClick={() => onAction(signInTo(agent))}
             >
-              {m.signedOut.length > 1 ? <AgentName name={agent} /> : "Sign in"}
+              {m.signedOut.length > 1 ? <AgentName name={agent} /> : gt("Sign in")}
             </button>
           ))}
         </div>

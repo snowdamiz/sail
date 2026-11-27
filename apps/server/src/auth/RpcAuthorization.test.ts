@@ -533,7 +533,16 @@ it.effect("reads Boats with read scope and gates Boat commands by what they chan
 
     const operator = yield* clientWith(AuthOrchestrationReadScope, AuthOrchestrationOperateScope);
     yield* operator[WS_METHODS.boatsInvoke]({ command: "create_machine", args: {} });
-    for (const command of ["setup_action", "add_mcp"] as const) {
+    yield* operator[WS_METHODS.boatsInvoke]({
+      command: "manage_agent_sign_in",
+      args: { action: "status", attemptId: "fixture" },
+    });
+    for (const command of [
+      "setup_action",
+      "add_mcp",
+      "manage_boat_sign_in",
+      "sign_out_boat",
+    ] as const) {
       expect(
         yield* operator[WS_METHODS.boatsInvoke]({ command, args: {} }).pipe(Effect.flip),
       ).toMatchObject({ requiredPermission: AuthEnvironmentMaintainScope });
@@ -542,7 +551,13 @@ it.effect("reads Boats with read scope and gates Boat commands by what they chan
     const maintainer = yield* clientWith(AuthEnvironmentMaintainScope);
     yield* maintainer[WS_METHODS.boatsInvoke]({ command: "setup_action", args: {} });
     yield* maintainer[WS_METHODS.boatsInvoke]({ command: "add_mcp", args: {} });
-    expect(ran).toEqual(["get_state", "create_machine", "setup_action", "add_mcp"]);
+    expect(ran).toEqual([
+      "get_state",
+      "create_machine",
+      "manage_agent_sign_in",
+      "setup_action",
+      "add_mcp",
+    ]);
   }).pipe(Effect.scoped),
 );
 

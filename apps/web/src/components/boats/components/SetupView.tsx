@@ -1,12 +1,9 @@
+import type { ReactNode } from "react";
+import { useGT } from "gt-react";
 import { useBoatAccess } from "../access";
 import type { Setup, SetupAction } from "../types";
 import { Icon } from "./Icons";
 import { Dots } from "./common";
-
-export interface SignInPrompt {
-  url: string;
-  userCode: string | null;
-}
 
 const STEPS: {
   id: Exclude<Setup, "starting" | "ready">;
@@ -25,7 +22,7 @@ const STEPS: {
   {
     id: "signInBoat",
     title: "Sign in to Boat",
-    body: "Opens your browser. Machines bill to your own Boat plan.",
+    body: "",
     button: "Sign in to Boat",
     busy: "Waiting for sign-in",
   },
@@ -34,22 +31,19 @@ const STEPS: {
 export function SetupView({
   setup,
   busy,
-  signInWaiting,
   signIn,
   requesting,
   onAction,
 }: {
   setup: Setup;
   busy: boolean;
-  signInWaiting: boolean;
-  signIn: SignInPrompt | null;
+  signIn: ReactNode;
   requesting: boolean;
   onAction: (a: SetupAction) => void;
 }) {
+  const gt = useGT();
   const canAct = useBoatAccess().can("setup_action");
-  const locked = busy || requesting || !canAct;
-  const canShowPendingSignIn =
-    setup === "signInBoat" && signInWaiting && signIn === null && canAct && !requesting;
+  const locked = busy || requesting || !canAct || signIn !== null;
   if (setup === "starting" || setup === "ready") {
     return (
       <div className="view center">
@@ -81,46 +75,34 @@ export function SetupView({
                   {status === "done" ? <Icon name="check" size={12} /> : `0${i + 1}`}
                 </span>
                 <div className="step-text">
-                  <span className="step-title">{s.title}</span>
-                  {status === "current" ? <span className="step-body">{s.body}</span> : null}
+                  <span className="step-title">
+                    {s.id === "signInBoat" ? gt("Sign in to Boat") : s.title}
+                  </span>
                   {status === "current" ? (
+                    <span className="step-body">
+                      {s.id === "signInBoat" ? gt("Machines bill to your Boat plan.") : s.body}
+                    </span>
+                  ) : null}
+                  {status === "current" && signIn === null ? (
                     <button
                       type="button"
                       className="btn btn-solid btn-lg"
-                      disabled={locked && !canShowPendingSignIn}
+                      disabled={locked}
                       aria-busy={busy}
                       onClick={() => onAction(s.id)}
                     >
-                      {canShowPendingSignIn ? (
-                        "Show sign-in page"
-                      ) : busy ? (
+                      {busy ? (
                         <>
-                          <Dots /> {s.busy}
+                          <Dots /> {s.id === "signInBoat" ? gt("Waiting for sign-in…") : s.busy}
                         </>
+                      ) : s.id === "signInBoat" ? (
+                        gt("Sign in to Boat")
                       ) : (
                         s.button
                       )}
                     </button>
                   ) : null}
-                  {status === "current" && signIn ? (
-                    <span className="step-body">
-                      Finish on{" "}
-                      <a
-                        className="btn btn-link"
-                        href={signIn.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        Boat's sign-in page
-                      </a>
-                      {signIn.userCode ? (
-                        <>
-                          . If it asks for a code, enter{" "}
-                          <code className="step-code">{signIn.userCode}</code>
-                        </>
-                      ) : null}
-                    </span>
-                  ) : null}
+                  {status === "current" ? signIn : null}
                 </div>
               </li>
             );

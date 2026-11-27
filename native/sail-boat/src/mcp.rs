@@ -448,7 +448,7 @@ async fn run(app: &Arc<App>, call: Call) -> Result<String> {
         }
         Call::TurnOnConnect { machine } => {
             let m = app.machine(&machine)?;
-            m.turn_on_connect().await?;
+            m.turn_on_connect_locally().await?;
             format!("T3 Connect is on for {}: the user's other devices reach it with their account.", m.record().name)
         }
         Call::MachineDetails { machine } => serde_json::to_string(&app.details(&machine)?)?,

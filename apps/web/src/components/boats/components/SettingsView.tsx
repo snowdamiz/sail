@@ -1,3 +1,4 @@
+import { useGT } from "gt-react";
 import { useEffect, useState } from "react";
 import { useBoatAccess } from "../access";
 import type { McpClient, Settings, UiState } from "../types";
@@ -17,10 +18,13 @@ interface Props {
   /** never rejects; errors are shown by the caller */
   onAddMcp: (client: McpClient) => Promise<void>;
   onBack: () => void;
+  onSignOut: () => Promise<void>;
 }
 
-export function SettingsView({ state, onSave, onAddMcp, onBack }: Props) {
+export function SettingsView({ state, onSave, onAddMcp, onBack, onSignOut }: Props) {
   const access = useBoatAccess();
+  const gt = useGT();
+  const [signingOut, setSigningOut] = useState(false);
   // optimistic copy; the next "state" event is the source of truth
   const [s, setS] = useState(state.settings);
   useEffect(() => setS(state.settings), [state.settings]);
@@ -121,6 +125,17 @@ export function SettingsView({ state, onSave, onAddMcp, onBack }: Props) {
           {email && plan && " · "}
           {plan}
         </span>
+        <button
+          type="button"
+          className="btn btn-sm btn-outline"
+          disabled={signingOut || !access.can("sign_out_boat")}
+          onClick={() => {
+            setSigningOut(true);
+            void onSignOut().finally(() => setSigningOut(false));
+          }}
+        >
+          {signingOut ? gt("Signing out of Boat…") : gt("Sign out of Boat")}
+        </button>
       </div>
     </div>
   );

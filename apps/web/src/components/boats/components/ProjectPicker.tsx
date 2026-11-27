@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { useBoatAccess } from "../access";
-import { call } from "../api";
+import { useBoatCall } from "../api";
 import { errorText } from "../reply";
 import type { LocalProject, MachineView } from "../types";
 import { PICK_PROJECT, hasRepo, homePath } from "../machine";
@@ -172,6 +172,7 @@ export interface LocalProjects {
 
 /** Sail's projects that can go to a machine, fetched once per mount. */
 export function useLocalProjects(): LocalProjects {
+  const call = useBoatCall();
   const [list, setList] = useState<LocalProject[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -184,7 +185,7 @@ export function useLocalProjects(): LocalProjects {
     return () => {
       live = false;
     };
-  }, [attempt]);
+  }, [attempt, call]);
   return {
     list,
     error,

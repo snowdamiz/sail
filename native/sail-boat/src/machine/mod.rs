@@ -207,6 +207,7 @@ pub struct MachineRuntime {
     /// One capture at a time: "sleep now" and the background poll can see the same drain.
     capturing: tokio::sync::Mutex<()>,
     flushing_deferred: tokio::sync::Mutex<()>,
+    signing_in: tokio::sync::Mutex<()>,
     last_heartbeat: Mutex<Option<Instant>>,
     /// When the watchdog was seen stopping the machine; cleared once Boat reports it stopped or
     /// the watchdog is active again.
@@ -242,6 +243,7 @@ impl MachineRuntime {
             waking: tokio::sync::Mutex::new(()),
             capturing: tokio::sync::Mutex::new(()),
             flushing_deferred: tokio::sync::Mutex::new(()),
+            signing_in: tokio::sync::Mutex::new(()),
             last_heartbeat: Mutex::new(None),
             stop_seen: Mutex::new(None),
             wake_failure: Mutex::new(None),

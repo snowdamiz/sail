@@ -5,6 +5,7 @@ import type { Action } from "./machine";
 import type { CommandName } from "./types";
 
 export interface BoatAccess {
+  readonly environmentId: EnvironmentId | null;
   readonly can: (command: CommandName) => boolean;
   readonly isPaired: (environmentId: EnvironmentId | null) => boolean;
   // The daemon's pairing and thread links are http://localhost ones until W12.
@@ -12,6 +13,7 @@ export interface BoatAccess {
 }
 
 export const BoatAccessContext = createContext<BoatAccess>({
+  environmentId: null,
   can: () => false,
   isPaired: () => false,
   onHost: false,
