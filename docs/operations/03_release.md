@@ -45,6 +45,20 @@ Windows packages the bundled server and its unpacked native modules in `resource
 
 ## One-time credentials setup
 
+### Sail lane container package
+
+Sail `-lane.*` releases publish images to the disposable registry package
+`ghcr.io/<owner>/sail-server-lane-v2`. The release workflow creates the package
+on its first push using `GITHUB_TOKEN`. The package may be public; private
+visibility and a personal access token are not required. If the package already
+exists and the workflow lacks write access, grant the Sail repository **Write**
+under **Manage Actions access** in the package settings.
+
+Regular releases still publish to `ghcr.io/<owner>/sail-server`. That package
+must be public, and the workflow verifies anonymous pulls for regular releases.
+
+[GitHub Packages visibility and access settings](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility)
+
 ### npm OIDC trusted publishing
 
 Configure `t3` on npm with GitHub Actions Trusted Publishing for `.github/workflows/release.yml` (the workflow publishes only the `t3` launcher tarball via `npm publish --provenance`). Set the publisher's environment to `production`, which `publish_cli` declares.

@@ -226,7 +226,9 @@ archive="${stem}.tar.gz"
 versions_dir="${t3_home}/runtime/versions"
 target_dir="${versions_dir}/${version}"
 
-if [ -f "${target_dir}/.install-complete" ] && [ "$(cat "${target_dir}/.install-complete")" = "$version" ]; then
+# A sandbox may already have an upstream CLI at this version.
+if [ -f "${target_dir}/.install-complete" ] && [ "$(cat "${target_dir}/.install-complete")" = "$version" ] &&
+  { [ "$platform" != linux ] || { [ -f "${target_dir}/.sail-product" ] && [ "$(cat "${target_dir}/.sail-product")" = sail ]; }; }; then
   step "Version ${version} is already downloaded."
 else
   mkdir -p "$versions_dir"
@@ -258,6 +260,7 @@ else
   tar -xzf "${staging}/${archive}" -C "$staging" --strip-components=1
   rm -f "${staging}/${archive}" "${staging}/SHA256SUMS"
   "${staging}/t3" --version >/dev/null || fail "the downloaded executable does not run"
+  printf '%s\n' sail > "${staging}/.sail-product"
   printf '%s\n' "$version" > "${staging}/.install-complete"
 
   rm -rf "$target_dir"

@@ -16,7 +16,9 @@ export async function buildDesktopInstallers(options: {
   readonly writeChecksums?: boolean;
 }) {
   if (
-    !/^\d+\.\d+\.\d+(?:-(?:(?:nightly|preview)\.\d{8}\.\d+|pr\.\d+\.\d+))?$/.test(options.version)
+    !/^\d+\.\d+\.\d+(?:-(?:(?:nightly|preview)\.\d{8}\.\d+|pr\.\d+\.\d+|lane\.[a-zA-Z0-9]+(?:[.-][a-zA-Z0-9]+)*))?$/.test(
+      options.version,
+    )
   )
     throw new Error("Invalid desktop installer version.");
   if (!/^[\w.-]+\/[\w.-]+$/.test(options.repository))
@@ -39,7 +41,9 @@ export async function buildDesktopInstallers(options: {
 
   if (options.writeChecksums) {
     const entries = (await NodeFSP.readdir(options.outputDir))
-      .filter((entry) => CHECKSUM_EXTENSIONS.some((ext) => entry.endsWith(ext)))
+      .filter(
+        (entry) => entry === "install.sh" || CHECKSUM_EXTENSIONS.some((ext) => entry.endsWith(ext)),
+      )
       .sort();
     const lines: string[] = [];
     for (const entry of entries) {

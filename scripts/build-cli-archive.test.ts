@@ -9,7 +9,11 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import { awaitCliNotarization, signMacArchiveContents } from "./build-cli-archive.ts";
+import {
+  awaitCliNotarization,
+  buildCliArchive,
+  signMacArchiveContents,
+} from "./build-cli-archive.ts";
 
 const signedEnv = {
   T3CODE_CLI_MAC_SIGN_IDENTITY: "Developer ID Application: Test (TEAM)",
@@ -71,6 +75,70 @@ const makeContent = Effect.fn("test.makeContent")(function* () {
 
 const notarySubcommands = (calls: ReadonlyArray<ReadonlyArray<string>>) =>
   calls.filter((argv) => argv[1] === "notarytool").map((argv) => argv.slice(2));
+
+it.layer(NodeServices.layer)("build-cli-archive contents", (it) => {
+  it.effect("archives sail-boatd as an executable beside t3 and resource-monitor", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const realSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const { root } = yield* makeContent();
+      const server = path.join(root, "apps/server");
+      const distExe = path.join(server, "dist-exe");
+      const client = path.join(server, "dist/client");
+      const monitor = path.join(server, "dist/resource-monitor");
+      const boatd = path.join(root, "boatd-input");
+      for (const directory of [distExe, client, monitor]) {
+        yield* fs.makeDirectory(directory, { recursive: true });
+      }
+      yield* fs.writeFileString(path.join(distExe, "t3-darwin-arm64"), "SEA fixture");
+      yield* fs.writeFileString(path.join(client, "index.html"), "Client fixture");
+      yield* fs.writeFileString(path.join(monitor, "t3-resource-monitor"), "Monitor fixture");
+      yield* fs.writeFileString(boatd, "Boat fixture");
+      for (const entry of ["pnpm-workspace.yaml", "patches"]) {
+        yield* fs.copy(path.resolve(import.meta.dirname, "..", entry), path.join(root, entry));
+      }
+      const stub = stubSpawner(() => ({ exitCode: 0 }));
+      const archive = yield* withStubs(
+        buildCliArchive(
+          {
+            platform: "mac",
+            arch: "arm64",
+            version: "1.2.3",
+            outputDir: root,
+            resourceMonitorDir: Option.none(),
+            boatdPath: Option.some(boatd),
+            notarySubmissionFile: Option.none(),
+          },
+          root,
+        ),
+        {
+          ...stub,
+          spawner: ChildProcessSpawner.make((command) =>
+            ChildProcess.isStandardCommand(command) && command.command === "tar"
+              ? realSpawner.spawn(command)
+              : stub.spawner.spawn(command),
+          ),
+        },
+        {},
+      );
+      const entries = yield* realSpawner.string(ChildProcess.make("tar", ["-tzf", archive]));
+      const stem = "t3-1.2.3-darwin-arm64";
+      assert.includeMembers(entries.trim().split("\n"), [
+        `${stem}/t3`,
+        `${stem}/sail-boatd`,
+        `${stem}/resource-monitor/t3-resource-monitor`,
+      ]);
+      const extracted = yield* realSpawner.exitCode(
+        ChildProcess.make("tar", ["-xzf", archive, "-C", root]),
+      );
+      assert.equal(Number(extracted), 0);
+      const sidecar = path.join(root, stem, "sail-boatd");
+      assert.equal(yield* fs.readFileString(sidecar), "Boat fixture");
+      assert.equal((yield* fs.stat(sidecar)).mode & 0o777, 0o755);
+    }),
+  );
+});
 
 it.layer(NodeServices.layer)("build-cli-archive notarization", (it) => {
   it.effect("records a deferred submission without waiting, then gates on Accepted", () =>

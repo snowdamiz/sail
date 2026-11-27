@@ -144,13 +144,14 @@ const bundleLinuxLibatomic = Effect.fn("bundleLinuxLibatomic")(function* (input:
   if (!pkg || !version || !sourcePackage || !sourceVersion) {
     return yield* new CliArchiveInputMissingError({
       inputPath: `dpkg package for ${source}`,
-      hint: "The archive copies libatomic's license and source reference from its Ubuntu package.",
+      hint: "The archive copies libatomic's license and source reference from its system package.",
     });
   }
-  const header = [
-    `libatomic.so.1 is copied from the Ubuntu package ${pkg} ${version}.`,
-    `Source: https://launchpad.net/ubuntu/+source/${sourcePackage}/${sourceVersion}`,
-  ].join("\n");
+  const osRelease = yield* fs.readFileString("/etc/os-release");
+  const sourceUrl = /^ID=debian$/m.test(osRelease)
+    ? `https://sources.debian.org/src/${sourcePackage}/${sourceVersion}/`
+    : `https://launchpad.net/ubuntu/+source/${sourcePackage}/${sourceVersion}`;
+  const header = `libatomic.so.1 is copied from the system package ${pkg} ${version}.\nSource: ${sourceUrl}`;
   // Vendored because CI runner images strip /usr/share/doc.
   const license = yield* fs.readFileString(
     path.join(input.repoRoot, "scripts/licenses/libatomic.LICENSE"),
@@ -276,7 +277,8 @@ export const signMacArchiveContents = Effect.fn("signMacArchiveContents")(functi
         entry.endsWith(".node") ||
         entry.endsWith(".dylib") ||
         entry.endsWith("spawn-helper") ||
-        entry.endsWith("t3-resource-monitor"),
+        entry.endsWith("t3-resource-monitor") ||
+        entry === "sail-boatd",
     )
     .map((entry) => path.join(input.contentDir, entry));
 
@@ -428,17 +430,21 @@ const signWindowsExecutable = Effect.fn("signWindowsExecutable")(function* (
   yield* Effect.log("[cli-archive] Signed t3.exe (Azure Trusted Signing).");
 });
 
-const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
-  readonly platform: BuildPlatform;
-  readonly arch: BuildArch;
-  readonly version: string;
-  readonly outputDir: string;
-  readonly resourceMonitorDir: Option.Option<string>;
-  readonly notarySubmissionFile: Option.Option<string>;
-}) {
+export const buildCliArchive = Effect.fn("buildCliArchive")(function* (
+  input: {
+    readonly platform: BuildPlatform;
+    readonly arch: BuildArch;
+    readonly version: string;
+    readonly outputDir: string;
+    readonly resourceMonitorDir: Option.Option<string>;
+    readonly boatdPath: Option.Option<string>;
+    readonly notarySubmissionFile: Option.Option<string>;
+  },
+  repoRootOverride?: string,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const repoRoot = yield* RepoRoot;
+  const repoRoot = repoRootOverride ?? (yield* RepoRoot);
   const serverDir = path.join(repoRoot, "apps/server");
   const executableName = input.platform === "win" ? "t3.exe" : "t3";
   // tsdown suffixes cross-built executables; prefer the exact target over the plain host build.
@@ -480,6 +486,11 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   yield* fs.copyFile(builtExecutable, path.join(contentDir, executableName));
   yield* stageWebClient(webClient, path.join(contentDir, "client"));
   yield* fs.copy(resourceMonitorDir, path.join(contentDir, "resource-monitor"));
+  if (Option.isSome(input.boatdPath)) {
+    const boatd = path.join(contentDir, input.platform === "win" ? "sail-boatd.exe" : "sail-boatd");
+    yield* fs.copyFile(input.boatdPath.value, boatd);
+    if (input.platform !== "win") yield* fs.chmod(boatd, 0o755);
+  }
   yield* stageServerRuntime({
     repoRoot,
     stageDir: contentDir,
@@ -566,6 +577,10 @@ const command = Command.make(
       Flag.withDescription(
         "Directory laid out like dist/resource-monitor (defaults to apps/server/dist/resource-monitor).",
       ),
+      Flag.optional,
+    ),
+    boatdPath: Flag.String("boatd-path").pipe(
+      Flag.withDescription("Path to the sail-boatd binary for the target platform."),
       Flag.optional,
     ),
     notarySubmissionFile: Flag.String("notary-submission-file").pipe(

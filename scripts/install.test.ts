@@ -6,7 +6,9 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeHttp from "node:http";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeUtil from "node:util";
 import { describe, expect, it } from "vite-plus/test";
+import { startMirror } from "./fixtures/release-mirror.ts";
 
 /** The launcher install.sh, `t3 install`, and `t3 update` write; exec by absolute path. */
 const launcherScript = (executable: string) =>
@@ -15,6 +17,54 @@ const launcherScript = (executable: string) =>
 const nightlies = Array.from({ length: 100 }, (_, index) => ({
   tag_name: `v1.2.4-nightly.20261020.${200 - index}`,
 }));
+
+describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("Sail CLI install", () => {
+  it("replaces an unmarked same-version install and marks the verified archive as Sail", async () => {
+    const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "sail-install-"));
+    const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
+    const arch = HostProcess.Architecture.defaultValue() === "arm64" ? "arm64" : "x64";
+    const version = "1.2.3";
+    const home = NodePath.join(root, "home");
+    const target = NodePath.join(home, "runtime/versions", version);
+    const stem = `t3-${version}-linux-${arch}`;
+    const payload = NodePath.join(root, stem);
+    try {
+      await NodeFSP.mkdir(target, { recursive: true });
+      await NodeFSP.writeFile(NodePath.join(target, ".install-complete"), `${version}\n`);
+      await NodeFSP.writeFile(NodePath.join(target, "t3"), "#!/bin/sh\necho upstream\n", {
+        mode: 0o755,
+      });
+      await NodeFSP.mkdir(payload);
+      await NodeFSP.writeFile(NodePath.join(payload, "t3"), "#!/bin/sh\necho sail\n", {
+        mode: 0o755,
+      });
+      await execFile("tar", ["-czf", `${stem}.tar.gz`, stem], { cwd: root });
+      const mirror = await startMirror({ dir: root });
+      try {
+        const bin = NodePath.join(root, "bin");
+        await execFile("sh", [NodePath.join(import.meta.dirname, "install.sh")], {
+          env: {
+            ...process.env,
+            T3CODE_VERSION: version,
+            T3CODE_HOME: home,
+            T3CODE_INSTALL_BIN_DIR: bin,
+            T3CODE_RELEASE_BASE_URL: mirror.url,
+          },
+        });
+        expect(await NodeFSP.readFile(NodePath.join(target, ".sail-product"), "utf8")).toBe(
+          "sail\n",
+        );
+        expect((await execFile(NodePath.join(bin, "t3"), ["--version"])).stdout.trim()).toBe(
+          "sail",
+        );
+      } finally {
+        await mirror.close();
+      }
+    } finally {
+      await NodeFSP.rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer home", () => {
   it("installs a relative home from a directory ending in a newline", async () => {
@@ -30,6 +80,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer home
     try {
       await NodeFSP.mkdir(target, { recursive: true });
       await NodeFSP.writeFile(NodePath.join(target, ".install-complete"), `${version}\n`);
+      await NodeFSP.writeFile(NodePath.join(target, ".sail-product"), "sail\n");
       await NodeFSP.writeFile(NodePath.join(target, "t3"), "#!/bin/sh\necho 't3 v1.2.3'\n", {
         mode: 0o755,
       });
@@ -80,10 +131,10 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chan
       if (failures-- > 0) return response.writeHead(504).end();
       const url = new URL(request.url ?? "/", "http://fixture");
       const body =
-        url.pathname === "/pingdotgg/t3code/releases/latest" &&
+        url.pathname === "/snowdamiz/sail/releases/latest" &&
         request.headers.accept === "application/json"
           ? { tag_name: "v1.2.3" }
-          : url.pathname === "/repos/pingdotgg/t3code/releases"
+          : url.pathname === "/repos/snowdamiz/sail/releases"
             ? { "1": nightlies, "2": [{ tag_name: `v${version}` }, { tag_name: "v1.2.3" }] }[
                 url.searchParams.get("page") ?? ""
               ]
@@ -96,6 +147,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chan
       // An existing completed install isolates release resolution from archive downloads.
       await NodeFSP.mkdir(target, { recursive: true });
       await NodeFSP.writeFile(NodePath.join(target, ".install-complete"), `${version}\n`);
+      await NodeFSP.writeFile(NodePath.join(target, ".sail-product"), "sail\n");
       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
       const address = server.address();
       if (!address || typeof address === "string") throw new Error("Expected a TCP listener");
@@ -200,6 +252,9 @@ async function installOver(input: {
   const target = NodePath.join(input.home, "runtime", "versions", "1.2.3");
   await NodeFSP.mkdir(target, { recursive: true });
   await NodeFSP.writeFile(NodePath.join(target, ".install-complete"), "1.2.3\n");
+  if (input.script === "install.sh") {
+    await NodeFSP.writeFile(NodePath.join(target, ".sail-product"), "sail\n");
+  }
   const installer = NodePath.resolve(import.meta.dirname, input.script);
   const [command, args] =
     input.script === "install.sh"

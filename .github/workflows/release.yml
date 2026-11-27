@@ -20,7 +20,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: sail-release-${{ github.ref }}
+  group: sail-release-${{ inputs.version && (startsWith(inputs.version, 'v') && inputs.version || format('v{0}', inputs.version)) || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -31,30 +31,70 @@ jobs:
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
+      lane: ${{ steps.resolve.outputs.lane }}
+      draft: ${{ steps.resolve.outputs.draft }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+      image: ${{ steps.resolve.outputs.image }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
-        with:
-          node-version-file: package.json
-          cache: true
-          run-install: true
       - name: Resolve release version
         id: resolve
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          REQUESTED_DRAFT: ${{ inputs.draft }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [[ -n "${{ inputs.version }}" ]]; then
-            version="${{ inputs.version }}"
+          if [[ -n "$REQUESTED_VERSION" ]]; then
+            version="$REQUESTED_VERSION"
           elif [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* ]]; then
             version="${GITHUB_REF_NAME#v}"
           else
             version="$(node -p "require('./apps/desktop/package.json').version")"
           fi
           version="${version#v}"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(nightly\.[0-9]{8}\.[0-9]+|preview\.[0-9]{8}\.[0-9]+|pr\.[0-9]+\.[0-9]+|lane\.[a-zA-Z0-9]+([.-][a-zA-Z0-9]+)*))?$ || ${#version} -gt 128 ]]; then
+            echo "::error::Invalid Sail release version."
+            exit 1
+          fi
+          tag="v$version"
+          lane=false
+          package="${GITHUB_REPOSITORY_OWNER,,}/sail-server"
+          draft="${REQUESTED_DRAFT:-false}"
+          prerelease=false
+          if [[ "$version" == *-* ]]; then prerelease=true; fi
+          if [[ "$version" == *-lane.* ]]; then
+            lane=true
+            package="$package-lane-v2"
+            draft=true
+            if git show-ref --verify --quiet "refs/tags/$tag"; then
+              echo "::error::Lane tag $tag already exists."
+              exit 1
+            fi
+            # Drafts can reserve a release version before a Git tag exists.
+            existing="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$tag\") | .tag_name")"
+            if [[ -n "$existing" ]]; then
+              echo "::error::Lane release $tag already exists."
+              exit 1
+            fi
+          fi
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "lane=$lane"
+            echo "draft=$draft"
+            echo "prerelease=$prerelease"
+            echo "image=ghcr.io/$package"
+          } >> "$GITHUB_OUTPUT"
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
       - name: Align workspace package versions
         run: node scripts/update-release-package-versions.ts "${{ steps.resolve.outputs.version }}"
       - name: Install Linux secret helper libraries
@@ -241,13 +281,195 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  cli-archive:
+    name: Build Linux CLI archive (${{ matrix.arch }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    # Keep the Rust sidecars compatible with the Debian 11 Boat sandbox (glibc 2.31).
+    container: debian:bullseye@sha256:6f519a81440354a85eb592c5f32109ab80605f6b892455983a6f618bf87fabe9
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      APP_VERSION: ${{ needs.prepare.outputs.version }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install archive build dependencies
+        run: |
+          sed -i 's|deb.debian.org|archive.debian.org|' /etc/apt/sources.list
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates curl git libatomic1 libsecret-1-dev patchelf pkg-config xz-utils
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-bullseye-${{ matrix.arch }}
+          workspaces: |
+            native/resource-monitor -> target
+            native/sail-boat -> target
+      - uses: actions/download-artifact@v4
+        with:
+          name: sail-bundle-server-dist
+          path: apps/server/dist
+      - name: Build the CLI and package it with both Rust sidecars
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          node scripts/update-release-package-versions.ts "$APP_VERSION"
+          cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml
+          cargo build --locked --release --manifest-path native/sail-boat/Cargo.toml --bin sail-boatd
+          install -D -m 0755 native/resource-monitor/target/release/t3-resource-monitor \
+            apps/server/dist/resource-monitor/t3-resource-monitor
+          brand="$(node --input-type=module -e 'import { resolveDesktopWebAssetBrand } from "./scripts/build-desktop-artifact.ts"; console.log(resolveDesktopWebAssetBrand(process.argv[1]))' "$APP_VERSION")"
+          node scripts/apply-web-brand-assets.ts "$brand" apps/server/dist/client
+          node apps/server/scripts/cli.ts build-exe
+          node scripts/build-cli-archive.ts --platform linux --arch "$ARCH" --version "$APP_VERSION" \
+            --boatd-path native/sail-boat/target/release/sail-boatd
+      - name: Smoke the CLI archive
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          archive="release-cli/t3-$APP_VERSION-linux-$ARCH.tar.gz"
+          test "$(stat -c %s "$archive")" -le 300000000
+          node scripts/smoke-cli-archive.ts --archive "$archive" --expect-version "$APP_VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sail-cli-archive-${{ matrix.arch }}
+          path: release-cli/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  server-image-build:
+    name: Build the Sail server image (${{ matrix.arch }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and push by digest
+        id: image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          build-args: APP_VERSION=${{ needs.prepare.outputs.version }}
+          cache-from: type=gha,scope=sail-server
+      - name: Save the platform digest
+        env:
+          ARCH: ${{ matrix.arch }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf '%s\n' "$DIGEST" > "$RUNNER_TEMP/$ARCH.digest"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sail-server-image-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/${{ matrix.arch }}.digest
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  server-image:
+    name: Publish the Sail server image index
+    needs: [prepare, server-image-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    env:
+      IMAGE: ${{ needs.prepare.outputs.image }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    outputs:
+      image: ${{ needs.prepare.outputs.image }}
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sail-server-image-digest-*
+          path: image-digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Assemble and tag the multi-platform image
+        id: image
+        run: |
+          set -euo pipefail
+          amd64="$(cat image-digests/amd64.digest)"
+          arm64="$(cat image-digests/arm64.digest)"
+          [[ "$amd64" =~ ^sha256:[0-9a-f]{64}$ && "$arm64" =~ ^sha256:[0-9a-f]{64}$ && "$amd64" != "$arm64" ]]
+
+          docker buildx imagetools create --metadata-file "$RUNNER_TEMP/image-index.json" \
+            --tag "$IMAGE:$VERSION" --tag "$IMAGE:$GITHUB_SHA" \
+            "$IMAGE@$amd64" "$IMAGE@$arm64"
+          digest="$(jq -er '."containerimage.descriptor".digest | select(test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/image-index.json")"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Verify anonymous pulls for regular releases
+        if: needs.prepare.outputs.lane == 'false'
+        run: |
+          set -euo pipefail
+          anonymous="$(mktemp -d)"
+          trap 'rm -rf "$anonymous"' EXIT
+          if ! docker --config "$anonymous" manifest inspect "$IMAGE:$VERSION" >/dev/null; then
+            echo "::error::Set the sail-server package visibility to Public in GitHub Package settings, then rerun this job."
+            exit 1
+          fi
   publish:
     name: Publish GitHub Release & SHA256SUMS
     needs:
       - prepare
       - desktop
+      - cli-archive
+      - server-image
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -262,11 +484,23 @@ jobs:
         with:
           pattern: sail-desktop-*
           path: dist-artifacts
+      - name: Download CLI archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sail-cli-archive-*
+          path: cli-artifacts
+          merge-multiple: true
       - name: Assemble release assets, merge macOS update manifest, and compute SHA256SUMS
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p release-final
           find dist-artifacts -type f -exec cp {} release-final/ \;
+          for arch in x64 arm64; do
+            cp "cli-artifacts/t3-$RELEASE_VERSION-linux-$arch.tar.gz" release-final/
+          done
+          sed "s|^repo=.*|repo=\"$GITHUB_REPOSITORY\"|" scripts/install.sh > release-final/install.sh
 
           for channel in latest nightly; do
             if [[ -f "release-final/${channel}-mac.yml" && -f "release-final/${channel}-mac-x64.yml" ]]; then
@@ -288,7 +522,9 @@ jobs:
           test -f release-final/SHA256SUMS
           test -f release-final/install-desktop.sh
           test -f release-final/latest-mac.yml -o -f release-final/nightly-mac.yml
-          ! ls release-final/*.cjs release-final/*.map >/dev/null 2>&1
+          if compgen -G 'release-final/*.cjs' || compgen -G 'release-final/*.map'; then
+            exit 1
+          fi
           ls -lh release-final
           cat release-final/SHA256SUMS
       - name: Create or update GitHub Release
@@ -297,7 +533,9 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           RELEASE_REPOSITORY: ${{ github.repository }}
-          IS_DRAFT: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
+          IS_DRAFT: ${{ needs.prepare.outputs.draft }}
+          IS_LANE: ${{ needs.prepare.outputs.lane }}
+          IS_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
         run: |
           set -euo pipefail
           NOTES_FILE="$RUNNER_TEMP/release-notes.md"
@@ -325,7 +563,17 @@ jobs:
             fs.writeFileSync(process.argv[1], notes, "utf8");
           ' "$NOTES_FILE"
 
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          if [[ "$IS_LANE" == true ]]; then
+            existing="$(gh api "repos/$RELEASE_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG" \
+              --jq ".[] | select(.ref == \"refs/tags/$RELEASE_TAG\") | .ref")"
+            if [[ -n "$existing" ]]; then
+              echo "::error::Lane tag $RELEASE_TAG already exists."
+              exit 1
+            fi
+            gh release create "$RELEASE_TAG" release-final/* --repo "$RELEASE_REPOSITORY" \
+              --target "$GITHUB_SHA" --draft --prerelease --latest=false \
+              --title "Sail ${RELEASE_VERSION}" --notes-file "$NOTES_FILE"
+          elif gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release-final/* --clobber
             gh release edit "$RELEASE_TAG" --notes-file "$NOTES_FILE"
           else
@@ -333,11 +581,33 @@ jobs:
             if [[ "$IS_DRAFT" == "true" ]]; then
               extra_args+=(--draft)
             fi
-            if [[ "$RELEASE_VERSION" == *-* ]]; then
+            if [[ "$IS_PRERELEASE" == "true" ]]; then
               extra_args+=(--prerelease)
             fi
             gh release create "$RELEASE_TAG" release-final/* \
+              --target "$GITHUB_SHA" \
               --title "Sail ${RELEASE_VERSION}" \
               --notes-file "$NOTES_FILE" \
               "${extra_args[@]}"
+          fi
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        if: needs.prepare.outputs.prerelease == 'false' && needs.prepare.outputs.draft == 'false'
+      - uses: docker/login-action@v3
+        if: needs.prepare.outputs.prerelease == 'false' && needs.prepare.outputs.draft == 'false'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Update the stable image tag
+        if: needs.prepare.outputs.prerelease == 'false' && needs.prepare.outputs.draft == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          IMAGE: ${{ needs.server-image.outputs.image }}
+          DIGEST: ${{ needs.server-image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')"
+          if [[ "$latest" == "$RELEASE_TAG" ]]; then
+            docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE@$DIGEST"
           fi
