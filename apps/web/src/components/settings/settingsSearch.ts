@@ -1466,6 +1466,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("This machine"),
     to: "/settings/access",
     searchTerms: [
+      msg("Browser sign-in password"),
       msg(
         "connections server backend local remote access administrative permissions scope pairing links qr code authorized clients sessions revoke endpoint",
       ),

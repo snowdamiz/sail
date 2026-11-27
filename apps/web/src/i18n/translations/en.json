@@ -12966,5 +12966,6 @@
   "07c1162f1cfdff2f": "Change password",
   "c95576eb2a5e4f06": "Set password",
   "c446b7021eebe478": "Password saved. Password-based sessions have been signed out. Paired devices remain signed in.",
-  "092ce0176682d08e": "Could not save password. Try again."
+  "092ce0176682d08e": "Could not save password. Try again.",
+  "3c7e4ee476de723b": "Passwords do not match."
 }

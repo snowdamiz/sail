@@ -861,6 +861,7 @@ export const make = Effect.gen(function* () {
   const passwordOrigin =
     config.mode === "web" &&
     config.ownerPasswordEnabled === true &&
+    ManagedLimits.allowsRemoteClients(managedPolicy) &&
     config.publicUrl?.protocol === "https:"
       ? config.publicUrl.origin
       : undefined;
@@ -1070,6 +1071,7 @@ export const make = Effect.gen(function* () {
         const activeSessions = yield* sessions
           .listActive()
           .pipe(Effect.mapError((cause) => new ServerAuthSessionsListError({ cause })));
+        // Retire existing password sessions before publishing the new verifier. If persistence fails, pairing remains available.
         yield* Effect.forEach(
           activeSessions.filter(
             (session) =>
@@ -1119,6 +1121,20 @@ export const make = Effect.gen(function* () {
             const key = yield* derivePassword(password, verifier.subarray(0, 16));
             if (!NodeCrypto.timingSafeEqual(key, verifier.subarray(16)))
               return yield* rejectPassword();
+            const previousCredential = selectRequestCredential(
+              request,
+              sessions.cookieName,
+              sessions.legacyCookieName,
+            );
+            const previousSession =
+              previousCredential && isBrowserCookieCredential(previousCredential.source)
+                ? yield* sessions.verify(previousCredential.token).pipe(
+                    Effect.catchIf(SessionStore.isSessionCredentialInvalidError, () => Effect.void),
+                    Effect.mapError(
+                      (cause) => new ServerAuthSessionCredentialValidationError({ cause }),
+                    ),
+                  )
+                : undefined;
             const session = yield* issueUnlessOthersRevokedSince(
               revocationsAtStart,
               sessions
@@ -1126,6 +1142,9 @@ export const make = Effect.gen(function* () {
                   method: "browser-session-cookie",
                   subject: LINK_PAIRED_SUBJECTS.password,
                   scopes: AuthOwnerPasswordV1Scopes,
+                  ...(previousSession?.method === "browser-session-cookie"
+                    ? { replaceSessionId: previousSession.sessionId }
+                    : {}),
                   client: requestMetadata,
                 })
                 .pipe(

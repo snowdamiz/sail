@@ -4,6 +4,7 @@ import {
   authScopeResponse,
   AuthAdministrativeClientScopes,
   AuthStandardClientScopes,
+  type ManagedPolicyDocument,
   connectDeviceVerificationCode,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
@@ -41,9 +42,12 @@ const layerServerConfig = (overrides?: Partial<ServerConfig.ServerConfig["Servic
     }),
   ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-auth-server-test-" })));
 
-const layerEnvironmentAuth = (overrides?: Partial<ServerConfig.ServerConfig["Service"]>) =>
+const layerEnvironmentAuth = (
+  overrides?: Partial<ServerConfig.ServerConfig["Service"]>,
+  managedPolicy?: ManagedPolicyDocument,
+) =>
   EnvironmentAuth.layer.pipe(
-    Layer.provideMerge(ManagedPolicy.layerTest()),
+    Layer.provideMerge(ManagedPolicy.layerTest(managedPolicy)),
     Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provideMerge(ServerSecretStore.layer),
     Layer.provide(ServerEnvironment.layerIdentity),
@@ -133,9 +137,14 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
           yield* TestClock.adjust("1 second");
           const secondSignIn = yield* restarted.createOwnerPasswordSession(
             password,
-            anonymous,
+            signedInRequest,
             requestMetadata,
           );
+          expect((yield* restarted.getSessionState(signedInRequest)).authenticated).toBe(false);
+          expect(
+            (yield* restarted.getSessionState(cookieRequest(secondSignIn.sessionToken)))
+              .authenticated,
+          ).toBe(true);
 
           const recoveryLink = yield* restarted.issuePairingCredential();
           const recovered = yield* restarted.createBrowserSession(
@@ -169,6 +178,44 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
           yield* restarted.setOwnerPassword(password, newRequest);
           expect((yield* restarted.getSessionState(newRequest)).authenticated).toBe(false);
           expect((yield* restarted.getSessionState(ownerRequest)).authenticated).toBe(true);
+
+          yield* TestClock.adjust("1 second");
+          const beforeFailure = yield* restarted.createOwnerPasswordSession(
+            password,
+            anonymous,
+            requestMetadata,
+          );
+          const store = yield* ServerSecretStore.ServerSecretStore;
+          const failing = yield* EnvironmentAuth.make.pipe(
+            Effect.provideService(ServerSecretStore.ServerSecretStore, {
+              ...store,
+              set: () =>
+                Effect.fail(
+                  new ServerSecretStore.SecretStorePersistError({
+                    resource: "owner password",
+                    cause: new Error("Simulated write failure"),
+                  }),
+                ),
+            }),
+          );
+          expect(
+            (yield* Effect.flip(failing.setOwnerPassword(replacement, ownerRequest)))._tag,
+          ).toBe("ServerAuthSessionCredentialValidationError");
+          expect(
+            (yield* restarted.getSessionState(cookieRequest(beforeFailure.sessionToken)))
+              .authenticated,
+          ).toBe(false);
+          expect((yield* restarted.getSessionState(ownerRequest)).authenticated).toBe(true);
+          yield* TestClock.adjust("1 second");
+          const recoveredAfterFailure = yield* restarted.createOwnerPasswordSession(
+            password,
+            anonymous,
+            requestMetadata,
+          );
+          expect(
+            (yield* restarted.getSessionState(cookieRequest(recoveredAfterFailure.sessionToken)))
+              .authenticated,
+          ).toBe(true);
         }).pipe(
           Effect.provide(
             layerEnvironmentAuth({
@@ -178,6 +225,24 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
             }),
           ),
         ),
+    );
+
+    it.effect("omits browser password setup when policy disallows remote clients", () =>
+      Effect.gen(function* () {
+        const auth = yield* EnvironmentAuth.EnvironmentAuth;
+        expect((yield* auth.getDescriptor()).ownerPassword).toBeUndefined();
+      }).pipe(
+        Effect.provide(
+          layerEnvironmentAuth(
+            { mode: "web", ownerPasswordEnabled: true, publicUrl: new URL("https://sail.example") },
+            {
+              schemaVersion: 1,
+              organization: "Example Corp",
+              limits: { clients: ["local-browser"] },
+            },
+          ),
+        ),
+      ),
     );
 
     it.effect("uses the reusable dev cookie without overriding a normal scoped cookie", () =>

@@ -86,6 +86,11 @@ export function OwnerPasswordSettings({
             disabled={saving}
             required
           />
+          {confirmation.length > 0 && confirmation !== password ? (
+            <p role="status" className="text-xs text-destructive">
+              <T>Passwords do not match.</T>
+            </p>
+          ) : null}
           <Button type="submit" size="sm" disabled={!matches || saving}>
             {configured || saved ? gt("Change password") : gt("Set password")}
           </Button>
