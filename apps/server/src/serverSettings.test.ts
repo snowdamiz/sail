@@ -118,8 +118,11 @@ it.effect("keeps optional workflow configuration stable during closure", () =>
         blockers: ["workflow-configured"],
       });
     }).pipe(
-      Effect.provide(layerServerSettings()),
-      Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        layerServerSettings().pipe(
+          Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+        ),
+      ),
       Effect.provideService(ServerAdmission, admission),
     );
   }),

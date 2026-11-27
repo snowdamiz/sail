@@ -829,7 +829,7 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
     Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
   );
 
-  const sweep: Workflows["Service"]["sweep"] = Effect.fn("Workflows.sweep")(function* () {
+  const sweep: Workflows["Service"]["sweep"] = Effect.gen(function* () {
     yield* settle;
     yield* Effect.gen(function* () {
       yield* store.mailExpire;
@@ -838,7 +838,7 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
       yield* fireWatches;
       yield* prune(yield* DateTime.now);
     }).pipe(withAdmission("root"), Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }));
-  })();
+  }).pipe(Effect.withSpan("Workflows.sweep"));
 
   // With nothing registered there is nothing to resume, end or start: only history to read.
   if (registered.length > 0) {
