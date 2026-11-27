@@ -2055,7 +2055,10 @@ const maintenanceChild = (dbPath: string) =>
     "}",
   ].join("\n");
 
-const setupMaintenance = Effect.fnUntraced(function* (drainBudgetMs: number) {
+const setupMaintenance = Effect.fnUntraced(function* (
+  drainBudgetMs: number,
+  processProof?: (incumbentPid: number) => void,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const root = yield* fs
@@ -2139,6 +2142,10 @@ const setupMaintenance = Effect.fnUntraced(function* (drainBudgetMs: number) {
         maintenanceCoordinator: {
           installation: { baseDir: root, environmentId: "environment-1", installationId: "boat-1" },
           drainBudgetMs,
+          assertPreCutover: (pid) => {
+            assert.isTrue(held);
+            processProof?.(pid);
+          },
           acquire: async () => {
             if (held) throw new Error("Lifecycle held");
             held = true;
@@ -2201,6 +2208,33 @@ it.live("stages, waits for a matching seal and confirms only matching replacemen
       assert.equal(final.update?.status, "committed");
       assert.isUndefined(final.maintenance);
       assert.deepEqual(f.launches, ["fixture-active", "fixture-trial"]);
+    });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("defers a matching seal when the process proof is unavailable", () =>
+  Effect.gen(function* () {
+    let observedPid: number | undefined;
+    const f = yield* setupMaintenance(20_000, (incumbentPid) => {
+      observedPid = incumbentPid;
+      throw new Error("An additional cgroup member is still live.");
+    });
+    const { launcher } = f.start();
+    yield* Effect.promise(async () => {
+      const incumbent = await f.wait("fixture-active");
+      await launcher.requestMaintenance(f.release);
+      await f.wait("fixture-draining");
+      incumbent.send({ type: "fixture-settle" });
+      await f.released();
+      assert.equal(observedPid, incumbent.pid);
+      assert.isNull(incumbent.exitCode);
+      assert.isNull(incumbent.signalCode);
+      assert.isFalse(NodeFS.existsSync(f.target));
+      assert.deepEqual(f.launches, ["fixture-active"]);
+      const state = await readServiceState(f.statePath);
+      assert.equal(state.activeVersion, "1.0.0");
+      assert.equal(state.update?.status, "failed");
+      assert.isUndefined(state.maintenance);
     });
   }).pipe(Effect.provide(NodeServices.layer)),
 );

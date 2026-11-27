@@ -1,3 +1,4 @@
+import type { makeProviderLifetimeLedger } from "../serverAdmissionObligations.ts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -325,7 +326,12 @@ export class ProviderSessionManagerV2 extends Context.Service<
   ProviderSessionManagerV2Shape
 >()("t3/orchestration-v2/ProviderSessionManager/ProviderSessionManagerV2") {}
 
+type MaintenanceProviderLifetime = Effect.Success<
+  ReturnType<typeof makeProviderLifetimeLedger>["start"]
+>;
+
 interface LiveSessionEntry {
+  readonly maintenanceLifetime?: MaintenanceProviderLifetime;
   readonly attachedThreadIds: ReadonlySet<ThreadId>;
   readonly loadedProviderThreadKeyByThread: ReadonlyMap<ThreadId, string>;
   /** null marks an unknown catalog; undefined means MCP refresh is not configured. */
@@ -1601,7 +1607,11 @@ export const layerWithOptions = (
                   if (Option.isSome(closeExit) && Exit.isFailure(closeExit.value)) {
                     return yield* Effect.failCause(closeExit.value.cause);
                   }
+                  if (Option.isSome(closeExit)) {
+                    yield* entry.maintenanceLifetime?.markClosed ?? Effect.void;
+                  }
                 }).pipe(
+                  Effect.ensuring(entry.maintenanceLifetime?.unverify ?? Effect.void),
                   withMetrics({
                     counter: providerSessionsTotal,
                     attributes: {
@@ -1761,13 +1771,18 @@ export const layerWithOptions = (
 
       if (admission !== undefined) {
         yield* admission.registerObserver(
-          Effect.sync(() => [
-            ...(retirementUnverified ? ["provider-retirement-unverified" as const] : []),
-            ...(unqualifiedProviderStarted ? ["provider-lifetime-unqualified" as const] : []),
-          ]),
+          Ref.get(sessions).pipe(
+            Effect.map((current) => [
+              ...(retirementUnverified || (!admission.mayRetireIdleProviders && current.size > 0)
+                ? ["provider-retirement-unverified" as const]
+                : []),
+              ...(unqualifiedProviderStarted ? ["provider-lifetime-unqualified" as const] : []),
+            ]),
+          ),
         );
         yield* admission.registerProviderRetirement(
           Effect.gen(function* () {
+            if (!admission.mayRetireIdleProviders) return;
             const current = yield* Ref.get(sessions);
             yield* Effect.forEach(
               current.values(),
@@ -3220,6 +3235,11 @@ export const layerWithOptions = (
           Effect.flatMap((exit) =>
             Effect.gen(function* () {
               if (shutdownSignal.received) return;
+              if (Exit.isSuccess(exit) && entry.maintenanceLifetime !== undefined) {
+                yield* entry.maintenanceLifetime.markEventsDrained.pipe(
+                  logReleaseFailure(entry.runtime.providerSessionId),
+                );
+              }
               const current = (yield* Ref.get(sessions)).get(
                 sessionKey(entry.runtime.providerSessionId),
               );
@@ -3398,12 +3418,20 @@ export const layerWithOptions = (
                   );
                 }).pipe(Effect.uninterruptible);
                 yield* agentScope.clear(input.threadId);
+                let maintenanceLifetime: MaintenanceProviderLifetime | undefined;
                 const runtime = yield* installationGate
                   .execute(
                     input.modelSelection.instanceId,
-                    Effect.suspend(() => {
-                      if (adapter.driver !== "acpRegistry") unqualifiedProviderStarted = true;
-                      return adapter.openSession({
+                    Effect.gen(function* () {
+                      if (adapter.driver === "acpRegistry") {
+                        maintenanceLifetime = yield* (
+                          admission?.providerLifetimes?.start ?? Effect.undefined
+                        );
+                      } else {
+                        yield* admission?.providerLifetimes?.recordUnsupported ?? Effect.void;
+                        unqualifiedProviderStarted = true;
+                      }
+                      return yield* adapter.openSession({
                         threadId: input.threadId,
                         providerSessionId: input.providerSessionId,
                         modelSelection: input.modelSelection,
@@ -3443,7 +3471,14 @@ export const layerWithOptions = (
                   ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
                 >(new Map());
                 const exposedRuntime = decorateRuntime(runtime, eventSubscribers);
+                const retirementSupported =
+                  runtime.driver === "acpRegistry" &&
+                  runtime.canResumeAfterRestart === true &&
+                  runtime.eventsEndOnClose === true;
+                if (!retirementSupported) unqualifiedProviderStarted = true;
+                const lifetime = retirementSupported ? maintenanceLifetime : undefined;
                 const entry: LiveSessionEntry = {
+                  ...(lifetime === undefined ? {} : { maintenanceLifetime: lifetime }),
                   attachedThreadIds: new Set([input.threadId]),
                   loadedProviderThreadKeyByThread: new Map(),
                   openedWithLinkedEnvironments,
@@ -3483,6 +3518,7 @@ export const layerWithOptions = (
                   }),
                 );
                 yield* startEventPump(entry, sessionClosed);
+                yield* lifetime?.qualify ?? Effect.void;
                 yield* scheduleIdleRelease(input.providerSessionId);
                 return exposedRuntime;
               }).pipe(

@@ -1,7 +1,6 @@
 // @effect-diagnostics globalTimers:off -- Standalone launcher coordinates OS leases.
 // @effect-diagnostics nodeBuiltinImport:off -- Also used by the standalone service launcher.
 import * as NodeChildProcess from "node:child_process";
-import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
@@ -112,13 +111,17 @@ function systemdProperties(unit: string, property: string) {
   );
 }
 
+function populated(directory: string): boolean {
+  const events = readOptional(NodePath.join(directory, "cgroup.events"));
+  if (events === undefined) throw new Error("The Boat cgroup is unobservable.");
+  const state = /^populated ([01])$/m.exec(events)?.[1];
+  if (state === undefined) throw new Error("The Boat cgroup population is unobservable.");
+  return state === "1";
+}
+
 function subgroupsAreEmpty(directory: string): boolean {
   return NodeFS.readdirSync(directory, { withFileTypes: true }).every(
-    (entry) =>
-      !entry.isDirectory() ||
-      /^populated 0$/m.test(
-        NodeFS.readFileSync(NodePath.join(directory, entry.name, "cgroup.events"), "utf8"),
-      ),
+    (entry) => !entry.isDirectory() || !populated(NodePath.join(directory, entry.name)),
   );
 }
 
@@ -150,35 +153,61 @@ export function openBoatCoordinator(runtime: string, serviceUnit: string | undef
   const stat = NodeFS.readFileSync("/proc/self/stat", "utf8");
   const launcherStart = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
   if (launcherStart === undefined) throw new Error("Cannot read the Boat launcher start time.");
-  const assertReaped = () => {
-    const processes = NodeFS.readFileSync(NodePath.join(directory, "cgroup.procs"), "utf8").trim();
-    if (processes !== String(pid) || !subgroupsAreEmpty(directory)) {
-      throw new Error("The Boat service cgroup still contains another process.");
+  const assertCgroupsIdle = (incumbentPid?: number) => {
+    const service = systemdProperties(SERVICE, "MainPID,ActiveState,ControlGroup,Job");
+    if (
+      service.get("MainPID") !== String(pid) ||
+      service.get("ActiveState") !== "active" ||
+      service.get("ControlGroup") !== controlGroup ||
+      service.get("Job") !== "" ||
+      !controlGroup.endsWith("/app.slice/" + SERVICE)
+    ) {
+      throw new Error("The Boat service cgroup does not match the running launcher.");
     }
-    const stateDir = NodePath.join(baseDir, "userdata");
-    const hash = NodeCrypto.createHash("sha256").update(stateDir).digest("hex").slice(0, 12);
-    // AgentScope can place a child in a sibling slice, including terminals that survive restart.
-    for (const unit of ["app-t3code-agents.slice", `app-t3code-agents-${hash}.slice`]) {
-      const properties = systemdProperties(unit, "ActiveState,ControlGroup");
-      const group = properties.get("ControlGroup");
-      if (group && group.startsWith("/") && !group.split("/").includes("..")) {
-        if (
-          /^populated 0$/m.test(
-            NodeFS.readFileSync(NodePath.join(CGROUP_ROOT, group, "cgroup.events"), "utf8"),
-          )
-        )
-          continue;
-      } else if (properties.get("ActiveState") === "inactive") {
-        continue;
+
+    const expected = new Set([String(pid)]);
+    if (incumbentPid !== undefined) expected.add(String(incumbentPid));
+    const assertServiceMembers = () => {
+      const processes = new Set(
+        NodeFS.readFileSync(NodePath.join(directory, "cgroup.procs"), "utf8").trim().split(/\s+/),
+      );
+      if (
+        processes.size !== expected.size ||
+        [...expected].some((id) => !processes.has(id)) ||
+        !subgroupsAreEmpty(directory)
+      ) {
+        throw new Error("The Boat service cgroup contains unexpected processes.");
       }
-      throw new Error(`The Boat agent slice ${unit} is occupied or unobservable.`);
+    };
+    assertServiceMembers();
+
+    // This parent contains both the shared restart-surviving slice and per-home agent slices.
+    const agentUnit = "app-t3code.slice";
+    const agentGroup = NodePath.join(NodePath.dirname(controlGroup), agentUnit);
+    const agentDirectory = NodePath.join(CGROUP_ROOT, agentGroup);
+    const agent = systemdProperties(agentUnit, "ActiveState,ControlGroup,Job,LoadState");
+    const group = agent.get("ControlGroup");
+    if (
+      agent.get("Job") !== "" ||
+      agent.get("LoadState") !== "loaded" ||
+      (group === agentGroup
+        ? agent.get("ActiveState") !== "active" || populated(agentDirectory)
+        : group !== "" ||
+          agent.get("ActiveState") !== "inactive" ||
+          NodeFS.lstatSync(agentDirectory, { throwIfNoEntry: false }) !== undefined)
+    ) {
+      throw new Error("The Boat agent slices are occupied or unobservable.");
     }
+
+    // Scope launch can move a process between the service and agent slice.
+    assertServiceMembers();
   };
 
   return {
     installation: { baseDir, installationId, environmentId },
     drainBudgetMs: 5_000,
-    assertReaped,
+    assertPreCutover: (incumbentPid: number) => assertCgroupsIdle(incumbentPid),
+    assertReaped: () => assertCgroupsIdle(),
     acquire: async ({ signal }: { readonly signal: AbortSignal }) => {
       for (let attempt = 0; ; attempt++) {
         signal.throwIfAborted();

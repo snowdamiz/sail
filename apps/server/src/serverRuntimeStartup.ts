@@ -1,3 +1,4 @@
+import { ProcessLauncher } from "./process/ProcessLauncher.ts";
 import { ServerAdmission } from "./serverAdmission.ts";
 import {
   CommandId,
@@ -484,12 +485,14 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
   const random = yield* SecureRandom.SecureRandom;
   const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
   const admission = yield* ServerAdmission;
+  const processLauncher = yield* ProcessLauncher;
   const reconcileSealed = providerRuntimeRecovery.reconcile("shutdown").pipe(
     Effect.tap((summary) =>
       Effect.logInfo("Sealed server shutdown reconciliation completed", summary),
     ),
     Effect.asVoid,
     Effect.orDie,
+    Effect.andThen(processLauncher.parkForMaintenance ?? Effect.void),
   );
 
   const commandGate = yield* makeCommandGate;
@@ -724,7 +727,13 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
         },
       }),
     );
-    yield* launcher.maintenanceReady?.(maintenanceIdentity, reconcileSealed) ?? Effect.void;
+    yield* (
+      launcher.maintenanceReady?.(
+        maintenanceIdentity,
+        reconcileSealed,
+        processLauncher.resumeAfterMaintenance,
+      ) ?? Effect.void
+    );
     yield* Effect.logDebug("startup phase: complete");
     yield* flushCompileCache;
   }).pipe(

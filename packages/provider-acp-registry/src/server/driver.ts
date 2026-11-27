@@ -2,7 +2,7 @@ import {
   officialAcpRegistryIconUrlForAgentId,
   ProviderDriverKind,
   resolveOfficialAcpRegistryIconUrl,
-  type AcpRegistryOperationError,
+  AcpRegistryOperationError,
   type AcpRegistryProbeModel,
   type CustomModelSetting,
   type ServerProvider,
@@ -1171,6 +1171,20 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
       ),
     );
 
+    const admitManagement = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      (host.tryStandaloneWork?.(effect) ?? Effect.asSome(effect)).pipe(
+        Effect.flatMap((result) =>
+          Effect.fromOption(
+            result,
+            () =>
+              new AcpRegistryOperationError({
+                reason: "maintenance_busy",
+                message: "Server maintenance is in progress. Retry the same request.",
+              }),
+          ),
+        ),
+      );
+
     const provideAcpManagementServices = <A, E>(
       effect: Effect.Effect<
         A,
@@ -1179,8 +1193,8 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
         | ChildProcessSpawner.ChildProcessSpawner
         | SecureRandom.SecureRandom
       >,
-    ): Effect.Effect<A, E> => {
-      const provided = effect.pipe(
+    ) => {
+      const provided = admitManagement(effect).pipe(
         Effect.provideService(AcpRegistrySupport.AcpRegistryCatalog, catalog),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(SecureRandom.SecureRandom, random),
@@ -1363,14 +1377,16 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
               ),
             ),
           );
-          return Option.isSome(runtimeCoordinator)
-            ? logout.pipe(
-                Effect.provideService(
-                  AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator,
-                  runtimeCoordinator.value,
-                ),
-              )
-            : logout;
+          return admitManagement(
+            Option.isSome(runtimeCoordinator)
+              ? logout.pipe(
+                  Effect.provideService(
+                    AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator,
+                    runtimeCoordinator.value,
+                  ),
+                )
+              : logout,
+          );
         },
       },
     } satisfies ProviderInstance;

@@ -1677,6 +1677,19 @@ export const layerWsRpc = (
           ? effect
           : Effect.fail(rpcAuthorizationError(requiredScope));
 
+      const admitAcpRegistryWork = <A, R>(work: Effect.Effect<A, AcpRegistryOperationError, R>) =>
+        work.pipe(
+          withAdmission("root"),
+          Effect.catchTags({
+            ServerMaintenanceBusy: (cause) =>
+              new AcpRegistryOperationError({
+                reason: "maintenance_busy",
+                message: cause.message,
+                cause,
+              }),
+          }),
+        );
+
       const listAcpRegistrySessions = Effect.fn("ws.acpRegistry.listSessions")(function* (
         input: AcpRegistryListSessionsInput,
       ) {
@@ -2544,7 +2557,7 @@ export const layerWsRpc = (
           Effect.annotateCurrentSpan({
             "provider.instance_id": input.instanceId,
             "project.id": input.projectId,
-          }).pipe(Effect.andThen(acpRegistrySessions.importSession(input))),
+          }).pipe(Effect.andThen(admitAcpRegistryWork(acpRegistrySessions.importSession(input)))),
         [WS_METHODS.serverDeleteAcpRegistrySession]: (input) =>
           Effect.annotateCurrentSpan({
             "provider.instance_id": input.instanceId,
@@ -2559,12 +2572,12 @@ export const layerWsRpc = (
           Effect.annotateCurrentSpan({
             "provider.instance_id": input.instanceId,
             "project.id": input.projectId,
-          }).pipe(Effect.andThen(setAcpRegistryProvider(input))),
+          }).pipe(Effect.andThen(admitAcpRegistryWork(setAcpRegistryProvider(input)))),
         [WS_METHODS.serverDisableAcpRegistryProvider]: (input) =>
           Effect.annotateCurrentSpan({
             "provider.instance_id": input.instanceId,
             "project.id": input.projectId,
-          }).pipe(Effect.andThen(disableAcpRegistryProvider(input))),
+          }).pipe(Effect.andThen(admitAcpRegistryWork(disableAcpRegistryProvider(input)))),
         [WS_METHODS.serverLogoutAcpRegistry]: (input) =>
           Effect.annotateCurrentSpan({ "provider.instance_id": input.instanceId }).pipe(
             Effect.andThen(
@@ -2605,7 +2618,7 @@ export const layerWsRpc = (
                 }
                 yield* providerRegistry.refreshInstance(input.instanceId);
                 return { loggedOut: true } as const;
-              }),
+              }).pipe(admitAcpRegistryWork),
             ),
           ),
         [WS_METHODS.serverRefreshProviders]:

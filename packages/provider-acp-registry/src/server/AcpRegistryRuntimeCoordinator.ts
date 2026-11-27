@@ -3,6 +3,7 @@ import {
   type AcpRegistryUrlAuthAction,
   type ProviderInstanceId,
 } from "@t3tools/contracts";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
@@ -123,6 +124,7 @@ export class AcpRegistryRuntimeCoordinator extends Context.Service<
 >()("@t3tools/provider-acp-registry/server/AcpRegistryRuntimeCoordinator") {}
 
 const make = Effect.gen(function* () {
+  const host = Option.getOrUndefined(yield* Effect.serviceOption(ProviderHost.ProviderHost));
   const foregroundStarts = yield* PubSub.unbounded<string>();
   const activeForegroundCounts = yield* Ref.make(new Map<string, number>());
   const availableCommandsUpdates = yield* PubSub.unbounded<AvailableCommandsUpdate>();
@@ -178,7 +180,10 @@ const make = Effect.gen(function* () {
           Stream.runHead,
           Effect.as(Option.none()),
         );
-        return yield* Effect.raceFirst(effect.pipe(Effect.asSome), foregroundStarted);
+        return yield* Effect.raceFirst(
+          host?.tryStandaloneWork?.(effect) ?? Effect.asSome(effect),
+          foregroundStarted,
+        );
       }),
     );
 

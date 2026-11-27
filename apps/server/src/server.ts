@@ -67,7 +67,10 @@ import * as IssueTrackerRegistry from "./issue/IssueTrackerRegistry.ts";
 import * as SqlitePersistence from "./persistence/Sqlite.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import { makeAdmission, ServerAdmission } from "./serverAdmission.ts";
-import { observeDurableObligations } from "./serverAdmissionObligations.ts";
+import {
+  makeProviderLifetimeLedger,
+  observeDurableObligations,
+} from "./serverAdmissionObligations.ts";
 import * as PullRequestFilesViewed from "./persistence/PullRequestFilesViewed.ts";
 import * as PullRequestReviewGuides from "./persistence/PullRequestReviewGuides.ts";
 import * as PullRequestReviewGuideService from "./pullRequest/PullRequestReviewGuideService.ts";
@@ -454,6 +457,7 @@ const layerAdmission = Layer.effect(
     return makeAdmission(
       observeDurableObligations().pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       "incomplete",
+      { providerLifetimes: makeProviderLifetimeLedger(sql) },
     );
   }),
 ).pipe(Layer.provide(layerPersistence));

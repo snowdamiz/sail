@@ -103,6 +103,7 @@ interface ManagedChild {
 interface MaintenanceCoordinator {
   readonly installation: MaintenanceInstallation;
   readonly drainBudgetMs: number;
+  readonly assertPreCutover?: (incumbentPid: number) => void;
   readonly assertReaped?: () => void;
   readonly automatic?: NonNullable<ReturnType<typeof openBoatCoordinator>>["automatic"];
   // The owner excludes service starts, installer/selector changes and Boat stop/snapshot.
@@ -1827,6 +1828,18 @@ export class Launcher {
       performance.now() >= this.#drainDeadline
     ) {
       await this.#abortMaintenance(update, "incumbent-unavailable");
+      return;
+    }
+    try {
+      const pid = child.process.pid;
+      if (pid === undefined) throw new Error("The incumbent PID is unavailable.");
+      this.#maintenance?.assertPreCutover?.(pid);
+    } catch {
+      await this.#abortMaintenance(update, "process-ownership-unverified");
+      return;
+    }
+    if (performance.now() >= this.#drainDeadline) {
+      await this.#abortMaintenance(update, "drain-timeout");
       return;
     }
     this.#clearTimer();

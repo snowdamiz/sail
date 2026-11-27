@@ -44,6 +44,9 @@ export class ProviderHost extends Context.Service<
       /** Changes buffered from the moment the scoped subscription is acquired. */
       readonly subscribe: Effect.Effect<Stream.Stream<ServerSettings>, never, Scope.Scope>;
     };
+    readonly tryStandaloneWork?: <A, E, R>(
+      work: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<Option.Option<A>, E, R>;
     readonly shouldRunBackgroundWork: (scope: BackgroundScope) => Effect.Effect<boolean>;
     /** Completes once server startup finishes; first provider checks wait for it. */
     readonly awaitServerReady?: Effect.Effect<void>;

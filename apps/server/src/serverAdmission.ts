@@ -9,6 +9,8 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
+import type { makeProviderLifetimeLedger } from "./serverAdmissionObligations.ts";
+
 export class ServerMaintenanceBusy extends Schema.TaggedError<ServerMaintenanceBusy>()(
   "ServerMaintenanceBusy",
   { retryable: Schema.Literal(true) },
@@ -84,7 +86,12 @@ class CurrentPermit extends Context.Reference<symbol | undefined>("t3/serverAdmi
 export const makeAdmission = <E>(
   observe: Effect.Effect<ReadonlyArray<DrainBlocker>, E>,
   producerInventory?: "complete" | "incomplete",
+  options?: {
+    readonly providerLifetimes?: ReturnType<typeof makeProviderLifetimeLedger>;
+    readonly retireIdleProviders?: boolean;
+  },
 ) => {
+  const providerLifetimes = options?.providerLifetimes;
   // Gate changes and permit registration run in synchronous sections on the server's JS thread.
   let phase: Phase = { kind: "open" };
   const permits = new Set<symbol>();
@@ -128,7 +135,11 @@ export const makeAdmission = <E>(
     );
 
   const census = Effect.suspend(() =>
-    Effect.all([observe, ...observers]).pipe(
+    Effect.all([
+      observe,
+      ...(providerLifetimes ? [providerLifetimes.observe] : []),
+      ...observers,
+    ]).pipe(
       Effect.map((reports) => [
         ...new Set([
           ...reports.flat(),
@@ -344,11 +355,13 @@ export const makeAdmission = <E>(
     abort,
     registerObserver,
     registerProviderRetirement,
+    mayRetireIdleProviders: options?.retireIdleProviders === true,
     isConfirmedSeal: Effect.sync(() => confirmedSeal !== undefined && isSealed(confirmedSeal)),
     confirmSeal,
     trackLifetime,
     hasPermit: Effect.map(CurrentPermit, (permit) => permit !== undefined && permits.has(permit)),
     producerInventoryComplete: producerInventory === "complete",
+    providerLifetimes,
   };
 };
 

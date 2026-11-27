@@ -101,3 +101,51 @@ export const observeDurableObligations = Effect.fn("ServerAdmission.observeDurab
     ];
   },
 );
+
+export function makeProviderLifetimeLedger(sql: SqlClient.SqlClient) {
+  // Only live, resumable sessions with an attached event pump can account for a receipt.
+  const owned = new Set<number>();
+  return {
+    observe: sql<{ id: number }>`SELECT id FROM maintenance_provider_lifetimes`.pipe(
+      Effect.map((rows) => [
+        ...(rows.some(({ id }) => id >= 0 && !owned.has(id))
+          ? ["provider-lifetime-unqualified" as const]
+          : []),
+        ...(rows.some(({ id }) => id === -1) ? ["provider-auth-unqualified" as const] : []),
+      ]),
+    ),
+    recordUnsupported:
+      sql`INSERT OR IGNORE INTO maintenance_provider_lifetimes (id) VALUES (0)`.pipe(Effect.asVoid),
+    recordAuth: sql`INSERT OR IGNORE INTO maintenance_provider_lifetimes (id) VALUES (-1)`.pipe(
+      Effect.asVoid,
+    ),
+    start: Effect.gen(function* () {
+      const [row] = yield* sql<{ id: number }>`
+        INSERT INTO maintenance_provider_lifetimes DEFAULT VALUES RETURNING id
+      `;
+      if (row === undefined) return yield* Effect.die("Provider lifetime was not recorded.");
+      const unverify = Effect.sync(() => {
+        owned.delete(row.id);
+      });
+      const settle = sql`DELETE FROM maintenance_provider_lifetimes WHERE id = ${row.id}`.pipe(
+        Effect.asVoid,
+      );
+      let closed = false;
+      let drained = false;
+      return {
+        qualify: Effect.sync(() => {
+          owned.add(row.id);
+        }),
+        unverify,
+        markClosed: Effect.suspend(() => {
+          closed = true;
+          return drained ? settle : Effect.void;
+        }),
+        markEventsDrained: Effect.suspend(() => {
+          drained = true;
+          return closed ? settle : Effect.void;
+        }),
+      };
+    }),
+  };
+}

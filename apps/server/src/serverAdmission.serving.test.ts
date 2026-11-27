@@ -2,6 +2,7 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeEvents from "node:events";
+import * as NodeFS from "node:fs";
 import * as NodeSqlite from "node:sqlite";
 import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -66,6 +67,7 @@ import {
 import * as ServerConfig from "./config.ts";
 import { ServerEnvironment } from "./environment/ServerEnvironment.ts";
 import { OrchestratorV2 } from "./orchestration-v2/Orchestrator.ts";
+import { ProviderInstanceRegistry } from "./provider/ProviderInstanceRegistry.ts";
 import { BUILT_IN_DRIVERS } from "./provider/builtInDrivers.ts";
 import { layerServer } from "./server.ts";
 import * as Admission from "./serverAdmission.ts";
@@ -84,6 +86,7 @@ const liveServices = Layer.mergeAll(
 
 const fixture = Effect.fn("ServingDrain.fixture")(function* (
   launcher: "production" | "fixture-positive" | "none" = "none",
+  mode: "replay" | "standalone-management" = "replay",
 ) {
   const controlled = launcher !== "none";
   const fs = yield* FileSystem.FileSystem;
@@ -117,7 +120,42 @@ const fixture = Effect.fn("ServingDrain.fixture")(function* (
   const configContext = yield* Layer.build(ServerConfig.layerTest(workspace, home));
   const config = Context.get(configContext, ServerConfig.ServerConfig);
   const agentPidPath = path.join(home, "replay.pid");
-  const agentPath = yield* path.fromFileUrl(replayAgent);
+  const listStarted = path.join(home, "list-started");
+  const listRelease = path.join(home, "release-list");
+  const agentPath =
+    mode === "replay" ? yield* path.fromFileUrl(replayAgent) : path.join(home, "manage.mjs");
+  if (mode === "standalone-management") {
+    yield* fs.writeFileString(
+      agentPath,
+      `
+      import { existsSync, watch, writeFileSync } from "node:fs";
+      import { createInterface } from "node:readline";
+      const release = ${JSON.stringify(listRelease)};
+      const started = ${JSON.stringify(listStarted)};
+      const root = ${JSON.stringify(home)};
+      for await (const line of createInterface({ input: process.stdin })) {
+        const { id, method } = JSON.parse(line);
+        if (id === undefined) continue;
+        let result = {};
+        if (method === "initialize") {
+          result = { protocolVersion: 1, agentCapabilities: { sessionCapabilities: { list: {} } } };
+        } else if (method === "session/list") {
+          await new Promise(resolve => {
+            const watcher = watch(root, () => {
+              if (!existsSync(release)) return;
+              watcher.close();
+              resolve();
+            });
+            if (existsSync(release)) { watcher.close(); resolve(); }
+            writeFileSync(started, String(process.pid));
+          });
+          result = { sessions: [{ sessionId: "synthetic", cwd: process.cwd() }] };
+        }
+        console.log(JSON.stringify({ jsonrpc: "2.0", id, result }));
+      }
+    `,
+    );
+  }
   const pidRecorder = path.join(home, "record-replay-pid.mjs");
   if (controlled) {
     yield* fs.writeFileString(
@@ -141,6 +179,7 @@ const fixture = Effect.fn("ServingDrain.fixture")(function* (
         [replayId]: {
           driver: "acpRegistry",
           displayName: "Replay (fixture)",
+          enabled: mode === "replay",
           config: {
             source: "local",
             commandPath: process.execPath,
@@ -196,11 +235,13 @@ const fixture = Effect.fn("ServingDrain.fixture")(function* (
   }
   if (launcher === "fixture-positive") {
     const makeAdmission = Admission.makeAdmission;
-    // The fixture supplies only the launcher's positive inventory verdict. The actual census stays live.
+    // This synthetic Replay fixture opts into idle retirement and the positive inventory verdict.
     const inventory = vi
       .spyOn(Admission, "makeAdmission")
       .mockImplementation(<E>(observe: Parameters<typeof makeAdmission<E>>[0]) => {
-        const admission = makeAdmission(observe.pipe(Effect.orDie), "complete");
+        const admission = makeAdmission(observe.pipe(Effect.orDie), "complete", {
+          retireIdleProviders: true,
+        });
         const drain: typeof admission.drain = (token, budget) =>
           Effect.gen(function* () {
             const active = yield* admission
@@ -294,6 +335,8 @@ const fixture = Effect.fn("ServingDrain.fixture")(function* (
     admission,
     serverScope,
     agentPidPath,
+    listStarted,
+    listRelease,
     config,
     replies,
     draining,
@@ -610,6 +653,47 @@ it.live("retries a synthetic relay delivery through the scheduled task serving r
 );
 
 it.live(
+  "holds a standalone ACP session list through reap and refuses another start during drain",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { server, admission, workspace, listStarted, listRelease } = yield* fixture(
+        "production",
+        "standalone-management",
+      );
+      const registry = Context.get(server, ProviderInstanceRegistry);
+      const instance = yield* registry.getInstance(replayId);
+      const manager = instance?.acpSessionManagement;
+      if (manager === undefined) return yield* Effect.die("Synthetic ACP management is missing");
+      const list = manager.listSessions({ cwd: workspace });
+      const running = yield* list.pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* Effect.callback<void>((resume) => {
+        const watcher = NodeFS.watch(path.dirname(listStarted), () => {
+          if (NodeFS.existsSync(listStarted)) resume(Effect.void);
+        });
+        if (NodeFS.existsSync(listStarted)) resume(Effect.void);
+        return Effect.sync(() => watcher.close());
+      }).pipe(Effect.timeout("10 seconds"));
+      const pid = Number(yield* fs.readFileString(listStarted));
+      expect(pid).toBeGreaterThan(0);
+      const token = Symbol();
+      const draining = yield* admission
+        .drain(token, "10 seconds")
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      expect(yield* list.pipe(Effect.flip)).toMatchObject({ reason: "maintenance_busy" });
+      expect(() => process.kill(pid, 0)).not.toThrow();
+      expect(running.pollUnsafe()).toBeUndefined();
+      yield* fs.writeFileString(listRelease, "release");
+      expect(yield* Fiber.join(running)).toMatchObject({ sessions: [{ sessionId: "synthetic" }] });
+      expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+      expect(yield* admission.abort(token)).toBe(true);
+      expect(yield* Fiber.join(draining)).toMatchObject({ kind: "aborted", reason: "requested" });
+      expect(yield* list).toMatchObject({ sessions: [{ sessionId: "synthetic" }] });
+    }).pipe(Effect.scoped, Effect.provide(liveServices)),
+);
+
+it.live(
   "reports specific configured optional blockers and refuses settings enablement while closed",
   () =>
     Effect.gen(function* () {
@@ -635,6 +719,10 @@ it.live(
         linkedEnvironmentsEnabled: false,
         enableDeviceSupport: false,
       });
+      const catalog = yield* rpc[WS_METHODS.serverSearchAcpRegistry]({ query: "fixture" }).pipe(
+        Effect.flip,
+      );
+      expect(catalog).toMatchObject({ reason: "maintenance_busy" });
       expect(yield* admission.abort(token)).toBe(true);
       yield* Fiber.join(drain);
 

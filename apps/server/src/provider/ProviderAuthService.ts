@@ -266,6 +266,19 @@ export const makeProviderAuthService = Effect.gen(function* () {
           Effect.gen(function* () {
             const auth = yield* getController(input.instanceId, "start");
             yield* checkSharedBinding(input.instanceId, "start", auth);
+            yield* (
+              admission?.providerLifetimes?.recordAuth.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderSetupError({
+                      instanceId: input.instanceId,
+                      operation: "start",
+                      detail: "Could not record the provider sign-in lifetime.",
+                      cause,
+                    }),
+                ),
+              ) ?? Effect.void
+            );
             startedSignIn = true;
             return yield* auth.start(
               ownerSessionId,

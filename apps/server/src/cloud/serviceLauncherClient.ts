@@ -149,6 +149,7 @@ export class ServiceLauncherClient extends Context.Service<
     readonly maintenanceReady?: (
       identity: MaintenanceIdentity,
       reconcileSealed: Effect.Effect<void>,
+      resumeAfterMaintenance?: Effect.Effect<void>,
     ) => Effect.Effect<void, ServiceLauncherClientError, Scope.Scope>;
   }
 >()("t3/cloud/serviceLauncherClient") {}
@@ -520,6 +521,7 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
   const maintenanceReady = Effect.fn("cloud.service_launcher_client.maintenance_ready")(function* (
     identity: MaintenanceIdentity,
     reconcileSealed: Effect.Effect<void>,
+    resumeAfterMaintenance: Effect.Effect<void> = Effect.void,
   ) {
     if (peer === undefined) return;
     const admission = yield* ServerAdmission;
@@ -556,7 +558,11 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
           if (current !== undefined && !sameMaintenanceFence(current.fence, command.fence)) return;
           const attempt = current;
           current = undefined;
-          if (attempt !== undefined) yield* sealGate.withPermit(admission.abort(attempt.token));
+          if (attempt !== undefined) {
+            yield* sealGate.withPermit(
+              resumeAfterMaintenance.pipe(Effect.andThen(admission.abort(attempt.token))),
+            );
+          }
           retired.add(command.fence.updateId);
           yield* send({ type: "maintenance-aborted", fence: command.fence }).pipe(
             Effect.timeoutOption("1 second"),
