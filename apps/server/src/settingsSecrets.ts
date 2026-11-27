@@ -20,6 +20,7 @@ import { kiroClient } from "@t3tools/provider-kiro/client";
 import { museClient } from "@t3tools/provider-muse/client";
 import { openCodeClient } from "@t3tools/provider-opencode/client";
 import { piClient } from "@t3tools/provider-pi/client";
+import { OnePasswordSecretProviderConfig } from "@t3tools/secret-provider-onepassword/shared/definition";
 import {
   readSecretFieldValues,
   SOURCE_CONTROL_HOST_SECRET_FIELDS,
@@ -51,6 +52,9 @@ const textGeneratorSecretFields = secretSettingsFields(TextGeneratorConfig);
 const voiceSecretFields = secretSettingsFields(CloudSpeechCredentials);
 const easDeviceHostSecretFields = secretSettingsFields(EasDeviceHostConfig);
 const simlockDeviceHostSecretFields = secretSettingsFields(SimlockDeviceHostConfig);
+const secretProviderSecretFields = new Map<string, ReadonlyArray<string>>([
+  ["one_password", secretSettingsFields(OnePasswordSecretProviderConfig)],
+]);
 const encode = (value: string) => Buffer.from(value, "utf8").toString("base64url");
 
 export interface SettingsSecret {
@@ -247,6 +251,34 @@ function mapSecretFieldGroups(
       ) as SimlockDeviceHostConfig,
   );
 
+  const secretProviders = Object.fromEntries(
+    Object.entries(settings.secretProviders).map(([id, provider]) => {
+      const config = provider.config;
+      const fields = secretProviderSecretFields.get(provider.kind) ?? [];
+      if (
+        fields.length === 0 ||
+        config === null ||
+        typeof config !== "object" ||
+        Array.isArray(config)
+      ) {
+        return [id, provider];
+      }
+      return [
+        id,
+        {
+          ...provider,
+          config: mapFields(
+            config as Record<string, unknown>,
+            fields,
+            (field, serverHost) =>
+              `secret-provider-${encode(id)}-${encode(provider.kind)}-${encode(field)}` +
+              (serverHost === null ? "" : `-${encode(serverHost)}`),
+          ),
+        },
+      ];
+    }),
+  ) as ServerSettings["secretProviders"];
+
   return {
     ...settings,
     cloudSpeechCredentials: mapFields(
@@ -258,6 +290,7 @@ function mapSecretFieldGroups(
     sourceControlHosts,
     usageLimitSources,
     textGenerators,
+    secretProviders,
     easDeviceHosts,
     simlockDeviceHosts,
   };

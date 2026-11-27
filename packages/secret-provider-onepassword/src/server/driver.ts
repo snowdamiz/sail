@@ -9,20 +9,47 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { ChildProcess } from "effect/process";
 
-import { definition, type OnePasswordAccount } from "../shared/definition.ts";
+import { definition, type OnePasswordSecretProviderConfig } from "../shared/definition.ts";
 
 const ONE_PASSWORD_BINARY = "op";
+const SECRET_REDACTED = "\u2022\u2022\u2022\u2022\u2022\u2022";
 // Bounds a read long enough to reach for a fingerprint reader, short enough not to wedge a rebuild.
 const READ_TIMEOUT = Duration.seconds(45);
 
+interface OnePasswordInvocation {
+  readonly accountArgs: ReadonlyArray<string>;
+  readonly env?: Readonly<Record<string, string>>;
+}
+
+function resolveInvocation(config: OnePasswordSecretProviderConfig): OnePasswordInvocation | null {
+  const token = config.serviceAccountToken?.trim();
+  if (token !== undefined && token.length > 0 && token !== SECRET_REDACTED) {
+    // 1Password CLI rejects `--account` when `OP_SERVICE_ACCOUNT_TOKEN` is set.
+    return {
+      accountArgs: [],
+      env: { OP_SERVICE_ACCOUNT_TOKEN: token },
+    };
+  }
+  if (config.account !== undefined) {
+    return {
+      accountArgs: [`--account=${config.account}`],
+    };
+  }
+  return null;
+}
+
 // `--cache=false` skips the `op daemon`, which hangs on prompts a background server cannot show.
 const runOnePassword = Effect.fn("OnePasswordDriver.runOnePassword")(function* (
+  invocation: OnePasswordInvocation,
   args: ReadonlyArray<string>,
 ) {
   const spawnCommand = yield* resolveSpawnCommand(ONE_PASSWORD_BINARY, ["--cache=false", ...args]);
   return yield* spawnAndCollect(
     ONE_PASSWORD_BINARY,
-    ChildProcess.make(spawnCommand.command, spawnCommand.args, { shell: spawnCommand.shell }),
+    ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+      shell: spawnCommand.shell,
+      ...(invocation.env !== undefined ? { env: invocation.env, extendEnv: true } : {}),
+    }),
   );
 });
 
@@ -30,10 +57,15 @@ const runOnePassword = Effect.fn("OnePasswordDriver.runOnePassword")(function* (
 const nonEmpty = (value: string) => (value.trim().length > 0 ? value : undefined);
 
 const readOne = Effect.fn("OnePasswordDriver.readOne")(function* (
-  account: OnePasswordAccount,
+  invocation: OnePasswordInvocation,
   reference: string,
 ) {
-  const result = yield* runOnePassword(["read", `--account=${account}`, "--no-newline", reference]);
+  const result = yield* runOnePassword(invocation, [
+    "read",
+    ...invocation.accountArgs,
+    "--no-newline",
+    reference,
+  ]);
   if (result.code !== 0) {
     yield* Effect.logWarning("Could not read secret from 1Password", {
       stage: "read",
@@ -48,7 +80,7 @@ const readOne = Effect.fn("OnePasswordDriver.readOne")(function* (
 // from Node, so the template goes through a temp file. A random separator after every reference
 // keeps one secret from shifting the others, and leaves any trailing newline outside the values.
 const readTogether = Effect.fn("OnePasswordDriver.readTogether")(function* (
-  account: OnePasswordAccount,
+  invocation: OnePasswordInvocation,
   references: ReadonlyArray<string>,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -58,7 +90,12 @@ const readTogether = Effect.fn("OnePasswordDriver.readTogether")(function* (
     templatePath,
     references.map((reference) => `{{ ${reference} }}${separator}`).join(""),
   );
-  const result = yield* runOnePassword(["inject", `--account=${account}`, "-i", templatePath]);
+  const result = yield* runOnePassword(invocation, [
+    "inject",
+    ...invocation.accountArgs,
+    "-i",
+    templatePath,
+  ]);
   const values = result.stdout.split(separator);
   const trailing = values.pop();
   if (
@@ -148,7 +185,9 @@ function sanitizeOnePasswordFieldId(raw: string, index: number, used: Set<string
 export const driver = defineSecretProviderDriver({
   kind: definition.kind,
   definition,
-  saveItem: Effect.fn("OnePasswordDriver.saveItem")(function* ({ account }, input) {
+  saveItem: Effect.fn("OnePasswordDriver.saveItem")(function* (config, input) {
+    const invocation = resolveInvocation(config);
+    if (invocation === null) return undefined;
     const result = yield* Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const template = yield* fileSystem.makeTempFileScoped({ prefix: "t3code-op-create-" });
@@ -169,10 +208,10 @@ export const driver = defineSecretProviderDriver({
           ],
         }),
       );
-      const saved = yield* runOnePassword([
+      const saved = yield* runOnePassword(invocation, [
         "item",
         "create",
-        `--account=${account}`,
+        ...invocation.accountArgs,
         `--vault=${input.vault}`,
         `--template=${template}`,
         "--format=json",
@@ -189,8 +228,9 @@ export const driver = defineSecretProviderDriver({
     );
     return Option.getOrUndefined(result);
   }),
-  saveFields: Effect.fn("OnePasswordDriver.saveFields")(function* ({ account }, input) {
-    if (input.fields.length === 0) return undefined;
+  saveFields: Effect.fn("OnePasswordDriver.saveFields")(function* (config, input) {
+    const invocation = resolveInvocation(config);
+    if (invocation === null || input.fields.length === 0) return undefined;
     const result = yield* Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const template = yield* fileSystem.makeTempFileScoped({ prefix: "t3code-op-create-" });
@@ -215,10 +255,10 @@ export const driver = defineSecretProviderDriver({
           })),
         }),
       );
-      const saved = yield* runOnePassword([
+      const saved = yield* runOnePassword(invocation, [
         "item",
         "create",
-        `--account=${account}`,
+        ...invocation.accountArgs,
         `--vault=${input.vault}`,
         `--template=${template}`,
         "--format=json",
@@ -240,18 +280,20 @@ export const driver = defineSecretProviderDriver({
     );
     return Option.getOrUndefined(result);
   }),
-  read: Effect.fn("OnePasswordDriver.read")(function* ({ account }, references) {
-    // One deadline covers the batch and the fallback; a reference not read by then is unreadable.
+  read: Effect.fn("OnePasswordDriver.read")(function* (config, references) {
+    const invocation = resolveInvocation(config);
     const values: Array<string | undefined> = references.map(() => undefined);
+    if (invocation === null) return values;
+    // One deadline covers the batch and the fallback; a reference not read by then is unreadable.
     const outcome = yield* Effect.gen(function* () {
       if (references.length > 1) {
-        const together = yield* recover("inject", readTogether(account, references));
+        const together = yield* recover("inject", readTogether(invocation, references));
         if (together !== undefined) return together;
       }
       yield* Effect.forEach(
         references,
         (reference, index) =>
-          recover("read", readOne(account, reference)).pipe(
+          recover("read", readOne(invocation, reference)).pipe(
             Effect.map((value) => {
               values[index] = value;
             }),

@@ -41,6 +41,7 @@ import { startEnvironmentThemeRepaint } from "./hooks/useEnvironmentTheme";
 import { startThemeBackground } from "./themeBackground";
 import { readLocalStorageValue, subscribeLocalStorageKey } from "./hooks/useLocalStorage";
 import { startClientPreferencesSync } from "./state/clientPreferences";
+import { startSecretProviderSync } from "./state/secretProviderSync";
 import { startHostEnvironmentLookup } from "./state/primaryEnvironment";
 import {
   getClientSettings,
@@ -276,6 +277,7 @@ export function startAppServices(): AppRouter {
   guardDomAgainstPageTranslation();
 
   startClientPreferencesSync();
+  startSecretProviderSync();
   startClientAppearance();
   startI18n();
   startDocumentTitle(router);

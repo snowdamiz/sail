@@ -9950,14 +9950,6 @@
   "02f531b974fc3dd5": "添加 1Password 提供方",
   "acbf0b4710755dc1": "个人",
   "bc714daca44e1826": "保存更改",
-  "787b3fff435313e4": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " 上的提供方变量可以按名称从中读取值。提供方启动时，会在该服务器上使用 op CLI 读取值。"
-  ],
   "daf8daec701f0863": "账户",
   "c3d6c8494c7d4b8f": "填写 op account list 显示的账户简称、登录地址（不含 https://）或 ID。",
   "afa8b4a2e025dd36": "值",
@@ -13009,5 +13001,22 @@
   "430bb9d743621c62": "新建并保存到 1Password",
   "1cd88cb84e003ee5": "自动提供给此项目的代理、终端和 Boat",
   "22382ecaffe51400": "保存到 1Password",
-  "8c1fa9d49d44f6de": "保存凭据"
+  "8c1fa9d49d44f6de": "保存凭据",
+  "129ce1e41eefa279": "Enter a 1Password Service Account token.",
+  "a8e63cc847b1a8bd": "Saved (leave blank to keep)",
+  "752d571b2fcf0fc9": [
+    "Connect with a Service Account token to share 1Password across Desktop, Web, and Boats. Local CLI accounts stay on ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "752419dfcabfdebf": "Connection",
+  "57d57bdb07789c6e": "Service account",
+  "bbeab9004d15619d": "Local CLI account",
+  "df2d1feea6bdcc51": "Service account token",
+  "b1cfac730d035027": "Create a Service Account in 1Password and grant it access to the vaults Sail should read and save to. Syncs automatically between Desktop and Web.",
+  "9d128425cb2f13fa": "Service account"
 }

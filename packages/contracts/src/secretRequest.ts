@@ -136,6 +136,58 @@ export const ProjectCredentialSaveResult = Schema.Struct({
 });
 export type ProjectCredentialSaveResult = typeof ProjectCredentialSaveResult.Type;
 
+export const PortableSecretProviderEntry = Schema.Struct({
+  id: SecretProviderId,
+  kind: Schema.Literal("one_password"),
+  label: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+  serviceAccountToken: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
+});
+export type PortableSecretProviderEntry = typeof PortableSecretProviderEntry.Type;
+
+const PortableCredentialBookmark = Schema.Struct({
+  label: CredentialLabel,
+  reference: SecretReference,
+  envVar: Schema.optionalKey(ProjectCredentialEnvVar),
+  autoGrant: Schema.optionalKey(Schema.Boolean),
+});
+
+export const PortableProjectCredentialsEntry = Schema.Struct({
+  projectId: ProjectId,
+  repoKey: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
+  bookmarks: Schema.Record(SecretProviderSlug, PortableCredentialBookmark),
+});
+export type PortableProjectCredentialsEntry = typeof PortableProjectCredentialsEntry.Type;
+
+export const SecretsExportPortableProvidersInput = Schema.Struct({});
+export type SecretsExportPortableProvidersInput = typeof SecretsExportPortableProvidersInput.Type;
+
+export const SecretsExportPortableProvidersResult = Schema.Struct({
+  providers: Schema.Array(PortableSecretProviderEntry),
+  projectCredentials: Schema.Array(PortableProjectCredentialsEntry),
+  repoCredentials: Schema.Record(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+    Schema.Record(SecretProviderSlug, PortableCredentialBookmark),
+  ),
+});
+export type SecretsExportPortableProvidersResult = typeof SecretsExportPortableProvidersResult.Type;
+
+export const SecretsImportPortableProvidersInput = Schema.Struct({
+  providers: Schema.Array(PortableSecretProviderEntry),
+  projectCredentials: Schema.Array(PortableProjectCredentialsEntry),
+  repoCredentials: Schema.Record(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+    Schema.Record(SecretProviderSlug, PortableCredentialBookmark),
+  ),
+  removeProviderIds: Schema.optionalKey(Schema.Array(SecretProviderId)),
+});
+export type SecretsImportPortableProvidersInput = typeof SecretsImportPortableProvidersInput.Type;
+
+export const SecretsImportPortableProvidersResult = Schema.Struct({
+  importedProviders: Schema.Number,
+  importedBookmarks: Schema.Number,
+});
+export type SecretsImportPortableProvidersResult = typeof SecretsImportPortableProvidersResult.Type;
+
 /** What the agent reads when its card ends without a secret. */
 export const SECRET_REQUEST_UNSAVED_NOTE = {
   declined:
@@ -169,6 +221,7 @@ const SECRET_REQUEST_FAILURE_MESSAGES = {
   consume_failed: "Could not use that secretRef. Try again.",
   not_a_file_request:
     'The user did not save this secret for shell use. Ask again with request_secret and delivery: "file".',
+  sync_not_supported: "Secret provider sync is not supported on this environment.",
 } as const;
 
 export const SecretRequestFailureReason = Schema.Literals(

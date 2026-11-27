@@ -141,6 +141,7 @@ import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as Workflows from "./workflows/Workflows.ts";
 import * as WorkflowRuntime from "./workflows/WorkflowRuntime.ts";
 import * as BoatCredentialSync from "./boat/BoatCredentialSync.ts";
+import { boatRuntime } from "./cloud/boatLifecycle.ts";
 import * as ProjectCredentials from "./secrets/ProjectCredentials.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as FeedbackStore from "./feedback/FeedbackStore.ts";
@@ -1614,6 +1615,13 @@ export const layerWsRpc = (
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const npmRelease = yield* NpmRelease.NpmRelease;
       const config = yield* ServerConfig.ServerConfig;
+      const isBoatServer = yield* Effect.sync(() => {
+        try {
+          return boatRuntime(config.baseDir) !== undefined;
+        } catch {
+          return false;
+        }
+      });
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
       const storageCleanup = yield* StorageCleanup.StorageCleanup;
       const databaseStorage = yield* DatabaseStorage.DatabaseStorage;
@@ -2012,6 +2020,7 @@ export const layerWsRpc = (
           secretRequestReferences: true,
           projectCredentialBookmarks: true,
           projectCredentialsSync: true,
+          portableSecretProviderSync: !isBoatServer,
           featureFlags: {
             secretProviders: featureFlags.secretProviders,
             tanstackSource: featureFlags.tanstackSource,
@@ -2531,6 +2540,28 @@ export const layerWsRpc = (
                 ),
               ),
           }),
+        [WS_METHODS.secretsExportPortableProviders]: (_input) =>
+          isBoatServer
+            ? Effect.fail(new SecretRequestError({ reason: "sync_not_supported" }))
+            : Option.match(projectCredentialsOption, {
+                onNone: () => Effect.fail(new SecretRequestError({ reason: "load_failed" })),
+                onSome: (service) => service.exportPortableProviders,
+              }),
+        [WS_METHODS.secretsImportPortableProviders]: (input) =>
+          isBoatServer
+            ? Effect.fail(new SecretRequestError({ reason: "sync_not_supported" }))
+            : Option.match(projectCredentialsOption, {
+                onNone: () => Effect.fail(new SecretRequestError({ reason: "store_failed" })),
+                onSome: (service) =>
+                  service.importPortableProviders(input).pipe(
+                    Effect.tap(() =>
+                      Option.match(boatCredentialSyncOption, {
+                        onNone: () => Effect.void,
+                        onSome: (sync) => sync.syncAllRunning,
+                      }),
+                    ),
+                  ),
+              }),
         [WS_METHODS.agentFeedbackAnswerRequest]: (input) => feedbackStore.answer(input),
         [WS_METHODS.scheduledTasksListWebhookDeliveries]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(

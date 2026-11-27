@@ -15,6 +15,7 @@ import {
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
   SecretProviderId,
+  SecretProviderKind,
   ServerSettings,
   ServerSettingsPatch,
   UsageLimitSourceConfig,
@@ -2141,6 +2142,75 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       assert.equal(removed.easDeviceHosts[0]?.accessToken, "");
       assert.deepEqual(Object.keys(removed.secretProviders), ["work"]);
     }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
+  );
+
+  it.effect(
+    "stores 1Password serviceAccountToken in ServerSecretStore, redacts it on disk and for clients, preserves it when echoed redacted, and prunes repoCredentialBookmarks on removal",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const fs = yield* FileSystem.FileSystem;
+        const config = yield* ServerConfig.ServerConfig;
+        const sharedId = SecretProviderId.make("shared-1password");
+
+        const saved = yield* service.updateSettings({
+          secretProviders: {
+            [sharedId]: {
+              kind: SecretProviderKind.make("one_password"),
+              label: "Shared 1Password",
+              config: { serviceAccountToken: "ops_secret_service_token_123" },
+            },
+          },
+          repoCredentialBookmarks: {
+            "github.com/acme/app": {
+              stripe: {
+                label: "Stripe Key",
+                reference: { provider: sharedId, reference: "op://Dev/Stripe/key" },
+              },
+            },
+          },
+        });
+
+        // Hydrated server view has the live token.
+        assert.deepEqual(saved.secretProviders[sharedId]?.config, {
+          serviceAccountToken: "ops_secret_service_token_123",
+        });
+
+        // Disk file redacts the token.
+        const rawOnDisk = yield* fs.readFileString(config.settingsPath);
+        assert.notInclude(rawOnDisk, "ops_secret_service_token_123");
+        assert.include(rawOnDisk, SECRET_REDACTED);
+
+        // Client view redacts the token.
+        const clientView = ServerSettingsModule.redactServerSettingsForClient(saved, {
+          secretReferences: true,
+        });
+        assert.deepEqual(clientView.secretProviders[sharedId]?.config, {
+          serviceAccountToken: SECRET_REDACTED,
+        });
+
+        // Editing the label while echoing SECRET_REDACTED preserves the stored token.
+        const renamed = yield* service.updateSettings({
+          secretProviders: {
+            [sharedId]: {
+              kind: SecretProviderKind.make("one_password"),
+              label: "Renamed 1Password",
+              config: { serviceAccountToken: SECRET_REDACTED },
+            },
+          },
+        });
+        assert.equal(renamed.secretProviders[sharedId]?.label, "Renamed 1Password");
+        assert.deepEqual(renamed.secretProviders[sharedId]?.config, {
+          serviceAccountToken: "ops_secret_service_token_123",
+        });
+
+        // Removing the provider prunes repoCredentialBookmarks referencing it.
+        const removed = yield* service.updateSettings({
+          secretProviders: { [sharedId]: null },
+        });
+        assert.isUndefined(removed.secretProviders[sharedId]);
+        assert.deepEqual(removed.repoCredentialBookmarks, {});
+      }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
   );
 
   it.effect("knows every strictly decoded field that can hold a secret reference", () =>

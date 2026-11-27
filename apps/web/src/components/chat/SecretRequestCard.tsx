@@ -48,6 +48,8 @@ import {
 import { useId, useRef, useState, type FormEvent } from "react";
 import { flushSync } from "react-dom";
 
+import { environmentCatalog } from "../../connection/catalog";
+import { clientPreferencesServerAtom } from "../../state/clientPreferences";
 import { serverEnvironment } from "../../state/server";
 import { localEnvironmentIdAtom } from "../../state/primaryEnvironment";
 import { useEnvironmentScope } from "../../state/session";
@@ -96,6 +98,19 @@ export function SecretRequestCard(props: {
 
 const NO_SOURCES: ReadonlyArray<SecretRequestSource> = [];
 const NULL_CONFIG_ATOM = Atom.make<ServerConfig | null>(null);
+const eligibleVaultManagersAtom = Atom.make((get) => {
+  const result: Array<EnvironmentId> = [];
+  for (const [candidateId] of get(environmentCatalog.catalogValueAtom).entries) {
+    const candidateConfig = get(serverEnvironment.configValueAtom(candidateId));
+    if (
+      candidateConfig?.portableSecretProviderSync === true &&
+      candidateConfig.projectCredentialsSync === true
+    ) {
+      result.push(candidateId);
+    }
+  }
+  return result;
+});
 
 function useSecretRequestSources(environmentId: EnvironmentId) {
   const config = useAtomValue(serverEnvironment.configValueAtom(environmentId));
@@ -113,7 +128,15 @@ function useManagedBoatVaultTarget(input: {
   readonly enabled: boolean;
 }) {
   const messages = useMessages();
-  const managerId = useAtomValue(localEnvironmentIdAtom);
+  const mainServerId = useAtomValue(clientPreferencesServerAtom);
+  const localManagerId = useAtomValue(localEnvironmentIdAtom);
+  const eligibleManagers = useAtomValue(eligibleVaultManagersAtom);
+  const managerId =
+    mainServerId != null && mainServerId !== input.environmentId
+      ? mainServerId
+      : localManagerId !== null && localManagerId !== input.environmentId
+        ? localManagerId
+        : (eligibleManagers.find((id) => id !== input.environmentId) ?? null);
   const candidateManagerId =
     input.enabled &&
     input.projectId !== undefined &&

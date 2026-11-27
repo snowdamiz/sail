@@ -128,6 +128,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.secretsSyncProjectCredentials]: "secrets",
   [WS_METHODS.secretsListProjectCredentials]: "secrets",
   [WS_METHODS.secretsSaveProjectCredential]: "secrets",
+  [WS_METHODS.secretsExportPortableProviders]: "secrets",
+  [WS_METHODS.secretsImportPortableProviders]: "secrets",
   [WS_METHODS.agentFeedbackAnswerRequest]: "agentFeedback",
   [WS_METHODS.guestShareCreate]: "guest-share",
   [WS_METHODS.cloudGetRelayClientStatus]: "cloud",

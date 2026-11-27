@@ -1,4 +1,4 @@
-import { SecretProviderKind } from "@t3tools/contracts";
+import { SecretProviderKind, secretSetting } from "@t3tools/contracts";
 import { defineSecretProvider } from "@t3tools/secret-provider-core/shared/definition";
 import * as Schema from "effect/Schema";
 
@@ -18,9 +18,27 @@ export const OnePasswordAccount = Schema.String.check(
 ).pipe(Schema.brand("OnePasswordAccount"));
 export type OnePasswordAccount = typeof OnePasswordAccount.Type;
 
+export const OnePasswordServiceAccountToken = Schema.String.check(
+  Schema.isMaxLength(4096),
+  Schema.makeFilter((value: string) => {
+    const trimmed = value.trim();
+    return trimmed.length > 0 && !/[\r\n]/.test(trimmed)
+      ? true
+      : "1Password service account token must be a single non-empty line.";
+  }),
+);
+export type OnePasswordServiceAccountToken = typeof OnePasswordServiceAccountToken.Type;
+
 export const OnePasswordSecretProviderConfig = Schema.Struct({
-  account: OnePasswordAccount,
-});
+  account: Schema.optionalKey(OnePasswordAccount),
+  serviceAccountToken: Schema.optionalKey(secretSetting(OnePasswordServiceAccountToken)),
+}).check(
+  Schema.makeFilter((value) =>
+    value.account !== undefined || value.serviceAccountToken !== undefined
+      ? true
+      : "Enter a 1Password Service Account token or a local 1Password CLI account.",
+  ),
+);
 export type OnePasswordSecretProviderConfig = typeof OnePasswordSecretProviderConfig.Type;
 
 // 1Password secret reference syntax: names outside this charset must be written as item ids.

@@ -9934,15 +9934,6 @@
   "02f531b974fc3dd5": "Ajouter un fournisseur 1Password",
   "acbf0b4710755dc1": "Personnel",
   "bc714daca44e1826": "Enregistrer les modifications",
-  "787b3fff435313e4": [
-    "Les variables de fournisseur sur ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " peuvent y lire des valeurs par nom. Les valeurs sont lues avec la CLI op sur ce serveur au démarrage d’un fournisseur."
-  ],
   "daf8daec701f0863": "Compte",
   "c3d6c8494c7d4b8f": "Le raccourci du compte, l’adresse de connexion sans https://, ou l’ID affiché par op account list.",
   "afa8b4a2e025dd36": "Valeur",
@@ -12991,5 +12982,22 @@
   "430bb9d743621c62": "Enregistrer dans 1Password",
   "1cd88cb84e003ee5": "Fournir automatiquement aux agents, terminaux et Boats de ce projet",
   "22382ecaffe51400": "Enregistrer dans 1Password",
-  "8c1fa9d49d44f6de": "Enregistrer l'identifiant"
+  "8c1fa9d49d44f6de": "Enregistrer l'identifiant",
+  "129ce1e41eefa279": "Enter a 1Password Service Account token.",
+  "a8e63cc847b1a8bd": "Saved (leave blank to keep)",
+  "752d571b2fcf0fc9": [
+    "Connect with a Service Account token to share 1Password across Desktop, Web, and Boats. Local CLI accounts stay on ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "752419dfcabfdebf": "Connection",
+  "57d57bdb07789c6e": "Service account",
+  "bbeab9004d15619d": "Local CLI account",
+  "df2d1feea6bdcc51": "Service account token",
+  "b1cfac730d035027": "Create a Service Account in 1Password and grant it access to the vaults Sail should read and save to. Syncs automatically between Desktop and Web.",
+  "9d128425cb2f13fa": "Service account"
 }

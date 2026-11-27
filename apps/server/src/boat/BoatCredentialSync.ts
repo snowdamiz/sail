@@ -34,6 +34,8 @@ const decodeBoatDaemonState = Schema.decodeUnknownOption(BoatDaemonState);
 
 const RUNNING_STATES = new Set(["working", "idle"]);
 
+const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
 function syncKey(machineId: string, destinationProjectId: string): string {
   return `${machineId}\0${destinationProjectId}`;
 }
@@ -222,10 +224,17 @@ const make = Effect.gen(function* () {
     );
   }
 
-  let lastBookmarks = (yield* serverSettings.getSettings).projectCredentialBookmarks;
+  const initialSettings = yield* serverSettings.getSettings;
+  let lastBookmarks = initialSettings.projectCredentialBookmarks;
+  let lastRepoBookmarks = encodeUnknownJson(initialSettings.repoCredentialBookmarks);
+  let lastProviders = encodeUnknownJson(initialSettings.secretProviders);
   yield* serverSettings.streamChanges.pipe(
     Stream.runForEach((settings) => {
       const nextBookmarks = settings.projectCredentialBookmarks;
+      const nextRepoBookmarks = encodeUnknownJson(settings.repoCredentialBookmarks);
+      const nextProviders = encodeUnknownJson(settings.secretProviders);
+      const globalChanged =
+        nextRepoBookmarks !== lastRepoBookmarks || nextProviders !== lastProviders;
       const changedProjects = new Set<ProjectId>();
       const allProjectIds = new Set([...Object.keys(lastBookmarks), ...Object.keys(nextBookmarks)]);
       for (const projectId of allProjectIds) {
@@ -236,6 +245,11 @@ const make = Effect.gen(function* () {
         }
       }
       lastBookmarks = nextBookmarks;
+      lastRepoBookmarks = nextRepoBookmarks;
+      lastProviders = nextProviders;
+      if (globalChanged) {
+        return runSync({ forceEmptySync: true });
+      }
       if (changedProjects.size === 0) {
         return Effect.void;
       }

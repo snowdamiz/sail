@@ -1,4 +1,6 @@
 import {
+  type PortableProjectCredentialsEntry,
+  type PortableSecretProviderEntry,
   type ProjectCredentialBookmark,
   type ProjectCredentialEnvVar,
   type ProjectCredentialSaveInput,
@@ -7,10 +9,16 @@ import {
   type ProjectCredentialsSyncInput,
   type ProjectCredentialsSyncResult,
   type ProjectCredentialSummary,
-  type ProjectId,
+  ProjectId,
+  SecretProviderId,
+  SecretProviderKind,
   SecretProviderSlug,
   type SecretReference,
   SecretRequestError,
+  type SecretsExportPortableProvidersResult,
+  type SecretsImportPortableProvidersInput,
+  type SecretsImportPortableProvidersResult,
+  type ServerSettingsPatch,
   type SyncedProjectCredentialEntry,
 } from "@t3tools/contracts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
@@ -18,16 +26,23 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { SECRET_REDACTED } from "../settingsSecrets.ts";
 
 const ENV_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const REPO_KEY_CACHE_TTL_MS = 60_000;
+const GIT_REMOTE_TIMEOUT = Duration.seconds(2);
 
 const BLOCKED_ENV_VARS = new Set([
   "PATH",
@@ -72,6 +87,42 @@ function isAllowedCredentialEnvVar(name: string): boolean {
     return false;
   }
   return ENV_VAR_PATTERN.test(name);
+}
+
+function normalizeGitRemoteRepoKey(remoteUrl: string): string | null {
+  const trimmed = remoteUrl.trim();
+  if (trimmed.length === 0) return null;
+  const scpMatch = /^[^@\s]+@([^:\s/]+):(.+)$/.exec(trimmed);
+  let host: string;
+  let path: string;
+  if (scpMatch !== null) {
+    host = scpMatch[1]!.toLowerCase();
+    path = scpMatch[2]!;
+  } else if (URL.canParse(trimmed)) {
+    const parsed = new URL(trimmed);
+    if (!parsed.hostname) return null;
+    host = parsed.hostname.toLowerCase();
+    path = parsed.pathname;
+  } else {
+    return null;
+  }
+  const cleanPath = path
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "")
+    .replace(/\.git$/i, "")
+    .toLowerCase();
+  if (cleanPath.length === 0 || !cleanPath.includes("/")) return null;
+  const key = `${host}/${cleanPath}`;
+  return key.length <= 256 ? key : null;
+}
+
+function extractPortableOnePasswordToken(config: unknown): string | null {
+  if (config === null || typeof config !== "object" || Array.isArray(config)) return null;
+  const raw = Object.getOwnPropertyDescriptor(config, "serviceAccountToken")?.value;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0 || trimmed === SECRET_REDACTED || /[\r\n]/.test(trimmed)) return null;
+  return trimmed;
 }
 
 const StoredSyncedCredential = Schema.Struct({
@@ -177,6 +228,13 @@ export class ProjectCredentials extends Context.Service<
     readonly saveToProject: (
       input: ProjectCredentialSaveInput,
     ) => Effect.Effect<ProjectCredentialSaveResult, SecretRequestError>;
+    readonly exportPortableProviders: Effect.Effect<
+      SecretsExportPortableProvidersResult,
+      SecretRequestError
+    >;
+    readonly importPortableProviders: (
+      input: SecretsImportPortableProvidersInput,
+    ) => Effect.Effect<SecretsImportPortableProvidersResult, SecretRequestError>;
   }
 >()("t3/secrets/ProjectCredentials") {}
 
@@ -186,6 +244,110 @@ const make = Effect.gen(function* () {
   const resolver = yield* SecretResolver.SecretResolver;
   const digest = yield* Digest.Digest;
   const random = yield* SecureRandom.SecureRandom;
+  const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
+  const spawnerOption = yield* Effect.serviceOption(ChildProcessSpawner.ChildProcessSpawner);
+
+  const repoKeyCache = new Map<
+    string,
+    { readonly key: string | null; readonly expiresAt: number }
+  >();
+
+  const readGitRemoteKey = Effect.fn("ProjectCredentials.readGitRemoteKey")(function* (
+    workspaceRoot: string,
+  ) {
+    if (Option.isNone(spawnerOption)) return null;
+    const spawner = spawnerOption.value;
+    const outcome = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const handle = yield* spawner.spawn(
+          ChildProcess.make("git", ["-C", workspaceRoot, "remote", "get-url", "origin"], {
+            stdin: "ignore",
+          }),
+        );
+        const [chunks, exitCode] = yield* Effect.all(
+          [
+            Stream.runCollect(handle.stdout).pipe(
+              Effect.map((items) => items.map((chunk) => new TextDecoder().decode(chunk)).join("")),
+            ),
+            handle.exitCode,
+          ],
+          { concurrency: "unbounded" },
+        );
+        if (exitCode !== 0) return null;
+        return normalizeGitRemoteRepoKey(chunks);
+      }),
+    ).pipe(
+      Effect.timeoutOption(GIT_REMOTE_TIMEOUT),
+      Effect.orElseSucceed((): Option.Option<string | null> => Option.none()),
+    );
+    return Option.isSome(outcome) ? outcome.value : null;
+  });
+
+  const listActiveProjects = Effect.fn("ProjectCredentials.listActiveProjects")(function* () {
+    if (Option.isNone(sqlOption)) {
+      return [] as ReadonlyArray<{ readonly projectId: ProjectId; readonly workspaceRoot: string }>;
+    }
+    const sql = sqlOption.value;
+    const rows = yield* sql<{
+      readonly projectId: string;
+      readonly workspaceRoot: string;
+    }>`
+      SELECT project_id AS "projectId", workspace_root AS "workspaceRoot"
+      FROM projection_projects
+      WHERE deleted_at IS NULL
+    `.pipe(Effect.orElseSucceed(() => []));
+    return rows.map((row) => ({
+      projectId: ProjectId.make(row.projectId),
+      workspaceRoot: row.workspaceRoot,
+    }));
+  });
+
+  const resolveProjectRepoKey = Effect.fn("ProjectCredentials.resolveProjectRepoKey")(function* (
+    projectId: ProjectId,
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    const cached = repoKeyCache.get(projectId);
+    if (cached !== undefined && cached.expiresAt > now) {
+      return cached.key;
+    }
+    if (Option.isNone(sqlOption)) {
+      return null;
+    }
+    const sql = sqlOption.value;
+    const rows = yield* sql<{ readonly workspaceRoot: string }>`
+      SELECT workspace_root AS "workspaceRoot"
+      FROM projection_projects
+      WHERE project_id = ${projectId} AND deleted_at IS NULL
+      LIMIT 1
+    `.pipe(Effect.orElseSucceed(() => []));
+    const workspaceRoot = rows[0]?.workspaceRoot;
+    const key =
+      workspaceRoot !== undefined && workspaceRoot.length > 0
+        ? yield* readGitRemoteKey(workspaceRoot)
+        : null;
+    repoKeyCache.set(projectId, { key, expiresAt: now + REPO_KEY_CACHE_TTL_MS });
+    return key;
+  });
+
+  const effectiveLocalBookmarks = Effect.fn("ProjectCredentials.effectiveLocalBookmarks")(
+    function* (
+      current: {
+        readonly projectCredentialBookmarks: Readonly<
+          Record<string, Readonly<Record<string, ProjectCredentialBookmark>>>
+        >;
+        readonly repoCredentialBookmarks: Readonly<
+          Record<string, Readonly<Record<string, ProjectCredentialBookmark>>>
+        >;
+      },
+      projectId: ProjectId,
+    ) {
+      const direct = current.projectCredentialBookmarks[projectId] ?? {};
+      const repoKey = yield* resolveProjectRepoKey(projectId);
+      const repoEntries = repoKey !== null ? (current.repoCredentialBookmarks[repoKey] ?? {}) : {};
+      if (Object.keys(repoEntries).length === 0) return direct;
+      return { ...repoEntries, ...direct };
+    },
+  );
 
   const storeKeyFor = (projectId: ProjectId) =>
     digest.digest(Digest.sha256, new TextEncoder().encode(projectId)).pipe(
@@ -244,7 +406,7 @@ const make = Effect.gen(function* () {
     const current = yield* settings.getSettings.pipe(
       Effect.mapError((cause) => new SecretRequestError({ reason: "load_failed", cause })),
     );
-    const localEntries = current.projectCredentialBookmarks[projectId] ?? {};
+    const localEntries = yield* effectiveLocalBookmarks(current, projectId);
     const syncedEntries = yield* readSyncedRaw(projectId);
     const merged = new Map<string, ProjectCredentialSummary>();
 
@@ -287,7 +449,7 @@ const make = Effect.gen(function* () {
         resolved: [] as ReadonlyArray<ResolvedProjectCredential>,
       };
     }
-    const bookmarks = current.projectCredentialBookmarks[projectId] ?? {};
+    const bookmarks = yield* effectiveLocalBookmarks(current, projectId);
     const authorized = Object.entries(bookmarks).filter(
       ([, bookmark]) =>
         bookmark.autoGrant !== false &&
@@ -490,17 +652,204 @@ const make = Effect.gen(function* () {
       }
     }
 
+    const repoKey = yield* resolveProjectRepoKey(input.projectId);
     yield* settings
       .updateSettings({
         projectCredentialBookmarks: {
           [input.projectId]: bookmarksPatch,
         },
+        ...(repoKey !== null ? { repoCredentialBookmarks: { [repoKey]: bookmarksPatch } } : {}),
       })
       .pipe(
         Effect.mapError(() => new SecretRequestError({ reason: "vault_saved_reference_failed" })),
       );
     return { savedIds };
   });
+
+  const exportPortableProviders: ProjectCredentials["Service"]["exportPortableProviders"] =
+    Effect.gen(function* () {
+      const current = yield* settings.getSettings.pipe(
+        Effect.mapError((cause) => new SecretRequestError({ reason: "load_failed", cause })),
+      );
+      const providers: Array<PortableSecretProviderEntry> = [];
+      const portableIds = new Set<string>();
+      for (const [id, entry] of Object.entries(current.secretProviders)) {
+        if (entry.kind !== "one_password") continue;
+        const token = extractPortableOnePasswordToken(entry.config);
+        if (token === null) continue;
+        portableIds.add(id);
+        providers.push({
+          id: SecretProviderId.make(id),
+          kind: "one_password",
+          label: entry.label,
+          serviceAccountToken: token,
+        });
+      }
+
+      const repoCredentials: Record<string, Record<string, ProjectCredentialBookmark>> = {};
+      for (const [repoKey, entries] of Object.entries(current.repoCredentialBookmarks)) {
+        const filtered = Object.fromEntries(
+          Object.entries(entries).filter(([, bookmark]) =>
+            portableIds.has(bookmark.reference.provider),
+          ),
+        );
+        if (Object.keys(filtered).length > 0) {
+          repoCredentials[repoKey] = filtered;
+        }
+      }
+
+      const projectCredentials: Array<PortableProjectCredentialsEntry> = [];
+      for (const [rawProjectId, entries] of Object.entries(current.projectCredentialBookmarks)) {
+        const filtered = Object.fromEntries(
+          Object.entries(entries).filter(([, bookmark]) =>
+            portableIds.has(bookmark.reference.provider),
+          ),
+        );
+        if (Object.keys(filtered).length === 0) continue;
+        const projectId = ProjectId.make(rawProjectId);
+        const repoKey = yield* resolveProjectRepoKey(projectId);
+        projectCredentials.push({
+          projectId,
+          ...(repoKey !== null ? { repoKey } : {}),
+          bookmarks: filtered,
+        });
+        if (repoKey !== null) {
+          repoCredentials[repoKey] = {
+            ...repoCredentials[repoKey],
+            ...filtered,
+          };
+        }
+      }
+
+      return {
+        providers,
+        projectCredentials,
+        repoCredentials,
+      };
+    });
+
+  const importPortableProviders: ProjectCredentials["Service"]["importPortableProviders"] =
+    Effect.fn("ProjectCredentials.importPortableProviders")(function* (input) {
+      const current = yield* settings.getSettings.pipe(
+        Effect.mapError((cause) => new SecretRequestError({ reason: "load_failed", cause })),
+      );
+
+      const secretProvidersPatch: Record<
+        string,
+        {
+          readonly kind: SecretProviderKind;
+          readonly label: string;
+          readonly config: { readonly serviceAccountToken: string };
+        } | null
+      > = {};
+
+      let importedProviders = 0;
+      for (const provider of input.providers) {
+        secretProvidersPatch[provider.id] = {
+          kind: SecretProviderKind.make(provider.kind),
+          label: provider.label,
+          config: { serviceAccountToken: provider.serviceAccountToken },
+        };
+        importedProviders += 1;
+      }
+
+      for (const removeId of input.removeProviderIds ?? []) {
+        if (Object.hasOwn(secretProvidersPatch, removeId)) continue;
+        const existing = current.secretProviders[removeId];
+        // Only remove a provider if it is also a portable service-account provider.
+        if (
+          existing !== undefined &&
+          existing.kind === "one_password" &&
+          extractPortableOnePasswordToken(existing.config) !== null
+        ) {
+          secretProvidersPatch[removeId] = null;
+        }
+      }
+
+      const activeProjects = yield* listActiveProjects();
+      const projectIdsByRepoKey = new Map<string, Array<ProjectId>>();
+      const activeProjectIdSet = new Set<string>();
+      for (const project of activeProjects) {
+        activeProjectIdSet.add(project.projectId);
+        const repoKey = yield* resolveProjectRepoKey(project.projectId);
+        if (repoKey !== null) {
+          const list = projectIdsByRepoKey.get(repoKey) ?? [];
+          list.push(project.projectId);
+          projectIdsByRepoKey.set(repoKey, list);
+        }
+      }
+
+      const projectBookmarksPatch: Record<string, Record<string, ProjectCredentialBookmark>> = {};
+      const repoBookmarksPatch: Record<string, Record<string, ProjectCredentialBookmark>> = {};
+      let importedBookmarks = 0;
+
+      for (const [repoKey, bookmarks] of Object.entries(input.repoCredentials)) {
+        if (Object.keys(bookmarks).length === 0) continue;
+        repoBookmarksPatch[repoKey] = {
+          ...repoBookmarksPatch[repoKey],
+          ...bookmarks,
+        };
+        for (const matchedProjectId of projectIdsByRepoKey.get(repoKey) ?? []) {
+          projectBookmarksPatch[matchedProjectId] = {
+            ...projectBookmarksPatch[matchedProjectId],
+            ...bookmarks,
+          };
+        }
+        importedBookmarks += Object.keys(bookmarks).length;
+      }
+
+      for (const entry of input.projectCredentials) {
+        if (Object.keys(entry.bookmarks).length === 0) continue;
+        if (entry.repoKey !== undefined) {
+          repoBookmarksPatch[entry.repoKey] = {
+            ...repoBookmarksPatch[entry.repoKey],
+            ...entry.bookmarks,
+          };
+        }
+        const matchedTargets = new Set<ProjectId>();
+        if (activeProjectIdSet.has(entry.projectId)) {
+          matchedTargets.add(entry.projectId);
+        }
+        if (entry.repoKey !== undefined) {
+          for (const matchedId of projectIdsByRepoKey.get(entry.repoKey) ?? []) {
+            matchedTargets.add(matchedId);
+          }
+        }
+        for (const targetProjectId of matchedTargets) {
+          projectBookmarksPatch[targetProjectId] = {
+            ...projectBookmarksPatch[targetProjectId],
+            ...entry.bookmarks,
+          };
+        }
+        importedBookmarks += Object.keys(entry.bookmarks).length;
+      }
+
+      const patch: ServerSettingsPatch = {
+        ...(Object.keys(secretProvidersPatch).length > 0
+          ? { secretProviders: secretProvidersPatch }
+          : {}),
+        ...(Object.keys(projectBookmarksPatch).length > 0
+          ? { projectCredentialBookmarks: projectBookmarksPatch }
+          : {}),
+        ...(Object.keys(repoBookmarksPatch).length > 0
+          ? { repoCredentialBookmarks: repoBookmarksPatch }
+          : {}),
+      };
+
+      if (
+        patch.secretProviders !== undefined ||
+        patch.projectCredentialBookmarks !== undefined ||
+        patch.repoCredentialBookmarks !== undefined
+      ) {
+        yield* settings
+          .updateSettings(patch)
+          .pipe(
+            Effect.mapError((cause) => new SecretRequestError({ reason: "store_failed", cause })),
+          );
+      }
+
+      return { importedProviders, importedBookmarks };
+    });
 
   return ProjectCredentials.of({
     syncForProject,
@@ -510,6 +859,8 @@ const make = Effect.gen(function* () {
     resolveForBoatSync,
     matchSecretRequest,
     saveToProject,
+    exportPortableProviders,
+    importPortableProviders,
   });
 });
 

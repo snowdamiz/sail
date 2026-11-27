@@ -45,6 +45,24 @@ RUN --mount=type=cache,id=sail-pnpm-store,target=/root/.local/share/pnpm/store,s
       --arch "$(if [ "$TARGETARCH" = amd64 ]; then echo x64; else echo "$TARGETARCH"; fi)" \
       --output-dir /stage
 
+# 1Password CLI enables 1Password service-account credentials on personal Sail web servers.
+FROM --platform=$BUILDPLATFORM node:26.13.1-bookworm-slim@sha256:0042e17d232a87a2cd485be1da7900fca4d10a4ad11b29e9285da1d2e54798c9 AS op-cli
+ARG TARGETARCH
+ARG OP_CLI_VERSION=2.42.0
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && case "$TARGETARCH" in \
+         amd64) sha=261fe3844a43e7e83a3d85e8a9f36411729436a1d3add1dc7dd46cbbceebe9e5 ;; \
+         arm64) sha=e56c379fabafb393ce699258e484694abe464870fb41f35ce1b5c3f17868ba61 ;; \
+         *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL "https://cache.agilebits.com/dist/1P/op2/pkg/v${OP_CLI_VERSION}/op_linux_${TARGETARCH}_v${OP_CLI_VERSION}.zip" -o /tmp/op.zip \
+    && echo "${sha}  /tmp/op.zip" | sha256sum -c - \
+    && unzip -q /tmp/op.zip op -d /out \
+    && chmod 0755 /out/op \
+    && rm -f /tmp/op.zip
+
 FROM node:26.13.1-bookworm-slim@sha256:0042e17d232a87a2cd485be1da7900fca4d10a4ad11b29e9285da1d2e54798c9 AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -66,6 +84,7 @@ RUN npm install --global --prefix /opt/npm-global \
     && chown -R sail:sail /opt/npm-global
 
 COPY --from=rust /out/sail-boatd /opt/sail/bin/sail-boatd
+COPY --from=op-cli /out/op /usr/local/bin/op
 COPY --from=build /stage/node_modules /opt/sail/node_modules
 COPY --from=build /src/apps/server/dist /opt/sail/server
 COPY --from=rust /out/t3-resource-monitor /opt/sail/server/resource-monitor/t3-resource-monitor

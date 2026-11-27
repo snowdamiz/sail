@@ -465,6 +465,10 @@ import {
 import {
   ProjectCredentialSaveInput,
   ProjectCredentialSaveResult,
+  SecretsExportPortableProvidersInput,
+  SecretsExportPortableProvidersResult,
+  SecretsImportPortableProvidersInput,
+  SecretsImportPortableProvidersResult,
   ProjectCredentialsListInput,
   ProjectCredentialsListResult,
   ProjectCredentialsSyncInput,
@@ -678,6 +682,8 @@ export const WS_METHODS = {
   secretsSyncProjectCredentials: "secrets.syncProjectCredentials",
   secretsListProjectCredentials: "secrets.listProjectCredentials",
   secretsSaveProjectCredential: "secrets.saveProjectCredential",
+  secretsExportPortableProviders: "secrets.exportPortableProviders",
+  secretsImportPortableProviders: "secrets.importPortableProviders",
   agentFeedbackAnswerRequest: "agentFeedback.answerRequest",
   guestShareCreate: "guestShare.create",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
@@ -2508,6 +2514,18 @@ const WsSecretsSaveProjectCredentialRpc = Rpc.make(WS_METHODS.secretsSaveProject
   error: Schema.Union([SecretRequestError, EnvironmentAuthorizationError]),
 });
 
+const WsSecretsExportPortableProvidersRpc = Rpc.make(WS_METHODS.secretsExportPortableProviders, {
+  payload: SecretsExportPortableProvidersInput,
+  success: SecretsExportPortableProvidersResult,
+  error: Schema.Union([SecretRequestError, EnvironmentAuthorizationError]),
+});
+
+const WsSecretsImportPortableProvidersRpc = Rpc.make(WS_METHODS.secretsImportPortableProviders, {
+  payload: SecretsImportPortableProvidersInput,
+  success: SecretsImportPortableProvidersResult,
+  error: Schema.Union([SecretRequestError, EnvironmentAuthorizationError]),
+});
+
 const WsAgentFeedbackAnswerRequestRpc = Rpc.make(WS_METHODS.agentFeedbackAnswerRequest, {
   payload: AgentFeedbackAnswerInput,
   error: Schema.Union([AgentFeedbackRequestError, EnvironmentAuthorizationError]),
@@ -2653,6 +2671,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsSecretsSyncProjectCredentialsRpc,
   WsSecretsListProjectCredentialsRpc,
   WsSecretsSaveProjectCredentialRpc,
+  WsSecretsExportPortableProvidersRpc,
+  WsSecretsImportPortableProvidersRpc,
   WsAgentFeedbackAnswerRequestRpc,
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,

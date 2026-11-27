@@ -29,18 +29,31 @@ type OpResult = {
   readonly delay?: Duration.Input;
 };
 
-function fakeOp(answer: (args: ReadonlyArray<string>) => OpResult) {
+function fakeOp(
+  answer: (
+    args: ReadonlyArray<string>,
+    options: { readonly env?: Readonly<Record<string, string>>; readonly extendEnv?: boolean },
+  ) => OpResult,
+) {
   const invocations: Array<ReadonlyArray<string>> = [];
+  const envs: Array<Readonly<Record<string, string>> | undefined> = [];
   const spawned = Deferred.makeUnsafe<void>();
   const layer = Layer.mergeAll(
     Layer.succeed(
       ChildProcessSpawner.ChildProcessSpawner,
       ChildProcessSpawner.make((command) =>
         Effect.sync(() => {
-          const { args } = command as unknown as { readonly args: ReadonlyArray<string> };
+          const { args, options } = command as unknown as {
+            readonly args: ReadonlyArray<string>;
+            readonly options?: {
+              readonly env?: Readonly<Record<string, string>>;
+              readonly extendEnv?: boolean;
+            };
+          };
           invocations.push(args);
+          envs.push(options?.env);
           Deferred.doneUnsafe(spawned, Effect.void);
-          const result = answer(args);
+          const result = answer(args, options ?? {});
           return ChildProcessSpawner.makeHandle({
             pid: ChildProcessSpawner.ProcessId(1),
             exitCode: result.hang
@@ -64,7 +77,7 @@ function fakeOp(answer: (args: ReadonlyArray<string>) => OpResult) {
     NodeFileSystem.layer,
     NodeCrypto.layer,
   );
-  return { layer, invocations, spawned };
+  return { layer, invocations, envs, spawned };
 }
 
 // Answers `op inject` by substituting each `{{ reference }}` in the template file it was handed.
@@ -259,5 +272,25 @@ describe("1Password driver", () => {
       assert.isDefined(path);
       assert.isFalse(path !== undefined && NodeFS.existsSync(path));
     }).pipe(Effect.provide(fixture.layer));
+  });
+  it.effect("authenticates with OP_SERVICE_ACCOUNT_TOKEN without --account", () => {
+    const op = fakeOp((args, options) => {
+      assert.isFalse(args.some((arg) => arg.startsWith("--account=")));
+      assert.equal(options.extendEnv, true);
+      assert.equal(options.env?.OP_SERVICE_ACCOUNT_TOKEN, "ops_test_token_123");
+      return { stdout: "sk-service-account" };
+    });
+    return Effect.gen(function* () {
+      assert.deepStrictEqual(
+        yield* driver.read({ serviceAccountToken: "ops_test_token_123" }, [
+          "op://Private/OpenAI/credential",
+        ]),
+        ["sk-service-account"],
+      );
+      assert.deepStrictEqual(op.invocations, [
+        ["--cache=false", "read", "--no-newline", "op://Private/OpenAI/credential"],
+      ]);
+      assert.deepStrictEqual(op.envs, [{ OP_SERVICE_ACCOUNT_TOKEN: "ops_test_token_123" }]);
+    }).pipe(Effect.provide(op.layer));
   });
 });

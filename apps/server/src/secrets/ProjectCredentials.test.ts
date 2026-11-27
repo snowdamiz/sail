@@ -6,6 +6,7 @@ import {
   ProjectId,
   SecretProviderId,
   SecretProviderKind,
+  type SecretProviderConfig,
   SecretProviderSlug,
 } from "@t3tools/contracts";
 import { defineSecretProviderDriver } from "@t3tools/secret-provider-core/server/driver";
@@ -26,6 +27,7 @@ const projectId = ProjectId.make("project-alpha");
 const otherProjectId = ProjectId.make("project-beta");
 
 function makeHarness(options?: {
+  readonly secretProviders?: Record<string, SecretProviderConfig>;
   readonly initialBookmarks?: Record<
     string,
     Record<
@@ -105,7 +107,7 @@ function makeHarness(options?: {
   );
 
   const settingsLayer = ServerSettingsService.layerTest({
-    secretProviders: {
+    secretProviders: options?.secretProviders ?? {
       [vaultId]: { kind: FAKE_KIND, label: "Vault", config: {} },
     },
     projectCredentialBookmarks: options?.initialBookmarks ?? {},
@@ -365,6 +367,121 @@ describe("ProjectCredentials", () => {
         assert.isTrue(boatPayload.hasConfiguredBookmarks);
         assert.equal(boatPayload.credentials.length, 2);
       }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect(
+    "exports only portable service-account 1Password providers and imports them into another host",
+    () => {
+      const sourceHarness = makeHarness({
+        secretProviders: {
+          [SecretProviderId.make("shared-1p")]: {
+            kind: SecretProviderKind.make("one_password"),
+            label: "Shared 1Password",
+            config: { serviceAccountToken: "ops_portable_token_123" },
+          },
+          [SecretProviderId.make("local-cli")]: {
+            kind: SecretProviderKind.make("one_password"),
+            label: "Local CLI",
+            config: { account: "my.1password.com" },
+          },
+        },
+        initialBookmarks: {
+          [projectId]: {
+            sharedCred: {
+              label: "Stripe Key",
+              reference: {
+                provider: SecretProviderId.make("shared-1p"),
+                reference: "op://Dev/Stripe/key",
+              },
+              envVar: ProjectCredentialEnvVar.make("STRIPE_KEY"),
+            },
+            cliCred: {
+              label: "Local Only",
+              reference: {
+                provider: SecretProviderId.make("local-cli"),
+                reference: "op://Dev/Local/key",
+              },
+            },
+          },
+        },
+      });
+      const targetHarness = makeHarness({
+        secretProviders: {
+          [SecretProviderId.make("target-cli")]: {
+            kind: SecretProviderKind.make("one_password"),
+            label: "Target CLI",
+            config: { account: "target.1password.com" },
+          },
+        },
+      });
+
+      return Effect.gen(function* () {
+        const exported = yield* Effect.gen(function* () {
+          const sourceService = yield* ProjectCredentials.ProjectCredentials;
+          return yield* sourceService.exportPortableProviders;
+        }).pipe(Effect.provide(sourceHarness.layer));
+
+        assert.deepStrictEqual(exported.providers, [
+          {
+            id: SecretProviderId.make("shared-1p"),
+            kind: "one_password",
+            label: "Shared 1Password",
+            serviceAccountToken: "ops_portable_token_123",
+          },
+        ]);
+        assert.equal(exported.projectCredentials.length, 1);
+        assert.deepStrictEqual(Object.keys(exported.projectCredentials[0]?.bookmarks ?? {}), [
+          "sharedCred",
+        ]);
+
+        const imported = yield* Effect.gen(function* () {
+          const targetService = yield* ProjectCredentials.ProjectCredentials;
+          const result = yield* targetService.importPortableProviders({
+            providers: exported.providers,
+            projectCredentials: exported.projectCredentials,
+            repoCredentials: {
+              "github.com/acme/app": exported.projectCredentials[0]!.bookmarks,
+            },
+          });
+          const settings = yield* ServerSettingsService;
+          const current = yield* settings.getSettings;
+          return { result, current };
+        }).pipe(Effect.provide(targetHarness.layer));
+
+        assert.equal(imported.result.importedProviders, 1);
+        assert.equal(
+          imported.current.secretProviders[SecretProviderId.make("shared-1p")]?.label,
+          "Shared 1Password",
+        );
+        assert.deepStrictEqual(
+          imported.current.secretProviders[SecretProviderId.make("shared-1p")]?.config,
+          { serviceAccountToken: "ops_portable_token_123" },
+        );
+        assert.isDefined(
+          imported.current.repoCredentialBookmarks["github.com/acme/app"]?.sharedCred,
+        );
+
+        // Removing portable provider removes only portable ones, leaving local CLI providers intact.
+        const afterRemove = yield* Effect.gen(function* () {
+          const targetService = yield* ProjectCredentials.ProjectCredentials;
+          yield* targetService.importPortableProviders({
+            providers: [],
+            projectCredentials: [],
+            repoCredentials: {},
+            removeProviderIds: [
+              SecretProviderId.make("shared-1p"),
+              SecretProviderId.make("target-cli"),
+            ],
+          });
+          const settings = yield* ServerSettingsService;
+          return yield* settings.getSettings;
+        }).pipe(Effect.provide(targetHarness.layer));
+
+        assert.isUndefined(afterRemove.secretProviders[SecretProviderId.make("shared-1p")]);
+        assert.isDefined(afterRemove.secretProviders[SecretProviderId.make("target-cli")]);
+        assert.deepStrictEqual(afterRemove.repoCredentialBookmarks, {});
+      });
     },
   );
 });

@@ -9893,14 +9893,6 @@
   "02f531b974fc3dd5": "1Password 제공자 추가",
   "acbf0b4710755dc1": "개인",
   "bc714daca44e1826": "변경 사항 저장",
-  "787b3fff435313e4": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    "의 제공자 변수는 이름으로 이 제공자의 값을 읽을 수 있습니다. 값은 제공자가 시작될 때 해당 서버에서 op CLI로 읽습니다."
-  ],
   "daf8daec701f0863": "계정",
   "c3d6c8494c7d4b8f": "op account list에 표시되는 계정 약칭, https://를 뺀 로그인 주소 또는 ID입니다.",
   "afa8b4a2e025dd36": "값",
@@ -12929,5 +12921,22 @@
   "430bb9d743621c62": "1Password에 새로 저장",
   "1cd88cb84e003ee5": "이 프로젝트의 에이전트, 터미널 및 Boat에 자동으로 제공",
   "22382ecaffe51400": "1Password에 저장",
-  "8c1fa9d49d44f6de": "자격 증명 저장"
+  "8c1fa9d49d44f6de": "자격 증명 저장",
+  "129ce1e41eefa279": "Enter a 1Password Service Account token.",
+  "a8e63cc847b1a8bd": "Saved (leave blank to keep)",
+  "752d571b2fcf0fc9": [
+    "Connect with a Service Account token to share 1Password across Desktop, Web, and Boats. Local CLI accounts stay on ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "752419dfcabfdebf": "Connection",
+  "57d57bdb07789c6e": "Service account",
+  "bbeab9004d15619d": "Local CLI account",
+  "df2d1feea6bdcc51": "Service account token",
+  "b1cfac730d035027": "Create a Service Account in 1Password and grant it access to the vaults Sail should read and save to. Syncs automatically between Desktop and Web.",
+  "9d128425cb2f13fa": "Service account"
 }

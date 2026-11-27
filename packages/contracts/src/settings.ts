@@ -886,6 +886,9 @@ declare module "effect/Schema" {
   }
 }
 
+/** Placeholder sent to clients and written to settings.json for stored secret settings. */
+export const SECRET_REDACTED = "\u2022\u2022\u2022\u2022\u2022\u2022";
+
 export function secretSetting<S extends Schema.Top>(schema: S): S["Rebuild"] {
   return schema.annotateKey({ settingsSecret: true });
 }
@@ -1842,6 +1845,10 @@ export const ServerSettings = Schema.Struct({
   projectCredentialBookmarks: Schema.Record(ProjectId, ProjectCredentialBookmarks).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  repoCredentialBookmarks: Schema.Record(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+    ProjectCredentialBookmarks,
+  ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
 
   usageHistoryRetentionDays: UsageHistoryRetentionDays.pipe(
     Schema.withDecodingDefault(Effect.succeed(92)),
@@ -2250,6 +2257,12 @@ export const ServerSettingsPatch = Schema.Struct({
       Schema.Record(SecretProviderSlug, Schema.NullOr(ProjectCredentialBookmark)),
     ),
   ),
+  repoCredentialBookmarks: Schema.optionalKey(
+    Schema.Record(
+      TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+      Schema.Record(SecretProviderSlug, Schema.NullOr(ProjectCredentialBookmark)),
+    ),
+  ),
 
   usageHistoryRetentionDays: Schema.optionalKey(UsageHistoryRetentionDays),
 
@@ -2295,7 +2308,8 @@ export function requiredScopesForServerSettingsPatch(
       key === "usageLimitSources" ||
       key === "textGenerators" ||
       key === "secretProviders" ||
-      key === "projectCredentialBookmarks"
+      key === "projectCredentialBookmarks" ||
+      key === "repoCredentialBookmarks"
     ) {
       changesProviders = true;
     } else {

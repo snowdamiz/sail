@@ -755,6 +755,7 @@ export const ServerConfig = Schema.Struct({
   secretRequestReferences: Schema.optionalKey(Schema.Boolean),
   projectCredentialBookmarks: Schema.optionalKey(Schema.Boolean),
   projectCredentialsSync: Schema.optionalKey(Schema.Boolean),
+  portableSecretProviderSync: Schema.optionalKey(Schema.Boolean),
   scratchWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
   newProjectsRoot: Schema.optionalKey(TrimmedNonEmptyString),
   /**
