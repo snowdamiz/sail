@@ -47,21 +47,16 @@ Windows packages the bundled server and its unpacked native modules in `resource
 
 ### Sail lane container package
 
-Before the first Sail `-lane.*` release, the package owner must provision
-`ghcr.io/<owner>/sail-server-lane` as a private package outside the release
-workflow. In the package settings, an admin must grant the Sail repository
-**Write** under **Manage Actions access**. Each lane image job requires GitHub
-Packages to report the package as `private` using the encrypted Actions
-secret `SAIL_LANE_PACKAGE_READ_TOKEN`: a classic personal access token with
-only `read:packages` from the personal package owner (or a user with read
-access to an organization package). The token is used only for metadata;
-image publication still uses `GITHUB_TOKEN`. Missing credentials or missing
-or unverifiable package metadata blocks the push.
+Sail `-lane.*` releases publish images to the disposable registry package
+`ghcr.io/<owner>/sail-server-lane-v2`. The release workflow creates the package
+on its first push using `GITHUB_TOKEN`. The package may be public; private
+visibility and a personal access token are not required. If the package already
+exists and the workflow lacks write access, grant the Sail repository **Write**
+under **Manage Actions access** in the package settings.
 
-A first push from a public repository can create a public package. GitHub
-prevents changing a public package back to private. If the name is already
-occupied by a public package, the owner must resolve it before retrying the
-lane release.
+Regular releases still publish to `ghcr.io/<owner>/sail-server`. That package
+must be public, and the workflow verifies anonymous pulls for regular releases.
+
 [GitHub Packages visibility and access settings](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility)
 
 ### npm OIDC trusted publishing
