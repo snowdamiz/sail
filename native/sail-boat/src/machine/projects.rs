@@ -201,6 +201,47 @@ impl MachineRuntime {
         Ok(true)
     }
 
+    /// Pushes synced LLM provider auth credentials to a running machine over its authenticated
+    /// upstream channel and refreshes cached provider statuses when anything changed.
+    /// Returns `Ok(false)` without waking a stopped machine.
+    pub async fn sync_provider_auth(&self, bundle: Value) -> Result<bool> {
+        if self.power() != Power::Running {
+            return Ok(false);
+        }
+        let (url, token) = (self.upstream_url(), self.upstream_token());
+        if url.is_empty() || token.is_empty() {
+            return Ok(false);
+        }
+        let result = upstream::call(
+            &url,
+            &token,
+            "provider.auth.importBundle",
+            json!({
+                "bundle": bundle,
+            }),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("syncing provider auth to {}", self.record().name))?;
+        if result["changed"] == true {
+            if let Ok(refreshed) = upstream::call(
+                &url,
+                &token,
+                "server.refreshProviders",
+                json!({ "reloadSecrets": true }),
+            )
+            .await
+            {
+                self.cache
+                    .lock()
+                    .unwrap()
+                    .fold_providers(&refreshed["providers"]);
+                self.save_cache();
+                self.shared.changed();
+            }
+        }
+        Ok(true)
+    }
+
     fn set_adding_status(&self, repo_key: &str, status: &str) {
         if let Some(a) = self.adding.lock().unwrap().iter_mut().find(|a| a.repo_key.as_deref() == Some(repo_key)) {
             a.status = Some(status.to_owned());
@@ -379,6 +420,32 @@ mod tests {
         let machine = MachineRuntime::new(shared, old_machine_record(), dir.path().join("m"));
         let synced = machine
             .sync_project_credentials("proj-1", vec![json!({"id": "c1", "label": "AWS", "value": "secret"})])
+            .await
+            .unwrap();
+        assert!(!synced);
+    }
+
+    #[tokio::test]
+    async fn sync_provider_auth_skips_non_running_machine() {
+        let dir = tempfile::tempdir().unwrap();
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let shared = Arc::new(Shared {
+            boat: Boat::at(dir.path().join("boat")),
+            t3: T3Desktop::at(dir.path().join("t3")),
+            settings: RwLock::new(Settings::default()),
+            events,
+            http: reqwest::Client::new(),
+            saving: Mutex::new(Default::default()),
+        });
+        let machine = MachineRuntime::new(shared, old_machine_record(), dir.path().join("m"));
+        let synced = machine
+            .sync_provider_auth(json!({
+                "version": 1,
+                "instances": [],
+                "storeBlobs": [],
+                "antigravityFiles": [],
+                "cliAuth": [],
+            }))
             .await
             .unwrap();
         assert!(!synced);

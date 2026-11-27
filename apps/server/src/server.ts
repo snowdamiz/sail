@@ -98,6 +98,8 @@ import { BUILT_IN_SOURCE_CONTROL_DRIVER_LIST } from "./sourceControl/sourceContr
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as SecretCheck from "./secrets/SecretCheck.ts";
 import * as BoatCredentialSync from "./boat/BoatCredentialSync.ts";
+import * as BoatProviderSync from "./boat/BoatProviderSync.ts";
+import * as ProviderAuthSync from "./provider/ProviderAuthSync.ts";
 import * as ProjectCredentials from "./secrets/ProjectCredentials.ts";
 import * as SecretResolver from "./secrets/SecretResolver.ts";
 import * as ProviderInstanceRegistryHydration from "./provider/ProviderInstanceRegistryHydration.ts";
@@ -841,10 +843,11 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(layerGit),
   Layer.provideMerge(layerVcs),
   Layer.provideMerge(
-    BoatCredentialSync.layer.pipe(
+    Layer.merge(BoatCredentialSync.layer, BoatProviderSync.layer).pipe(
       Layer.provideMerge(Layer.mergeAll(layerTerminal, layerPreview, layerDevice, layerBoat)),
     ),
   ),
+  Layer.provideMerge(ProviderAuthSync.layer),
   Layer.provideMerge(
     Layer.merge(
       ProjectStore.layer,

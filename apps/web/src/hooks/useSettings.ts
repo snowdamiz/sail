@@ -65,6 +65,7 @@ import { toastManager } from "~/components/ui/toast";
 import { isHostedStaticApp } from "~/hostedPairing";
 import { environmentCatalog } from "~/connection/catalog";
 import { primaryServerSettingsAtom, serverEnvironment } from "~/state/server";
+import { notifyProviderAuthEdited } from "~/state/providerAuthSync";
 import { useEnvironments, usePrimaryEnvironment } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { useTheme } from "./useTheme";
@@ -779,11 +780,19 @@ export function usePersistEnvironmentProviderInstanceMutation(environmentId: Env
   const mutateProviderInstance = useAtomCommand(serverEnvironment.mutateProviderInstance, {
     reportFailure: false,
   });
-  return (providerInstanceMutation: ProviderInstanceMutation, patch: ServerSettingsPatch = {}) =>
-    mutateProviderInstance({
+  return async (
+    providerInstanceMutation: ProviderInstanceMutation,
+    patch: ServerSettingsPatch = {},
+  ) => {
+    const result = await mutateProviderInstance({
       environmentId,
       input: { patch, providerInstanceMutation },
     });
+    if (result._tag === "Success") {
+      notifyProviderAuthEdited(environmentId);
+    }
+    return result;
+  };
 }
 
 export function usePrimarySettings<T = UnifiedSettings>(

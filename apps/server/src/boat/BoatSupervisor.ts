@@ -11,6 +11,7 @@ import {
   BoatSignIn,
   EnvironmentId,
   type SyncedProjectCredentialEntry,
+  type ProviderAuthSyncBundle,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { makeAsyncRotatingFileSink } from "@t3tools/shared/logging";
@@ -252,6 +253,10 @@ export class BoatSupervisor extends Context.Service<
       readonly machineId: string;
       readonly projectId: string;
       readonly credentials: ReadonlyArray<SyncedProjectCredentialEntry>;
+    }) => Effect.Effect<{ readonly synced: boolean }, BoatError>;
+    readonly syncProviderAuth?: (input: {
+      readonly machineId: string;
+      readonly bundle: ProviderAuthSyncBundle;
     }) => Effect.Effect<{ readonly synced: boolean }, BoatError>;
     readonly currentState?: Effect.Effect<Option.Option<unknown>>;
     readonly passiveEvents?: Stream.Stream<BoatEvent>;
@@ -767,9 +772,50 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const syncProviderAuth = Effect.fn("BoatSupervisor.syncProviderAuth")(function* (input: {
+    readonly machineId: string;
+    readonly bundle: ProviderAuthSyncBundle;
+  }) {
+    const current = yield* SynchronizedRef.get(lifecycle);
+    if (current._tag !== "Running") {
+      return { synced: false };
+    }
+    const response = yield* httpClient
+      .execute(
+        HttpClientRequest.post(`${current.daemon.baseUrl}/api/command/sync_provider_auth`).pipe(
+          authorized(current.daemon),
+          HttpClientRequest.bodyJsonUnsafe(input),
+        ),
+      )
+      .pipe(
+        Effect.mapError(
+          () => new BoatError({ message: "sail-boatd did not answer sync_provider_auth." }),
+        ),
+      );
+    const reply = yield* response.json.pipe(
+      Effect.flatMap(decodeCommandReply),
+      Effect.mapError(
+        () =>
+          new BoatError({
+            message: `sail-boatd answered sync_provider_auth with HTTP ${response.status}.`,
+          }),
+      ),
+    );
+    if (!reply.ok) {
+      return yield* new BoatError({ message: reply.error });
+    }
+    const synced =
+      typeof reply.data === "object" &&
+      reply.data !== null &&
+      "synced" in reply.data &&
+      reply.data.synced === true;
+    return { synced };
+  });
+
   return BoatSupervisor.of({
     invoke,
     syncProjectCredentials,
+    syncProviderAuth,
     currentState: Ref.get(latestState),
     passiveEvents: Stream.fromPubSub(hub),
     events,

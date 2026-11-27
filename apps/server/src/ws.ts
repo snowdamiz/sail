@@ -90,6 +90,7 @@ import {
   ProjectMutationError,
   ProviderUploadFeedbackError,
   ProviderSetupError,
+  ProviderAuthSyncError,
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   type ServerConfig as ClientServerConfig,
@@ -141,6 +142,8 @@ import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as Workflows from "./workflows/Workflows.ts";
 import * as WorkflowRuntime from "./workflows/WorkflowRuntime.ts";
 import * as BoatCredentialSync from "./boat/BoatCredentialSync.ts";
+import * as BoatProviderSync from "./boat/BoatProviderSync.ts";
+import * as ProviderAuthSync from "./provider/ProviderAuthSync.ts";
 import { boatRuntime } from "./cloud/boatLifecycle.ts";
 import * as ProjectCredentials from "./secrets/ProjectCredentials.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
@@ -1543,6 +1546,8 @@ export const layerWsRpc = (
       const boatCredentialSyncOption = yield* Effect.serviceOption(
         BoatCredentialSync.BoatCredentialSync,
       );
+      const providerAuthSyncOption = yield* Effect.serviceOption(ProviderAuthSync.ProviderAuthSync);
+      const boatProviderSyncOption = yield* Effect.serviceOption(BoatProviderSync.BoatProviderSync);
       const feedbackStore = yield* FeedbackStore.FeedbackStore;
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -2021,6 +2026,7 @@ export const layerWsRpc = (
           projectCredentialBookmarks: true,
           projectCredentialsSync: true,
           portableSecretProviderSync: !isBoatServer,
+          portableProviderAuthSync: !isBoatServer,
           featureFlags: {
             secretProviders: featureFlags.secretProviders,
             tanstackSource: featureFlags.tanstackSource,
@@ -2881,9 +2887,24 @@ export const layerWsRpc = (
             Effect.andThen(providerAuth.respond(input, currentSessionId)),
           ),
         [WS_METHODS.providerAuthComplete]: (input) =>
-          providerAuth.complete(input, currentSessionId),
+          providerAuth.complete(input, currentSessionId).pipe(
+            Effect.tap(() =>
+              Option.match(boatProviderSyncOption, {
+                onNone: () => Effect.void,
+                onSome: (sync) => sync.syncAllRunning.pipe(Effect.ignore, Effect.forkDetach),
+              }),
+            ),
+          ),
         [WS_METHODS.chatGptReconnectProfile]: (input) => providerAuth.reconnectProfile(input),
-        [WS_METHODS.chatGptImportProfile]: (input) => providerAuth.importProfile(input),
+        [WS_METHODS.chatGptImportProfile]: (input) =>
+          providerAuth.importProfile(input).pipe(
+            Effect.tap(() =>
+              Option.match(boatProviderSyncOption, {
+                onNone: () => Effect.void,
+                onSome: (sync) => sync.syncAllRunning.pipe(Effect.ignore, Effect.forkDetach),
+              }),
+            ),
+          ),
         [WS_METHODS.chatGptHandoffSubscribe]: (input) =>
           subscribeChatGptHandoff(input, currentSessionId),
         [WS_METHODS.providerAuthCancel]: (input) => providerAuth.cancel(input, currentSessionId),
@@ -2891,6 +2912,29 @@ export const layerWsRpc = (
         [WS_METHODS.providerAuthLogout]: (input) => providerAuth.logout(input),
         [WS_METHODS.providerAuthSubscribe]: (input) =>
           providerAuth.subscribe(input, currentSessionId),
+        [WS_METHODS.providerAuthExportBundle]: (input) =>
+          isBoatServer
+            ? Effect.fail(new ProviderAuthSyncError({ reason: "sync_not_supported" }))
+            : Option.match(providerAuthSyncOption, {
+                onNone: () => Effect.fail(new ProviderAuthSyncError({ reason: "export_failed" })),
+                onSome: (service) => service.exportBundle(input),
+              }),
+        [WS_METHODS.providerAuthImportBundle]: (input) =>
+          Option.match(providerAuthSyncOption, {
+            onNone: () => Effect.fail(new ProviderAuthSyncError({ reason: "import_failed" })),
+            onSome: (service) =>
+              service.importBundle(input).pipe(
+                Effect.tap((result) =>
+                  result.changed
+                    ? Option.match(boatProviderSyncOption, {
+                        onNone: () => Effect.void,
+                        onSome: (sync) =>
+                          sync.syncAllRunning.pipe(Effect.ignore, Effect.forkDetach),
+                      })
+                    : Effect.void,
+                ),
+              ),
+          }),
         [WS_METHODS.providerInstallStart]: (input) => providerInstallation.start(input),
         [WS_METHODS.providerInstallCancel]: (input) => providerInstallation.cancel(input),
         [WS_METHODS.providerInstallSubscribe]: (input) => providerInstallation.subscribe(input),
