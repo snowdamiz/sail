@@ -1,4 +1,10 @@
 import {
+  afterAdmissionReopens,
+  forkAccepted,
+  withAdmission,
+  isServerMaintenanceBusy,
+} from "../serverAdmission.ts";
+import {
   defaultInstanceIdForDriver,
   isProviderWorkspaceSnapshotCurrent,
   isProviderWorkspaceSnapshotPending,
@@ -793,47 +799,53 @@ export const layer = Layer.effect(
 
     const refreshAll = Effect.fn("refreshAll")(function* () {
       yield* refreshHostPath;
-      const claimed = yield* Ref.modify(
-        refreshAllInFlightRef,
-        (
-          inFlight,
-        ): readonly [
-          { readonly owner: boolean; readonly completion: RefreshAllCompletion },
-          Option.Option<RefreshAllCompletion>,
-        ] => {
-          if (Option.isSome(inFlight)) {
-            return [{ owner: false, completion: inFlight.value }, inFlight];
-          }
-          const completion = Deferred.makeUnsafe<ReadonlyArray<ServerProvider>>();
-          return [{ owner: true, completion }, Option.some(completion)];
-        },
-      );
-      if (claimed.owner) {
-        // Detach shared passes so the first caller's interruption cannot cancel other callers' work.
-        // Syncing first keeps a refresh right after a rebuild from probing the replaced instance.
-        yield* manifestService.current.pipe(
-          Effect.flatMap(({ updatedAt }) =>
-            syncLiveSourcesAndContinue.pipe(
-              Effect.andThen(Ref.get(liveSubsRef)),
-              Effect.flatMap((instances) =>
-                Effect.forEach(instances.values(), (instance) => refreshOneSource(instance), {
-                  concurrency: "unbounded",
-                  discard: true,
-                }),
+      const completion = yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          const claimed = yield* Ref.modify(
+            refreshAllInFlightRef,
+            (
+              inFlight,
+            ): readonly [
+              { readonly owner: boolean; readonly completion: RefreshAllCompletion },
+              Option.Option<RefreshAllCompletion>,
+            ] => {
+              if (Option.isSome(inFlight)) {
+                return [{ owner: false, completion: inFlight.value }, inFlight];
+              }
+              const completion = Deferred.makeUnsafe<ReadonlyArray<ServerProvider>>();
+              return [{ owner: true, completion }, Option.some(completion)];
+            },
+          );
+          if (claimed.owner) {
+            // Detach shared passes so the first caller's interruption cannot cancel other callers' work.
+            // Syncing first keeps a refresh right after a rebuild from probing the replaced instance.
+            yield* manifestService.current.pipe(
+              Effect.flatMap(({ updatedAt }) =>
+                syncLiveSourcesAndContinue.pipe(
+                  Effect.andThen(Ref.get(liveSubsRef)),
+                  Effect.flatMap((instances) =>
+                    Effect.forEach(instances.values(), (instance) => refreshOneSource(instance), {
+                      concurrency: "unbounded",
+                      discard: true,
+                    }),
+                  ),
+                  Effect.andThen(Ref.get(providersRef)),
+                  Effect.tap(() => Ref.set(probedManifestUpdatedAt, updatedAt)),
+                ),
               ),
-              Effect.andThen(Ref.get(providersRef)),
-              Effect.tap(() => Ref.set(probedManifestUpdatedAt, updatedAt)),
-            ),
-          ),
-          Effect.onExit((exit) =>
-            Ref.set(refreshAllInFlightRef, Option.none()).pipe(
-              Effect.andThen(Deferred.done(claimed.completion, exit)),
-            ),
-          ),
-          Effect.forkDetach,
-        );
-      }
-      return yield* Deferred.await(claimed.completion);
+              Effect.onExit((exit) =>
+                Ref.set(refreshAllInFlightRef, Option.none()).pipe(
+                  Effect.andThen(Deferred.done(claimed.completion, exit)),
+                ),
+              ),
+              Effect.interruptible,
+              forkAccepted(),
+            );
+          }
+          return claimed.completion;
+        }),
+      );
+      return yield* Deferred.await(completion);
     });
 
     const refresh = Effect.fn("refresh")(function* (provider?: ProviderDriverKind) {
@@ -1056,7 +1068,9 @@ export const layer = Layer.effect(
         for (const [, instance] of newlyAdded) {
           const source = buildSnapshotSource(instance);
           yield* Stream.runForEach(source.streamChanges, (provider) =>
-            correlateSnapshotWithSource(source, provider).pipe(Effect.flatMap(syncProvider)),
+            afterAdmissionReopens(
+              correlateSnapshotWithSource(source, provider).pipe(Effect.flatMap(syncProvider)),
+            ),
           ).pipe(Effect.forkScoped);
           if (instance.workspaceRescans) {
             yield* Stream.runForEach(instance.workspaceRescans, (cwd) =>
@@ -1163,9 +1177,8 @@ export const layer = Layer.effect(
     );
     const instanceChanges = yield* instanceRegistry.subscribeChanges;
     yield* syncLiveSources;
-    yield* Stream.runForEach(
-      Stream.fromSubscription(instanceChanges),
-      () => syncLiveSourcesAndContinue,
+    yield* Stream.runForEach(Stream.fromSubscription(instanceChanges), () =>
+      afterAdmissionReopens(syncLiveSourcesAndContinue),
     ).pipe(Effect.forkScoped);
 
     const recoverRefreshFailure = Effect.fn("recoverRefreshFailure")(function* (
@@ -1339,8 +1352,7 @@ export const layer = Layer.effect(
           });
           if (inFlight) return { inFlight } as const;
           return {
-            // Starting now attaches the scan's `ensuring` before anything can close the scope.
-            scan: yield* Effect.forkIn(runScan, serviceScope, { startImmediately: true }),
+            scan: yield* runScan.pipe(forkAccepted(serviceScope)),
           } as const;
         }),
       );
@@ -1352,6 +1364,7 @@ export const layer = Layer.effect(
     });
     yield* Stream.runForEach(Stream.fromQueue(workspaceRescans), ({ instance, cwd }) =>
       refreshWorkspaceSnapshot({ instanceId: instance.instanceId, cwd, rescan: instance }).pipe(
+        withAdmission("root"),
         Effect.ignoreCause({ log: true }),
       ),
     ).pipe(Effect.forkScoped);
@@ -1395,24 +1408,38 @@ export const layer = Layer.effect(
       }
     });
 
+    const admitRefresh = <A, E, R>(work: Effect.Effect<A, E, R>, whenClosed: Effect.Effect<A>) =>
+      work.pipe(
+        withAdmission("root"),
+        Effect.catchIf(isServerMaintenanceBusy, () => whenClosed),
+      );
+
+    const cached = Ref.get(providersRef);
+    const admitProbe = <E, R>(work: Effect.Effect<ReadonlyArray<ServerProvider>, E, R>) =>
+      admitRefresh(work, cached);
+
     return {
-      getProviders: Ref.get(providersRef),
+      getProviders: cached,
       refresh: (provider?: ProviderDriverKind) =>
-        refresh(provider).pipe(Effect.catchCause(recoverRefreshFailure)),
+        admitProbe(refresh(provider)).pipe(Effect.catchCause(recoverRefreshFailure)),
       refreshInstance: (instanceId: ProviderInstanceId) =>
-        refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
+        admitProbe(refreshInstance(instanceId)).pipe(Effect.catchCause(recoverRefreshFailure)),
       reloadSecretsAndRefresh: (instanceId?: ProviderInstanceId) =>
-        reloadSecretsAndRefresh(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
-      rebuildMissingAndRefresh: rebuildMissingAndRefresh().pipe(
+        admitProbe(reloadSecretsAndRefresh(instanceId)).pipe(
+          Effect.catchCause(recoverRefreshFailure),
+        ),
+      rebuildMissingAndRefresh: admitProbe(rebuildMissingAndRefresh()).pipe(
         Effect.catchCause(recoverRefreshFailure),
       ),
       applySecretAndRefresh: (reference: SecretReference, value: string) =>
-        applySecretAndRefresh(reference, value).pipe(Effect.catchCause(recoverRefreshFailure)),
+        admitProbe(applySecretAndRefresh(reference, value)).pipe(
+          Effect.catchCause(recoverRefreshFailure),
+        ),
       refreshWorkspaceSnapshot: (input) =>
-        refreshWorkspaceSnapshot(input).pipe(Effect.catchCause(recoverRefreshFailure)),
-      refreshAfterUpdate,
-      invalidateModelCaches,
-      refreshModelCatalog: refreshModelCatalog().pipe(
+        admitProbe(refreshWorkspaceSnapshot(input)).pipe(Effect.catchCause(recoverRefreshFailure)),
+      refreshAfterUpdate: (provider, id) => admitProbe(refreshAfterUpdate(provider, id)),
+      invalidateModelCaches: (input) => admitRefresh(invalidateModelCaches(input), Effect.void),
+      refreshModelCatalog: admitRefresh(refreshModelCatalog(), Effect.void).pipe(
         Effect.catchCause(recoverRefreshFailure),
         Effect.asVoid,
       ),

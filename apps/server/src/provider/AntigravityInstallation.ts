@@ -1,3 +1,5 @@
+import { afterAdmissionReopens, forkAccepted, withAdmission } from "../serverAdmission.ts";
+import { forkParked, ServerActivation } from "../serverActivation.ts";
 // @effect-diagnostics nodeBuiltinImport:off - Effect has no incremental digest or free-space query.
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ModelManifest from "./ModelManifest.ts";
@@ -1357,30 +1359,42 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
             }),
           ),
         );
-        const fiber = yield* Effect.forkIn(Effect.interruptible(work), serviceScope);
+        const fiber = yield* Effect.interruptible(work).pipe(forkAccepted(serviceScope));
         running = { operationId, fiber };
         return next;
       }).pipe(Effect.uninterruptible),
     );
-  }).pipe(Effect.mapError(wrapFailure("start", "Could not start the Antigravity installation.")));
+  }).pipe(
+    Effect.mapError(wrapFailure("start", "Could not start the Antigravity installation.")),
+    withAdmission("root"),
+    Effect.catchTags({
+      ServerMaintenanceBusy: (cause) => installationError("start", cause.message, cause),
+    }),
+  );
 
-  const cancel = Effect.fn("AntigravityInstallation.cancel")(function* (operationId: string) {
-    return yield* gate.withPermit(
-      Effect.gen(function* () {
-        const current = yield* SubscriptionRef.get(state);
-        if (current.operationId !== operationId) {
-          return yield* installationError(
-            "cancel",
-            "This installation is no longer current. Refresh its status before cancelling.",
-          );
-        }
-        if (running?.operationId === operationId && isRunning(current)) {
-          yield* Fiber.interrupt(running.fiber);
-        }
-        return yield* SubscriptionRef.get(state);
-      }),
-    );
-  });
+  const cancel = Effect.fn("AntigravityInstallation.cancel")(
+    function* (operationId: string) {
+      return yield* gate.withPermit(
+        Effect.gen(function* () {
+          const current = yield* SubscriptionRef.get(state);
+          if (current.operationId !== operationId) {
+            return yield* installationError(
+              "cancel",
+              "This installation is no longer current. Refresh its status before cancelling.",
+            );
+          }
+          if (running?.operationId === operationId && isRunning(current)) {
+            yield* Fiber.interrupt(running.fiber);
+          }
+          return yield* SubscriptionRef.get(state);
+        }),
+      );
+    },
+    withAdmission("continuation"),
+    Effect.catchTags({
+      ServerMaintenanceBusy: (cause) => installationError("cancel", cause.message, cause),
+    }),
+  );
 
   const remove = Effect.fn("AntigravityInstallation.remove")(
     function* (protectedBinaryPaths: ReadonlyArray<string> = []) {
@@ -1454,9 +1468,13 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
         "Could not remove the managed Antigravity runtime. Check for open processes and try again.",
       ),
     ),
+    withAdmission("root"),
+    Effect.catchTags({
+      ServerMaintenanceBusy: (cause) => installationError("remove", cause.message, cause),
+    }),
   );
 
-  yield* Effect.gen(function* () {
+  const initialize = Effect.gen(function* () {
     const canRemove = (yield* fs.exists(managedDirectory)) || (yield* isSymlink(managedDirectory));
     yield* SubscriptionRef.update(state, (current) => ({ ...current, canRemove }));
     if (!(yield* fs.exists(activePath))) return;
@@ -1506,10 +1524,16 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
               }) satisfies ProviderInstallState,
           ),
     ),
+    Effect.andThen(
+      Effect.gen(function* () {
+        if (!isRunning(yield* SubscriptionRef.get(state))) yield* pruneInactiveReleases;
+      }),
+    ),
+    afterAdmissionReopens,
   );
 
-  // A startup install prunes when it activates; pruning now could delete the release it is verifying.
-  if (!isRunning(yield* SubscriptionRef.get(state))) yield* pruneInactiveReleases;
+  if ((yield* ServerActivation) === undefined) yield* initialize;
+  else yield* forkParked(initialize);
 
   return AntigravityInstallation.of({
     managedDirectory,
@@ -1520,7 +1544,7 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
     cancel,
     state: SubscriptionRef.get(state),
     changes: SubscriptionRef.changes(state),
-    checkForUpdate: refreshRelease().pipe(Effect.ignore),
+    checkForUpdate: refreshRelease().pipe(withAdmission("root"), Effect.ignore),
     remove,
   });
 });

@@ -1,3 +1,8 @@
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
+import { observeDurableObligations } from "../serverAdmissionObligations.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 import * as AssetSigner from "./AssetSigner.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 // @effect-diagnostics nodeBuiltinImport:off
@@ -139,6 +144,79 @@ describe("AttachmentUpload", () => {
         expect(NodeFS.existsSync(claimed.claimedPaths[1]!)).toBe(false);
       }).pipe(Effect.provide(layerTest)),
   );
+  it.effect(
+    "defers a held upload, then preserves the final write barrier with the writer census",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const census = observeDurableObligations().pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        expect(yield* census).toEqual([]);
+        const finalScan = yield* Deferred.make<void>();
+        const allowSeal = yield* Deferred.make<void>();
+        let scans = 0;
+        const admission = makeAdmission(
+          census.pipe(
+            Effect.tap(() =>
+              ++scans === 2
+                ? Deferred.succeed(finalScan, undefined).pipe(
+                    Effect.andThen(Deferred.await(allowSeal)),
+                  )
+                : Effect.void,
+            ),
+          ),
+        );
+        const issued = yield* issueAttachmentUploadUrl(uploadInput);
+        const token = issued.relativeUrl.slice(ATTACHMENT_UPLOAD_ROUTE_PREFIX.length + 1);
+        const claims = yield* validateAttachmentUploadToken(token);
+        if (!claims) throw new Error("Expected upload claims");
+        const bytes = new Uint8Array([1, 2, 3, 4, 5, 6]);
+        const reading = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const upload = yield* storeAttachmentUpload(
+          claims,
+          Stream.fromEffect(
+            Deferred.succeed(reading, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.as(bytes),
+            ),
+          ),
+        ).pipe(Effect.provideService(ServerAdmission, admission), Effect.forkScoped);
+        yield* Deferred.await(reading);
+
+        const first = yield* admission
+          .drain(Symbol(), "1 second")
+          .pipe(Effect.forkScoped({ startImmediately: true }));
+        const write = storeAttachmentUpload(claims, bytes).pipe(
+          Effect.provideService(ServerAdmission, admission),
+        );
+        expect(yield* write).toMatchObject({ ok: false, status: 503 });
+        yield* TestClock.adjust("1 second");
+        expect(yield* Fiber.join(first)).toMatchObject({
+          kind: "aborted",
+          blockers: ["in-flight"],
+        });
+        expect(upload.pollUnsafe()).toBeUndefined();
+        yield* Deferred.succeed(release, undefined);
+        expect(yield* Fiber.join(upload)).toEqual({ ok: true });
+
+        const second = yield* admission.drain(Symbol(), "1 second").pipe(Effect.forkScoped);
+        yield* Deferred.await(finalScan);
+        expect(yield* write).toMatchObject({ ok: false, status: 503 });
+        expect(
+          (yield* admission.run("continuation", Effect.void).pipe(Effect.flip)).retryable,
+        ).toBe(true);
+        expect(yield* validateAttachmentUploadToken(token)).toEqual(claims);
+        yield* Deferred.succeed(allowSeal, undefined);
+        expect(yield* Fiber.join(second)).toEqual({ kind: "sealed" });
+        const config = yield* ServerConfig.ServerConfig;
+        const path = NodePath.join(config.attachmentsDir, `${issued.attachmentId}.png`);
+        expect(NodeFS.readFileSync(path)).toEqual(Buffer.from(bytes));
+        expect(NodeFS.readdirSync(config.attachmentsDir)).toEqual([`${issued.attachmentId}.png`]);
+      }).pipe(Effect.provide(Layer.merge(layerTest, SqlitePersistence.layerMemory))),
+  );
+
   it.effect("rejects tampered and malformed upload tokens", () =>
     Effect.gen(function* () {
       const issued = yield* issueAttachmentUploadUrl(uploadInput);

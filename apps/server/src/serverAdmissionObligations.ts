@@ -12,6 +12,8 @@ export const observeDurableObligations = Effect.fn("ServerAdmission.observeDurab
       delegated_work: number;
       native_work: number;
       workflow: number;
+      workflow_settlement: number;
+      peer_link: number;
     }>`
       SELECT (
         EXISTS (SELECT 1 FROM orchestration_v2_projection_runs
@@ -56,7 +58,28 @@ export const observeDurableObligations = Effect.fn("ServerAdmission.observeDurab
         EXISTS (SELECT 1 FROM scheduled_tasks WHERE last_run_status = 'running')
         OR EXISTS (SELECT 1 FROM scheduled_task_webhook_pending)
       ) AS scheduled_delivery,
-      EXISTS (SELECT 1 FROM workflow_runs WHERE ended_at IS NULL) AS workflow
+      EXISTS (SELECT 1 FROM workflow_runs WHERE ended_at IS NULL) AS workflow,
+      (
+        EXISTS (
+          SELECT 1 FROM workflow_runs run
+          WHERE run.status = 'cancelled'
+            AND (
+              NOT EXISTS (SELECT 1 FROM workflow_steps step
+                          WHERE step.run_id = run.run_id AND step.name = 'onEnd'
+                            AND step.status = 'completed')
+              OR EXISTS (SELECT 1 FROM workflow_steps step
+                         WHERE step.run_id = run.run_id AND step.name != 'onEnd'
+                           AND step.status = 'running')
+            )
+        )
+        OR EXISTS (
+          SELECT 1 FROM workflow_waits wait
+          JOIN workflow_runs child ON child.parent_run_id = wait.run_id
+                                  AND child.parent_wait = wait.name
+          WHERE wait.signalled_at IS NULL AND child.ended_at IS NOT NULL
+        )
+      ) AS workflow_settlement,
+      EXISTS (SELECT 1 FROM peer_environment_links) AS peer_link
     `;
     if (row === undefined) return ["quiescence-unknown"] as const;
     return [
@@ -66,6 +89,8 @@ export const observeDurableObligations = Effect.fn("ServerAdmission.observeDurab
       ...(row.native_work ? ["native-work" as const] : []),
       ...(row.scheduled_delivery ? ["scheduled-delivery" as const] : []),
       ...(row.workflow ? ["workflow" as const] : []),
+      ...(row.workflow_settlement ? ["workflow-settlement" as const] : []),
+      ...(row.peer_link ? ["peer-link-retained" as const] : []),
     ];
   },
 );

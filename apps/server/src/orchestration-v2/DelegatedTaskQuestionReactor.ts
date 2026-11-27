@@ -17,6 +17,7 @@ import { reportLabel } from "@t3tools/provider-core/server/notification";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 
 import { forkParked } from "../serverActivation.ts";
+import { withAdmission } from "../serverAdmission.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
@@ -43,22 +44,24 @@ const make = Effect.gen(function* () {
       request.responseCapability.type === "message"
         ? `Delegated task ${task.id} asked a question and is still working.`
         : `Delegated task ${task.id} is blocked on a question and cannot continue until it is answered.`;
-    yield* engine.dispatch({
-      type: "message.dispatch",
-      commandId: CommandId.make(`server:delegated-task-question:${key}`),
-      threadId: task.threadId,
-      messageId: MessageId.make(`message:delegated-task-question:${key}`),
-      text: `${situation} Read it with t3_pending_request action read, threadId ${task.childThreadId}, and requestId ${request.id}. Answer it with action respond when the answer follows from the task or the user's instructions; otherwise ask the user, then answer it. If it is no longer pending, it was answered or dismissed.`,
-      notification: {
-        source: { kind: "delegated_task", taskIds: [task.id], childThreadId: task.childThreadId },
-        outcome: "updated",
-        summary: `Delegated task${label === undefined ? "" : ` "${label}"`} has a question`,
-      },
-      attachments: [],
-      dispatchMode: { type: "queue_after_active" },
-      createdBy: "agent",
-      creationSource: "server",
-    });
+    yield* engine
+      .dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`server:delegated-task-question:${key}`),
+        threadId: task.threadId,
+        messageId: MessageId.make(`message:delegated-task-question:${key}`),
+        text: `${situation} Read it with t3_pending_request action read, threadId ${task.childThreadId}, and requestId ${request.id}. Answer it with action respond when the answer follows from the task or the user's instructions; otherwise ask the user, then answer it. If it is no longer pending, it was answered or dismissed.`,
+        notification: {
+          source: { kind: "delegated_task", taskIds: [task.id], childThreadId: task.childThreadId },
+          outcome: "updated",
+          summary: `Delegated task${label === undefined ? "" : ` "${label}"`} has a question`,
+        },
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "agent",
+        creationSource: "server",
+      })
+      .pipe(withAdmission("continuation"));
   });
 
   const cancelQueuedWakes = Effect.fnUntraced(function* (
@@ -198,6 +201,8 @@ const make = Effect.gen(function* () {
       );
       if (
         task === undefined ||
+        task.childThreadId !== child.id ||
+        ["completed", "failed", "cancelled", "interrupted"].includes(task.status) ||
         parent.thread.archivedAt !== null ||
         parent.thread.deletedAt !== null
       ) {

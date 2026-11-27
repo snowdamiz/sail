@@ -1,3 +1,4 @@
+import { ServerAdmission, withAdmission } from "../serverAdmission.ts";
 import {
   type SourceControlAppAccess,
   type SourceControlAppAccessInput,
@@ -49,16 +50,41 @@ const make = Effect.gen(function* () {
       : Effect.succeed(signIn);
   };
 
+  let started = false;
+  const admission = yield* ServerAdmission;
+  yield* (
+    admission?.registerObserver(
+      Effect.sync(() => (started ? ["source-control-sign-in-unqualified"] : [])),
+    ) ?? Effect.void
+  );
+  const admit =
+    (lane: "root" | "continuation") =>
+    <A>(work: Effect.Effect<A, SourceControlSignInError>, input: SourceControlSignInInput) =>
+      work.pipe(
+        withAdmission(lane),
+        Effect.catchTags({
+          ServerMaintenanceBusy: (cause) =>
+            new SourceControlSignInError({
+              provider: input.provider,
+              host: input.host,
+              reason: "maintenance",
+              detail: cause.message,
+            }),
+        }),
+      );
+
   return SourceControlSignIn.of({
     start: Effect.fn("SourceControlSignIn.start")(function* (input) {
-      return yield* (yield* signInFor(input)).start(input.host);
-    }),
+      const signIn = yield* signInFor(input);
+      started = true;
+      return yield* signIn.start(input.host);
+    }, admit("root")),
     wait: Effect.fn("SourceControlSignIn.wait")(function* (input) {
       return yield* (yield* signInFor(input)).wait(input.host);
-    }),
+    }, admit("continuation")),
     cancel: Effect.fn("SourceControlSignIn.cancel")(function* (input) {
       return yield* (yield* signInFor(input)).cancel(input.host);
-    }),
+    }, admit("continuation")),
     access: Effect.fn("SourceControlSignIn.access")(function* (input) {
       const signIn = drivers.find(({ driver }) => driver.kind === input.provider)?.instance.signIn;
       return {
@@ -71,11 +97,15 @@ const make = Effect.gen(function* () {
         .isRepositoryStarred;
       return isStarred === undefined ? false : yield* isStarred(input.host, input.repository);
     }),
-    star: Effect.fn("SourceControlSignIn.star")(function* (input) {
-      const star = drivers.find(({ driver }) => driver.kind === input.provider)?.instance
-        .starRepository;
-      return star === undefined ? false : yield* star(input.host, input.repository);
-    }),
+    star: Effect.fn("SourceControlSignIn.star")(
+      function* (input) {
+        const star = drivers.find(({ driver }) => driver.kind === input.provider)?.instance
+          .starRepository;
+        return star === undefined ? false : yield* star(input.host, input.repository);
+      },
+      withAdmission("root"),
+      Effect.catchTags({ ServerMaintenanceBusy: () => Effect.succeed(false) }),
+    ),
   });
 });
 

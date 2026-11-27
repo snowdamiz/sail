@@ -1,3 +1,4 @@
+import { withAdmission } from "./serverAdmission.ts";
 import { GitCommandError, OrchestrationDispatchCommandError } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest inside the pure provider mapping.
 import * as NodeCrypto from "node:crypto";
@@ -543,75 +544,83 @@ function unexpectedCompatibilityError(error: never): never {
   throw new Error(`Unhandled compatibility error: ${String(error)}`);
 }
 
-const persistChatAttachments = Effect.fn("ws.assets.persistChatAttachments")(function* (input: {
-  readonly threadId: ThreadId;
-  readonly messageId: MessageId;
-  readonly attachments: ReadonlyArray<{
-    readonly type: "image";
-    readonly name: string;
-    readonly mimeType: string;
-    readonly sizeBytes: number;
-    readonly dataUrl: string;
-  }>;
-}) {
-  const config = yield* ServerConfig.ServerConfig;
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  return yield* Effect.forEach(
-    input.attachments.map((attachment, index) => ({ attachment, index })),
-    Effect.fn("ws.assets.persistChatAttachment")(function* ({ attachment, index }) {
-      const parsed = parseBase64DataUrl(attachment.dataUrl);
-      if (parsed === null || parsed.mimeType !== attachment.mimeType.toLowerCase()) {
-        return yield* new PersistChatAttachmentsError({
-          message: `Attachment ${attachment.name} has an invalid image payload.`,
-        });
-      }
-      const bytes = yield* Effect.fromResult(Base64.decode(parsed.base64)).pipe(
-        Effect.mapError(
-          (cause) =>
-            new PersistChatAttachmentsError({
-              message: `Attachment ${attachment.name} is not valid base64.`,
-              cause,
-            }),
-        ),
-      );
-      if (bytes.byteLength !== attachment.sizeBytes) {
-        return yield* new PersistChatAttachmentsError({
-          message: `Attachment ${attachment.name} size does not match its payload.`,
-        });
-      }
-      const rawId = createDeterministicAttachmentId(
-        input.threadId,
-        chatAttachmentStableKey(input.messageId, index, bytes),
-      );
-      if (rawId === null) {
-        return yield* new PersistChatAttachmentsError({
-          message: "Could not allocate an attachment identifier.",
-        });
-      }
-      const persisted = {
-        type: "image" as const,
-        id: ChatAttachmentId.make(rawId),
-        name: attachment.name,
-        mimeType: attachment.mimeType,
-        sizeBytes: attachment.sizeBytes,
-      };
-      yield* fileSystem
-        .writeFile(path.join(config.attachmentsDir, attachmentRelativePath(persisted)!), bytes)
-        .pipe(
+const persistChatAttachments = Effect.fn("ws.assets.persistChatAttachments")(
+  function* (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+    readonly attachments: ReadonlyArray<{
+      readonly type: "image";
+      readonly name: string;
+      readonly mimeType: string;
+      readonly sizeBytes: number;
+      readonly dataUrl: string;
+    }>;
+  }) {
+    const config = yield* ServerConfig.ServerConfig;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    return yield* Effect.forEach(
+      input.attachments.map((attachment, index) => ({ attachment, index })),
+      Effect.fn("ws.assets.persistChatAttachment")(function* ({ attachment, index }) {
+        const parsed = parseBase64DataUrl(attachment.dataUrl);
+        if (parsed === null || parsed.mimeType !== attachment.mimeType.toLowerCase()) {
+          return yield* new PersistChatAttachmentsError({
+            message: `Attachment ${attachment.name} has an invalid image payload.`,
+          });
+        }
+        const bytes = yield* Effect.fromResult(Base64.decode(parsed.base64)).pipe(
           Effect.mapError(
             (cause) =>
               new PersistChatAttachmentsError({
-                message: `Could not persist attachment ${attachment.name}.`,
+                message: `Attachment ${attachment.name} is not valid base64.`,
                 cause,
               }),
           ),
         );
-      return persisted;
-    }),
-    { concurrency: 2 },
-  );
-});
+        if (bytes.byteLength !== attachment.sizeBytes) {
+          return yield* new PersistChatAttachmentsError({
+            message: `Attachment ${attachment.name} size does not match its payload.`,
+          });
+        }
+        const rawId = createDeterministicAttachmentId(
+          input.threadId,
+          chatAttachmentStableKey(input.messageId, index, bytes),
+        );
+        if (rawId === null) {
+          return yield* new PersistChatAttachmentsError({
+            message: "Could not allocate an attachment identifier.",
+          });
+        }
+        const persisted = {
+          type: "image" as const,
+          id: ChatAttachmentId.make(rawId),
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+        };
+        yield* fileSystem
+          .writeFile(path.join(config.attachmentsDir, attachmentRelativePath(persisted)!), bytes)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new PersistChatAttachmentsError({
+                  message: `Could not persist attachment ${attachment.name}.`,
+                  cause,
+                }),
+            ),
+          );
+        return persisted;
+      }),
+      { concurrency: 2 },
+    );
+  },
+  Effect.uninterruptible,
+  withAdmission("root"),
+  Effect.catchTags({
+    ServerMaintenanceBusy: (cause) =>
+      new PersistChatAttachmentsError({ message: cause.message, cause }),
+  }),
+);
 
 function projectEntriesFailureContext(error: WorkspaceEntries.WorkspaceEntriesError): {
   readonly failure: ProjectEntriesFailure;
@@ -3162,7 +3171,9 @@ export const layerWsRpc = (
                 new ProjectWriteFileError({
                   cwd: input.cwd,
                   relativePath: input.relativePath,
-                  ...projectFileFailureContext(cause),
+                  ...(cause._tag === "ServerMaintenanceBusy"
+                    ? ({ failure: "operation_failed", operation: "write-file" } as const)
+                    : projectFileFailureContext(cause)),
                   cause,
                 }),
             ),
@@ -3360,6 +3371,19 @@ export const layerWsRpc = (
                       ),
                       Effect.andThen(refreshGitStatus(input.cwd)),
                       Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
+                    ),
+                }),
+                withAdmission("root"),
+                Effect.catchTags({
+                  ServerMaintenanceBusy: (cause) =>
+                    Queue.fail(
+                      queue,
+                      new GitCommandError({
+                        operation: "gitRunStackedAction",
+                        command: "vcs-route",
+                        cwd: input.cwd,
+                        detail: cause.message,
+                      }),
                     ),
                 }),
               ),

@@ -1,4 +1,10 @@
 import {
+  afterAdmissionReopens,
+  ServerAdmission,
+  withAdmission,
+  isServerMaintenanceBusy,
+} from "../serverAdmission.ts";
+import {
   type EnvironmentCloudLinkStateResult,
   type EnvironmentCloudPreferencesRequest,
   type EnvironmentCloudRelayConfigResult,
@@ -529,6 +535,36 @@ const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const managedPolicy = yield* ManagedPolicy.ManagedPolicy;
+
+  const admission = yield* ServerAdmission;
+  yield* (
+    admission?.registerObserver(
+      Effect.all([
+        secrets.get(CLOUD_LINKED_USER_ID),
+        secrets.get(CLOUD_ENDPOINT_RUNTIME_CONFIG),
+        secrets.get(RELAY_URL_SECRET),
+        readCliDesiredLinkMode.pipe(
+          Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
+        ),
+      ]).pipe(
+        Effect.map(([account, endpoint, relay, desired]) => [
+          ...(Option.isSome(account) || Option.isSome(endpoint) || desired !== null
+            ? (["connect-configured"] as const)
+            : []),
+          ...(Option.isSome(relay) ? (["relay-webhook-configured"] as const) : []),
+        ]),
+        Effect.orElseSucceed(() => ["quiescence-unknown"] as const),
+      ),
+    ) ?? Effect.void
+  );
+
+  const admitCloudMutation =
+    (operation: CloudLinkInternalError["operation"]) =>
+    <A, E, R>(work: Effect.Effect<A, E, R>) =>
+      work.pipe(
+        withAdmission("root"),
+        Effect.catchIf(isServerMaintenanceBusy, internalError(operation)),
+      );
 
   // Relay-signed text must not name a file directly; a digest is also a fixed, safe length.
   // Untraced: it runs twice per proof inside the health and mint spans.
@@ -1707,7 +1743,7 @@ const make = Effect.gen(function* () {
       linkProof: refused,
       applyRelayConfig: refused,
       linkState,
-      unlink,
+      unlink: Effect.fn("CloudLink.admitUnlink")(unlink, admitCloudMutation("remove-relay-config")),
       updatePreferences: refused,
       updateLiveActivityPreference: refused,
       answerHealthRequest: refused,
@@ -1721,18 +1757,46 @@ const make = Effect.gen(function* () {
   }
 
   return CloudLink.of({
-    linkProof,
-    applyRelayConfig,
+    linkProof: Effect.fn("CloudLink.admitLinkProof")(
+      linkProof,
+      admitCloudMutation("persist-desired-link"),
+    ),
+    applyRelayConfig: Effect.fn("CloudLink.admitApplyRelayConfig")(
+      applyRelayConfig,
+      admitCloudMutation("persist-desired-link"),
+    ),
     linkState,
-    unlink,
-    updatePreferences,
-    updateLiveActivityPreference,
-    answerHealthRequest,
-    mintCredential,
-    reconcileDesiredLinkIfStillDesired,
-    registerManagedTunnelRecovery,
-    recoverManagedTunnel,
-    startManagedTunnelIfOriginConfirmed,
+    unlink: Effect.fn("CloudLink.admitUnlink")(unlink, admitCloudMutation("remove-relay-config")),
+    updatePreferences: Effect.fn("CloudLink.admitUpdatePreferences")(
+      updatePreferences,
+      admitCloudMutation("persist-preferences"),
+    ),
+    updateLiveActivityPreference: Effect.fn("CloudLink.admitUpdateLiveActivityPreference")(
+      updateLiveActivityPreference,
+      admitCloudMutation("update-live-activity-preference"),
+    ),
+    answerHealthRequest: Effect.fn("CloudLink.admitAnswerHealthRequest")(
+      answerHealthRequest,
+      admitCloudMutation("answer-health"),
+    ),
+    mintCredential: Effect.fn("CloudLink.admitMintCredential")(
+      mintCredential,
+      admitCloudMutation("issue-credential"),
+    ),
+    reconcileDesiredLinkIfStillDesired: Effect.fn(
+      "CloudLink.admitReconcileDesiredLinkIfStillDesired",
+    )(reconcileDesiredLinkIfStillDesired, afterAdmissionReopens),
+    registerManagedTunnelRecovery: Effect.fn("CloudLink.admitRegisterManagedTunnelRecovery")(
+      registerManagedTunnelRecovery,
+      afterAdmissionReopens,
+    ),
+    recoverManagedTunnel: Effect.fn("CloudLink.admitRecoverManagedTunnel")(
+      recoverManagedTunnel,
+      afterAdmissionReopens,
+    ),
+    startManagedTunnelIfOriginConfirmed: Effect.fn(
+      "CloudLink.admitStartManagedTunnelIfOriginConfirmed",
+    )(startManagedTunnelIfOriginConfirmed, afterAdmissionReopens),
     releaseManagedTunnelOnShutdown,
   });
 });

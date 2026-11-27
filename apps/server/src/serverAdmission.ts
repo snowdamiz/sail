@@ -36,6 +36,20 @@ type DrainBlocker =
   | "native-work"
   | "scheduled-delivery"
   | "workflow"
+  | "workflow-runner-unqualified"
+  | "guest-sharing-configured"
+  | "workflow-configured"
+  | "workflow-settlement"
+  | "linked-environments-configured"
+  | "peer-link-retained"
+  | "device-host-configured"
+  | "device-runtime-unqualified"
+  | "preview-runtime-unqualified"
+  | "provider-auth-unqualified"
+  | "source-control-sign-in-unqualified"
+  | "connect-configured"
+  | "relay-webhook-configured"
+  | "settings-state-unknown"
   | "quiescence-unknown"
   | "producer-inventory-incomplete";
 
@@ -144,6 +158,22 @@ export const makeAdmission = <E>(
     );
   });
 
+  const awaitOpen = (): Effect.Effect<void> =>
+    Effect.suspend(() =>
+      phase.kind === "open" ? Effect.void : Deferred.await(changed).pipe(Effect.andThen(awaitOpen)),
+    );
+
+  const runWhenOpen = <A, E, R>(work: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+    Effect.suspend(() =>
+      run("root", Effect.result(work)).pipe(
+        Effect.catchTags({
+          ServerMaintenanceBusy: () =>
+            awaitOpen().pipe(Effect.andThen(runWhenOpen(work).pipe(Effect.result))),
+        }),
+        Effect.flatMap(Effect.fromResult),
+      ),
+    );
+
   const fork = <A, E, R>(scope: Scope.Scope | undefined, work: Effect.Effect<A, E, R>) =>
     Effect.uninterruptible(
       Effect.gen(function* () {
@@ -163,6 +193,7 @@ export const makeAdmission = <E>(
     if (phase.kind === "open" || phase.drain.token !== token) return false;
     const { aborted } = phase.drain;
     phase = { kind: "open" };
+    signalChange();
     yield* Deferred.succeed(aborted, undefined);
     return true;
   }, Effect.uninterruptible);
@@ -253,6 +284,7 @@ export const makeAdmission = <E>(
 
   return {
     run,
+    runWhenOpen,
     fork,
     drain,
     abort,
@@ -283,3 +315,6 @@ export const forkAccepted =
           ? Effect.forkDetach(work)
           : Effect.forkIn(work, scope),
     );
+
+export const afterAdmissionReopens = <A, E, R>(work: Effect.Effect<A, E, R>) =>
+  Effect.flatMap(ServerAdmission, (admission) => admission?.runWhenOpen(work) ?? work);

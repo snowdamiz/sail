@@ -1,4 +1,8 @@
-import type { ProjectId, TaskFolderError, WorktreeLayoutCommandKind } from "@t3tools/contracts";
+import {
+  type ProjectId,
+  TaskFolderError,
+  type WorktreeLayoutCommandKind,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
@@ -6,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { withAdmission } from "../serverAdmission.ts";
 import { commandHash, failed } from "./LayoutCommandApprovals.ts";
 
 /**
@@ -29,23 +34,30 @@ const make = Effect.gen(function* () {
   const digest = yield* Digest.Digest;
 
   return LayoutCommandApprovalWrites.of({
-    set: Effect.fn("LayoutCommandApprovalWrites.set")(function* ({ projectId, kind, command }) {
-      if (command === null) {
-        yield* sql`
+    set: Effect.fn("LayoutCommandApprovalWrites.set")(
+      function* ({ projectId, kind, command }) {
+        if (command === null) {
+          yield* sql`
           DELETE FROM layout_command_approvals WHERE project_id = ${projectId} AND kind = ${kind}
         `.pipe(Effect.mapError(failed));
-        return;
-      }
-      const hash = yield* commandHash(digest, command);
-      const approvedAt = DateTime.formatIso(yield* DateTime.now);
-      yield* sql`
+          return;
+        }
+        const hash = yield* commandHash(digest, command);
+        const approvedAt = DateTime.formatIso(yield* DateTime.now);
+        yield* sql`
         INSERT INTO layout_command_approvals (project_id, kind, command_hash, approved_at)
         VALUES (${projectId}, ${kind}, ${hash}, ${approvedAt})
         ON CONFLICT (project_id, kind) DO UPDATE SET
           command_hash = excluded.command_hash,
           approved_at = excluded.approved_at
       `.pipe(Effect.mapError(failed));
-    }),
+      },
+      withAdmission("root"),
+      Effect.catchTags({
+        ServerMaintenanceBusy: (cause) =>
+          new TaskFolderError({ operation: "approve", detail: cause.message, cause }),
+      }),
+    ),
   });
 });
 

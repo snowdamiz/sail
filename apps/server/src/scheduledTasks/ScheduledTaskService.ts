@@ -1,4 +1,9 @@
-import { forkAccepted, withAdmission } from "../serverAdmission.ts";
+import {
+  afterAdmissionReopens,
+  forkAccepted,
+  withAdmission,
+  isServerMaintenanceBusy,
+} from "../serverAdmission.ts";
 import {
   CommandId,
   MessageId,
@@ -59,6 +64,8 @@ import { OrchestratorDispatchError } from "../orchestration-v2/Orchestrator.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import { forkParked, ServerActivation } from "../serverActivation.ts";
+import * as Deferred from "effect/Deferred";
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { latestRootProviderFailure } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -1367,7 +1374,7 @@ export const layer = Layer.effect(
     });
 
     // Recover crash-left running rows that the due-task filter would otherwise skip forever.
-    yield* Effect.gen(function* () {
+    const recoverInterruptedRuns = Effect.gen(function* () {
       const rows = yield* selectAllRows();
       const stuck = rows.filter((row) => row.last_run_status === "running");
       if (stuck.length === 0) return;
@@ -1419,7 +1426,30 @@ export const layer = Layer.effect(
       ),
     );
 
-    yield* scheduler.register("scheduled-tasks", runDueTasks());
+    const recovery = yield* Deferred.make<void>();
+    if ((yield* ServerActivation) === undefined) {
+      yield* afterAdmissionReopens(recoverInterruptedRuns);
+      yield* Deferred.succeed(recovery, undefined);
+    } else {
+      yield* forkParked(
+        afterAdmissionReopens(recoverInterruptedRuns).pipe(
+          Effect.andThen(Deferred.succeed(recovery, undefined)),
+        ),
+      );
+    }
+    yield* scheduler.register(
+      "scheduled-tasks",
+      Deferred.await(recovery).pipe(Effect.andThen(runDueTasks())),
+    );
+
+    const admitMutation = <A, E, R>(work: Effect.Effect<A, E, R>) =>
+      work.pipe(
+        withAdmission("root"),
+        Effect.catchIf(
+          isServerMaintenanceBusy,
+          (cause) => new ScheduledTaskError({ message: cause.message, retryable: true, cause }),
+        ),
+      );
 
     const list: ScheduledTaskService["Service"]["list"] = () =>
       listRows().pipe(
@@ -1635,7 +1665,7 @@ export const layer = Layer.effect(
       );
       yield* notifyChanged;
       return { task: (yield* findTask(id)) ?? task };
-    });
+    }, admitMutation);
 
     const setEnabled: ScheduledTaskService["Service"]["setEnabled"] = Effect.fn(
       "ScheduledTaskService.setEnabled",
@@ -1684,7 +1714,7 @@ export const layer = Layer.effect(
       return {
         task: { ...existing, enabled: input.enabled, nextRunAt: next, updatedAt: iso(now) },
       };
-    });
+    }, admitMutation);
 
     const forgetWebhookTask = (id: ScheduledTaskId) =>
       Effect.all(
@@ -1723,6 +1753,7 @@ export const layer = Layer.effect(
         Effect.andThen(forgetWebhookTask(input.id)),
         Effect.andThen(notifyChanged),
         Effect.as({ id: input.id }),
+        admitMutation,
       );
 
     const deleteForThread = Effect.fn("ScheduledTaskService.deleteForThread")(function* (
@@ -1751,7 +1782,7 @@ export const layer = Layer.effect(
         discard: true,
       });
       if (removed.length > 0) yield* notifyChanged;
-    });
+    }, admitMutation);
 
     const moveThreadTasks: ScheduledTaskService["Service"]["moveThreadTasks"] = Effect.fn(
       "ScheduledTaskService.moveThreadTasks",
@@ -1767,7 +1798,7 @@ export const layer = Layer.effect(
         ),
       );
       if (moved.length > 0) yield* notifyChanged;
-    });
+    }, admitMutation);
 
     const runNow: ScheduledTaskService["Service"]["runNow"] = Effect.fn(
       "ScheduledTaskService.runNow",
@@ -1828,7 +1859,7 @@ export const layer = Layer.effect(
       }
       yield* notifyChanged;
       return { task: yield* loadTask(input.id) };
-    });
+    }, admitMutation);
 
     const deliveryHeaders = (row: WebhookDeliveryRow): Readonly<Record<string, string>> =>
       Option.getOrElse(decodeHeadersJson(row.headers_json), () => ({}));

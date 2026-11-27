@@ -1,3 +1,4 @@
+import { withAdmission, isServerMaintenanceBusy } from "../serverAdmission.ts";
 import {
   GitCommandError,
   isRuntimeModeAbove,
@@ -1716,15 +1717,40 @@ const make = Effect.gen(function* () {
     };
   });
 
+  const admitMutation =
+    (operation: TaskFolderError["operation"]) =>
+    <A, E, R>(work: Effect.Effect<A, E, R>) =>
+      work.pipe(
+        withAdmission("root"),
+        Effect.catchIf(
+          isServerMaintenanceBusy,
+          (cause) =>
+            new TaskFolderError({
+              operation,
+              detail: "Server maintenance is in progress. Retry this request.",
+              cause,
+            }),
+        ),
+      );
+
   return TaskFolders.of({
     plan,
-    create,
-    createForProjectFolder,
-    addRepository,
+    create: Effect.fn("TaskFolders.admitCreate")(create, admitMutation("create")),
+    createForProjectFolder: Effect.fn("TaskFolders.admitCreateForProjectFolder")(
+      createForProjectFolder,
+      admitMutation("create"),
+    ),
+    addRepository: Effect.fn("TaskFolders.admitAddRepository")(
+      addRepository,
+      admitMutation("add-repository"),
+    ),
     find: store.findContaining,
-    remove,
-    removeIfTaskFolder,
-    renameBranch,
+    remove: Effect.fn("TaskFolders.admitRemove")(remove, admitMutation("remove")),
+    removeIfTaskFolder: Effect.fn("TaskFolders.admitRemoveIfTaskFolder")(
+      removeIfTaskFolder,
+      admitMutation("remove"),
+    ),
+    renameBranch: Effect.fn("TaskFolders.admitRenameBranch")(renameBranch, admitMutation("create")),
     restore,
     layoutCommands,
   });

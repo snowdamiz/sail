@@ -771,7 +771,7 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
     yield* store.pruneSkipped(kept, SKIPPED_PRUNE_BATCH);
   });
 
-  const sweep: Workflows["Service"]["sweep"] = Effect.gen(function* () {
+  const settle = Effect.gen(function* () {
     for (const wait of yield* store.waitsPastDeadline) {
       const woke = { expired: true, value: null };
       if (yield* store.waitSignalled(wait.run_id, wait.name, woke)) yield* wake(wait, woke);
@@ -799,10 +799,6 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
     }
     // A run that ended without its parent hearing of it. Telling twice is harmless.
     for (const child of yield* store.untold) yield* ended(child.run_id);
-    yield* store.mailExpire;
-    yield* fireSchedules;
-    yield* fireOpened;
-    yield* fireWatches;
     const at = yield* DateTime.now;
     // A run with a step still going is ended by its cancel, which waits for that step.
     for (const row of yield* store.runsToEnd(END_STEP, END_TRIES)) {
@@ -828,8 +824,21 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
       if (due === undefined || DateTime.isLessThan(at, due)) continue;
       yield* Effect.ignore(resumeRun(row.run_id, row));
     }
-    yield* prune(at);
-  }).pipe(Effect.withSpan("Workflows.sweep"));
+  }).pipe(
+    withAdmission("continuation"),
+    Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
+  );
+
+  const sweep: Workflows["Service"]["sweep"] = Effect.fn("Workflows.sweep")(function* () {
+    yield* settle;
+    yield* Effect.gen(function* () {
+      yield* store.mailExpire;
+      yield* fireSchedules;
+      yield* fireOpened;
+      yield* fireWatches;
+      yield* prune(yield* DateTime.now);
+    }).pipe(withAdmission("root"), Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }));
+  })();
 
   // With nothing registered there is nothing to resume, end or start: only history to read.
   if (registered.length > 0) {

@@ -11,6 +11,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as Upload from "../../../assets/AttachmentUpload.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
+import { admitMcp } from "../../maintenanceAdmission.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { isThreadManagementError, threadManagementFailure } from "../../OrchestratorMcpService.ts";
 import { dispatchFailure, newCommandId, readThread, unavailable } from "../../threadAccess.ts";
@@ -67,7 +68,7 @@ export const layer = McpToolAccess.toLayer(
             return origin === undefined
               ? result
               : { ...result, uploadUrl: `${origin}${result.relativeUrl}` };
-          }),
+          }).pipe(admitMcp("root")),
         { linkedCallers: "allowed" },
       ),
       t3_attachment_discard: McpToolAccess.writes(
@@ -79,10 +80,12 @@ export const layer = McpToolAccess.toLayer(
                 message: "Only the caller that prepared a pending upload can discard it.",
               });
             }
-            yield* Upload.deletePendingAttachment(input.attachmentId);
+            yield* Upload.deletePendingAttachment(input.attachmentId).pipe(
+              Effect.mapError(unavailable),
+            );
             uploadOwners.delete(input.attachmentId);
             return {};
-          }),
+          }).pipe(admitMcp("root")),
         { linkedCallers: "allowed" },
       ),
       t3_thread_send_attachments: McpToolAccess.writesThreads(

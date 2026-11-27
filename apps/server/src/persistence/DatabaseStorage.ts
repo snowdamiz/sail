@@ -17,6 +17,7 @@ import { resolveHostCliCommand } from "../cli/invocation.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
 import * as DatabaseMaintenance from "./DatabaseMaintenance.ts";
+import { forkAccepted, withAdmission } from "../serverAdmission.ts";
 import { forkParked } from "../serverActivation.ts";
 
 // Bound each reclaim pass to one minute of churn.
@@ -134,6 +135,8 @@ const make = Effect.gen(function* () {
       // The pass owns the span; tracing each page's two PRAGMAs floods the server trace.
       Effect.withTracerEnabled(false),
       Effect.withSpan("DatabaseStorage.reclaim"),
+      withAdmission("root"),
+      Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
     );
   });
 
@@ -159,6 +162,8 @@ const make = Effect.gen(function* () {
     Effect.catch((cause) =>
       Effect.logWarning("Orchestration history compaction failed", { cause }),
     ),
+    withAdmission("root"),
+    Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
   );
   const lastCompactedAt = yield* fs.readFileString(compactedAtPath).pipe(
     Effect.map(Number),
@@ -224,7 +229,7 @@ const make = Effect.gen(function* () {
     yield* Effect.uninterruptible(
       fs.writeFileString(reclaimFiles.request, String(requestedAt)).pipe(
         // Reply before stopping: the restart closes this connection.
-        Effect.andThen(restart.pipe(Effect.delay("500 millis"), Effect.forkDetach)),
+        Effect.andThen(restart.pipe(Effect.delay("500 millis"), forkAccepted())),
       ),
     );
     yield* Effect.logInfo("Restarting to reclaim database space");
@@ -235,6 +240,10 @@ const make = Effect.gen(function* () {
         : new DatabaseReclaimError({ reason: "Could not prepare the repair. Try again." }),
     ),
     Effect.withSpan("DatabaseStorage.requestReclaim"),
+    withAdmission("root"),
+    Effect.catchTags({
+      ServerMaintenanceBusy: (cause) => new DatabaseReclaimError({ reason: cause.message }),
+    }),
   );
 
   return DatabaseStorage.of({

@@ -31,6 +31,7 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import * as ServerConfig from "../config.ts";
+import { afterAdmissionReopens, ServerAdmission, withAdmission } from "../serverAdmission.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { engineTag, text, type WorkflowDefinition } from "./workflow.ts";
@@ -546,7 +547,7 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
     retrying = true;
     return Effect.suspend(() => {
       retrying = false;
-      return lock.withPermits(1)(reload());
+      return afterAdmissionReopens(lock.withPermits(1)(reload()));
     }).pipe(
       Effect.delay(LIST_RETRY),
       Effect.catchCause((cause) =>
@@ -565,13 +566,11 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
   yield* fileSystem.watch(directory).pipe(
     Stream.debounce(RELOAD_SETTLE),
     Stream.runForEach(() =>
-      lock
-        .withPermits(1)(reload())
-        .pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Reloading workflow definitions failed", Cause.pretty(cause)),
-          ),
+      afterAdmissionReopens(lock.withPermits(1)(reload())).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Reloading workflow definitions failed", Cause.pretty(cause)),
         ),
+      ),
     ),
     Effect.catchCause((cause) =>
       Effect.logWarning("Workflow definitions are not watched for changes", Cause.pretty(cause)),
@@ -581,7 +580,9 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
 
   yield* Effect.sleep(HELD_RETRY).pipe(
     Effect.andThen(
-      Effect.suspend(() => (held.size > 0 ? lock.withPermits(1)(reload()) : Effect.void)),
+      Effect.suspend(() =>
+        held.size > 0 ? afterAdmissionReopens(lock.withPermits(1)(reload())) : Effect.void,
+      ),
     ),
     Effect.catchCause((cause) =>
       Effect.logWarning("Reloading workflow definitions failed", Cause.pretty(cause)),
@@ -830,6 +831,7 @@ export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
       if (scope !== undefined) yield* Scope.close(scope, Exit.void);
       scope = undefined;
       if (on) {
+        runnerStarted = true;
         const opened = yield* Scope.fork(outer);
         const started = yield* runtime.pipe(
           Effect.provideService(Scope.Scope, opened),
@@ -851,6 +853,15 @@ export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
     // Once `ready` is replaced it must be settled, or every caller waits on it for good.
     Effect.uninterruptible,
     lock.withPermits(1),
+    afterAdmissionReopens,
+  );
+
+  let runnerStarted = false;
+  const admission = yield* ServerAdmission;
+  yield* (
+    admission?.registerObserver(
+      Effect.sync(() => (runnerStarted ? ["workflow-runner-unqualified"] : [])),
+    ) ?? Effect.void
   );
 
   const initialized = yield* Deferred.make<void>();
@@ -937,12 +948,26 @@ export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
         WorkflowDefinitions,
         WorkflowDefinitions.of({
           read: Effect.flatMap(definitions, (files) => files.read),
-          save: Effect.fn("WorkflowDefinitions.save")(function* (name, source) {
-            return yield* (yield* definitions).save(name, source);
-          }),
-          remove: Effect.fn("WorkflowDefinitions.remove")(function* (name) {
-            return yield* (yield* definitions).remove(name);
-          }),
+          save: Effect.fn("WorkflowDefinitions.save")(
+            function* (name, source) {
+              return yield* (yield* definitions).save(name, source);
+            },
+            withAdmission("root"),
+            Effect.catchTags({
+              ServerMaintenanceBusy: (cause) =>
+                Effect.succeed({ changed: false, problems: [{ message: cause.message }] }),
+            }),
+          ),
+          remove: Effect.fn("WorkflowDefinitions.remove")(
+            function* (name) {
+              return yield* (yield* definitions).remove(name);
+            },
+            withAdmission("root"),
+            Effect.catchTags({
+              ServerMaintenanceBusy: (cause) =>
+                Effect.succeed({ changed: false, problems: [{ message: cause.message }] }),
+            }),
+          ),
         }),
       ),
     ),

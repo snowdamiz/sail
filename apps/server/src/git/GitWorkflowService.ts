@@ -1,3 +1,4 @@
+import { withAdmission, isServerMaintenanceBusy } from "../serverAdmission.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -203,6 +204,18 @@ export const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => rootPath),
       Effect.flatMap((cwd) => withWorkspaceLease(cwd, effect)),
     );
+
+  const admitGit =
+    (operation: string, cwd: string) =>
+    <A, E, R>(work: Effect.Effect<A, E, R>) =>
+      work.pipe(
+        withAdmission("root"),
+        Effect.catchIf(
+          isServerMaintenanceBusy,
+          (cause) =>
+            new GitCommandError({ operation, command: "vcs-route", cwd, detail: cause.message }),
+        ),
+      );
 
   const ensureGit = Effect.fn("GitWorkflowService.ensureGit")(function* (
     operation: string,
@@ -421,6 +434,7 @@ export const make = Effect.gen(function* () {
     pullCurrentBranch: Effect.fn("GitWorkflowService.pullCurrentBranch")(function (cwd) {
       return ensureGitCommand("GitWorkflowService.pullCurrentBranch", cwd).pipe(
         Effect.andThen(git.pullCurrentBranch(cwd)),
+        admitGit("GitWorkflowService.pullCurrentBranch", cwd),
       );
     }),
     runStackedAction: Effect.fn("GitWorkflowService.runStackedAction")(function (input, options) {
@@ -431,6 +445,7 @@ export const make = Effect.gen(function* () {
             gitManager.runStackedAction(input, options),
           ),
         ),
+        admitGit("GitWorkflowService.runStackedAction", input.cwd),
       );
     }),
     resolvePullRequest: routeGitManager(
@@ -448,6 +463,7 @@ export const make = Effect.gen(function* () {
                 )
               : gitManager.preparePullRequestThread(input),
           ),
+          admitGit("GitWorkflowService.preparePullRequestThread", input.cwd),
         );
       },
     ),
@@ -461,6 +477,7 @@ export const make = Effect.gen(function* () {
     createWorktree: Effect.fn("GitWorkflowService.createWorktree")(function (input, options) {
       return ensureGitCommand("GitWorkflowService.createWorktree", input.cwd).pipe(
         Effect.andThen(gitManager.createWorktree(input, options)),
+        admitGit("GitWorkflowService.createWorktree", input.cwd),
       );
     }),
     listLocalBranchNames: Effect.fn("GitWorkflowService.listLocalBranchNames")(function (cwd) {
@@ -471,6 +488,7 @@ export const make = Effect.gen(function* () {
     fetchRemote: Effect.fn("GitWorkflowService.fetchRemote")(function (input) {
       return ensureGitCommand("GitWorkflowService.fetchRemote", input.cwd).pipe(
         Effect.andThen(git.fetchRemote(input)),
+        admitGit("GitWorkflowService.fetchRemote", input.cwd),
       );
     }),
     remoteExists: Effect.fn("GitWorkflowService.remoteExists")(function (input) {
@@ -508,6 +526,7 @@ export const make = Effect.gen(function* () {
       function (input) {
         return ensureGitCommand("GitWorkflowService.fetchWorktreeBaseCommit", input.cwd).pipe(
           Effect.andThen(git.fetchWorktreeBaseCommit(input)),
+          admitGit("GitWorkflowService.fetchWorktreeBaseCommit", input.cwd),
         );
       },
     ),
@@ -521,16 +540,19 @@ export const make = Effect.gen(function* () {
     removeWorktree: Effect.fn("GitWorkflowService.removeWorktree")(function (input) {
       return ensureGitCommand("GitWorkflowService.removeWorktree", input.cwd).pipe(
         Effect.andThen(git.removeWorktree(input)),
+        admitGit("GitWorkflowService.removeWorktree", input.cwd),
       );
     }),
     pruneWorktrees: Effect.fn("GitWorkflowService.pruneWorktrees")(function (input) {
       return ensureGitCommand("GitWorkflowService.pruneWorktrees", input.cwd).pipe(
         Effect.andThen(git.pruneWorktrees(input)),
+        admitGit("GitWorkflowService.pruneWorktrees", input.cwd),
       );
     }),
     deleteLocalBranch: Effect.fn("GitWorkflowService.deleteLocalBranch")(function (input) {
       return ensureGitCommand("GitWorkflowService.deleteLocalBranch", input.cwd).pipe(
         Effect.andThen(git.deleteLocalBranch(input)),
+        admitGit("GitWorkflowService.deleteLocalBranch", input.cwd),
       );
     }),
     createRef: Effect.fn("GitWorkflowService.createRef")(function (input) {
@@ -540,6 +562,7 @@ export const make = Effect.gen(function* () {
             ? withCheckoutLease(handle.repository.rootPath, git.createRef(input))
             : git.createRef(input),
         ),
+        admitGit("GitWorkflowService.createRef", input.cwd),
       );
     }),
     switchRef: Effect.fn("GitWorkflowService.switchRef")(function (input) {
@@ -547,11 +570,13 @@ export const make = Effect.gen(function* () {
         Effect.flatMap((handle) =>
           withCheckoutLease(handle.repository.rootPath, Effect.scoped(git.switchRef(input))),
         ),
+        admitGit("GitWorkflowService.switchRef", input.cwd),
       );
     }),
     renameBranch: Effect.fn("GitWorkflowService.renameBranch")(function (input) {
       return ensureGit("GitWorkflowService.renameBranch", input.cwd).pipe(
         Effect.andThen(git.renameBranch(input)),
+        admitGit("GitWorkflowService.renameBranch", input.cwd),
       );
     }),
   });

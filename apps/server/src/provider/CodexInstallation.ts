@@ -1,3 +1,5 @@
+import { afterAdmissionReopens, forkAccepted, withAdmission } from "../serverAdmission.ts";
+import { forkParked, ServerActivation } from "../serverActivation.ts";
 // @effect-diagnostics nodeBuiltinImport:off - Effect has no incremental digest.
 import {
   ProviderDriverKind,
@@ -374,7 +376,7 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
         );
       }),
     )
-    .pipe(Effect.ignore);
+    .pipe(withAdmission("root"), Effect.ignore);
   const resolveManaged = Effect.fn("CodexInstallation.resolveManaged")(
     function* () {
       const active = yield* readRecord(activePath, ActiveRelease);
@@ -910,30 +912,42 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
             }),
           ),
         );
-        const fiber = yield* Effect.forkIn(Effect.interruptible(work), serviceScope);
+        const fiber = yield* Effect.interruptible(work).pipe(forkAccepted(serviceScope));
         running = { operationId, fiber };
         return next;
       }).pipe(Effect.uninterruptible),
     )
-    .pipe(Effect.mapError(wrapFailure("start", "Could not start the Codex installation.")));
-
-  const cancel = Effect.fn("CodexInstallation.cancel")(function* (operationId: string) {
-    return yield* gate.withPermit(
-      Effect.gen(function* () {
-        const current = yield* SubscriptionRef.get(state);
-        if (current.operationId !== operationId) {
-          return yield* installationError(
-            "cancel",
-            "This installation is no longer current. Refresh its status before cancelling.",
-          );
-        }
-        if (running?.operationId === operationId && isRunning(current)) {
-          yield* Fiber.interrupt(running.fiber);
-        }
-        return yield* SubscriptionRef.get(state);
+    .pipe(
+      Effect.mapError(wrapFailure("start", "Could not start the Codex installation.")),
+      withAdmission("root"),
+      Effect.catchTags({
+        ServerMaintenanceBusy: (cause) => installationError("start", cause.message, cause),
       }),
     );
-  });
+
+  const cancel = Effect.fn("CodexInstallation.cancel")(
+    function* (operationId: string) {
+      return yield* gate.withPermit(
+        Effect.gen(function* () {
+          const current = yield* SubscriptionRef.get(state);
+          if (current.operationId !== operationId) {
+            return yield* installationError(
+              "cancel",
+              "This installation is no longer current. Refresh its status before cancelling.",
+            );
+          }
+          if (running?.operationId === operationId && isRunning(current)) {
+            yield* Fiber.interrupt(running.fiber);
+          }
+          return yield* SubscriptionRef.get(state);
+        }),
+      );
+    },
+    withAdmission("continuation"),
+    Effect.catchTags({
+      ServerMaintenanceBusy: (cause) => installationError("cancel", cause.message, cause),
+    }),
+  );
 
   const remove = Effect.fn("CodexInstallation.remove")(
     function* (protectedBinaryPaths: ReadonlyArray<string> = []) {
@@ -984,9 +998,13 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
         "Could not remove the managed Codex runtime. Check for open processes and try again.",
       ),
     ),
+    withAdmission("root"),
+    Effect.catchTags({
+      ServerMaintenanceBusy: (cause) => installationError("remove", cause.message, cause),
+    }),
   );
 
-  yield* Effect.gen(function* () {
+  const initialize = Effect.gen(function* () {
     // Shared-home installs do not refresh parent mtimes; remove only staging directories far older than the 45-minute download cap.
     let canRemove = false;
     if (yield* fs.exists(managedDirectory)) {
@@ -1042,10 +1060,16 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
           }) satisfies ProviderInstallState,
       ),
     ),
+    Effect.andThen(
+      Effect.gen(function* () {
+        if (!isRunning(yield* SubscriptionRef.get(state))) yield* pruneInactiveReleases;
+      }),
+    ),
+    afterAdmissionReopens,
   );
 
-  // A startup install prunes when it activates; pruning now could delete the release it is verifying.
-  if (!isRunning(yield* SubscriptionRef.get(state))) yield* pruneInactiveReleases;
+  if ((yield* ServerActivation) === undefined) yield* initialize;
+  else yield* forkParked(initialize);
 
   return CodexInstallation.of({
     managedDirectory,

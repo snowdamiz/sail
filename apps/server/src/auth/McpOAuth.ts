@@ -1,3 +1,4 @@
+import { withAdmission } from "../serverAdmission.ts";
 import {
   AuthAccessWriteScope,
   type AuthMcpApprovalDecision,
@@ -604,9 +605,27 @@ const make = Effect.gen(function* () {
     register,
     validateAuthorization,
     approvingSession,
-    approve,
+    approve: Effect.fn("McpOAuth.admitApproval")((input) =>
+      approve(input).pipe(
+        withAdmission("root"),
+        Effect.catchTags({
+          ServerMaintenanceBusy: (cause) => new McpOAuthPageError({ description: cause.message }),
+        }),
+      ),
+    ),
     deny,
-    exchangeCode,
+    exchangeCode: Effect.fn("McpOAuth.admitCodeExchange")((input) =>
+      exchangeCode(input).pipe(
+        withAdmission("root"),
+        Effect.catchTags({
+          ServerMaintenanceBusy: (cause) =>
+            new AuthMcpTokenError({
+              error: "invalid_request",
+              error_description: cause.message,
+            }),
+        }),
+      ),
+    ),
   });
 });
 

@@ -617,7 +617,10 @@ export const layerAttachmentUploadRoute = HttpRouter.add(
     const stored = yield* storeAttachmentUpload(claims, Stream.fromPull(Effect.succeed(bodyPull)));
     return stored.ok
       ? HttpServerResponse.empty({ status: 204 })
-      : HttpServerResponse.text(stored.detail, { status: stored.status });
+      : HttpServerResponse.text(stored.detail, {
+          status: stored.status,
+          ...(stored.status === 503 ? { headers: { "retry-after": "1" } } : {}),
+        });
   }),
   SIGNED_URL_ROUTE_OPTIONS,
 );

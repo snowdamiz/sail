@@ -27,6 +27,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import { afterAdmissionReopens } from "../serverAdmission.ts";
 import * as Exit from "effect/Exit";
 import * as FiberMap from "effect/FiberMap";
 import * as Layer from "effect/Layer";
@@ -878,6 +879,7 @@ export const make = Effect.gen(function* () {
   }, passes.withPermit);
 
   const sweep = pass(undefined).pipe(
+    afterAdmissionReopens,
     Effect.catchCause(logFailure("pull request watch sweep failed", {})),
     Effect.withSpan("PullRequestWatchReactor.sweep"),
   );
@@ -886,6 +888,7 @@ export const make = Effect.gen(function* () {
 
   const readOnChange = (pullRequest: string) =>
     pass(pullRequest).pipe(
+      afterAdmissionReopens,
       Effect.catchCause(logFailure("pull request watch change read failed", { pullRequest })),
       Effect.withSpan("PullRequestWatchReactor.readOnChange"),
     );

@@ -1,3 +1,8 @@
+import { observeDurableObligations } from "../serverAdmissionObligations.ts";
+import * as Option from "effect/Option";
+import { ServerActivation } from "../serverActivation.ts";
+import * as Stream from "effect/Stream";
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
@@ -58,6 +63,15 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
       const created = yield* service.upsert(input);
       const edit = yield* decodeUpsertInput({ ...input, requireExisting: true, title: "Edited" });
       expect((yield* service.upsert(edit)).task.title).toBe("Edited");
+      const admission = makeAdmission(Effect.succeed([]));
+      const token = Symbol();
+      expect(yield* admission.drain(token, "1 second")).toEqual({ kind: "sealed" });
+      const refused = yield* service
+        .upsert({ ...edit, title: "After seal" })
+        .pipe(Effect.provideService(ServerAdmission, admission), Effect.flip);
+      expect(refused.retryable).toBe(true);
+      expect((yield* service.list()).tasks[0]?.title).toBe("Edited");
+      expect(yield* admission.abort(token)).toBe(true);
       yield* service.delete({ id: created.task.id });
 
       const failure = yield* service.upsert(edit).pipe(Effect.flip);
@@ -66,6 +80,58 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
 
       expect((yield* service.upsert(input)).task.id).toBe(created.task.id);
     }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("leaves crash-left schedule rows unchanged until activation", () =>
+  Effect.gen(function* () {
+    const layerDependencies = Layer.mergeAll(
+      NodeCrypto.layer,
+      Scheduler.layer,
+      ManagedPolicy.layerTest(),
+      Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/projects",
+        isScratchProject: () => Effect.succeed(false),
+      }),
+      Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+      Layer.mock(SecretRequests.SecretRequests)({}),
+    );
+    const serviceLayer = ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies));
+    const sql = yield* SqlClient.SqlClient;
+    const input = yield* decodeUpsertInput({
+      id: "scheduled-task:crash-recovery",
+      title: "Review",
+      prompt: "Review pull requests.",
+      enabled: false,
+      schedule: { type: "interval", everyMs: 60_000 },
+      projectId: "project-schedule-recovery",
+      workspaceStrategy: { type: "root" },
+      modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+    });
+    yield* ScheduledTaskService.ScheduledTaskService.pipe(
+      Effect.flatMap((service) => service.upsert(input)),
+      Effect.provide(serviceLayer),
+    );
+    yield* sql`UPDATE scheduled_tasks SET last_run_status = 'running' WHERE task_id = ${input.id}`;
+    expect(yield* observeDurableObligations()).toEqual(["scheduled-delivery"]);
+    const activation = yield* Deferred.make<void>();
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      expect((yield* service.list()).tasks[0]?.lastRunStatus).toBe("running");
+      yield* Deferred.succeed(activation, undefined);
+      const changed = yield* service.subscribeList().pipe(
+        Stream.filter(({ tasks }) => tasks[0]?.lastRunStatus === "failed"),
+        Stream.runHead,
+      );
+      expect(Option.getOrThrow(changed).tasks[0]?.runCount).toBe(1);
+      expect(yield* observeDurableObligations()).toEqual([]);
+    }).pipe(
+      Effect.provide(Layer.fresh(serviceLayer)),
+      Effect.provideService(ServerActivation, Deferred.await(activation)),
+    );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 

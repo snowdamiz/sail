@@ -1,3 +1,4 @@
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import { vi } from "vite-plus/test";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -3507,6 +3508,7 @@ it.layer(
           ),
         ).pipe(Scope.provide(scope));
 
+        const admission = makeAdmission(Effect.succeed([]));
         yield* Effect.gen(function* () {
           const registry = yield* ProviderRegistry.ProviderRegistry;
           const first = yield* registry.refresh().pipe(Effect.forkChild);
@@ -3514,6 +3516,16 @@ it.layer(
           const second = yield* registry.refresh().pipe(Effect.forkChild);
           yield* Effect.yieldNow;
           assert.strictEqual(yield* Ref.get(refreshCalls), 1);
+          const draining = yield* admission
+            .drain(Symbol(), "1 second")
+            .pipe(Effect.forkScoped({ startImmediately: true }));
+          expect(yield* registry.refreshInstance(instanceId)).toEqual(yield* registry.getProviders);
+          assert.strictEqual(yield* Ref.get(refreshCalls), 1);
+          yield* TestClock.adjust("1 second");
+          expect(yield* Fiber.join(draining)).toMatchObject({
+            kind: "aborted",
+            blockers: ["in-flight"],
+          });
           yield* Deferred.succeed(releaseProbe, undefined);
           expect(yield* Fiber.join(first)).toEqual([expect.objectContaining(provider)]);
           expect(yield* Fiber.join(second)).toEqual([expect.objectContaining(provider)]);
@@ -3521,7 +3533,7 @@ it.layer(
 
           yield* registry.refresh();
           assert.strictEqual(yield* Ref.get(refreshCalls), 2);
-        }).pipe(Effect.provide(runtimeServices));
+        }).pipe(Effect.provide(runtimeServices), Effect.provideService(ServerAdmission, admission));
       }),
     );
 

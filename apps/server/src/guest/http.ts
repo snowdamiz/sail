@@ -29,6 +29,7 @@ import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
 
 import { htmlRenderFileName } from "@t3tools/shared/htmlRender";
 
+import { withAdmission } from "../serverAdmission.ts";
 import { eventStreamResponse } from "../eventStreamResponse.ts";
 import { assetFileResponse, downloadContentDisposition } from "../http.ts";
 import type { GuestUpload } from "./guestAttachments.ts";
@@ -54,22 +55,31 @@ const encodeOutputFrame = Schema.encodeEffect(
 const encodeItem = Schema.encodeEffect(Schema.toCodecJson(OrchestrationV2GetTurnItemResult));
 const encodeHistoryPage = Schema.encodeEffect(Schema.toCodecJson(OrchestrationV2ThreadHistoryPage));
 
+const maintenanceResponse = HttpServerResponse.json(
+  { reason: "maintenance", message: "Server maintenance is in progress. Retry this request." },
+  { status: 503, headers: { ...NO_STORE, "retry-after": "1" } },
+);
+
 const errorResponse = (error: GuestShareAccessError) =>
-  HttpServerResponse.json(
-    { reason: error.reason, message: error.message },
-    {
-      status:
-        error.reason === "invalid" || error.reason === "inactive" || error.reason === "unavailable"
-          ? 403
-          : error.reason === "empty" ||
-              error.reason === "too_many_files" ||
-              error.reason === "too_large" ||
-              error.reason === "unsupported_file"
-            ? 400
-            : 409,
-      headers: NO_STORE,
-    },
-  );
+  error.reason === "maintenance"
+    ? maintenanceResponse
+    : HttpServerResponse.json(
+        { reason: error.reason, message: error.message },
+        {
+          status:
+            error.reason === "invalid" ||
+            error.reason === "inactive" ||
+            error.reason === "unavailable"
+              ? 403
+              : error.reason === "empty" ||
+                  error.reason === "too_many_files" ||
+                  error.reason === "too_large" ||
+                  error.reason === "unsupported_file"
+                ? 400
+                : 409,
+          headers: NO_STORE,
+        },
+      );
 
 const badRequest = HttpServerResponse.json(
   { reason: "invalid", message: "The request was not valid." },
@@ -189,14 +199,17 @@ const submitRoute = HttpRouter.add(
     const shareId = requestedShareId(request);
     const session = sessionFor(request, shareId);
     yield* guestShares.check(session);
-    const submission = yield* readSubmission;
-    if (submission === null || submission.fields.shareId !== shareId) return yield* badRequest;
-    yield* guestShares.submit(session, submission.fields, submission.uploads);
-    return HttpServerResponse.empty({ status: 204, headers: NO_STORE });
+    return yield* Effect.gen(function* () {
+      const submission = yield* readSubmission;
+      if (submission === null || submission.fields.shareId !== shareId) return yield* badRequest;
+      yield* guestShares.submit(session, submission.fields, submission.uploads);
+      return HttpServerResponse.empty({ status: 204, headers: NO_STORE });
+    }).pipe(Effect.scoped, withAdmission("root"));
   }).pipe(
-    Effect.catchTags({ GuestShareAccessError: errorResponse }),
-    // The parser's temporary files are removed once the response is ready.
-    Effect.scoped,
+    Effect.catchTags({
+      GuestShareAccessError: errorResponse,
+      ServerMaintenanceBusy: () => maintenanceResponse,
+    }),
   ),
 );
 
