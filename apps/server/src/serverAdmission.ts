@@ -47,6 +47,7 @@ type DrainBlocker =
   | "peer-authorization-pending"
   | "peer-link-request"
   | "peer-mutation-unresolved"
+  | "boat-supervisor-unqualified"
   | "device-host-configured"
   | "device-runtime-unqualified"
   | "preview-runtime-unqualified"
@@ -100,6 +101,10 @@ export const makeAdmission = <E>(
   let retireIdleProviders: Effect.Effect<void> | undefined;
   const observers = new Set<Effect.Effect<ReadonlyArray<DrainBlocker>>>();
   const liveProducers = new Map<LiveProducer, number>();
+  const restartableWorkers = new Set<{
+    readonly pause: Effect.Effect<void>;
+    readonly resume: Effect.Effect<void>;
+  }>();
   let observerRevision = 0;
   let changed = Deferred.makeUnsafe<void>();
 
@@ -150,6 +155,39 @@ export const makeAdmission = <E>(
       ]),
     ),
   );
+  // Only workers whose state can be discarded and rebuilt belong here, such as diagnostics.
+  const forkRestartableWorker = Effect.fnUntraced(function* (work: Effect.Effect<void>) {
+    const scope = yield* Effect.scope;
+    let running: Fiber.Fiber<void> | undefined;
+    const worker = {
+      pause: Effect.suspend(() =>
+        running === undefined
+          ? Effect.void
+          : Fiber.interrupt(running).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  running = undefined;
+                }),
+              ),
+            ),
+      ).pipe(Effect.uninterruptible),
+      resume: Effect.gen(function* () {
+        if (running === undefined) running = yield* Effect.forkIn(work, scope);
+      }).pipe(Effect.uninterruptible),
+    };
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        restartableWorkers.add(worker);
+        observerRevision++;
+      }),
+      () =>
+        Effect.sync(() => {
+          restartableWorkers.delete(worker);
+        }),
+    );
+    yield* worker.resume;
+  });
+
   const isSealed = (token: symbol) => phase.kind === "sealed" && phase.drain.token === token;
   const confirmSeal = Effect.fn("ServerAdmission.confirmSeal")(function* (
     token: symbol,
@@ -157,6 +195,10 @@ export const makeAdmission = <E>(
   ) {
     if (!isSealed(token)) return false;
     const revision = observerRevision;
+    yield* Effect.forEach(restartableWorkers, ({ pause }) => pause, {
+      concurrency: "unbounded",
+      discard: true,
+    });
     yield* reconcile;
     const blockers = yield* census.pipe(Effect.orDie);
     if (
@@ -256,6 +298,7 @@ export const makeAdmission = <E>(
     phase = { kind: "open" };
     signalChange();
     yield* Deferred.succeed(aborted, undefined);
+    yield* Effect.forEach(restartableWorkers, ({ resume }) => resume, { discard: true });
     return true;
   }, Effect.uninterruptible);
 
@@ -355,6 +398,7 @@ export const makeAdmission = <E>(
     drain,
     abort,
     registerObserver,
+    forkRestartableWorker,
     registerProviderRetirement,
     mayRetireIdleProviders: options?.retireIdleProviders === true,
     isConfirmedSeal: Effect.sync(() => confirmedSeal !== undefined && isSealed(confirmedSeal)),
@@ -390,3 +434,9 @@ export const forkAccepted =
 
 export const afterAdmissionReopens = <A, E, R>(work: Effect.Effect<A, E, R>) =>
   Effect.flatMap(ServerAdmission, (admission) => admission?.runWhenOpen(work) ?? work);
+
+export const forkRestartableWorker = (work: Effect.Effect<void>) =>
+  Effect.flatMap(
+    ServerAdmission,
+    (admission) => admission?.forkRestartableWorker(work) ?? Effect.asVoid(Effect.forkScoped(work)),
+  );

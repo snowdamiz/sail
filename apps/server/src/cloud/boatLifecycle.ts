@@ -142,7 +142,11 @@ function subgroupsAreEmpty(directory: string): boolean {
   );
 }
 
-export function openBoatCoordinator(runtime: string, serviceUnit: string | undefined) {
+export function openBoatCoordinator(
+  runtime: string,
+  serviceUnit: string | undefined,
+  home: string | undefined = process.env.HOME,
+) {
   const baseDir = NodePath.dirname(runtime);
   const installationId = NodeFS.readFileSync(
     NodePath.join(runtime, INSTALLATION_ID),
@@ -241,6 +245,38 @@ export function openBoatCoordinator(runtime: string, serviceUnit: string | undef
       bootId,
       pid,
       launcherStart,
+      assertInstalledOwnership: (version: string, childPid: number | undefined) => {
+        const executable = NodePath.join(runtime, "versions", version, "t3");
+        if (
+          home === undefined ||
+          baseDir !== NodePath.join(NodeFS.realpathSync(home), ".t3") ||
+          childPid === undefined ||
+          NodeFS.realpathSync(executable) !== executable ||
+          NodeFS.readlinkSync("/proc/self/exe") !== executable ||
+          NodeFS.readlinkSync(`/proc/${childPid}/exe`) !== executable ||
+          readOptional(NodePath.join(NodePath.dirname(executable), ".sail-product"))?.trim() !==
+            "sail"
+        ) {
+          throw new Error(
+            "The installed Sail launcher and child must use the same pinned executable.",
+          );
+        }
+        const cli = NodePath.join(NodeFS.realpathSync(home), ".local", "bin", "t3");
+        const installers = readOptional(NodePath.join(runtime, "launchers"))?.trim().split("\n");
+        const wrapper = NodeFS.lstatSync(cli);
+        if (
+          installers?.length !== 1 ||
+          installers[0] !== cli ||
+          !wrapper.isFile() ||
+          wrapper.size > 4096 ||
+          (wrapper.mode & 0o111) === 0 ||
+          readOptional(cli) !== `#!/bin/sh\nexec '${executable.replaceAll("'", "'\\''")}' "$@"\n`
+        ) {
+          throw new Error(
+            "The installed Sail CLI must be the sole registered launcher for this home.",
+          );
+        }
+      },
       readRequest: () => {
         const raw = readOptional(NodePath.join(runtime, BOAT_REQUEST));
         if (raw === undefined) return undefined;

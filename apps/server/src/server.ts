@@ -454,9 +454,10 @@ const layerAdmission = Layer.effect(
   ServerAdmission,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
     return makeAdmission(
       observeDurableObligations().pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-      "incomplete",
+      launcher.maintenanceProfile === "idle-boat" ? "complete" : "incomplete",
       { providerLifetimes: makeProviderLifetimeLedger(sql) },
     );
   }),
@@ -1468,7 +1469,7 @@ const layerMakeServer = Layer.unwrap(
         ),
       ),
       Layer.provide(layerActivation),
-      Layer.provideMerge(layerAdmission),
+      Layer.provideMerge(layerAdmission.pipe(Layer.provide(layerLauncher))),
       Layer.provideMerge(
         RelayTracing.layerServerRelayBroker.pipe(Layer.provide(ManagedPolicy.layer)),
       ),

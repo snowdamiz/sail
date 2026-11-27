@@ -87,6 +87,7 @@ const LOCK_ATTEMPTS = 240;
 // Match contracts' SERVER_EXIT_CODE_STATE_DIR_OWNED without depending on Effect.
 const STATE_DIR_OWNED_EXIT_CODE = 78;
 const STATE_DIR_OWNER_POLL_MS = 30_000;
+const BOAT_MAINTENANCE_RETRY_MS = 30_000;
 
 type TerminalStatus = "committed" | "rolled-back" | "failed";
 type ChildRole = "active" | "trial";
@@ -990,6 +991,7 @@ export class Launcher {
   readonly #boatRuntime: string | undefined;
   #releaseStart: (() => void) | undefined;
   #lastAutomaticRequest: string | undefined;
+  #automaticRetry: NodeJS.Timeout | undefined;
 
   constructor(
     baseDir: string,
@@ -1062,6 +1064,7 @@ export class Launcher {
       }
     } finally {
       watcher?.close();
+      clearTimeout(this.#automaticRetry);
       this.#releaseServing();
       process.off("SIGTERM", onSigterm);
       process.off("SIGINT", onSigint);
@@ -1425,6 +1428,9 @@ export class Launcher {
       protocol: SERVICE_LAUNCHER_PROTOCOL,
       childVersion: version,
       ...(maintenancePeer === undefined ? {} : { maintenancePeer }),
+      ...(this.#maintenance?.automatic === undefined
+        ? {}
+        : { maintenanceProfile: "idle-boat" as const }),
       ...(maintenanceFence === undefined ? {} : { maintenanceFence }),
       ...(update === undefined ? {} : { update }),
     };
@@ -1573,6 +1579,7 @@ export class Launcher {
         }
         const coordinator = await this.#acquireMaintenance(false);
         acquired = true;
+        coordinator.automatic?.assertInstalledOwnership(child.version, child.process.pid);
         budgetMs = coordinator.drainBudgetMs;
         if (!Number.isSafeInteger(budgetMs) || budgetMs < 1 || budgetMs > 120_000) {
           throw new Error("Invalid maintenance drain budget.");
@@ -1677,12 +1684,19 @@ export class Launcher {
   #considerAutomaticMaintenance(): void {
     const automatic = this.#maintenance?.automatic;
     const child = this.#child;
-    if (automatic === undefined || child?.censusComplete !== true || this.#stopRequested) return;
+    if (
+      automatic === undefined ||
+      child?.censusComplete !== true ||
+      this.#stopRequested ||
+      this.#state.maintenance !== undefined
+    )
+      return;
     try {
       const request = automatic.readRequest();
       if (request === undefined || request.instanceId !== child.maintenancePeer?.instanceId) return;
       const key = JSON.stringify(request);
       if (key === this.#lastAutomaticRequest) return;
+      clearTimeout(this.#automaticRetry);
       this.#lastAutomaticRequest = key;
       void this.requestMaintenance(request.release).catch((error: unknown) =>
         this.#log(`[service-launcher] Boat update remains pending: ${String(error)}\n`),
@@ -1696,7 +1710,15 @@ export class Launcher {
     const automatic = this.#maintenance?.automatic;
     const peer = child.maintenancePeer;
     if (automatic === undefined || peer === undefined) return;
-    if (censusComplete === true) child.censusComplete = true;
+    delete child.censusComplete;
+    if (censusComplete === true) {
+      try {
+        automatic.assertInstalledOwnership(child.version, child.process.pid);
+        child.censusComplete = true;
+      } catch (cause) {
+        this.#log(`[service-launcher] Boat runtime ownership is unverified: ${String(cause)}\n`);
+      }
+    }
     try {
       await replaceFileDurably(
         NodePath.join(automatic.runtime, BOAT_CAPABILITY),
@@ -1790,6 +1812,12 @@ export class Launcher {
     if (message.type === "maintenance-aborted" && attempt.phase === "aborting") {
       await this.#finishMaintenanceAbort(update, "drain-deferred");
       this.#releaseMaintenance();
+      if (this.#maintenance?.automatic !== undefined) {
+        this.#automaticRetry = setTimeout(() => {
+          this.#lastAutomaticRequest = undefined;
+          this.#considerAutomaticMaintenance();
+        }, BOAT_MAINTENANCE_RETRY_MS).unref();
+      }
       return;
     }
     if (attempt.phase !== "draining") return;
@@ -1833,6 +1861,7 @@ export class Launcher {
     try {
       const pid = child.process.pid;
       if (pid === undefined) throw new Error("The incumbent PID is unavailable.");
+      this.#maintenance?.automatic?.assertInstalledOwnership(child.version, pid);
       this.#maintenance?.assertPreCutover?.(pid);
     } catch {
       await this.#abortMaintenance(update, "process-ownership-unverified");
@@ -1848,6 +1877,9 @@ export class Launcher {
     await terminateChild(child.process, "SIGTERM", true);
     this.#maintenance?.assertReaped?.();
     if (child.process.exitCode !== 0) {
+      this.#log(
+        `[service-launcher] The sealed incumbent exited with ${String(child.process.exitCode ?? child.process.signalCode)}.\n`,
+      );
       await this.#returnToPrevious(update, "failed", "unclean-maintenance-shutdown");
       return;
     }

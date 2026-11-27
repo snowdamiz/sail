@@ -134,6 +134,7 @@ export class ServiceLauncherClient extends Context.Service<
   ServiceLauncherClient,
   {
     readonly managed: boolean;
+    readonly maintenanceProfile?: "idle-boat";
     /** The supervising launcher's protocol. A remote update never replaces the launcher,
         so it can be older than this runtime's own. */
     readonly protocol: SupportedLauncherProtocol | undefined;
@@ -611,6 +612,9 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
 
   return ServiceLauncherClient.of({
     managed,
+    ...(context?.maintenanceProfile === undefined
+      ? {}
+      : { maintenanceProfile: context.maintenanceProfile }),
     protocol: context?.protocol,
     requestUpdate,
     prepareTrial,

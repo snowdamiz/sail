@@ -1,4 +1,5 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -18,6 +19,11 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as AutomaticPort from "./automaticPort.ts";
 import { type CliServerFlags, resolveServerConfig, sharedServerCommandFlags } from "./config.ts";
 
+export class ServiceLauncherStopped extends Context.Reference<() => void>(
+  "t3/cli/ServiceLauncherStopped",
+  { defaultValue: () => () => {} },
+) {}
+
 const encodeCommand = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 
 const runServerCommand = Effect.fn("server.runServerCommand")(function* (
@@ -35,8 +41,8 @@ const runServerCommand = Effect.fn("server.runServerCommand")(function* (
   const config = yield* resolveServerConfig(flags, logLevel, { ...options, selectAutomaticPort });
   yield* verifyServiceMaintenanceHome(config);
   const run = Effect.raceFirst(
-    runServer.pipe(Effect.provideService(ServerConfig.ServerConfig, config)),
-    awaitServiceLauncherStop(),
+    runServer.pipe(Effect.provideService(ServerConfig.ServerConfig, config), Effect.as(false)),
+    awaitServiceLauncherStop().pipe(Effect.as(true)),
   ).pipe(
     // Settings' Reclaim stops the server; repair once the database is closed, before the restart.
     Effect.ensuring(
@@ -45,7 +51,7 @@ const runServerCommand = Effect.fn("server.runServerCommand")(function* (
       ),
     ),
   );
-  return yield* Effect.acquireUseRelease(
+  const stoppedByLauncher = yield* Effect.acquireUseRelease(
     claimUnmanagedBoatStart(config.baseDir),
     () =>
       config.mode !== "desktop" || config.desktopBootstrapToken === undefined
@@ -53,6 +59,7 @@ const runServerCommand = Effect.fn("server.runServerCommand")(function* (
         : stopOnLauncherLoss(run),
     (release) => Effect.sync(release),
   );
+  if (stoppedByLauncher) yield* Effect.sync(yield* ServiceLauncherStopped);
 });
 
 export const runDefaultServerCommand = Effect.fn("server.runDefaultServerCommand")(function* (

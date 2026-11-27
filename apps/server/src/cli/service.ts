@@ -1,4 +1,4 @@
-import { holdBoatCliAccess } from "../cloud/boatCliAccess.ts";
+import { holdBoatMutation } from "../cloud/boatCliAccess.ts";
 import * as NodeUtil from "node:util";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -102,7 +102,7 @@ export const writeServiceEnv = Effect.fn("cli.service.write_env")(function* (
   entries: Readonly<Record<string, string | undefined>>,
 ) {
   const fs = yield* FileSystem.FileSystem;
-  yield* holdBoatCliAccess(baseDir);
+  yield* holdBoatMutation(baseDir);
   const current = yield* readServiceEnv(baseDir);
   const next = upsertServiceEnv(current.contents, entries);
   if (next === current.contents) return;

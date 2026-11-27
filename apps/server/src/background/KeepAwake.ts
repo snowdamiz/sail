@@ -1,3 +1,4 @@
+import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -15,7 +16,8 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
 import { windowsPowerShellPath } from "@t3tools/shared/windowsSystem";
-import { forkParked } from "../serverActivation.ts";
+import { ServerActivation } from "../serverActivation.ts";
+import { forkRestartableWorker } from "../serverAdmission.ts";
 import * as Settings from "../serverSettings.ts";
 
 // Bridges gaps between back-to-back runs, so a long-idle machine does not sleep mid-queue.
@@ -245,11 +247,21 @@ export const layer = Layer.effectDiscard(
       Effect.ignore,
     );
 
-    yield* forkParked(
-      holdWhileWanted(
-        Stream.zipLatestWith(enabled, active, (on, busy) => on && busy),
-        hold,
-      ).pipe(Effect.catchCause((cause) => Effect.logWarning("keep-awake stopped", { cause }))),
+    const activation = (yield* ServerActivation) ?? Effect.void;
+    yield* forkRestartableWorker(
+      activation.pipe(
+        Effect.andThen(
+          holdWhileWanted(
+            Stream.zipLatestWith(enabled, active, (on, busy) => on && busy),
+            hold,
+          ),
+        ),
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.void
+            : Effect.logWarning("keep-awake stopped", { cause }),
+        ),
+      ),
     );
   }),
 );

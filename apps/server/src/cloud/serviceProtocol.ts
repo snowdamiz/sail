@@ -179,6 +179,7 @@ export interface ServiceLauncherContext {
   readonly childVersion: string;
   readonly update?: ServiceUpdateRecord;
   readonly maintenancePeer?: MaintenancePeer;
+  readonly maintenanceProfile?: "idle-boat";
   readonly maintenanceFence?: MaintenanceFence;
 }
 
@@ -491,6 +492,11 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
   const fence = decodeMaintenanceFence(parsed.maintenanceFence);
   if (parsed.maintenancePeer !== undefined && peer === undefined) return undefined;
   if (
+    parsed.maintenanceProfile !== undefined &&
+    (peer === undefined || parsed.maintenanceProfile !== "idle-boat")
+  )
+    return undefined;
+  if (
     parsed.maintenanceFence !== undefined &&
     (fence === undefined ||
       peer === undefined ||
@@ -505,6 +511,9 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
     protocol: parsed.protocol,
     childVersion: parsed.childVersion,
     ...(peer === undefined ? {} : { maintenancePeer: peer }),
+    ...(parsed.maintenanceProfile === "idle-boat"
+      ? { maintenanceProfile: parsed.maintenanceProfile }
+      : {}),
     ...(fence === undefined ? {} : { maintenanceFence: fence }),
     ...(update === undefined ? {} : { update }),
   };

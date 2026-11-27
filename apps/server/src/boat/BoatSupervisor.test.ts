@@ -19,6 +19,7 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpServer from "effect/http/HttpServer";
 import * as NetAddress from "effect/net/NetAddress";
 
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 import * as ServerConfig from "../config.ts";
 import * as BoatDaemonBinary from "./BoatDaemonBinary.ts";
 import * as BoatSupervisor from "./BoatSupervisor.ts";
@@ -294,6 +295,29 @@ const isAlive = (pid: number) => {
 };
 
 describe("BoatSupervisor", () => {
+  it.live("keeps subscriptions and commands from starting Boats behind a sealed gate", () =>
+    Effect.gen(function* () {
+      const { reports, supervisor } = yield* setup;
+      const admission = makeAdmission(Effect.succeed([]), "complete");
+      yield* Effect.gen(function* () {
+        const boats = yield* BoatSupervisor.BoatSupervisor;
+        const seal = Symbol();
+        assert.deepEqual(yield* admission.drain(seal, "2 seconds"), { kind: "sealed" });
+        assert.deepEqual(
+          yield* boats.events.pipe(Stream.runHead),
+          Option.some<BoatEvent>({ _tag: "status", status: { phase: "stopped", error: null } }),
+        );
+        const refusal = yield* boats.invoke({ command: "get_state", args: {} }).pipe(Effect.flip);
+        assert.include(refusal.message, "maintenance is in progress");
+        assert.equal(yield* Queue.size(reports), 0);
+        assert.isTrue(yield* admission.abort(seal));
+        assert.deepEqual(yield* untilReady(boats), ["stopped", "starting", "ready"]);
+        const blocked = yield* admission.drain(Symbol(), "300 millis");
+        assert.deepInclude(blocked, { blockers: ["boat-supervisor-unqualified"] });
+      }).pipe(Effect.provide(supervisor()), Effect.provideService(ServerAdmission, admission));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.live.each([
     { protocol: "no version", version: null, reportsTcpAddress: true },
     { protocol: "a future version", version: 2, reportsTcpAddress: true },

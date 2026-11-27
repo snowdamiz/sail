@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
 
 import { makeAdmission } from "./serverAdmission.ts";
@@ -167,5 +168,30 @@ it.effect("keeps the production inventory blocker even if the durable census is 
       blockers: ["producer-inventory-incomplete"],
     });
     assert.isTrue(makeAdmission(Effect.succeed([]), "complete").producerInventoryComplete);
+  }),
+);
+
+it.effect("reaps a restartable worker before confirmation and resumes it after abort", () =>
+  Effect.gen(function* () {
+    const admission = makeAdmission(Effect.succeed([]));
+    const events = yield* Queue.unbounded<"started" | "stopped">();
+    yield* admission.forkRestartableWorker(
+      Effect.acquireUseRelease(
+        Queue.offer(events, "started"),
+        () => Effect.never,
+        () => Queue.offer(events, "stopped"),
+      ),
+    );
+    assert.equal(yield* Queue.take(events), "started");
+    const token = Symbol();
+    assert.deepEqual(yield* admission.drain(token, "1 second"), { kind: "sealed" });
+    const reconcile = Queue.take(events).pipe(
+      Effect.tap((event) => Effect.sync(() => assert.equal(event, "stopped"))),
+      Effect.asVoid,
+    );
+    assert.isTrue(yield* admission.confirmSeal(token, reconcile));
+    assert.equal(yield* Queue.size(events), 0);
+    assert.isTrue(yield* admission.abort(token));
+    assert.equal(yield* Queue.take(events), "started");
   }),
 );
