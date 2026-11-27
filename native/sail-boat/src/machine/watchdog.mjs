@@ -675,15 +675,7 @@ async function loop() {
   await tick().catch((e) => log("tick failed", e.message));
   setTimeout(loop, TICK_MS);
 }
-if (process.argv[2] === "--check-idle") {
-  const activity = await checkWorking();
-  if (activity.threads || activity.subagents || activity.waiting)
-    throw new Error(
-      "Sail upgrade deferred because the server has active work or pending approvals",
-    );
-} else {
-  server.listen(PORT, "127.0.0.1", () =>
-    log(`watchdog on ${PORT}, sleep after ${config.sleepAfterSecs}s`),
-  );
-  loop();
-}
+server.listen(PORT, "127.0.0.1", () =>
+  log(`watchdog on ${PORT}, sleep after ${config.sleepAfterSecs}s`),
+);
+loop();

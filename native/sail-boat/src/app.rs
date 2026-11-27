@@ -87,13 +87,13 @@ pub struct MachineView {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Countdown {
-    pub template: &'static str,
+    pub template: String,
     pub ends_at: u64,
 }
 
 impl Countdown {
     fn new(template: &'static str, secs: u64, from: SystemTime) -> Self {
-        Self { template, ends_at: unix_ms_after(from, secs) }
+        Self { template: template.to_owned(), ends_at: unix_ms_after(from, secs) }
     }
 
     fn text(&self, secs: u64) -> String {
@@ -786,7 +786,7 @@ fn view(m: &MachineRuntime) -> MachineView {
         text
     };
     use MachineState::*;
-    let (state, detail) = match (m.power(), &watchdog) {
+    let (state, mut detail) = match (m.power(), &watchdog) {
         (Power::Missing, _) => (Missing, "Deleted on Boat".to_owned()),
         (_, _) if m.last_error().is_some() => (Error, m.last_error().unwrap_or_default()),
         (Power::Running, Some(w)) if w.agents_unknown => (Working, "Server not answering · stays up 30m max".to_owned()),
@@ -816,6 +816,13 @@ fn view(m: &MachineRuntime) -> MachineView {
         },
         (Power::Unknown, _) => (Unknown, "Checking".to_owned()),
     };
+    if !matches!(state, Missing | Error) && m.server_upgrade_pending(&r) {
+        const PENDING: &str = "Sail upgrade pending · ";
+        detail.insert_str(0, PENDING);
+        if let Some(countdown) = &mut countdown {
+            countdown.template.insert_str(0, PENDING);
+        }
+    }
     let running_watchdog = watchdog.as_ref().filter(|_| m.power() == Power::Running);
     MachineView {
         id: r.id.clone(),
@@ -906,6 +913,132 @@ mod tests {
         assert_eq!((later_day.today, later_day.awake_secs_today, later_day.month), (0.0, 0, 5.0));
         let later_month = super::usage(&spend, 300, 300);
         assert_eq!((later_month.today, later_month.month), (0.0, 0.0));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn wake_delivers_deferred_commands_to_the_incumbent_with_upgrade_pending() {
+        use super::*;
+        use axum::{
+            Json, Router,
+            extract::ws::{Message, WebSocketUpgrade},
+            routing::{get, post},
+        };
+        use crate::store::Machine;
+        use serde_json::{Value, json};
+        use std::{fs, os::unix::fs::PermissionsExt};
+
+        let (dispatched, mut commands) = mpsc::unbounded_channel();
+        let watchdog_status = || async {
+            Json(json!({
+                "phase":"active","busy":false,"workingThreads":0,"workingSubagents":0,"cpuBusy":false,
+                "agentsUnknown":false,"keepAwakeSecs":0,"keepAwakeForever":false,
+                "idleSecs":0,"sleepAfterSecs":180
+            }))
+        };
+        let upstream = Router::new()
+            .route("/.well-known/t3/environment", get(|| async { Json(json!({"environmentId":"env-dev"})) }))
+            .route("/api/auth/session", get(|| async { Json(json!({})) }))
+            .route("/activity", post(watchdog_status))
+            .route("/status", get(watchdog_status))
+            .route("/ws", get(move |ws: WebSocketUpgrade| async move {
+                ws.on_upgrade(move |mut socket| async move {
+                    let Some(Ok(Message::Text(text))) = socket.recv().await else { return };
+                    let request: Value = serde_json::from_str(&text).unwrap();
+                    dispatched.send(request.clone()).unwrap();
+                    socket.send(Message::Text(json!({
+                        "_tag":"Exit","requestId":request["id"],"exit":{"_tag":"Success","value":null}
+                    }).to_string().into())).await.unwrap();
+                })
+            }));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+
+        for restored in [false, true] {
+            let dir = std::env::temp_dir().join(format!("sail-boat-wake-{:016x}", rand::random::<u64>()));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("url"), &url).unwrap();
+            if restored {
+                fs::write(dir.join("expired"), "").unwrap();
+            }
+            let boat = dir.join("boat");
+            fs::write(&boat, r#"#!/bin/sh
+d=$(dirname "$0"); shift
+echo "$1" >> "$d/calls"
+case "$1" in
+  info) echo '{"sandbox":{"id":"bx_dev","state":"stopped"}}' ;;
+  resume) if [ -f "$d/expired" ]; then echo snapshot_data_expired >&2; exit 1; fi ;;
+  new) echo '{"id":"bx_restored"}' ;;
+  delete) echo '{}' ;;
+  host) printf '{"url":"%s"}\n' "$(cat "$d/url")" ;;
+  *) exit 1 ;;
+esac
+"#).unwrap();
+            fs::set_permissions(&boat, fs::Permissions::from_mode(0o700)).unwrap();
+            let t3 = dir.join("t3");
+            fs::write(&t3, "#!/bin/sh\necho 't3 v2.0.0'\n").unwrap();
+            fs::set_permissions(&t3, fs::Permissions::from_mode(0o700)).unwrap();
+            let (events, _) = mpsc::unbounded_channel();
+            let shared = Arc::new(Shared {
+                boat: Boat::at(boat),
+                t3: T3Desktop::at(t3),
+                settings: RwLock::new(Settings::default()),
+                events,
+                http: reqwest::Client::new(),
+                saving: Mutex::new(HashSet::new()),
+            });
+            let watchdog_receipt = format!("watchdog:{}", provision::revision());
+            let record = Machine {
+                id: "bx_dev".into(),
+                sandbox_id: "bx_dev".into(),
+                name: "dev".into(),
+                size: "small".into(),
+                upstream_url: url.clone(),
+                upstream_token: "upstream".into(),
+                watchdog_url: url.clone(),
+                watchdog_secret: "watchdog".into(),
+                local_port: 0,
+                t3_version: "1.0.0".into(),
+                provision_revision: watchdog_receipt.clone(),
+                environment_id: "env-dev".into(),
+                client_tokens: Vec::new(),
+                link_tokens: Vec::new(),
+                created_at: 0,
+                next_due_at: None,
+                connect: false,
+                saved_stop: None,
+            };
+            let machine = MachineRuntime::new(shared, record, dir.clone());
+            let command = json!({"type":"message.dispatch","commandId":"queued","threadId":"fixture-thread"});
+            machine.cache.lock().unwrap().deferred_commands.push(command.clone());
+
+            machine.ensure_awake().await.unwrap();
+            let request = commands.try_recv().unwrap();
+            assert_eq!(request["tag"], "orchestration.dispatchCommand");
+            assert_eq!(request["payload"], command);
+            let state = view(&machine);
+            assert_eq!(state.state, MachineState::Idle);
+            assert!(state.detail.contains("Sail upgrade pending"), "{}", state.detail);
+            assert!(state.countdown.unwrap().template.contains("Sail upgrade pending"));
+            assert!(machine.last_error().is_none());
+            assert!(machine.cache.lock().unwrap().deferred_commands.is_empty());
+
+            let mut expected = vec!["info", "resume"];
+            let record = machine.record();
+            if restored {
+                expected.extend(["new", "delete", "host", "host"]);
+                assert_eq!(record.sandbox_id, "bx_restored");
+                assert!(record.provision_revision.is_empty());
+            } else {
+                assert_eq!(record.t3_version, "1.0.0");
+                assert_eq!(record.provision_revision, watchdog_receipt);
+            }
+            let calls = fs::read_to_string(dir.join("calls")).unwrap();
+            assert_eq!(calls.lines().collect::<Vec<_>>(), expected);
+            fs::remove_dir_all(dir).unwrap();
+        }
+        server.abort();
     }
 
     /// A Boat CLI that logs each call. `list` fails while `list-down` exists; `bx_a` deletes once

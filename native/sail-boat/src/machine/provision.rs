@@ -1,5 +1,4 @@
-//! Creating and upgrading machines: everything that runs on the sandbox goes through
-//! `provision.sh`, which is idempotent.
+//! Provisioning fresh sandboxes and refreshing existing watchdogs.
 
 use crate::boat::Boat;
 use crate::proxy::auth::random_token;
@@ -7,6 +6,7 @@ use crate::store::Machine;
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
 use serde::Deserialize;
+use std::sync::OnceLock;
 
 const PROVISION_SH: &str = include_str!("provision.sh");
 const WATCHDOG_MJS: &str = include_str!("watchdog.mjs");
@@ -14,11 +14,13 @@ const CLI_RELEASE_DOWNLOAD_URL: &str = "https://github.com/snowdamiz/sail/releas
 const T3_PORT: u16 = 3773;
 const WATCHDOG_PORT: u16 = 3774;
 
-/// Identifies the provisioning scripts; a machine provisioned with others gets them on wake, or
-/// in place while it runs.
-pub fn revision() -> String {
-    let hash = fnv1a(PROVISION_SH.bytes().chain(WATCHDOG_MJS.bytes()).chain(SLEEP_AFTER_SECS.to_string().bytes()));
-    format!("{hash:016x}")
+/// Identifies the provisioning scripts used for creation or an in-place watchdog refresh.
+pub fn revision() -> &'static str {
+    static REVISION: OnceLock<String> = OnceLock::new();
+    REVISION.get_or_init(|| {
+        let hash = fnv1a(PROVISION_SH.bytes().chain(WATCHDOG_MJS.bytes()).chain(SLEEP_AFTER_SECS.to_string().bytes()));
+        format!("{hash:016x}")
+    })
 }
 
 /// FNV-1a: stable across builds, unlike std's hasher.
@@ -28,9 +30,9 @@ pub fn fnv1a(bytes: impl IntoIterator<Item = u8>) -> u64 {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Provisioned {
-    pub environment_id: String,
-    pub upstream_token: Option<String>,
+struct Provisioned {
+    environment_id: String,
+    upstream_token: String,
 }
 
 /// Machine sizes, as Boat sells them.
@@ -81,18 +83,29 @@ fn cli_install_url(version: &str, override_url: Option<&str>) -> Result<String> 
     Ok(parsed.to_string())
 }
 
-/// Copies the scripts over as a file (the watchdog secret must not appear in any command line)
-/// and runs `provision.sh`. No T3 version: T3 is left as it runs, neither installed nor restarted.
-pub async fn run(
+pub(super) async fn refresh_watchdog(boat: &Boat, record: &Machine) -> Result<()> {
+    run(
+        boat,
+        &record.sandbox_id,
+        &record.name,
+        None,
+        &record.watchdog_secret,
+        &snapshot_name(&record.name, &record.id),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Copies the scripts over as a file so the watchdog secret stays out of command lines.
+/// Only creation passes a version.
+async fn run(
     boat: &Boat,
     sandbox_id: &str,
     name: &str,
     t3_version: Option<&str>,
     watchdog_secret: &str,
     snapshot: &str,
-    mint_upstream_token: bool,
-    check_idle: bool,
-) -> Result<Provisioned> {
+) -> Result<String> {
     let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
     let version = shell_word(t3_version.unwrap_or("-"))?;
     let install_url = if t3_version.is_some() {
@@ -104,7 +117,7 @@ pub async fn run(
         "set -e; d=$(mktemp -d); trap 'rm -rf \"$d\" \"$0\"' EXIT\n\
          echo {p} | base64 -d > \"$d/provision.sh\"; echo {w} | base64 -d > \"$d/watchdog.mjs\"\n\
          install_url=$(echo {u} | base64 -d)\n\
-         SAIL_BOAT_SECRET={s} SAIL_CLI_INSTALL_URL=\"$install_url\" bash \"$d/provision.sh\" {v} {sleep} {snapshot} {mint} {name} {sandbox} {check_idle}\n",
+         SAIL_BOAT_SECRET={s} SAIL_CLI_INSTALL_URL=\"$install_url\" bash \"$d/provision.sh\" {v} {sleep} {snapshot} {name} {sandbox}\n",
         p = b64(PROVISION_SH),
         w = b64(WATCHDOG_MJS),
         u = b64(&install_url),
@@ -112,8 +125,6 @@ pub async fn run(
         s = shell_word(watchdog_secret)?,
         sleep = SLEEP_AFTER_SECS,
         snapshot = shell_word(snapshot)?,
-        mint = u8::from(mint_upstream_token),
-        check_idle = u8::from(check_idle),
         name = shell_word(name)?,
         sandbox = shell_word(sandbox_id)?,
     );
@@ -124,13 +135,7 @@ pub async fn run(
     let uploaded = boat.upload(sandbox_id, &local, &remote).await;
     let _ = std::fs::remove_file(&local);
     uploaded?;
-    let out = boat.exec_ok(sandbox_id, &format!("bash {remote}"), 600).await?;
-    let line = out
-        .lines()
-        .rev()
-        .find(|l| l.starts_with('{'))
-        .ok_or_else(|| anyhow!("provisioning printed no result"))?;
-    Ok(serde_json::from_str(line)?)
+    boat.exec_ok(sandbox_id, &format!("bash {remote}"), 600).await
 }
 
 /// Only `[A-Za-z0-9._-]` reaches the remote shell.
@@ -167,7 +172,12 @@ pub async fn create(
     created(&id);
     progress("Installing Sail server");
     let secret = random_token();
-    let provisioned = run(boat, &id, name, Some(t3_version), &secret, &snapshot_name(name, &id), true, false).await?;
+    let out = run(boat, &id, name, Some(t3_version), &secret, &snapshot_name(name, &id)).await?;
+    let line = out.lines().rev().find(|l| l.starts_with('{')).ok_or_else(|| anyhow!("provisioning printed no result"))?;
+    let provisioned: Provisioned = serde_json::from_str(line)?;
+    if provisioned.upstream_token.is_empty() {
+        bail!("provisioning issued no token");
+    }
     progress("Opening the machine's address");
     let (upstream_url, watchdog_url) = host(boat, &id).await?;
     Ok(Machine {
@@ -176,14 +186,12 @@ pub async fn create(
         name: name.to_owned(),
         size: size.to_owned(),
         upstream_url,
-        upstream_token: provisioned
-            .upstream_token
-            .ok_or_else(|| anyhow!("provisioning issued no token"))?,
+        upstream_token: provisioned.upstream_token,
         watchdog_url,
         watchdog_secret: secret,
         local_port,
         t3_version: t3_version.to_owned(),
-        provision_revision: revision(),
+        provision_revision: revision().to_owned(),
         environment_id: provisioned.environment_id,
         client_tokens: Vec::new(),
         link_tokens: Vec::new(),
@@ -233,7 +241,7 @@ mod tests {
         let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&inherited_path))).unwrap();
         let output = Command::new("bash")
             .current_dir(&home)
-            .args(["-c", PROVISION_SH, "provision.sh", "1.2.3", "180", "snapshot", "0", "dev", "sandbox"])
+            .args(["-c", PROVISION_SH, "provision.sh", "1.2.3", "180", "snapshot", "dev", "sandbox"])
             .env("HOME", &home)
             .env("PATH", path)
             .env("SAIL_BOAT_SECRET", "fixture")
@@ -248,14 +256,105 @@ mod tests {
         assert!(stderr.contains("fixture installer unavailable: http://127.0.0.1:8080/install.sh"), "{stderr}");
     }
 
+    #[cfg(unix)]
     #[test]
-    fn provision_watchdog_refresh_leaves_the_server_upgrade_pending() {
-        use super::super::provision_is_current;
+    fn provision_activates_fresh_service_once_and_refreshes_only_watchdog_state() {
+        use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
-        assert!(provision_is_current("watchdog:current", "current", true));
-        assert!(!provision_is_current("watchdog:current", "current", false));
-        assert!(provision_is_current("current", "current", false));
-        assert!(!provision_is_current("old", "current", true));
+        let home = std::env::temp_dir().join(format!("sail-provision-{}", random_token()));
+        let bin = home.join(".local/bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(home.join("watchdog.mjs"), WATCHDOG_MJS).unwrap();
+        fs::write(home.join("provision.sh"), PROVISION_SH).unwrap();
+        let write_executable = |name, contents| {
+            let file = bin.join(name);
+            fs::write(&file, contents).unwrap();
+            fs::set_permissions(file, fs::Permissions::from_mode(0o700)).unwrap();
+        };
+        write_executable("curl", r#"#!/bin/sh
+case "$1" in
+  -fsSL)
+    cat > "$5" <<'INSTALL'
+set -eu
+test "$SAIL_HOME" = "$HOME/.t3"
+test "$T3CODE_HOME" = "$SAIL_HOME"
+runtime="$T3CODE_HOME/runtime/versions/$T3CODE_VERSION"
+mkdir -p "$runtime"
+echo sail > "$runtime/.sail-product"
+echo installed >> "$HOME/calls"
+INSTALL
+    ;;
+  -sf)
+    grep -qx activated "$HOME/calls" || exit 1
+    echo '{"environmentId":"fixture"}'
+    ;;
+  *) exit 1 ;;
+esac
+"#);
+        write_executable("timeout", "#!/bin/sh\nshift 3\nexec \"$@\"\n");
+        write_executable("t3", r#"#!/bin/sh
+set -eu
+test "$SAIL_HOME" = "$HOME/.t3"
+test "$T3CODE_HOME" = "$SAIL_HOME"
+case "$*" in
+  --version) echo 't3 v1.2.3' ;;
+  "service install --base-dir $HOME/.t3 --allow-downgrade") echo activated >> "$HOME/calls" ;;
+  *sail-watchdog*) echo watchdog-fixture ;;
+  *sail-boat*) echo proxy-fixture ;;
+  *) exit 1 ;;
+esac
+"#);
+        write_executable("sudo", "#!/bin/sh\ncat >/dev/null\n");
+        write_executable("systemctl", "#!/bin/sh\necho \"$*\" >> \"$HOME/calls\"\n");
+        let inherited_path = std::env::var_os("PATH").unwrap_or_default();
+        let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&inherited_path))).unwrap();
+        let run = |version, sandbox| {
+            let output = Command::new("bash")
+                .current_dir(&home)
+                .args(["provision.sh", version, "180", "snapshot", "dev", sandbox])
+                .env("HOME", &home)
+                .env("PATH", &path)
+                .env("SAIL_BOAT_SECRET", "fixture")
+                .env("SAIL_CLI_INSTALL_URL", "http://127.0.0.1:8080/install.sh")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            output
+        };
+
+        let output = run("1.2.3", "fresh");
+        let receipt: Provisioned = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(receipt.environment_id, "fixture");
+        assert_eq!(receipt.upstream_token, "proxy-fixture");
+        let calls = fs::read_to_string(home.join("calls")).unwrap();
+        assert_eq!(calls.lines().filter(|line| *line == "activated").count(), 1);
+        assert!(calls.contains("installed"));
+        assert!(!calls.contains("t3code.service"), "{calls}");
+
+        let settings = home.join(".t3/userdata/settings.json");
+        let initial: serde_json::Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+        assert_eq!(initial["linkedEnvironmentsEnabled"], true);
+        let live_settings = b"{\"linkedEnvironmentsEnabled\":false, \"example\":1}\n";
+        fs::write(&settings, live_settings).unwrap();
+        fs::write(home.join("calls"), "").unwrap();
+        run("-", "restored");
+        assert_eq!(fs::read(&settings).unwrap(), live_settings);
+        let calls = fs::read_to_string(home.join("calls")).unwrap();
+        assert!(calls.contains("restart sail-watchdog.service"));
+        assert!(calls.lines().all(|line| line.contains("watchdog.service") || line == "--user daemon-reload"), "{calls}");
+        let config: serde_json::Value = serde_json::from_slice(&fs::read(home.join(".sail-boat/config.json")).unwrap()).unwrap();
+        assert_eq!(config["t3Token"], "watchdog-fixture");
+        assert_eq!(config["sandbox"], "restored");
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn provision_recognizes_a_current_watchdog() {
+        use super::super::watchdog_is_current;
+
+        assert!(watchdog_is_current("watchdog:current", "current"));
+        assert!(watchdog_is_current("current", "current"));
+        assert!(!watchdog_is_current("old", "current"));
     }
 
     #[test]

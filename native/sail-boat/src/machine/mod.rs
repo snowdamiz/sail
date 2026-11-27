@@ -31,7 +31,7 @@ const WATCHDOG_POLL: Duration = Duration::from_secs(5);
 const BOAT_POLL: Duration = Duration::from_secs(60);
 const OVERDUE_STOP_RETRY: Duration = Duration::from_secs(120);
 /// A running machine on older scripts takes this app's in place, retried this often.
-const UPGRADE_RETRY: Duration = Duration::from_secs(10 * 60);
+const WATCHDOG_REFRESH_RETRY: Duration = Duration::from_secs(10 * 60);
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(20);
 const READY_TIMEOUT: Duration = Duration::from_secs(180);
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -189,7 +189,7 @@ pub struct MachineRuntime {
     stop_seen: Mutex<Option<Instant>>,
     /// The last failed wake: its message and when.
     wake_failure: Mutex<Option<(String, Instant)>>,
-    upgrade_failure: Mutex<Option<String>>,
+    target_version: Mutex<Option<String>>,
     /// Saving the snapshot failing, until a save succeeds.
     save_failure: Mutex<Option<disk::SaveFailure>>,
     /// Its T3 projects as last read, and those Sail Boat is adding.
@@ -197,9 +197,8 @@ pub struct MachineRuntime {
     adding: Mutex<Vec<projects::MachineProject>>,
 }
 
-// A watchdog-only refresh leaves the server upgrade pending until a safe wake.
-fn provision_is_current(recorded: &str, revision: &str, live: bool) -> bool {
-    recorded == revision || (live && recorded.strip_prefix("watchdog:") == Some(revision))
+fn watchdog_is_current(recorded: &str, revision: &str) -> bool {
+    recorded.strip_prefix("watchdog:").unwrap_or(recorded) == revision
 }
 
 impl MachineRuntime {
@@ -221,7 +220,7 @@ impl MachineRuntime {
             last_heartbeat: Mutex::new(None),
             stop_seen: Mutex::new(None),
             wake_failure: Mutex::new(None),
-            upgrade_failure: Mutex::new(None),
+            target_version: Mutex::new(None),
             save_failure: Mutex::new(None),
             projects: Mutex::new(Vec::new()),
             adding: Mutex::new(Vec::new()),
@@ -298,7 +297,11 @@ impl MachineRuntime {
 
     pub fn last_error(&self) -> Option<String> {
         self.wake_failure.lock().unwrap().as_ref().map(|(e, _)| e.clone())
-            .or_else(|| self.upgrade_failure.lock().unwrap().clone())
+    }
+
+    pub fn server_upgrade_pending(&self, record: &Machine) -> bool {
+        record.provision_revision != provision::revision()
+            || self.target_version.lock().unwrap().as_ref().is_some_and(|v| *v != record.t3_version)
     }
 
     /// The machine is about to freeze or frozen: user actions must wait for it and wake it again.
@@ -482,38 +485,30 @@ impl MachineRuntime {
         }
         // From here on the machine runs: whatever it slept with is history. A sleep the proxy
         // did not see may have outdated the recorded reads too.
-        if !fresh {
-            self.cache.lock().unwrap().bump_epoch();
+        if !fresh || restored {
+            let mut cache = self.cache.lock().unwrap();
+            cache.bump_epoch();
+            if restored {
+                cache.streams.clear();
+            }
+        }
+        if restored {
+            // The snapshot may predate the proxy's cached chats.
+            threads::sweep(&self.dir, &HashSet::new());
         }
         self.drop_capture();
+        if restored {
+            self.save_cache();
+        }
         self.set_power(Power::Starting);
-        if self.fetch_descriptor().await.is_none() {
+        if restored || self.fetch_descriptor().await.is_none() {
             self.rehost().await?;
         }
-        match self.wait_ready(started).await {
-            Ok(()) if resumed => {
-                self.send_activity(true).await;
-                // A warm resume may still have an agent turn or an approval.
-                let idle = restored || self.watchdog_get("/status?fresh").await.is_ok_and(|s| {
-                    s.phase == WatchdogPhase::Active && !s.agents_unknown && !s.busy && s.waiting_threads == 0 && !s.saving
-                });
-                if idle {
-                    self.kept_awake(self.upgrade_if_needed(!restored)).await.context("upgrading the Sail server")?;
-                } else {
-                    tracing::info!("could not confirm {id} is idle: Sail upgrade deferred to the next wake");
-                }
-            }
-            Err(e) => {
-                // An interrupted install can leave no server to answer the readiness probe.
-                let stopped = self.shared.boat
-                    .exec_ok(&self.sandbox_id(), "systemctl --user show --property=ActiveState --value t3code.service", 15)
-                    .await
-                    .is_ok_and(|state| matches!(state.trim(), "failed" | "inactive"));
-                if !stopped || !self.kept_awake(self.upgrade_if_needed(false)).await.context("recovering the Sail server")? {
-                    return Err(e);
-                }
-            }
-            Ok(()) => {}
+        self.wait_ready(started).await?;
+        // Both resume and restore can start the incumbent before Boat returns. Its service
+        // lifecycle owns recovery, and a wake has no pre-serve window to replace it.
+        if resumed {
+            self.send_activity(true).await;
         }
         // Before Running is published: Sail reconnects then, and must find the messages
         // accepted while asleep ahead of anything it sends next.
@@ -562,66 +557,28 @@ impl MachineRuntime {
         Ok(())
     }
 
-    /// Keeps the machine on the desktop app's T3 version and on this app's scripts.
-    async fn upgrade_if_needed(&self, check_idle: bool) -> Result<bool> {
-        let desktop = self.shared.t3.version().await?;
-        let result = self.upgrade(Some(desktop), check_idle).await;
-        *self.upgrade_failure.lock().unwrap() = result.as_ref().err().map(|e| format!("Sail server upgrade failed: {e:#}"));
-        result
+    async fn refresh_target_version(&self) {
+        if let Ok(Ok(version)) = tokio::time::timeout(Duration::from_secs(5), self.shared.t3.version()).await {
+            let mut target = self.target_version.lock().unwrap();
+            if target.as_ref() != Some(&version) {
+                *target = Some(version);
+                self.shared.changed();
+            }
+        }
     }
 
-    /// No T3 version: this app's scripts only, T3 neither installed nor restarted, so nobody using
-    /// it loses anything; a new T3 version waits for the next wake.
-    async fn upgrade(&self, t3_version: Option<String>, check_idle: bool) -> Result<bool> {
-        let revision = provision::revision();
+    async fn refresh_watchdog(&self) -> Result<()> {
         let record = self.record();
-        let new_server = t3_version.as_ref().is_some_and(|v| *v != record.t3_version);
-        if !new_server && provision_is_current(&record.provision_revision, &revision, t3_version.is_none()) {
-            return Ok(false);
+        provision::refresh_watchdog(&self.shared.boat, &record).await?;
+        let mut current = self.record.write().unwrap();
+        // A restore may have replaced the sandbox during the refresh.
+        if current.sandbox_id == record.sandbox_id {
+            current.provision_revision = format!("watchdog:{}", provision::revision());
+            drop(current);
+            self.shared.persist();
+            self.shared.changed();
         }
-        tracing::info!(
-            "upgrading {} (T3 {}, scripts {revision})",
-            self.id(),
-            t3_version.as_deref().unwrap_or("left as it runs")
-        );
-        provision::run(
-            &self.shared.boat,
-            &record.sandbox_id,
-            &record.name,
-            t3_version.as_deref(),
-            &record.watchdog_secret,
-            &provision::snapshot_name(&record.name, &record.id),
-            false,
-            check_idle,
-        )
-        .await?;
-        let live = t3_version.is_none();
-        if !live {
-            self.wait_ready(Instant::now()).await?;
-        }
-        self.update_record(|m| {
-            if let Some(v) = t3_version {
-                m.t3_version = v;
-            }
-            m.provision_revision = if live { format!("watchdog:{revision}") } else { revision };
-        });
-        // T3 ran on untouched: nothing it served changed.
-        if live {
-            return Ok(true);
-        }
-        {
-            let mut cache = self.cache.lock().unwrap();
-            cache.bump_epoch();
-            if new_server {
-                // Recorded streams and stored chats are in the old server's encoding.
-                cache.streams.clear();
-            }
-        }
-        if new_server {
-            threads::sweep(&self.dir, &HashSet::new());
-            self.save_cache();
-        }
-        Ok(true)
+        Ok(())
     }
 
     async fn flush_deferred_commands(&self) {
@@ -971,7 +928,7 @@ impl MachineRuntime {
         let mut overdue_stop_failed = false;
         // Told the user its own sleep is broken: once per run of this app.
         let mut overdue_stop_told = false;
-        let mut last_upgrade: Option<Instant> = None;
+        let mut last_watchdog_refresh: Option<Instant> = None;
         let mut watchdog_failures = 0u32;
         let mut was_busy = false;
         let mut was_running = false;
@@ -1035,6 +992,7 @@ impl MachineRuntime {
                     last_link_check = Some(Instant::now());
                     let this = self.clone();
                     tokio::spawn(async move {
+                        this.refresh_target_version().await;
                         if let Err(e) = this.ensure_linked().await {
                             tracing::warn!("linking {} into Sail: {e:#}", this.id());
                         }
@@ -1063,15 +1021,12 @@ impl MachineRuntime {
                             tokio::spawn(async move { this.on_ready().await });
                         }
                         let sleep_broken = s.sleep_broken;
-                        // Otherwise only a resume upgrades it, and an older watchdog whose own stop
-                        // always fails never sleeps. Scripts only: T3 runs on under whatever works
-                        // there. Not during a save, which restarting the watchdog would kill, nor
-                        // while T3 can't be checked: a restarted one takes that for T3 starting,
-                        // not maybe mid-turn.
-                        let upgrade = s.phase == WatchdogPhase::Active
+                        // A watchdog refresh can interrupt a save. It also needs a responding
+                        // T3 server to check for active work immediately after it starts.
+                        let refresh_watchdog = s.phase == WatchdogPhase::Active
                             && !s.saving
                             && !s.agents_unknown
-                            && !provision_is_current(&self.record().provision_revision, &provision::revision(), true);
+                            && !watchdog_is_current(&self.record().provision_revision, provision::revision());
                         self.on_watchdog_status(s).await;
                         if sleep_broken && last_overdue_stop.is_none_or(|t| t.elapsed() >= OVERDUE_STOP_RETRY) {
                             last_overdue_stop = Some(Instant::now());
@@ -1095,12 +1050,12 @@ impl MachineRuntime {
                                     }
                                 }
                             }
-                        } else if upgrade && last_upgrade.is_none_or(|t| t.elapsed() >= UPGRADE_RETRY) {
-                            last_upgrade = Some(Instant::now());
-                            // Not kept awake: that counts as use, so an upgrade failing every
+                        } else if refresh_watchdog && last_watchdog_refresh.is_none_or(|t| t.elapsed() >= WATCHDOG_REFRESH_RETRY) {
+                            last_watchdog_refresh = Some(Instant::now());
+                            // Not kept awake: that counts as use, so a refresh failing every
                             // retry would never let it sleep.
-                            if let Err(e) = self.upgrade(None, false).await {
-                                tracing::warn!("upgrading {}: {e:#}", self.id());
+                            if let Err(e) = self.refresh_watchdog().await {
+                                tracing::warn!("refreshing {}'s watchdog: {e:#}", self.id());
                             }
                         }
                     }
