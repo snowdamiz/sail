@@ -231,6 +231,15 @@ pub async fn create(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
+
+    #[cfg(unix)]
+    fn stage_provision_scripts(dir: &Path) {
+        fs::write(dir.join("provision.sh"), PROVISION_SH).unwrap();
+        fs::write(dir.join("watchdog.mjs"), WATCHDOG_MJS).unwrap();
+        fs::write(dir.join("boat-lifecycle.mjs"), LIFECYCLE_MJS).unwrap();
+    }
 
     #[test]
     fn provision_defaults_to_the_sail_release_installer() {
@@ -247,11 +256,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn provision_reinstalls_a_matching_cli_without_the_sail_marker() {
-        use std::{fs, os::unix::fs::PermissionsExt, process::Command};
-
         let home = std::env::temp_dir().join(format!("sail-provision-{}", random_token()));
         let bin = home.join(".local/bin");
         fs::create_dir_all(&bin).unwrap();
+        stage_provision_scripts(&home);
         let write_executable = |name, contents| {
             let path = bin.join(name);
             fs::write(&path, contents).unwrap();
@@ -267,7 +275,7 @@ mod tests {
         let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&inherited_path))).unwrap();
         let output = Command::new("bash")
             .current_dir(&home)
-            .args(["-c", PROVISION_SH, "provision.sh", "1.2.3", "180", "snapshot", "dev", "sandbox"])
+            .args(["provision.sh", "1.2.3", "180", "snapshot", "dev", "sandbox"])
             .env("HOME", &home)
             .env("PATH", path)
             .env("SAIL_BOAT_SECRET", "fixture")
@@ -285,14 +293,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn provision_activates_fresh_service_once_and_refreshes_only_watchdog_state() {
-        use std::{fs, os::unix::fs::PermissionsExt, process::Command};
-
         let home = std::env::temp_dir().join(format!("sail-provision-{}", random_token()));
         let bin = home.join(".local/bin");
         fs::create_dir_all(&bin).unwrap();
-        fs::write(home.join("watchdog.mjs"), WATCHDOG_MJS).unwrap();
-        fs::write(home.join("boat-lifecycle.mjs"), LIFECYCLE_MJS).unwrap();
-        fs::write(home.join("provision.sh"), PROVISION_SH).unwrap();
+        stage_provision_scripts(&home);
         let write_executable = |name, contents| {
             let file = bin.join(name);
             fs::write(&file, contents).unwrap();
