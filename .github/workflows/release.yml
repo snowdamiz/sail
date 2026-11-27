@@ -34,6 +34,7 @@ jobs:
       lane: ${{ steps.resolve.outputs.lane }}
       draft: ${{ steps.resolve.outputs.draft }}
       prerelease: ${{ steps.resolve.outputs.prerelease }}
+      image: ${{ steps.resolve.outputs.image }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -61,11 +62,13 @@ jobs:
           fi
           tag="v$version"
           lane=false
+          package="${GITHUB_REPOSITORY_OWNER,,}/sail-server"
           draft="${REQUESTED_DRAFT:-false}"
           prerelease=false
           if [[ "$version" == *-* ]]; then prerelease=true; fi
           if [[ "$version" == *-lane.* ]]; then
             lane=true
+            package="$package-lane"
             draft=true
             if git show-ref --verify --quiet "refs/tags/$tag"; then
               echo "::error::Lane tag $tag already exists."
@@ -85,6 +88,7 @@ jobs:
             echo "lane=$lane"
             echo "draft=$draft"
             echo "prerelease=$prerelease"
+            echo "image=ghcr.io/$package"
           } >> "$GITHUB_OUTPUT"
       - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
         with:
@@ -355,65 +359,111 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  server-image:
-    name: Publish the Sail server image
+  server-image-build:
+    name: Build the Sail server image (${{ matrix.arch }})
     needs: prepare
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
       contents: read
       packages: write
-    outputs:
-      image: ${{ steps.package.outputs.image }}
-      digest: ${{ steps.image.outputs.digest }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Select the image package
-        id: package
+      - &require-private-lane-package
+        name: Require a private lane package
+        if: needs.prepare.outputs.lane == 'true'
         env:
-          LANE: ${{ needs.prepare.outputs.lane }}
+          IMAGE: ${{ needs.prepare.outputs.image }}
         run: |
           set -euo pipefail
-          package="${GITHUB_REPOSITORY_OWNER,,}/sail-server"
-          if [[ "$LANE" == true ]]; then
-            package="$package-lane"
-            status="$(curl -sS -o /dev/null -w '%{http_code}' --get https://ghcr.io/token \
-              --data-urlencode "service=ghcr.io" --data-urlencode "scope=repository:$package:pull")"
-            case "$status" in
-              401|403|404) ;;
-              *) echo "::error::Lane package must be private. Anonymous token request returned HTTP $status."; exit 1 ;;
-            esac
-          fi
-          echo "image=ghcr.io/$package" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
+          status="$(curl -sS -o /dev/null -w '%{http_code}' --get https://ghcr.io/token \
+            --data-urlencode "service=ghcr.io" --data-urlencode "scope=repository:${IMAGE#ghcr.io/}:pull")"
+          case "$status" in
+            401|403|404) ;;
+            *) echo "::error::Lane package must be private. Anonymous token request returned HTTP $status."; exit 1 ;;
+          esac
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Build and push the multi-platform image
+      - name: Build and push by digest
         id: image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ steps.package.outputs.image }}:${{ needs.prepare.outputs.version }}
-            ${{ steps.package.outputs.image }}:${{ github.sha }}
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           build-args: APP_VERSION=${{ needs.prepare.outputs.version }}
           cache-from: type=gha,scope=sail-server
+      - name: Save the platform digest
+        env:
+          ARCH: ${{ matrix.arch }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf '%s\n' "$DIGEST" > "$RUNNER_TEMP/$ARCH.digest"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sail-server-image-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/${{ matrix.arch }}.digest
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  server-image:
+    name: Publish the Sail server image index
+    needs: [prepare, server-image-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    env:
+      IMAGE: ${{ needs.prepare.outputs.image }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    outputs:
+      image: ${{ needs.prepare.outputs.image }}
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - *require-private-lane-package
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sail-server-image-digest-*
+          path: image-digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Assemble and tag the multi-platform image
+        id: image
+        run: |
+          set -euo pipefail
+          amd64="$(cat image-digests/amd64.digest)"
+          arm64="$(cat image-digests/arm64.digest)"
+          [[ "$amd64" =~ ^sha256:[0-9a-f]{64}$ && "$arm64" =~ ^sha256:[0-9a-f]{64}$ && "$amd64" != "$arm64" ]]
+
+          docker buildx imagetools create --metadata-file "$RUNNER_TEMP/image-index.json" \
+            --tag "$IMAGE:$VERSION" --tag "$IMAGE:$GITHUB_SHA" \
+            "$IMAGE@$amd64" "$IMAGE@$arm64"
+          digest="$(jq -er '."containerimage.descriptor".digest | select(test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/image-index.json")"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - name: Verify anonymous pulls for regular releases
         if: needs.prepare.outputs.lane == 'false'
-        env:
-          IMAGE: ${{ steps.package.outputs.image }}
-          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
           anonymous="$(mktemp -d)"
