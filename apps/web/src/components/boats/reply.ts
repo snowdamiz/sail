@@ -26,7 +26,18 @@ export function classifyBoatLink(openUrl: string | undefined, onHost: boolean): 
   if (pairingUrl !== null) return onHost ? { kind: "pairing", pairingUrl } : IGNORED;
   const href = promptLinkAppPath(openUrl);
   if (href !== null) return { kind: "app", href };
-  return URL.parse(openUrl)?.protocol === "https:" ? { kind: "browser", url: openUrl } : IGNORED;
+  const url = URL.parse(openUrl);
+  if (url?.protocol !== "https:") return IGNORED;
+  if (
+    url.pathname === "/pair" &&
+    url.search === "" &&
+    url.username === "" &&
+    url.password === "" &&
+    new URLSearchParams(url.hash.slice(1)).get("token")
+  ) {
+    return { kind: "pairing", pairingUrl: openUrl };
+  }
+  return { kind: "browser", url: openUrl };
 }
 
 export function errorText(e: unknown): string {

@@ -3555,7 +3555,12 @@ export const layerWsRpc = (
         [WS_METHODS.deviceAction]: (input) => deviceService.action(input),
         [WS_METHODS.subscribeDeviceState]: (_input) => DeviceService.stateStream(deviceService),
         [WS_METHODS.boatsInvoke]: (input) =>
-          boats.invoke(input, { owner: terminalViewerPrefix, onHost: boatClientOnHost }),
+          boats.invoke(input, {
+            owner: terminalViewerPrefix,
+            onHost: boatClientOnHost,
+            session: { sessionId: currentSessionId, scopes: currentSession.scopes },
+            requestPairing: peerClientPairing.request,
+          }),
         [WS_METHODS.subscribeBoats]: (_input) => boats.events,
         [WS_METHODS.subscribeBoatNotices]: (_input) => boats.notices,
         [WS_METHODS.previewStopLocalServer]: (input) => portDiscovery.stopServer(input),

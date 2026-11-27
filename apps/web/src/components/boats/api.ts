@@ -69,11 +69,11 @@ export function useBoatsPage(environmentId: EnvironmentId | null) {
 export function useFollowBoatLink(onHost: boolean) {
   const router = useRouter();
   const pairFromLink = usePairFromLink();
-  return (openUrl: string | undefined): BoatLink => {
+  return (openUrl: string | undefined, expectedEnvironmentId?: EnvironmentId): BoatLink => {
     const link = classifyBoatLink(openUrl, onHost);
     switch (link.kind) {
       case "pairing":
-        void pairFromLink(link.pairingUrl);
+        void pairFromLink(link.pairingUrl, expectedEnvironmentId);
         break;
       case "app":
         void router.navigate({ href: link.href });

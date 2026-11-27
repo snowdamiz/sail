@@ -36,6 +36,22 @@ agents will run. For Claude, run `claude auth login` and follow the browser
 instructions. For Codex, run `codex login --device-auth` and follow its
 device-code instructions. Then select the provider when you start a thread.
 
+## Use Boats from a remote client
+
+Open **Boats** from your browser or Sail Desktop while connected to your Fly
+server. If you have several servers, choose your Fly server in **Boats server**.
+Enable **Linked environments** in the Fly server's **Settings → Labs**.
+On the machine's row, choose **Add to Sail** and confirm its Boat HTTPS address.
+Your client saves a direct connection to that machine.
+
+When an added machine is asleep, open **Boats** on the Fly server and choose
+**Wake now** on the machine's row. Open a thread from the machine's details
+or go back to its environment. To revoke a device's access to a Boat machine,
+use **Settings → Sharing & access** on the Boat machine.
+
+If Boat restores the machine from a snapshot at a new address, use
+**Add to Sail again** from the machine's menu to save its new address.
+
 ## Add another device
 
 Request fresh links without restarting Sail.

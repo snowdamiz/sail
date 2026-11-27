@@ -120,7 +120,7 @@ export function usePairFromLink(
       }),
     );
 
-  return async (pairingUrl: string) => {
+  return async (pairingUrl: string, expectedEnvironmentId?: EnvironmentId) => {
     // A repeated click would only ask again and then fail on the spent one-time token.
     if (pairedUrlsRef.current.has(pairingUrl)) return;
     // The origin keeps the scheme visible, so a plain HTTP backend is not mistaken for HTTPS.
@@ -134,7 +134,10 @@ export function usePairFromLink(
     const confirmed =
       (await requestConfirmDialog(gt("Add the backend at {origin}?", { origin }))) ?? false;
     if (!confirmed) return;
-    const result = await connectPairingEnvironment({ pairingUrl });
+    const result = await connectPairingEnvironment({
+      pairingUrl,
+      ...(expectedEnvironmentId === undefined ? {} : { expectedEnvironmentId }),
+    });
     if (result._tag === "Failure") {
       if (!isAtomCommandInterrupted(result)) reportPairingFailure(squashAtomCommandFailure(result));
       return;

@@ -35,7 +35,7 @@ import type { LocalProject, MachineView, McpClient, SetupAction, UiState } from 
 
 type View = "list" | "new" | "settings" | `machine:${string}`;
 
-type FollowLink = (openUrl: string | undefined) => BoatLink;
+type FollowLink = (openUrl: string | undefined, expectedEnvironmentId?: EnvironmentId) => BoatLink;
 
 const canOpen = (m: MachineView) => !!m.id && m.state !== "creating";
 
@@ -130,6 +130,7 @@ function Ready({
   const gt = useGT();
   const registry = useContext(RegistryContext);
   const setEnabled = useAtomCommand(environmentCatalog.setEnabled, { reportFailure: false });
+  const retryNow = useAtomCommand(environmentCatalog.retryNow, { reportFailure: false });
   const [view, setView] = useState<View>("list");
   const [pickProject, setPickProject] = useState(false);
   const [hover, setHover] = useState<string | null>(null);
@@ -208,11 +209,19 @@ function Ready({
     const isSignIn = a.cmd === "sign_in_agent" || a.cmd === "turn_on_connect";
     if (isSignIn && (signIn !== null || startingSignIn.current)) return;
     if (isSignIn) startingSignIn.current = true;
-    track(m, a.busy, async () => {
+    const busy =
+      a.cmd === "wake_machine"
+        ? gt("Waking…")
+        : a.cmd === "pair_machine"
+          ? gt("Sending…")
+          : a.cmd === "open_machine"
+            ? gt("Opening…")
+            : a.busy;
+    track(m, busy, async () => {
       const key = machineKey(m);
       const pairIfAsked = (openUrl: string | undefined) => {
-        if (follow(openUrl).kind === "pairing")
-          toast(`Accept "${m.name}" to pair it with Sail`, "info");
+        if (follow(openUrl, m.environmentId ?? undefined).kind === "pairing")
+          toast(gt('Accept "{name}" to pair it with Sail', { name: m.name }), "info");
       };
       switch (a.cmd) {
         case "delete_machine":
@@ -245,7 +254,14 @@ function Ready({
         case "resize_machine":
           await call("resize_machine", { id: m.id, size: a.size });
           return;
+        case "wake_machine":
+          await call("wake_machine", { id: m.id });
+          if (!access.onHost && m.environmentId !== null && access.isPaired(m.environmentId)) {
+            void retryNow(m.environmentId);
+          }
+          return;
         case "open_machine": {
+          if (!access.onHost && m.state === "asleep") await call("wake_machine", { id: m.id });
           const { data: thread } = await call("latest_thread", { id: m.id });
           if (thread === null) {
             toast(message(msg("No thread available to open.")), "info");
@@ -257,7 +273,7 @@ function Ready({
         }
         case "pair_machine": {
           const id = m.environmentId;
-          if (id !== null) {
+          if (access.onHost && id !== null) {
             const entry = registry.get(environmentCatalog.catalogValueAtom).entries.get(id);
             if (entry?.enabled === false && entry.unsupportedReason === undefined) {
               const result = await setEnabled({ environmentId: id, enabled: true });

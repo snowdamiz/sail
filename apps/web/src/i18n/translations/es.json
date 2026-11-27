@@ -12917,6 +12917,12 @@
   "1ec7a2c612524967": "Falló la solicitud de inicio de sesión. Inténtalo de nuevo.",
   "64c07d2cd0e78ac4": "Código enviado. Si el inicio de sesión no avanza, prueba con otro código.",
   "334031c5b02772d0": "Cancelando el inicio de sesión…",
+  "cc6bbdb04e0b2428": "Activando…",
+  "131380a6faac90a7": "Confirma «{name}» para vincular la máquina con Sail",
+  "0b7dce533f3cd22e": "Añadir a Sail",
+  "a14cfd2c600f9cf5": "Volver a añadir a Sail",
+  "567966179e5aecce": "Abrir el último hilo en Sail",
+  "5178f00af5c11b61": "Intentar activar la máquina",
   "d6c672884cc6a076": "Servidor de Boats",
   "82e4ac5a54ebd8d3": "Selecciona un servidor",
   "8e5ef13e0ab5ed30": "Conéctate al servidor que administra tus máquinas de Boat y selecciónalo aquí."

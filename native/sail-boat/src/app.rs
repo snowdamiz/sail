@@ -190,16 +190,21 @@ impl App {
             .chain(sandboxes)
             .filter(|d| !state.machines.iter().any(|m| d.sandbox.as_ref() == Some(&m.sandbox_id)))
             .collect();
+        let mut http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            // Boat answers an unrouted port with a redirect to its fallback page.
+            .redirect(reqwest::redirect::Policy::none());
+        if let Some(path) = std::env::var_os("SAIL_BOAT_CA_CERT").filter(|path| !path.is_empty()) {
+            let pem = std::fs::read(path).context("Reading SAIL_BOAT_CA_CERT")?;
+            let ca = reqwest::Certificate::from_pem(&pem).context("Parsing SAIL_BOAT_CA_CERT")?;
+            http = http.add_root_certificate(ca);
+        }
         let shared = Arc::new(Shared {
             boat,
             t3: t3.with_token_file(data_dir.join("t3-token")),
             settings: RwLock::new(state.settings.clone()),
             events,
-            http: reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                // Boat answers an unrouted port with a redirect to its fallback page.
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?,
+            http: http.build()?,
             saving: Mutex::new(HashSet::new()),
         });
         let app = Arc::new(Self {
@@ -555,6 +560,18 @@ impl App {
         crate::t3desktop::pair_link(&pairing_url)
     }
 
+    pub async fn remote_pairing_target(&self, machine: &Arc<MachineRuntime>) -> Result<RemotePairingTarget> {
+        machine.ensure_awake().await?;
+        let record = machine.record();
+        let url = url::Url::parse(&record.upstream_url).ok().filter(|url| {
+            url.scheme() == "https" && url.host().is_some() && url.username().is_empty()
+                && url.password().is_none() && url.path() == "/" && url.query().is_none() && url.fragment().is_none()
+        }).ok_or_else(|| anyhow!("The machine has no HTTPS address for remote pairing."))?;
+        machine.user_action();
+        machine.ensure_linked().await.map_err(|_| anyhow!("Could not link the Boat machine to this server."))?;
+        Ok(RemotePairingTarget { environment_id: record.environment_id, url: url.into() })
+    }
+
     /// Refuses while work runs on the machine, unless `discard`. Sail offers no way to remove
     /// a backend from outside, so a paired machine ends with a note on what to remove there.
     pub async fn delete_machine(&self, machine: &MachineRuntime, discard: bool) -> Result<()> {
@@ -786,6 +803,13 @@ impl App {
         }
         thread.map(|thread| crate::t3desktop::thread_link(&record.environment_id, thread))
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemotePairingTarget {
+    environment_id: String,
+    url: String,
 }
 
 fn view(m: &MachineRuntime) -> MachineView {

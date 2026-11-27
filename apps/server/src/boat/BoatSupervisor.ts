@@ -1,4 +1,7 @@
 import {
+  AuthAccessWriteScope,
+  type AuthEnvironmentScope,
+  type AuthSessionId,
   BoatError,
   type BoatDaemonStatus,
   type BoatEvent,
@@ -6,6 +9,7 @@ import {
   type BoatInvokeResult,
   BoatNotice,
   BoatSignIn,
+  EnvironmentId,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { makeAsyncRotatingFileSink } from "@t3tools/shared/logging";
@@ -35,6 +39,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { loopbackBindAddress } from "../auth/utils.ts";
 import { resolveEntryPath } from "../cli/invocation.ts";
 import * as ServerConfig from "../config.ts";
+import type { PeerClientPairing } from "../peer/PeerClientPairing.ts";
 import { forkAccepted, ServerAdmission, withAdmission } from "../serverAdmission.ts";
 import * as ServerActivation from "../serverActivation.ts";
 import { loopbackUrlHostForAddress } from "../startupAccess.ts";
@@ -50,7 +55,7 @@ const DAEMON_LOG_BACKUPS = 2;
 const RESTART_DELAY_CAP_SECONDS = 60;
 const STAYED_UP = Duration.minutes(1);
 const STATE_READ_TIMEOUT = Duration.seconds(1);
-const BOAT_DAEMON_PROTOCOL_VERSION = 2;
+const BOAT_DAEMON_PROTOCOL_VERSION = 3;
 
 const Handshake = Schema.Struct({
   ready: Schema.Literal(true),
@@ -72,6 +77,9 @@ const CommandReply = Schema.Union([
     data: Schema.optional(Schema.Unknown),
     openUrl: Schema.optional(Schema.NullOr(Schema.String)),
     signIn: Schema.optional(BoatSignIn),
+    pairingTarget: Schema.optional(
+      Schema.Struct({ environmentId: EnvironmentId, url: Schema.String }),
+    ),
   }),
   Schema.Struct({ ok: Schema.Literal(false), error: Schema.String }),
 ]);
@@ -191,6 +199,7 @@ const SERVER_ENV_FORWARDED_TO_DAEMON = new Set([
   "SAIL_APP_BUNDLE_ID",
   "SAIL_CLI_INSTALL_URL",
   "SAIL_BOAT_BIN",
+  "SAIL_BOAT_CA_CERT",
   "SAIL_MCP_PORT",
 ]);
 
@@ -224,6 +233,11 @@ export function isBoatClientOnHost(
 interface BoatClient {
   readonly owner: string;
   readonly onHost: boolean;
+  readonly session: {
+    readonly sessionId: AuthSessionId;
+    readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
+  };
+  readonly requestPairing: PeerClientPairing["Service"]["request"];
 }
 
 export class BoatSupervisor extends Context.Service<
@@ -628,9 +642,38 @@ const make = Effect.gen(function* () {
 
   const invoke = Effect.fn("BoatSupervisor.invoke")(
     function* (input: BoatInvokeInput, client?: BoatClient) {
+      const remotePair = input.command === "pair_machine" && client?.onHost === false;
+      if (remotePair && !client.session.scopes.includes(AuthAccessWriteScope)) {
+        return yield* new BoatError({ message: "Pairing a remote Boat requires access:write." });
+      }
       const daemon = yield* Effect.flatten(ensureStarted);
       const reply = yield* outlivingCaller(send(daemon, input, client));
       if (!reply.ok) return yield* new BoatError({ message: reply.error });
+      if (remotePair) {
+        const target = reply.pairingTarget;
+        const url = URL.parse(target?.url ?? "");
+        if (target === undefined || url?.protocol !== "https:" || url.href !== `${url.origin}/`) {
+          return yield* new BoatError({
+            message: "The Boat machine has no HTTPS pairing address.",
+          });
+        }
+        const pairing = yield* client
+          .requestPairing({ environmentId: target.environmentId }, client.session)
+          .pipe(Effect.mapError((error) => new BoatError({ message: error.message })));
+        if (pairing.type === "unsupported") {
+          const messages = {
+            link_access: "The Boat machine needs a full-access link for remote pairing.",
+            version: "Update the Boat machine to a Sail version that supports remote pairing.",
+            refused:
+              "The Boat machine refused remote pairing. Check its linked-environment settings and permissions.",
+            unreachable: "The Boat machine could not be reached. Wake it and try again.",
+          } satisfies Record<typeof pairing.reason, string>;
+          return yield* new BoatError({ message: messages[pairing.reason] });
+        }
+        url.pathname = "/pair";
+        url.hash = new URLSearchParams({ token: pairing.credential }).toString();
+        return { data: null, openUrl: url.href } satisfies BoatInvokeResult;
+      }
       return {
         data: reply.data ?? null,
         ...(reply.signIn ? { signIn: reply.signIn } : {}),

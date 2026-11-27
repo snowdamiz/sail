@@ -2,7 +2,16 @@
 import * as NodeHttp from "node:http";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { BoatError, type BoatEvent } from "@t3tools/contracts";
+import {
+  AuthAccessWriteScope,
+  AuthOrchestrationOperateScope,
+  AuthSessionId,
+  BoatError,
+  type BoatEvent,
+  type BoatInvokeInput,
+  EnvironmentId,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -21,6 +30,7 @@ import * as NetAddress from "effect/net/NetAddress";
 
 import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 import * as ServerConfig from "../config.ts";
+import type { PeerClientPairing } from "../peer/PeerClientPairing.ts";
 import * as BoatDaemonBinary from "./BoatDaemonBinary.ts";
 import * as BoatSupervisor from "./BoatSupervisor.ts";
 
@@ -36,6 +46,7 @@ const DAEMON_ENV = [
   "SAIL_BOATD_PATH",
   "SAIL_DEEP_LINK_SCHEME",
   "SAIL_BOAT_BIN",
+  "SAIL_BOAT_CA_CERT",
   "SAIL_CLI_INSTALL_URL",
   "T3CODE_HOME",
   "T3CODE_DEV_AUTH_TOKEN",
@@ -93,6 +104,9 @@ const commands = {
     return [200, { ok: true, data: null }];
   },
   get_state: () => [200, { ok: true, data: state }],
+  pair_machine: (_args, req) => [200, req.headers["x-sail-client-on-host"] === "0"
+    ? { ok: true, pairingTarget: { environmentId: "boat-m1", url: "https://boat.example" } }
+    : { ok: true, openUrl: "sail://pair?pairingUrl=http%3A%2F%2Flocalhost%3A47732%2Fpair%23token%3Dlocal" }],
   sign_in_agent: (_args, req) => [200, { ok: true, signIn: {
     attemptId: req.headers["x-sail-client"],
     onHost: req.headers["x-sail-client-on-host"] === "1",
@@ -106,7 +120,7 @@ const commands = {
   },
 };
 const server = http.createServer((req, res) => {
-  if (${protocolVersion !== 2 || !reportsTcpAddress}) fs.writeFileSync(${JSON.stringify(requestMarkerPath)}, req.url);
+  if (${protocolVersion !== 3 || !reportsTcpAddress}) fs.writeFileSync(${JSON.stringify(requestMarkerPath)}, req.url);
   if (req.headers.authorization !== "Bearer " + token) return reply(res, 401, { ok: false, error: "unauthorized" });
   if (req.method === "GET" && req.url === "/api/events") {
     res.writeHead(200, { "content-type": "text/event-stream" });
@@ -277,7 +291,12 @@ const setupWithProtocolVersion = Effect.fnUntraced(function* (
   return { baseDir, port, reports, requestMarkerPath, saveBoatState, supervisor };
 });
 
-const setup = setupWithProtocolVersion(2);
+const setup = setupWithProtocolVersion(3);
+const clientSession = {
+  sessionId: AuthSessionId.make("boat-client"),
+  scopes: [AuthAccessWriteScope, AuthOrchestrationOperateScope],
+};
+const rejectUnexpectedPairing = () => Effect.die("Unexpected pairing request");
 
 const isReady = (event: BoatEvent) => event._tag === "status" && event.status.phase === "ready";
 
@@ -336,8 +355,9 @@ describe("BoatSupervisor", () => {
 
   it.live.each([
     { protocol: "no version", version: null, reportsTcpAddress: true },
-    { protocol: "a future version", version: 3, reportsTcpAddress: true },
-    { protocol: "a changed ready payload", version: 2, reportsTcpAddress: false },
+    { protocol: "the previous version", version: 2, reportsTcpAddress: true },
+    { protocol: "a future version", version: 4, reportsTcpAddress: true },
+    { protocol: "a changed ready payload", version: 3, reportsTcpAddress: false },
   ])(
     "refuses sail-boatd with $protocol before publishing Boats state",
     ({ version, reportsTcpAddress }) =>
@@ -369,7 +389,7 @@ describe("BoatSupervisor", () => {
               status: {
                 phase: "error",
                 error: reportsTcpAddress
-                  ? "sail-boatd uses an incompatible protocol. Install a matching sail-boatd (protocol version 2) and retry."
+                  ? "sail-boatd uses an incompatible protocol. Install a matching sail-boatd (protocol version 3) and retry."
                   : "sail-boatd reported an invalid startup address or token.",
               },
             },
@@ -398,7 +418,12 @@ describe("BoatSupervisor", () => {
           assert.deepEqual(
             yield* boats.invoke(
               { command: "sign_in_agent", args: { agent: "x" } },
-              { owner: "socket-a", onHost: false },
+              {
+                owner: "socket-a",
+                onHost: false,
+                session: clientSession,
+                requestPairing: rejectUnexpectedPairing,
+              },
             ),
             {
               data: null,
@@ -422,6 +447,62 @@ describe("BoatSupervisor", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.live("returns the machine's pairing only to the remote caller and keeps local pairing", () =>
+    Effect.gen(function* () {
+      const { supervisor } = yield* setup;
+      const environmentId = EnvironmentId.make("boat-m1");
+      const requestPairing: PeerClientPairing["Service"]["request"] = (input, client) =>
+        Effect.gen(function* () {
+          assert.deepEqual(input, { environmentId });
+          assert.deepEqual(client, clientSession);
+          return {
+            type: "credential",
+            environmentId,
+            label: "m1",
+            urls: ["http://localhost:47732"],
+            credential: "first+code",
+            expiresAt: DateTime.add(yield* DateTime.now, { minutes: 3 }),
+          };
+        });
+      yield* Effect.gen(function* () {
+        const boats = yield* BoatSupervisor.BoatSupervisor;
+        const input = {
+          command: "pair_machine",
+          args: { id: "m1" },
+        } satisfies BoatInvokeInput;
+        const denied = yield* boats
+          .invoke(input, {
+            owner: "socket-read",
+            onHost: false,
+            session: { ...clientSession, scopes: [AuthOrchestrationOperateScope] },
+            requestPairing: rejectUnexpectedPairing,
+          })
+          .pipe(Effect.flip);
+        assert.match(denied.message, /access:write/);
+        const local = yield* boats.invoke(input, {
+          owner: "socket-local",
+          onHost: true,
+          session: clientSession,
+          requestPairing: rejectUnexpectedPairing,
+        });
+        assert.match(local.openUrl ?? "", /^sail:\/\/pair/);
+
+        const remote = yield* boats.invoke(input, {
+          owner: "socket-remote",
+          onHost: false,
+          session: clientSession,
+          requestPairing,
+        });
+        assert.deepEqual(remote, {
+          data: null,
+          openUrl: "https://boat.example/pair#token=first%2Bcode",
+        });
+        const state = yield* boats.invoke({ command: "get_state" });
+        assert.isUndefined(state.openUrl);
+      }).pipe(Effect.provide(supervisor()));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.live.each([
     { home: "an explicit home", devState: false },
     { home: "an implicit dev home", devState: true },
@@ -441,6 +522,7 @@ describe("BoatSupervisor", () => {
           Sail_Mcp_Port: "4242",
           SAIL_DEEP_LINK_SCHEME: "sail-dev",
           SAIL_BOAT_BIN: "/fake/boat",
+          SAIL_BOAT_CA_CERT: "/fixture/ca.pem",
           SAIL_CLI_INSTALL_URL: "http://127.0.0.1:4111/install.sh",
           FAKE_BOAT_HOME: "/tmp/fake-boat-home",
         };
@@ -468,6 +550,7 @@ describe("BoatSupervisor", () => {
             SAIL_BOATD_PATH: null,
             SAIL_DEEP_LINK_SCHEME: "sail-dev",
             SAIL_BOAT_BIN: "/fake/boat",
+            SAIL_BOAT_CA_CERT: "/fixture/ca.pem",
             SAIL_CLI_INSTALL_URL: "http://127.0.0.1:4111/install.sh",
             T3CODE_HOME: null,
             T3CODE_DEV_AUTH_TOKEN: null,

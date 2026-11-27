@@ -127,6 +127,28 @@ pub async fn mcp(State(m): M, req: Request) -> Response {
     relay(&m, parts, Body::from(body), route).await
 }
 
+pub async fn client_pairing(State(m): M, req: Request) -> Response {
+    let (parts, body) = req.into_parts();
+    if parts.headers.contains_key(header::ORIGIN) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let now = chrono::Utc::now().timestamp();
+    let linked = auth::bearer(&parts.headers)
+        .is_some_and(|t| m.record().link_tokens.iter().any(|l| l.token == t && l.expires_at > now));
+    if !linked {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Ok(body) = axum::body::to_bytes(body, MAX_STEP_BODY).await else {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    };
+    let route = Relay {
+        target: target(&parts.uri),
+        authorization: parts.headers.get(header::AUTHORIZATION).cloned(),
+        wake: false,
+    };
+    relay(&m, parts, Body::from(body), route).await
+}
+
 /// A linker gives the handshake that opens its MCP session 3 s, less than a wake takes; its
 /// tool calls may wait for minutes. So for a sleeping machine the proxy answers the handshake
 /// itself and starts the wake. The call that follows waits for the machine, which answers 404

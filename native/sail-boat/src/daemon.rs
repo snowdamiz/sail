@@ -30,7 +30,7 @@ use tokio::task::JoinHandle;
 
 const COSTS_EVERY: Duration = Duration::from_secs(300);
 const EVENT_CHANNEL_CAPACITY: usize = 64;
-const BOAT_DAEMON_PROTOCOL_VERSION: u32 = 2;
+const BOAT_DAEMON_PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Clone, Debug)]
 pub struct DaemonConfig {
@@ -140,6 +140,8 @@ struct Reply {
     open_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sign_in: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pairing_target: Option<app::RemotePairingTarget>,
 }
 
 impl Reply {
@@ -355,6 +357,7 @@ impl Daemon {
     }
 
     async fn handle_command(self: Arc<Self>, name: &str, body: Bytes, client: Option<SignInClient>) -> std::result::Result<Reply, CmdErr> {
+        let on_host = client.as_ref().is_none_or(|client| client.on_host);
         match name {
             "get_state" => Reply::data(self.state()),
             "create_machine" => {
@@ -369,7 +372,7 @@ impl Daemon {
                 let args: Args = parse_args(name, &body)?;
                 let app = self.app()?;
                 let machine = app.create_machine(&args.name, &args.size, args.projects).await.map_err(err)?;
-                Ok(Reply::open(Some(app.pair_link(&machine))))
+                Ok(Reply::open(on_host.then(|| app.pair_link(&machine))))
             }
             "local_projects" => {
                 Reply::data(self.app()?.local_projects().await.map_err(err)?)
@@ -428,6 +431,12 @@ impl Daemon {
                 let args: Args = parse_args(name, &body)?;
                 let app = self.app()?;
                 let machine = app.machine(&args.id).map_err(err)?;
+                if !on_host {
+                    let Some(thread) = args.thread else { return Ok(Reply::default()) };
+                    machine.ensure_awake().await.map_err(err)?;
+                    machine.user_action();
+                    return Ok(Reply::open(Some(t3desktop::thread_link(&machine.record().environment_id, &thread))));
+                }
                 let url = match args.thread {
                     Some(thread) => Some(t3desktop::thread_link(&machine.record().environment_id, &thread)),
                     None => app.open_in_t3(&machine, None),
@@ -442,7 +451,14 @@ impl Daemon {
                 let args: Args = parse_args(name, &body)?;
                 let app = self.app()?;
                 let machine = app.machine(&args.id).map_err(err)?;
-                Ok(Reply::open(Some(app.pair_link(&machine))))
+                if on_host {
+                    return Ok(Reply::open(Some(app.pair_link(&machine))));
+                }
+                let pairing_target = app.remote_pairing_target(&machine).await.map_err(err)?;
+                Ok(Reply {
+                    pairing_target: Some(pairing_target),
+                    ..Reply::default()
+                })
             }
             "latest_thread" => {
                 #[derive(Deserialize)]
@@ -1302,6 +1318,29 @@ mod tests {
         let front = command(port, "open_machine", json!({ "id": "dev" })).await;
         assert_eq!(front, json!({ "ok": true, "data": null }), "no thread: the caller is already in front");
 
+        app.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn remote_pair_requires_a_successful_wake_and_local_pair_does_not() {
+        let (app, port, dir) = daemon_with_machine().await;
+        let machine = app.machine("dev").unwrap();
+        machine.retire();
+        let response = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{port}/api/command/pair_machine"))
+            .bearer_auth(TOKEN)
+            .header("x-sail-client", "remote")
+            .header("x-sail-client-on-host", "0")
+            .json(&json!({ "id": "dev" }))
+            .send().await.unwrap();
+        let reply: Value = response.json().await.unwrap();
+        assert_eq!(reply["ok"], false);
+        assert!(reply["error"].as_str().unwrap().contains("the sandbox no longer exists"));
+        assert!(reply.get("pairingTarget").is_none() && reply.get("openUrl").is_none());
+
+        let local = command(port, "pair_machine", json!({ "id": "dev" })).await;
+        assert!(machine.auth.redeem_pairing_code(&pairing_code(&local["openUrl"], machine.record().local_port)));
         app.shutdown();
         let _ = std::fs::remove_dir_all(dir);
     }
