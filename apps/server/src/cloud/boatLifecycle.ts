@@ -224,6 +224,38 @@ export function openBoatCoordinator(
     assertServiceMembers();
   };
 
+  const assertInstalledCli = (version: string) => {
+    if (home === undefined || baseDir !== NodePath.join(NodeFS.realpathSync(home), ".t3")) {
+      throw new Error("Automatic maintenance requires the ordinary pinned Boat home.");
+    }
+    const executable = NodePath.join(runtime, "versions", version, "t3");
+    if (
+      NodeFS.realpathSync(executable) !== executable ||
+      readOptional(NodePath.join(NodePath.dirname(executable), ".sail-product"))?.trim() !== "sail"
+    ) {
+      throw new Error("The selected Sail executable is not a canonical installed runtime.");
+    }
+    const binDir = NodePath.join(baseDir, "..", ".local", "bin");
+    if (NodeFS.realpathSync(binDir) !== binDir) {
+      throw new Error("The installed Sail CLI directory is not canonical.");
+    }
+    NodeFS.accessSync(binDir, NodeFS.constants.W_OK | NodeFS.constants.X_OK);
+    const cli = NodePath.join(binDir, "t3");
+    const installers = readOptional(NodePath.join(runtime, "launchers"))?.trim().split("\n");
+    const wrapper = NodeFS.lstatSync(cli);
+    if (
+      installers?.length !== 1 ||
+      installers[0] !== cli ||
+      !wrapper.isFile() ||
+      wrapper.size > 4096 ||
+      (wrapper.mode & 0o111) === 0 ||
+      readOptional(cli) !== `#!/bin/sh\nexec '${executable.replaceAll("'", "'\\''")}' "$@"\n`
+    ) {
+      throw new Error("The installed Sail CLI must be the sole registered launcher for this home.");
+    }
+    return executable;
+  };
+
   return {
     installation: { baseDir, installationId, environmentId },
     drainBudgetMs: 5_000,
@@ -245,35 +277,16 @@ export function openBoatCoordinator(
       bootId,
       pid,
       launcherStart,
+      assertInstalledCli,
       assertInstalledOwnership: (version: string, childPid: number | undefined) => {
-        const executable = NodePath.join(runtime, "versions", version, "t3");
+        const executable = assertInstalledCli(version);
         if (
-          home === undefined ||
-          baseDir !== NodePath.join(NodeFS.realpathSync(home), ".t3") ||
           childPid === undefined ||
-          NodeFS.realpathSync(executable) !== executable ||
           NodeFS.readlinkSync("/proc/self/exe") !== executable ||
-          NodeFS.readlinkSync(`/proc/${childPid}/exe`) !== executable ||
-          readOptional(NodePath.join(NodePath.dirname(executable), ".sail-product"))?.trim() !==
-            "sail"
+          NodeFS.readlinkSync(`/proc/${childPid}/exe`) !== executable
         ) {
           throw new Error(
             "The installed Sail launcher and child must use the same pinned executable.",
-          );
-        }
-        const cli = NodePath.join(NodeFS.realpathSync(home), ".local", "bin", "t3");
-        const installers = readOptional(NodePath.join(runtime, "launchers"))?.trim().split("\n");
-        const wrapper = NodeFS.lstatSync(cli);
-        if (
-          installers?.length !== 1 ||
-          installers[0] !== cli ||
-          !wrapper.isFile() ||
-          wrapper.size > 4096 ||
-          (wrapper.mode & 0o111) === 0 ||
-          readOptional(cli) !== `#!/bin/sh\nexec '${executable.replaceAll("'", "'\\''")}' "$@"\n`
-        ) {
-          throw new Error(
-            "The installed Sail CLI must be the sole registered launcher for this home.",
           );
         }
       },

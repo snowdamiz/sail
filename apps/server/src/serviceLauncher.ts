@@ -1774,6 +1774,7 @@ export class Launcher {
       this.#clearTimer();
       const automatic = this.#maintenance?.automatic;
       if (automatic !== undefined) {
+        automatic.assertInstalledCli(child.version);
         await this.#repointServiceUnit(child.version, true);
         await replaceFileDurably(
           NodePath.join(automatic.runtime, BOAT_READY),
