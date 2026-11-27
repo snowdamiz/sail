@@ -382,26 +382,32 @@ jobs:
         name: Require a private lane package
         if: needs.prepare.outputs.lane == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.SAIL_LANE_PACKAGE_READ_TOKEN }}
           IMAGE: ${{ needs.prepare.outputs.image }}
           OWNER_TYPE: ${{ github.event.repository.owner.type }}
         run: |
           set -euo pipefail
           owner="${GITHUB_REPOSITORY_OWNER,,}"
+          name="${IMAGE##*/}"
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::Configure SAIL_LANE_PACKAGE_READ_TOKEN with read:packages access to the private lane package."
+            exit 1
+          fi
           case "$OWNER_TYPE" in
-            User) namespace="users/$owner" ;;
+            User) namespace="user" ;;
             Organization) namespace="orgs/$owner" ;;
             *) echo "::error::Cannot verify $IMAGE. Unrecognized GitHub repository owner type."; exit 1 ;;
           esac
-          if ! gh api --paginate --slurp "$namespace/packages?package_type=container&per_page=100" |
-            jq -e --arg owner "$owner" --arg name "${IMAGE##*/}" '
-              type == "array" and all(.[]; type == "array") and
-              ([.[][] | select(.name == $name)] | length == 1 and
-                .[0].package_type == "container" and
-                (.[0].owner.login | ascii_downcase) == $owner and
-                .[0].visibility == "private")
+          if ! gh api "$namespace/packages/container/$name" |
+            jq -es --arg owner "$owner" --arg name "$name" '
+              length == 1 and (.[0] |
+                type == "object" and
+                .name == $name and
+                .package_type == "container" and
+                (.owner.login | ascii_downcase) == $owner and
+                .visibility == "private")
             ' >/dev/null; then
-            echo "::error::GitHub Packages must confirm $IMAGE exists and is private. A package admin must provision it privately and grant this repository Actions write access."
+            echo "::error::GitHub Packages must confirm $IMAGE exists and is private. Verify SAIL_LANE_PACKAGE_READ_TOKEN and package settings."
             exit 1
           fi
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3

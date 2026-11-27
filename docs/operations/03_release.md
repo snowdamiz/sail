@@ -51,8 +51,12 @@ Before the first Sail `-lane.*` release, the package owner must provision
 `ghcr.io/<owner>/sail-server-lane` as a private package outside the release
 workflow. In the package settings, an admin must grant the Sail repository
 **Write** under **Manage Actions access**. Each lane image job requires GitHub
-Packages to report the package as `private` using the workflow's `GITHUB_TOKEN`.
-Missing or unverifiable package metadata blocks the push.
+Packages to report the package as `private` using the encrypted Actions
+secret `SAIL_LANE_PACKAGE_READ_TOKEN`: a classic personal access token with
+only `read:packages` from the personal package owner (or a user with read
+access to an organization package). The token is used only for metadata;
+image publication still uses `GITHUB_TOKEN`. Missing credentials or missing
+or unverifiable package metadata blocks the push.
 
 A first push from a public repository can create a public package. GitHub
 prevents changing a public package back to private. If the name is already
