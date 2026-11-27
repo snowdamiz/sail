@@ -291,7 +291,11 @@ import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
-import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
+import {
+  failEnvironmentAuthInvalid,
+  failEnvironmentAuthInternal,
+  failEnvironmentInternal,
+} from "./auth/http.ts";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import { isNetworkPath } from "@t3tools/shared/path";
 import * as RelayClient from "@t3tools/shared/relayClient";
@@ -3867,7 +3871,7 @@ export const layer = Layer.unwrap(
             ),
           ),
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-            failEnvironmentInternal("internal_error", error),
+            failEnvironmentAuthInternal("internal_error", error),
           ),
         );
         // Desktop bootstrap sessions connect to their own backend, including same-machine WSL.
@@ -3997,6 +4001,7 @@ export const layer = Layer.unwrap(
         Effect.catchTags({
           EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
           EnvironmentInternalError: HttpServerRespondable.toResponse,
+          EnvironmentMaintenanceError: HttpServerRespondable.toResponse,
         }),
       ),
     );

@@ -1,3 +1,4 @@
+import { withAdmission } from "../serverAdmission.ts";
 import {
   type DpopVerificationFailureCode as DpopVerificationFailureCodeType,
   verifyDpopProof,
@@ -126,7 +127,7 @@ export const checkRequestDpopProof = Effect.fn("dpop.checkRequestDpopProof")(fun
             }),
           ),
         );
-    });
+    }).pipe(withAdmission("root"));
   return { thumbprint: result.thumbprint, consume };
 });
 

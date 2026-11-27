@@ -1240,6 +1240,11 @@ it.effect("keeps provider teardown counted after its live entry is removed", () 
           yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now: yield* DateTime.now }),
         ],
       });
+      const neverStarted = Symbol();
+      assert.deepEqual(yield* admission.drain(neverStarted, "1 second"), { kind: "sealed" });
+      assert.equal((yield* manager.open(input).pipe(Effect.flip))._tag, "ProviderSessionOpenError");
+      assert.isTrue(yield* admission.abort(neverStarted));
+      const scansBeforeStart = scans;
       yield* manager.open(input);
       const closing = yield* manager.close(providerSessionId).pipe(Effect.forkScoped);
       yield* Deferred.await(scopeCloseReached);
@@ -1251,14 +1256,20 @@ it.effect("keeps provider teardown counted after its live entry is removed", () 
       const refused = yield* manager.open(input).pipe(Effect.flip);
       assert.equal(refused._tag, "ProviderSessionOpenError");
       assert.isUndefined(draining.pollUnsafe());
-      assert.equal(scans, 0);
+      assert.equal(scans, scansBeforeStart);
       assert.isTrue(yield* admission.abort(token));
       assert.equal((yield* Fiber.join(draining)).kind, "aborted");
       yield* Deferred.succeed(scopeCloseRelease, undefined);
       yield* Fiber.join(closing);
       const next = Symbol();
-      assert.deepEqual(yield* admission.drain(next, "1 second"), { kind: "sealed" });
-      yield* admission.abort(next);
+      const retried = yield* admission
+        .drain(next, "1 second")
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* TestClock.adjust("1 second");
+      assert.deepInclude(yield* Fiber.join(retried), {
+        kind: "aborted",
+        blockers: ["provider-lifetime-unqualified"],
+      });
     }).pipe(
       Effect.ensuring(Deferred.succeed(scopeCloseRelease, undefined)),
       Effect.provide(

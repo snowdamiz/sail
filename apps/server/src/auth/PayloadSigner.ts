@@ -1,8 +1,10 @@
 import * as Mac from "effect/crypto/Mac";
 import * as Effect from "effect/Effect";
 import * as Base64Url from "effect/encoding/Base64Url";
+import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 
+import { withAdmission } from "../serverAdmission.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 
 /** HMAC-SHA256 signatures over UTF-8 payloads, as unpadded base64url. */
@@ -13,7 +15,11 @@ export interface PayloadSigner<E = never> {
 
 const utf8 = (value: string) => new TextEncoder().encode(value);
 
-const fromKey = <E>(mac: Mac.Mac["Service"], key: Effect.Effect<Mac.Key, E>): PayloadSigner<E> => ({
+const fromKey = <E>(
+  mac: Mac.Mac["Service"],
+  key: Effect.Effect<Mac.Key, E>,
+  verificationKey: Effect.Effect<Option.Option<Mac.Key>, E> = key.pipe(Effect.asSome),
+): PayloadSigner<E> => ({
   sign: (payload) =>
     key.pipe(
       Effect.flatMap((loaded) => mac.sign(loaded, utf8(payload)).pipe(Effect.orDie)),
@@ -23,9 +29,12 @@ const fromKey = <E>(mac: Mac.Mac["Service"], key: Effect.Effect<Mac.Key, E>): Pa
     const tag = Base64Url.decode(signature);
     return Result.isFailure(tag)
       ? Effect.succeed(false)
-      : key.pipe(
-          Effect.flatMap((loaded) =>
-            mac.verify(loaded, tag.success, utf8(payload)).pipe(Effect.orDie),
+      : verificationKey.pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () => Effect.succeed(false),
+              onSome: (loaded) => mac.verify(loaded, tag.success, utf8(payload)).pipe(Effect.orDie),
+            }),
           ),
         );
   },
@@ -43,17 +52,38 @@ export const make = Effect.fn("PayloadSigner.make")(function* (secretName: strin
   const secrets = yield* ServerSecretStore.ServerSecretStore;
   const mac = yield* Mac.Mac;
   let key: Mac.Key | undefined;
-  const loadKey = Effect.suspend(() =>
+  const decodeKey = (bytes: Uint8Array) =>
+    Mac.key(Mac.hmacSha256, bytes).pipe(
+      Effect.orDie,
+      Effect.tap((loaded) =>
+        Effect.sync(() => {
+          key = loaded;
+        }),
+      ),
+    );
+  const readKey = Effect.suspend(() =>
     key !== undefined
-      ? Effect.succeed(key)
-      : secrets.getOrCreateRandom(secretName, 32).pipe(
-          Effect.flatMap((bytes) => Mac.key(Mac.hmacSha256, bytes).pipe(Effect.orDie)),
-          Effect.tap((loaded) =>
-            Effect.sync(() => {
-              key = loaded;
+      ? Effect.succeedSome(key)
+      : secrets.get(secretName).pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () => Effect.succeedNone,
+              onSome: (bytes) =>
+                bytes.length === 0 ? Effect.succeedNone : decodeKey(bytes).pipe(Effect.asSome),
             }),
           ),
         ),
   );
-  return fromKey(mac, loadKey);
+  const loadKey = readKey.pipe(
+    Effect.flatMap(
+      Option.match({
+        onNone: () =>
+          secrets
+            .getOrCreateRandom(secretName, 32)
+            .pipe(Effect.flatMap(decodeKey), withAdmission("root")),
+        onSome: Effect.succeed,
+      }),
+    ),
+  );
+  return fromKey(mac, loadKey, readKey);
 });

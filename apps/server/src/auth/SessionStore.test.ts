@@ -22,6 +22,7 @@ import * as SessionStore from "./SessionStore.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 import { base64UrlDecodeUtf8, base64UrlEncode } from "./utils.ts";
 import * as PayloadSigner from "./PayloadSigner.ts";
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 
 const layerServerConfig = (overrides?: Partial<ServerConfig.ServerConfig["Service"]>) =>
   Layer.effect(
@@ -86,6 +87,35 @@ const makeDiskSessionStoreLayer = Effect.fn("makeDiskSessionStoreLayer")(functio
 });
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("SessionStore.layer", (it) => {
+  it.effect(
+    "tracks read connections while sealed and timestamps the first connection after reopening",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore.SessionStore;
+        const session = yield* sessions.issue({ subject: "fixture" });
+        const admission = makeAdmission(Effect.succeed([]));
+        const token = Symbol();
+        const connect = sessions
+          .markConnected(session.sessionId)
+          .pipe(Effect.provideService(ServerAdmission, admission));
+        const current = sessions
+          .listActive()
+          .pipe(Effect.map((rows) => rows.find((row) => row.sessionId === session.sessionId)));
+        const before = yield* current;
+        expect(yield* admission.drain(token, "10 seconds")).toEqual({ kind: "sealed" });
+        yield* TestClock.adjust("5 seconds");
+        yield* connect;
+        expect(yield* current).toMatchObject({
+          connected: true,
+          lastConnectedAt: before?.lastConnectedAt,
+        });
+        yield* sessions.markDisconnected(session.sessionId);
+        expect(yield* admission.abort(token)).toBe(true);
+        yield* connect;
+        expect((yield* current)?.lastConnectedAt).not.toEqual(before?.lastConnectedAt);
+      }).pipe(Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
+  );
+
   it.effect.each(["revoke", "revokeAllExcept", "replace"] as const)(
     "invalidates every connection for a session on %s and leaves other sessions active",
     (operation) =>

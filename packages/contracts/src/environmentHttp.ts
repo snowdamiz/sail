@@ -279,6 +279,23 @@ export class EnvironmentInternalError extends Schema.TaggedError<EnvironmentInte
   }
 }
 
+export class EnvironmentMaintenanceError extends Schema.TaggedError<EnvironmentMaintenanceError>()(
+  "EnvironmentMaintenanceError",
+  { code: Schema.Literal("maintenance"), retryable: Schema.Literal(true) },
+  { httpApiStatus: 503 },
+) {
+  [HttpServerRespondable.symbol]() {
+    return HttpServerResponse.schemaJson(EnvironmentMaintenanceError)(this, {
+      status: 503,
+      headers: { "Retry-After": "1" },
+    });
+  }
+
+  override get message(): string {
+    return "Server maintenance is in progress. Retry the same request.";
+  }
+}
+
 export const EnvironmentResourceNotFoundReason = Schema.Literals(["thread_not_found"]);
 export type EnvironmentResourceNotFoundReason = typeof EnvironmentResourceNotFoundReason.Type;
 
@@ -312,6 +329,7 @@ export const EnvironmentHttpCommonError = Schema.Union([
 export type EnvironmentHttpCommonError = typeof EnvironmentHttpCommonError.Type;
 
 const EnvironmentAuthenticationErrors = [
+  EnvironmentMaintenanceError,
   EnvironmentAuthInvalidError,
   EnvironmentInternalError,
 ] as const;
@@ -391,10 +409,12 @@ export class EnvironmentCloudEndpointUnavailableError extends Schema.TaggedError
   }
 }
 const EnvironmentSessionCreationErrors = [
+  EnvironmentMaintenanceError,
   EnvironmentAuthInvalidError,
   EnvironmentInternalError,
 ] as const;
 const EnvironmentTokenExchangeErrors = [
+  EnvironmentMaintenanceError,
   EnvironmentRequestInvalidError,
   EnvironmentAuthInvalidError,
   EnvironmentConnectApprovalPendingError,
@@ -603,7 +623,7 @@ class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
     HttpApiEndpoint.get("session", "/api/auth/session", {
       headers: OptionalBearerHeaders,
       success: AuthSessionState,
-      error: [EnvironmentInternalError],
+      error: [EnvironmentInternalError, EnvironmentMaintenanceError],
     }),
   )
   .add(
@@ -625,7 +645,7 @@ class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
     HttpApiEndpoint.post("webSocketTicket", "/api/auth/websocket-ticket", {
       headers: OptionalBearerHeaders,
       success: AuthWebSocketTicketResult,
-      error: [EnvironmentInternalError],
+      error: [EnvironmentInternalError, EnvironmentMaintenanceError],
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
@@ -633,7 +653,7 @@ class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
       headers: OptionalBearerHeaders,
       params: AuthWebSocketTicketParams,
       success: AuthWebSocketTicketResult,
-      error: [EnvironmentInternalError],
+      error: [EnvironmentInternalError, EnvironmentMaintenanceError],
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(

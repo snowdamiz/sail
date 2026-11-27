@@ -1654,6 +1654,7 @@ export const layerWithOptions = (
         );
 
       let retirementUnverified = false;
+      let unqualifiedProviderStarted = false;
       const releaseIfStillIdle = Effect.fn("ProviderSessionManager.releaseIfStillIdle")(
         function* (input: {
           readonly providerSessionId: ProviderSessionId;
@@ -1760,7 +1761,10 @@ export const layerWithOptions = (
 
       if (admission !== undefined) {
         yield* admission.registerObserver(
-          Effect.sync(() => (retirementUnverified ? ["provider-retirement-unverified"] : [])),
+          Effect.sync(() => [
+            ...(retirementUnverified ? ["provider-retirement-unverified" as const] : []),
+            ...(unqualifiedProviderStarted ? ["provider-lifetime-unqualified" as const] : []),
+          ]),
         );
         yield* admission.registerProviderRetirement(
           Effect.gen(function* () {
@@ -3397,24 +3401,27 @@ export const layerWithOptions = (
                 const runtime = yield* installationGate
                   .execute(
                     input.modelSelection.instanceId,
-                    adapter.openSession({
-                      threadId: input.threadId,
-                      providerSessionId: input.providerSessionId,
-                      modelSelection: input.modelSelection,
-                      runtimePolicy: input.runtimePolicy,
-                      promptSuggestions: promptSuggestionsEnabled,
-                      ...(input.resumeFromSession === undefined
-                        ? {}
-                        : { resumeFromSession: input.resumeFromSession }),
-                      ...(input.initialNativeThreadId === undefined
-                        ? {}
-                        : { initialNativeThreadId: input.initialNativeThreadId }),
-                      ...(input.initialProviderItemIdentityVersion === undefined
-                        ? {}
-                        : {
-                            initialProviderItemIdentityVersion:
-                              input.initialProviderItemIdentityVersion,
-                          }),
+                    Effect.suspend(() => {
+                      if (adapter.driver !== "acpRegistry") unqualifiedProviderStarted = true;
+                      return adapter.openSession({
+                        threadId: input.threadId,
+                        providerSessionId: input.providerSessionId,
+                        modelSelection: input.modelSelection,
+                        runtimePolicy: input.runtimePolicy,
+                        promptSuggestions: promptSuggestionsEnabled,
+                        ...(input.resumeFromSession === undefined
+                          ? {}
+                          : { resumeFromSession: input.resumeFromSession }),
+                        ...(input.initialNativeThreadId === undefined
+                          ? {}
+                          : { initialNativeThreadId: input.initialNativeThreadId }),
+                        ...(input.initialProviderItemIdentityVersion === undefined
+                          ? {}
+                          : {
+                              initialProviderItemIdentityVersion:
+                                input.initialProviderItemIdentityVersion,
+                            }),
+                      });
                     }),
                   )
                   .pipe(

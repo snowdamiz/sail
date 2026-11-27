@@ -4,6 +4,7 @@ import {
   AuthTokenExchangeGrantType,
   AuthEnvironmentBootstrapTokenType,
   AuthAccessTokenType,
+  AuthAccessTokenResult,
   EnvironmentHttpApi,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
@@ -28,6 +29,7 @@ import { makeDpopKey } from "./dpop.testkit.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 import * as AuthHttp from "./http.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 
 const DEV_TOKEN = "reusable-dev-auth-token-that-is-long-enough";
 class AuthTestApi extends HttpApi.make("environment").add(EnvironmentHttpApi.groups.auth) {}
@@ -67,6 +69,7 @@ const layerRoutes = HttpApiBuilder.layer(AuthTestApi).pipe(
 );
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeAccessToken = Schema.decodeUnknownEffect(AuthAccessTokenResult);
 const postJson = (path: string, body: unknown, headers?: Readonly<Record<string, string>>) =>
   new Request(`http://127.0.0.1${path}`, {
     method: "POST",
@@ -299,8 +302,10 @@ it.live("checks token-endpoint DPoP proofs without writing replay state", () =>
       getOrCreateRandom: () => Effect.die("Not used by these routes."),
       remove: () => Effect.void,
     });
+    const admission = makeAdmission(Effect.succeed([]));
     const requestContext = Context.make(SecureRandom.SecureRandom, random).pipe(
       Context.add(ServerSecretStore.ServerSecretStore, recordingSecretStore),
+      Context.add(ServerAdmission, admission),
     );
     const url = "http://127.0.0.1/oauth/token";
     const key = makeDpopKey();
@@ -319,28 +324,54 @@ it.live("checks token-endpoint DPoP proofs without writing replay state", () =>
     return yield* Effect.acquireUseRelease(
       Effect.sync(() => HttpRouter.toWebHandler(layerRoutes, { disableLogger: true })),
       (environment) =>
-        Effect.promise(async () => {
-          const unknownToken = await environment.handler(
+        Effect.gen(function* () {
+          const request = (input: Request) =>
+            Effect.promise(() => environment.handler(input, requestContext));
+          const unknownToken = yield* request(
             tokenRequest("not-a-pairing-token", key.sign({ method: "POST", url, token: "", iat })),
-            requestContext,
           );
           expect(unknownToken.status).toBe(401);
-          expect(await unknownToken.json()).not.toHaveProperty("dpopFailureReason");
+          expect(yield* Effect.promise(() => unknownToken.json())).not.toHaveProperty(
+            "dpopFailureReason",
+          );
 
-          const accepted = await environment.handler(
+          const accepted = yield* request(
             tokenRequest(DEV_TOKEN, key.sign({ method: "POST", url, token: "", iat })),
-            requestContext,
           );
           expect(accepted.status).toBe(200);
-          expect(await accepted.json()).toMatchObject({ token_type: "DPoP" });
+          const issued = yield* decodeAccessToken(yield* Effect.promise(() => accepted.json()));
+          expect(issued.token_type).toBe("DPoP");
 
-          const badProof = await environment.handler(
-            tokenRequest(DEV_TOKEN, "not-a-proof"),
-            requestContext,
-          );
+          const badProof = yield* request(tokenRequest(DEV_TOKEN, "not-a-proof"));
           expect(badProof.status).toBe(401);
           expect(badProof.headers.get("www-authenticate")).toBe("DPoP");
           expect(written).toEqual([]);
+
+          const token = issued.access_token;
+          const sessionUrl = "http://127.0.0.1/api/auth/session";
+          const proof = key.sign({ method: "GET", url: sessionUrl, token, iat });
+          const sessionRequest = () =>
+            new Request(sessionUrl, {
+              headers: { authorization: `DPoP ${token}`, dpop: proof, host: "127.0.0.1" },
+            });
+          const seal = Symbol();
+          expect(yield* admission.drain(seal, "10 seconds")).toEqual({
+            kind: "sealed",
+          });
+          const deferred = yield* request(sessionRequest());
+          expect(deferred.status).toBe(503);
+          expect(deferred.headers.get("retry-after")).toBe("1");
+          expect(yield* Effect.promise(() => deferred.json())).toMatchObject({
+            code: "maintenance",
+            retryable: true,
+          });
+          expect(written).toEqual([]);
+          expect(yield* admission.abort(seal)).toBe(true);
+          const resumed = yield* request(sessionRequest());
+          expect(resumed.status).toBe(200);
+          expect(yield* Effect.promise(() => resumed.json())).toMatchObject({
+            authenticated: true,
+          });
         }),
       (environment) => Effect.promise(() => environment.dispose()),
     );

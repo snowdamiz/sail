@@ -59,7 +59,7 @@ import {
   annotateEnvironmentRequest,
   failEnvironmentScopeRequired,
   failEnvironmentAuthInvalid,
-  failEnvironmentInternal,
+  failEnvironmentAuthInternal,
 } from "./auth/http.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import {
@@ -390,7 +390,7 @@ const authenticateRawRouteWithScope =
         ),
       ),
       Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-        failEnvironmentInternal("internal_error", error),
+        failEnvironmentAuthInternal("internal_error", error),
       ),
     );
     if (!session.scopes.includes(scope)) {
@@ -490,6 +490,7 @@ export const layerOtlpTracesProxyRoute = HttpRouter.add(
     Effect.catchTags({
       EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
       EnvironmentInternalError: HttpServerRespondable.toResponse,
+      EnvironmentMaintenanceError: HttpServerRespondable.toResponse,
       EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
     }),
     Effect.withTracerEnabled(false),

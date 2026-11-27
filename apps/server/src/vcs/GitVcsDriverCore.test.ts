@@ -4155,6 +4155,27 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         }),
     );
 
+    it.effect("includes untracked files during a seal without adding shared Git objects", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        yield* writeTextFile(cwd, "new.txt", "untracked text\n");
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const fingerprint = () =>
+          NodeChildProcess.execFileSync("git", ["count-objects", "-v"], { cwd }).toString();
+        const before = yield* Effect.sync(fingerprint);
+        const admission = makeAdmission(Effect.succeed([]));
+        const token = Symbol();
+        assert.deepEqual(yield* admission.drain(token, "10 seconds"), { kind: "sealed" });
+
+        const preview = yield* driver
+          .getReviewDiffPreview({ cwd, sourceKind: "working-tree" })
+          .pipe(Effect.provideService(ServerAdmission, admission));
+        assert.include(preview.sources[0]!.diff, "+untracked text");
+        assert.equal(yield* Effect.sync(fingerprint), before);
+      }).pipe(Effect.provide(layerTest)),
+    );
+
     it.effect("propagates patch failures instead of reporting an empty complete diff", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

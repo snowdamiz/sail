@@ -18,6 +18,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -67,6 +68,29 @@ const encodeLegacyAttachmentUploadClaims = Schema.encodeEffect(
 );
 
 describe("AttachmentUpload", () => {
+  it.effect("reads asset signatures during a seal without creating a signing key", () =>
+    Effect.gen(function* () {
+      const signer = yield* AssetSigner.AssetSigner;
+      const store = yield* ServerSecretStore.ServerSecretStore;
+      const admission = makeAdmission(Effect.succeed([]));
+      const token = Symbol();
+      const readSecret = store.get("asset-access-signing-key");
+      const verify = (signature: string) =>
+        signer.verify("asset", signature).pipe(Effect.provideService(ServerAdmission, admission));
+      const sign = signer.sign("asset").pipe(Effect.provideService(ServerAdmission, admission));
+      expect(yield* admission.drain(token, "10 seconds")).toEqual({ kind: "sealed" });
+      expect(yield* verify("AA")).toBe(false);
+      expect(Option.isNone(yield* readSecret)).toBe(true);
+      expect((yield* Effect.flip(sign))._tag).toBe("ServerMaintenanceBusy");
+
+      expect(yield* admission.abort(token)).toBe(true);
+      const signature = yield* sign;
+      expect(Option.isSome(yield* readSecret)).toBe(true);
+      expect(yield* admission.drain(Symbol(), "10 seconds")).toEqual({ kind: "sealed" });
+      expect(yield* verify(signature)).toBe(true);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
   it.effect.each([false, true])(
     "persists and replays immutable uploads (hard links unsupported: %s)",
     (unsupported) =>

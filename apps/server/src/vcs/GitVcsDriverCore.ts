@@ -1,3 +1,5 @@
+import * as Context from "effect/Context";
+import { trackNativeProcessGroup } from "../process/nativeChildAdmission.ts";
 import { forkAccepted, isServerMaintenanceBusy, withAdmission } from "../serverAdmission.ts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
@@ -219,6 +221,10 @@ interface GitRefsSnapshot {
   readonly hasPrimaryRemote: boolean;
   readonly worktreeStamp: string | null;
 }
+
+class LocalObjectReads extends Context.Reference<boolean>("t3/git/LocalObjectReads", {
+  defaultValue: () => false,
+}) {}
 
 interface ExecuteGitOptions {
   stdin?: string | undefined;
@@ -1060,6 +1066,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   >();
   const statusFetchProcesses = yield* Semaphore.make(4);
 
+  const localObjectReads = <A, E, R>(work: Effect.Effect<A, E, R>) =>
+    work.pipe(Effect.provideService(LocalObjectReads, true));
+
   const executeRaw: GitVcsDriver.GitVcsDriver["Service"]["execute"] = Effect.fnUntraced(
     function* (input) {
       const commandInput = {
@@ -1084,11 +1093,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           ),
         );
         const hostEnv = yield* HostProcess.Environment;
+        const localObjectsOnly = yield* LocalObjectReads;
         const baseEnv = {
           ...hostEnv,
           ...unsetInheritedRepositoryEnv(hostEnv, hostPlatform),
           // Concurrent status polls must not take index.lock to save refreshed indexes.
           GIT_OPTIONAL_LOCKS: "0",
+          ...(localObjectsOnly ? { GIT_NO_LAZY_FETCH: "1" } : {}),
           ...input.env,
           ...trace2Monitor.env,
         };
@@ -1103,7 +1114,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           });
         // cmd wrappers truncate multiline commits; leave git.cmd handling to Node lookup.
         const executable = resolved.shell ? "git" : resolved.command;
-        const child = yield* commandSpawner
+        const trackGroup = yield* trackNativeProcessGroup();
+        const spawn = commandSpawner
           .spawn(
             ChildProcess.make(executable, commandInput.args, {
               cwd: commandInput.cwd,
@@ -1120,6 +1132,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             // Synchronous spawn throws (such as E2BIG) arrive as defects.
             Effect.catchDefect((cause) => Effect.fail(spawnError(cause))),
           );
+        const child = yield* trackGroup === undefined
+          ? spawn
+          : spawn.pipe(
+              Effect.tap((child) => Effect.sync(() => trackGroup(child))),
+              Effect.uninterruptible,
+            );
 
         const [stdout, stderr, exitCode] = yield* Effect.all(
           [
@@ -3132,7 +3150,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const statusDetailsLocal: GitVcsDriver.GitVcsDriver["Service"]["statusDetailsLocal"] = Effect.fn(
     "statusDetailsLocal",
   )(function* (cwd, options) {
-    return yield* readStatusDetailsLocal(cwd, options);
+    return yield* localObjectReads(readStatusDetailsLocal(cwd, options));
   });
 
   const refreshStatusUpstream = (cwd: string) =>
@@ -3148,15 +3166,17 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     "statusDetails",
   )(function* (cwd) {
     yield* refreshStatusUpstream(cwd);
-    return yield* readStatusDetailsLocal(cwd);
+    return yield* localObjectReads(readStatusDetailsLocal(cwd));
   });
 
   const statusDetailsRemote: GitVcsDriver.GitVcsDriver["Service"]["statusDetailsRemote"] =
     Effect.fn("statusDetailsRemote")(function* (cwd, options) {
-      return yield* readStatusDetailsRemote(
-        cwd,
-        options?.refreshUpstream !== false,
-        options?.includeAheadOfDefault !== false,
+      return yield* localObjectReads(
+        readStatusDetailsRemote(
+          cwd,
+          options?.refreshUpstream !== false,
+          options?.includeAheadOfDefault !== false,
+        ),
       );
     });
 
@@ -4289,13 +4309,29 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const omitted = pathsToAdd.length < candidates.length;
     if (pathsToAdd.length === 0 || (omitted && !allowPartial)) return { env: undefined, omitted };
 
-    const prefix = `t3code-review-index-${process.pid}-`;
-    // The pathspec excludes every other entry, so an index holding only the added paths diffs
-    // the same as a copy of the real one. Git reads the missing file as an empty index.
-    const tempIndexPath = isolated
-      ? path.join(yield* fileSystem.makeTempDirectoryScoped({ prefix }), "index")
-      : yield* fileSystem.makeTempFileScoped({ prefix });
-    const env = { GIT_INDEX_FILE: tempIndexPath } satisfies NodeJS.ProcessEnv;
+    const tempDir = yield* fileSystem.makeTempDirectoryScoped({
+      prefix: `t3code-review-index-${process.pid}-`,
+    });
+    const tempIndexPath = path.join(tempDir, "index");
+    // Intent-to-add writes a blob even when Git uses a disposable index.
+    const privateObjects = path.join(tempDir, "objects");
+    const repositoryObjects = (yield* runGitStdout("GitVcsDriver.review.objectsPath", cwd, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-path",
+      "objects",
+    ])).replace(/\n$/, "");
+    const hasAlternates = yield* fileSystem.exists(
+      path.join(repositoryObjects, "info", "alternates"),
+    );
+    const objectDirectories = hasAlternates
+      ? yield* runGitStdout("GitVcsDriver.review.alternates", cwd, ["count-objects", "-v"])
+      : "";
+    yield* fileSystem.makeDirectory(privateObjects);
+    const env = {
+      ...privateObjectDirectoryEnv(privateObjects, repositoryObjects, objectDirectories),
+      GIT_INDEX_FILE: tempIndexPath,
+    } satisfies NodeJS.ProcessEnv;
     const tempIndexConfig = [
       "-c",
       "core.splitIndex=false",
@@ -5119,7 +5155,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       "GitVcsDriver.getReviewDiffFileContents.revision",
       input.cwd,
       ["show", "--end-of-options", `${revision}:${relativePath}`],
-      { maxOutputBytes: REVIEW_DIFF_FILE_MAX_OUTPUT_BYTES },
+      {
+        maxOutputBytes: REVIEW_DIFF_FILE_MAX_OUTPUT_BYTES,
+        fallbackErrorDetail:
+          "The requested file revision could not be read from the local Git objects.",
+      },
     );
     if (result.stdout.includes("\0")) {
       return yield* reviewDiffFileError(input, `Cannot expand binary file '${relativePath}'.`);
@@ -7154,9 +7194,15 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       return yield* withListRefsInvalidation(cwd, pullCurrentBranch(cwd));
     }),
     readRangeContext,
-    getReviewBranchCommits,
-    getReviewDiffPreview,
-    getReviewDiffFileContents,
+    getReviewBranchCommits: Effect.fnUntraced(function* (input) {
+      return yield* localObjectReads(getReviewBranchCommits(input));
+    }),
+    getReviewDiffPreview: Effect.fnUntraced(function* (input) {
+      return yield* localObjectReads(getReviewDiffPreview(input));
+    }),
+    getReviewDiffFileContents: Effect.fnUntraced(function* (input) {
+      return yield* localObjectReads(getReviewDiffFileContents(input));
+    }),
     readConfigValue,
     readBranchBase,
     resolveBranchName,

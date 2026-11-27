@@ -10,6 +10,7 @@ import {
   EnvironmentHttpApi,
   EnvironmentHttpForbiddenError,
   EnvironmentInternalError,
+  EnvironmentMaintenanceError,
   type EnvironmentInternalErrorReason,
   EnvironmentOperationForbiddenError,
   EnvironmentRequestInvalidError,
@@ -45,6 +46,7 @@ import { traceAuthenticatedRelayRequest, traceRelayRequest } from "../cloud/trac
 import { deriveAuthClientMetadata } from "./utils.ts";
 import { checkRequestDpopProof } from "./dpop.ts";
 import { requestUrl } from "../requestUrl.ts";
+import { isServerMaintenanceBusy } from "../serverAdmission.ts";
 
 const CREDENTIAL_RESPONSE_HEADERS = {
   "cache-control": "no-store",
@@ -218,6 +220,29 @@ export const failEnvironmentInternal =
     });
   });
 
+export const failEnvironmentAuthInternal = (
+  reason: EnvironmentInternalErrorReason,
+  error: EnvironmentAuth.ServerAuthInternalError,
+): Effect.Effect<
+  never,
+  EnvironmentInternalError | EnvironmentMaintenanceError,
+  HttpServerRequest.HttpServerRequest
+> =>
+  isServerMaintenanceBusy(error)
+    ? HttpEffect.appendPreResponseHandler((_request, response) =>
+        Effect.succeed(HttpServerResponse.setHeader(response, "Retry-After", "1")),
+      ).pipe(
+        Effect.andThen(
+          Effect.fail(
+            new EnvironmentMaintenanceError({
+              code: "maintenance",
+              retryable: true,
+            }),
+          ),
+        ),
+      )
+    : failEnvironmentInternal(reason, error);
+
 // Plaintext LAN servers still need the cookie; TLS arrives through a proxy that sets X-Forwarded-Proto.
 const sessionCookieOptions = (request: HttpServerRequest.HttpServerRequest) => ({
   httpOnly: true,
@@ -272,7 +297,7 @@ export const layerAuthenticatedAuth = Layer.effect(
             ),
           ),
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-            failEnvironmentInternal("internal_error", error),
+            failEnvironmentAuthInternal("internal_error", error),
           ),
         );
         const endTime = yield* Clock.currentTimeNanos;
@@ -326,7 +351,7 @@ export const layer = HttpApiBuilder.group(
             return result;
           },
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-            failEnvironmentInternal("internal_error", error),
+            failEnvironmentAuthInternal("internal_error", error),
           ),
         ),
       )
@@ -380,7 +405,7 @@ export const layer = HttpApiBuilder.group(
             ),
           ),
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-            failEnvironmentInternal("browser_session_issuance_failed", error),
+            failEnvironmentAuthInternal("browser_session_issuance_failed", error),
           ),
         ),
       )
@@ -411,7 +436,7 @@ export const layer = HttpApiBuilder.group(
                     ),
                   ),
                   Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-                    failEnvironmentInternal("access_token_issuance_failed", error),
+                    failEnvironmentAuthInternal("access_token_issuance_failed", error),
                   ),
                 )
               : undefined;
@@ -471,7 +496,7 @@ export const layer = HttpApiBuilder.group(
             failEnvironmentInvalidRequest(EnvironmentAuth.serverAuthInvalidRequestReason(error)),
           ),
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-            failEnvironmentInternal("access_token_issuance_failed", error),
+            failEnvironmentAuthInternal("access_token_issuance_failed", error),
           ),
         ),
       )
@@ -485,7 +510,7 @@ export const layer = HttpApiBuilder.group(
             return yield* serverAuth.issueWebSocketTicket(session);
           },
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-            failEnvironmentInternal("websocket_ticket_issuance_failed", error),
+            failEnvironmentAuthInternal("websocket_ticket_issuance_failed", error),
           ),
         ),
       )
@@ -499,7 +524,7 @@ export const layer = HttpApiBuilder.group(
             return yield* serverAuth.issueWebSocketTicket(session, { use: args.params.use });
           },
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-            failEnvironmentInternal("websocket_ticket_issuance_failed", error),
+            failEnvironmentAuthInternal("websocket_ticket_issuance_failed", error),
           ),
         ),
       )
@@ -526,7 +551,7 @@ export const layer = HttpApiBuilder.group(
             return yield* serverAuth.issuePairingCredential(args.payload);
           },
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-            failEnvironmentInternal("pairing_credential_issuance_failed", error),
+            failEnvironmentAuthInternal("pairing_credential_issuance_failed", error),
           ),
           Effect.catchTags({
             ManagedPolicyRefusedError: (error) =>
@@ -544,7 +569,7 @@ export const layer = HttpApiBuilder.group(
             return { revoked };
           },
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-            failEnvironmentInternal("pairing_link_revoke_failed", error),
+            failEnvironmentAuthInternal("pairing_link_revoke_failed", error),
           ),
         ),
       )
@@ -565,7 +590,7 @@ export const layer = HttpApiBuilder.group(
               failEnvironmentOperationForbidden("current_session_revoke_not_allowed"),
           }),
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-            failEnvironmentInternal("client_session_revoke_failed", error),
+            failEnvironmentAuthInternal("client_session_revoke_failed", error),
           ),
         ),
       )
@@ -579,7 +604,7 @@ export const layer = HttpApiBuilder.group(
             return { approved };
           },
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-            failEnvironmentInternal("connect_device_approve_failed", error),
+            failEnvironmentAuthInternal("connect_device_approve_failed", error),
           ),
         ),
       )
@@ -593,7 +618,7 @@ export const layer = HttpApiBuilder.group(
             return { revoked };
           },
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-            failEnvironmentInternal("connect_device_revoke_failed", error),
+            failEnvironmentAuthInternal("connect_device_revoke_failed", error),
           ),
         ),
       )
@@ -607,7 +632,7 @@ export const layer = HttpApiBuilder.group(
             return { revokedCount };
           },
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-            failEnvironmentInternal("client_session_revoke_failed", error),
+            failEnvironmentAuthInternal("client_session_revoke_failed", error),
           ),
         ),
       );

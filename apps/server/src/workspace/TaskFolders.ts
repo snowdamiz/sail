@@ -1751,7 +1751,7 @@ const make = Effect.gen(function* () {
       admitMutation("remove"),
     ),
     renameBranch: Effect.fn("TaskFolders.admitRenameBranch")(renameBranch, admitMutation("create")),
-    restore,
+    restore: Effect.fn("TaskFolders.admitRestore")(restore, admitMutation("create")),
     layoutCommands,
   });
 });

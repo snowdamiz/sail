@@ -53,6 +53,7 @@ type DrainBlocker =
   | "relay-webhook-configured"
   | "database-reclaim-pending"
   | "provider-retirement-unverified"
+  | "provider-lifetime-unqualified"
   | "settings-state-unknown"
   | "quiescence-unknown"
   | "producer-inventory-incomplete";
@@ -346,6 +347,7 @@ export const makeAdmission = <E>(
     isConfirmedSeal: Effect.sync(() => confirmedSeal !== undefined && isSealed(confirmedSeal)),
     confirmSeal,
     trackLifetime,
+    hasPermit: Effect.map(CurrentPermit, (permit) => permit !== undefined && permits.has(permit)),
     producerInventoryComplete: producerInventory === "complete",
   };
 };

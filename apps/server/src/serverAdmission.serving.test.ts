@@ -50,6 +50,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
 import { EnvironmentAuth } from "./auth/EnvironmentAuth.ts";
 import { ServerSecretStore } from "./auth/ServerSecretStore.ts";
@@ -81,7 +82,10 @@ const liveServices = Layer.mergeAll(
   FetchHttpClient.layer,
 );
 
-const fixture = Effect.fn("ServingDrain.fixture")(function* (controlled = false) {
+const fixture = Effect.fn("ServingDrain.fixture")(function* (
+  launcher: "production" | "fixture-positive" | "none" = "none",
+) {
+  const controlled = launcher !== "none";
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const home = yield* fs
@@ -189,6 +193,8 @@ const fixture = Effect.fn("ServingDrain.fixture")(function* (controlled = false)
   );
   if (controlled) {
     yield* fs.writeFileString(config.environmentIdPath, peer.environmentId + "\n");
+  }
+  if (launcher === "fixture-positive") {
     const makeAdmission = Admission.makeAdmission;
     // The fixture supplies only the launcher's positive inventory verdict. The actual census stays live.
     const inventory = vi
@@ -238,11 +244,12 @@ const fixture = Effect.fn("ServingDrain.fixture")(function* (controlled = false)
         )
       : build,
   );
-  if (controlled)
-    expect(yield* Queue.take(replies).pipe(Effect.timeout("15 seconds"))).toMatchObject({
-      type: "maintenance-ready",
-      censusComplete: true,
-    });
+  if (controlled) {
+    const ready = yield* Queue.take(replies).pipe(Effect.timeout("15 seconds"));
+    expect(ready).toMatchObject({ type: "maintenance-ready" });
+    if (launcher === "fixture-positive") expect(ready).toHaveProperty("censusComplete", true);
+    else expect(ready).not.toHaveProperty("censusComplete");
+  }
   const address = Context.get(server, HttpServer.HttpServer).address;
   if (typeof address === "string" || !("port" in address))
     throw new Error("Expected a loopback TCP listener");
@@ -312,7 +319,7 @@ it.live.each([false, true])(
         draining,
         fence,
         send,
-      } = yield* fixture(controlled);
+      } = yield* fixture(controlled ? "fixture-positive" : "none");
       const orchestrator = Context.get(server, OrchestratorV2);
       const dispatch = rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand];
       const threadId = ThreadId.make("drain-thread");
@@ -447,6 +454,48 @@ it.live.each([false, true])(
     }).pipe(Effect.scoped, Effect.provide(liveServices)),
 );
 
+it.effect("holds a due interval in SQLite until the serving scheduler reopens", () =>
+  Effect.gen(function* () {
+    const { server, rpc, admission } = yield* fixture();
+    const task = (yield* rpc[WS_METHODS.scheduledTasksUpsert]({
+      title: TrimmedNonEmptyString.make("Synthetic timer"),
+      prompt: TrimmedNonEmptyString.make("Process a scheduled run"),
+      projectId,
+      enabled: true,
+      schedule: { type: "interval", everyMs: 60_000 },
+      threadMode: "continue",
+      workspaceStrategy: { type: "root" },
+      modelSelection: { instanceId: replayId, model: TrimmedNonEmptyString.make("multi-turn") },
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+    })).task;
+    const sql = Context.get(server, SqlClient.SqlClient);
+    const readTask = sql<{ readonly run_count: number; readonly next_run_at: string }>`
+      SELECT run_count, next_run_at FROM scheduled_tasks WHERE task_id = ${task.id}
+    `;
+    const token = Symbol();
+    const drain = yield* admission
+      .drain(token, "5 minutes")
+      .pipe(Effect.forkScoped({ startImmediately: true }));
+    yield* TestClock.adjust("65 seconds");
+    expect(yield* readTask).toEqual([{ run_count: 0, next_run_at: task.nextRunAt }]);
+    expect(yield* admission.abort(token)).toBe(true);
+    yield* Fiber.join(drain);
+
+    yield* TestClock.adjust("5 seconds");
+    yield* rpc[WS_METHODS.scheduledTasksSubscribe]({}).pipe(
+      Stream.filter((snapshot) =>
+        snapshot.tasks.some(
+          (candidate) => candidate.id === task.id && candidate.lastRunStatus === "succeeded",
+        ),
+      ),
+      Stream.runHead,
+      Effect.flatMap(Effect.fromOption),
+    );
+    expect(yield* readTask).toEqual([{ run_count: 1, next_run_at: expect.any(String) }]);
+  }).pipe(Effect.scoped, Effect.provide(liveServices)),
+);
+
 it.live("retries a synthetic relay delivery through the scheduled task serving route", () =>
   Effect.gen(function* () {
     const { server, origin, rpc, admission } = yield* fixture();
@@ -564,7 +613,7 @@ it.live(
   "reports specific configured optional blockers and refuses settings enablement while closed",
   () =>
     Effect.gen(function* () {
-      const { server, rpc, admission } = yield* fixture();
+      const { server, rpc, admission } = yield* fixture("production");
       const getSettings = rpc[WS_METHODS.serverGetSettings];
       const updateSettings = rpc[WS_METHODS.serverUpdateSettings];
       const optionalSettings = {
