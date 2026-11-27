@@ -239,7 +239,9 @@ export function assertLiveCaller({ caller, scope }: Caller) {
 }
 
 export const assertFullAccess = (context: Caller, message: string) =>
-  context.limits.runtimeMode === "full-access" && context.limits.interactionMode === "default"
+  context.limits.runtimeMode === "full-access" &&
+  (context.scope.runtimeModeCeiling ?? "full-access") === "full-access" &&
+  context.limits.interactionMode === "default"
     ? Effect.void
     : Effect.fail(new OrchestratorMcpFailure({ code: "capability_denied", message }));
 

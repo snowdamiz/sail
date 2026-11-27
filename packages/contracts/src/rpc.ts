@@ -1,4 +1,10 @@
 import {
+  EnvironmentSetupBundle,
+  EnvironmentSetupError,
+  EnvironmentSetupImportInput,
+  EnvironmentSetupPreview,
+} from "./environmentSetup.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -614,6 +620,8 @@ export const WS_METHODS = {
   peerLinksPairLink: "peerLinks.pairLink",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
+  environmentSetupExport: "environmentSetup.export",
+  environmentSetupImport: "environmentSetup.import",
   serverDiscoverSourceControl: "server.discoverSourceControl",
   serverCheckSecretSource: "server.checkSecretSource",
   serverSearchAcpRegistry: "server.searchAcpRegistry",
@@ -1029,6 +1037,18 @@ const WsServerGetSettingsRpc = Rpc.make(WS_METHODS.serverGetSettings, {
   payload: Schema.Struct({}),
   success: ServerSettings,
   error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
+});
+
+const WsEnvironmentSetupExportRpc = Rpc.make(WS_METHODS.environmentSetupExport, {
+  payload: Schema.Struct({}),
+  success: EnvironmentSetupBundle,
+  error: Schema.Union([EnvironmentSetupError, EnvironmentAuthorizationError]),
+});
+
+const WsEnvironmentSetupImportRpc = Rpc.make(WS_METHODS.environmentSetupImport, {
+  payload: EnvironmentSetupImportInput,
+  success: EnvironmentSetupPreview,
+  error: Schema.Union([EnvironmentSetupError, EnvironmentAuthorizationError]),
 });
 
 const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSettings, {
@@ -2547,6 +2567,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetSettingsRpc,
   WsServerReclaimDatabaseSpaceRpc,
   WsServerUpdateSettingsRpc,
+  WsEnvironmentSetupExportRpc,
+  WsEnvironmentSetupImportRpc,
   WsPeerLinksListRpc,
   WsPeerLinksNamesRpc,
   WsPeerLinksLinkRpc,

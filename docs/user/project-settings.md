@@ -303,3 +303,11 @@ On mobile, use **Settings → Source control & issues** to change selected envir
 T3 Code only pulls when it can fast-forward and the checkout has no changed files, untracked files,
 or local commits. It skips checkouts on another branch or without an upstream. If a checkout has
 local work, resolve it yourself before automatic pulls can resume.
+
+## Copy setup between environments
+
+Open **Settings > Environments > Copy setup**. Choose a source and target, then select **Preview copy**. Review the changes and choose **Apply copy**. To copy in the other direction, switch the source and target.
+
+The copy includes portable provider definitions, selected server preferences, keyboard shortcuts, theme palettes and styles, and user skill files in the standard provider skill folders. Existing providers keep their local paths and credentials. Set up any missing credentials on the target. Theme background images and project settings stay with their environment.
+
+The target keeps entries that the source does not provide, and shortcuts for other target commands keep precedence. Review the skill folders before exporting if you store private data in their files. Copied skills become available to agents on the target.

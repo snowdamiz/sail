@@ -50,6 +50,7 @@ import { useSearchableSetting } from "./settingsSearch";
 import { ConnectDeviceApprovalSettings } from "./ConnectDeviceApprovalSettings";
 import { EnvironmentIconMenu } from "./EnvironmentIconPicker";
 import { FoldedSettingsSection } from "./FoldedSettingsSection";
+import { CopySetupDialog } from "./CopySetupDialog";
 import { EnvironmentsMap } from "./EnvironmentsMap";
 import { LinkedEnvironmentsSettings } from "./LinkedEnvironmentsSettings";
 import { addEnvironmentPrefillAtom } from "~/state/linkedThreadView";
@@ -1866,7 +1867,7 @@ function ConnectionsSettingsContent({
             {savedServerUpdateTargets.length > 0 ? (
               <ServerUpdatesAction targets={savedServerUpdateTargets} variant="ghost-muted" />
             ) : null}
-            {/* Actions on several machines at once, such as linking several, go here. */}
+            <CopySetupDialog />
             <AddEnvironmentDialog
               key={`${addPrefill?.environmentId ?? "any"}:${addBackendHost}`}
               open={addBackendDialogOpen || addPrefill !== null}

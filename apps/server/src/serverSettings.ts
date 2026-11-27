@@ -1,3 +1,11 @@
+import * as NodeUtil from "node:util";
+import type { PortableEnvironmentSettings, PortableProviderInstance } from "@t3tools/contracts";
+import {
+  mergePortableProvider,
+  portableProviders,
+  portableSettings,
+  providerIdentityConflicts,
+} from "./environmentSetup/portableSettings.ts";
 import {
   DEFAULT_SERVER_SETTINGS,
   ModelSelection,
@@ -28,6 +36,7 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import {
   afterAdmissionReopens,
@@ -276,6 +285,66 @@ function ensureProviderInstanceMutationAllowed(
   return Effect.void;
 }
 
+type PortableSetupWrite = {
+  readonly settings: PortableEnvironmentSettings;
+  readonly providers: readonly PortableProviderInstance[];
+  readonly expected: {
+    readonly settings: PortableEnvironmentSettings;
+    readonly providers: readonly PortableProviderInstance[];
+  };
+  readonly apply: boolean;
+};
+
+function checkPortableSetupSnapshot(
+  current: ServerSettings,
+  input: PortableSetupWrite,
+  settingsPath: string,
+) {
+  if (
+    !NodeUtil.isDeepStrictEqual(portableSettings(current), input.expected.settings) ||
+    !NodeUtil.isDeepStrictEqual(portableProviders(current), input.expected.providers)
+  ) {
+    return Effect.fail(new ServerSettingsError({ settingsPath, operation: "write-file" }));
+  }
+  return Effect.void;
+}
+
+function mergePortableSetup(
+  current: ServerSettings,
+  settings: PortableEnvironmentSettings,
+  providers: readonly PortableProviderInstance[],
+  setAt: string,
+  settingsPath: string,
+) {
+  const providerInstances = { ...current.providerInstances };
+  for (const provider of providers) {
+    const existing = Object.hasOwn(providerInstances, provider.id)
+      ? providerInstances[provider.id]
+      : undefined;
+    if (existing !== undefined && providerIdentityConflicts(provider, existing)) {
+      return Effect.fail(
+        new ServerSettingsError({
+          settingsPath,
+          operation: "create-provider-instance",
+          providerInstanceId: provider.id,
+        }),
+      );
+    }
+    providerInstances[provider.id] = mergePortableProvider(provider, existing);
+  }
+  return Effect.succeed({
+    ...current,
+    ...settings,
+    favorites: settings.favorites ?? current.favorites,
+    providerModelPreferences: settings.providerModelPreferences ?? current.providerModelPreferences,
+    providerInstances,
+    ...(settings.defaultTheme === current.defaultTheme ? {} : { defaultThemeSetAt: setAt }),
+    ...(settings.defaultAppearance === current.defaultAppearance
+      ? {}
+      : { defaultAppearanceSetAt: setAt }),
+  });
+}
+
 export class ServerSettingsService extends Context.Service<
   ServerSettingsService,
   {
@@ -290,6 +359,10 @@ export class ServerSettingsService extends Context.Service<
 
     readonly updateSettings: (
       patch: ServerSettingsPatch,
+    ) => Effect.Effect<ServerSettings, ServerSettingsError>;
+
+    readonly importPortableSetup: (
+      input: PortableSetupWrite,
     ) => Effect.Effect<ServerSettings, ServerSettingsError>;
 
     readonly updateProviderInstance: (
@@ -353,6 +426,21 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
     updateSettings: (patch) =>
       updateTestSettings((currentSettings) =>
         Effect.succeed(applyServerSettingsPatch(currentSettings, patch)),
+      ),
+    importPortableSetup: (input) =>
+      updateTestSettings((current) =>
+        Effect.gen(function* () {
+          yield* checkPortableSetupSnapshot(current, input, "test settings");
+          if (!input.apply) return current;
+          const now = yield* DateTime.now;
+          return yield* mergePortableSetup(
+            current,
+            input.settings,
+            input.providers,
+            DateTime.formatIso(now),
+            "test settings",
+          );
+        }),
       ),
     updateProviderInstance: (mutation, patch = {}) =>
       updateTestSettings((currentSettings) =>
@@ -1271,6 +1359,7 @@ const make = Effect.gen(function* () {
   const updateAndPersistSettings = (
     patch: ServerSettingsPatch,
     update: (current: ServerSettings) => Effect.Effect<ServerSettings, ServerSettingsError>,
+    validateOnly = false,
   ): Effect.Effect<ServerSettings, ServerSettingsError> =>
     writeSemaphore
       .withPermits(1)(
@@ -1317,6 +1406,7 @@ const make = Effect.gen(function* () {
               managedBy: managedPolicy?.organization,
             });
           }
+          if (validateOnly) return current;
           // After vetting, which can keep stored variables a policy hides from clients.
           const persisted = yield* persistSettingsSecrets(
             current,
@@ -1508,6 +1598,36 @@ const make = Effect.gen(function* () {
           Effect.as(applyServerSettingsPatch(current, patch)),
         ),
       ),
+    importPortableSetup: (input) => {
+      const { settings, providers } = input;
+      return updateAndPersistSettings(
+        {
+          defaultTheme: settings.defaultTheme,
+          defaultAppearance: settings.defaultAppearance,
+          responseStreamingMode: settings.responseStreamingMode,
+          sidebarAutoSettleAfterDays: settings.sidebarAutoSettleAfterDays,
+          sidebarAutoSettleKeepPullRequests: settings.sidebarAutoSettleKeepPullRequests,
+          sidebarAutoSettleOnMerge: settings.sidebarAutoSettleOnMerge,
+          ...(settings.favorites === null ? {} : { favorites: settings.favorites }),
+          ...(settings.providerModelPreferences === null
+            ? {}
+            : { providerModelPreferences: settings.providerModelPreferences }),
+        },
+        (current) =>
+          Effect.gen(function* () {
+            yield* checkPortableSetupSnapshot(toEffective(current), input, settingsPath);
+            const now = yield* DateTime.now;
+            return yield* mergePortableSetup(
+              current,
+              settings,
+              providers,
+              DateTime.formatIso(now),
+              settingsPath,
+            );
+          }),
+        !input.apply,
+      );
+    },
     updateProviderInstance: (mutation, patch = {}) =>
       updateAndPersistSettings(patch, (current) =>
         Effect.gen(function* () {

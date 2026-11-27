@@ -5,7 +5,7 @@ import { ProjectId, ThreadId, TrimmedNonEmptyString, TrimmedString } from "./bas
 import { ProviderOptionDescriptor } from "./model.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
-const AcpRegistryAgentId = TrimmedNonEmptyString.check(
+export const AcpRegistryAgentId = TrimmedNonEmptyString.check(
   Schema.isMaxLength(128),
   Schema.isPattern(/^[a-z0-9][a-z0-9._-]*$/),
 );

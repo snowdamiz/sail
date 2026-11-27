@@ -680,6 +680,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
       Effect.andThen(Ref.get(settings)),
     ),
     updateSettings,
+    importPortableSetup: () => Effect.die("Unexpected setup import"),
     updateProviderInstance: () => Effect.die("Unexpected provider mutation"),
     withSettingsSnapshot: (use) => Ref.get(settings).pipe(Effect.flatMap(use)),
     streamChanges: Stream.fromPubSub(settingsChanges),

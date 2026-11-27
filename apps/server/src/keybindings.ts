@@ -5,6 +5,7 @@ import {
   KeybindingShortcut,
   KeybindingWhenNode,
   MAX_KEYBINDINGS_COUNT,
+  KeybindingsConfig,
   ResolvedKeybindingRule,
   ResolvedKeybindingsConfig,
   type ServerRemoveKeybindingInput,
@@ -245,6 +246,13 @@ export class Keybindings extends Context.Service<
     readonly upsertKeybindingRule: (
       input: ServerUpsertKeybindingInput,
     ) => Effect.Effect<KeybindingsConfigState, KeybindingsConfigError>;
+
+    readonly exportRules: Effect.Effect<ReadonlyArray<KeybindingRule>, KeybindingsConfigError>;
+    readonly importRules: (
+      rules: ReadonlyArray<KeybindingRule>,
+      apply: boolean,
+      expected?: readonly KeybindingRule[],
+    ) => Effect.Effect<boolean, KeybindingsConfigError>;
 
     readonly removeKeybindingRule: (
       input: ServerRemoveKeybindingInput,
@@ -745,6 +753,53 @@ const make = Effect.gen(function* () {
               }),
           }),
         ),
+    exportRules: loadWritableCustomKeybindingsConfig().pipe(
+      Effect.map((entries) => entries.flatMap(({ rule }) => (rule === null ? [] : [rule]))),
+    ),
+    importRules: (rules, apply, expected) =>
+      upsertSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          const existing = yield* loadWritableCustomKeybindingsConfig();
+          if (
+            expected &&
+            !Schema.toEquivalence(KeybindingsConfig)(
+              expected,
+              existing.flatMap(({ rule }) => (rule === null ? [] : [rule])),
+            )
+          ) {
+            return yield* new KeybindingsConfigError({
+              configPath: keybindingsConfigPath,
+              detail: "The shortcuts changed since the copy was previewed.",
+            });
+          }
+          const commands = new Set(rules.map(({ command }) => command));
+          const retained = existing.filter(
+            ({ rule }) => rule === null || !commands.has(rule.command),
+          );
+          const replaced = existing.flatMap(({ rule }) =>
+            rule !== null && commands.has(rule.command) ? [rule] : [],
+          );
+          if (
+            rules.length === replaced.length &&
+            replaced.every((rule, index) => isSameKeybindingRule(rule, rules[index]!))
+          )
+            return false;
+          if (
+            retained.length + rules.length > MAX_KEYBINDINGS_COUNT ||
+            rules.some((rule) => decodeResolvedKeybindingFromConfigExit(rule)._tag !== "Success")
+          ) {
+            return yield* new KeybindingsConfigError({
+              configPath: keybindingsConfigPath,
+              detail: "The copied shortcuts are invalid or exceed the shortcut limit.",
+            });
+          }
+          if (apply) {
+            yield* writeConfigAtomically([...rules, ...retained.map(({ value }) => value)]);
+            yield* reloadAndEmit;
+          }
+          return true;
+        }),
+      ),
     removeKeybindingRule: (input) =>
       upsertSemaphore
         .withPermits(1)(
