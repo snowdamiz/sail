@@ -1,7 +1,12 @@
 import * as Schema from "effect/Schema";
 
-import { ThreadId, TrimmedNonEmptyString, TurnItemId } from "./baseSchemas.ts";
-import { SecretProviderId, SecretReference } from "./secretReference.ts";
+import { ProjectId, ThreadId, TrimmedNonEmptyString, TurnItemId } from "./baseSchemas.ts";
+import {
+  ProjectCredentialEnvVar,
+  SecretProviderId,
+  SecretProviderSlug,
+  SecretReference,
+} from "./secretReference.ts";
 
 /** The http(s) page a secret card may open, or null for anything else. */
 export function secretRequestPageUrl(value: string): URL | null {
@@ -14,6 +19,12 @@ export function secretRequestPageUrl(value: string): URL | null {
   }
 }
 
+const VaultName = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(120),
+  Schema.isPattern(/^[^\r\n]+$/),
+);
+const CredentialLabel = TrimmedNonEmptyString.check(Schema.isMaxLength(100));
+
 /** Server stores the value under a one-use SecretRef; the thread learns only status. */
 export const SecretRequestAnswerInput = Schema.Struct({
   threadId: ThreadId,
@@ -24,8 +35,20 @@ export const SecretRequestAnswerInput = Schema.Struct({
       type: Schema.Literal("save-to-vault"),
       secret: TrimmedNonEmptyString,
       provider: SecretProviderId,
-      vault: TrimmedNonEmptyString.check(Schema.isMaxLength(120), Schema.isPattern(/^[^\r\n]+$/)),
-      label: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+      vault: VaultName,
+      label: CredentialLabel,
+      envVar: Schema.optionalKey(ProjectCredentialEnvVar),
+      autoGrant: Schema.optionalKey(Schema.Boolean),
+    }),
+    /** Multi-field vault save: stores each field in the vault and authorizes them for the project. */
+    Schema.Struct({
+      type: Schema.Literal("save-to-vault"),
+      values: Schema.Record(Schema.String, TrimmedNonEmptyString),
+      provider: SecretProviderId,
+      vault: VaultName,
+      label: CredentialLabel,
+      envVars: Schema.optionalKey(Schema.Record(Schema.String, ProjectCredentialEnvVar)),
+      autoGrant: Schema.optionalKey(Schema.Boolean),
     }),
     /** A request with `fields`: one value per field name. */
     Schema.Struct({
@@ -38,6 +61,80 @@ export const SecretRequestAnswerInput = Schema.Struct({
   ]),
 });
 export type SecretRequestAnswerInput = typeof SecretRequestAnswerInput.Type;
+
+export const SyncedProjectCredentialEntry = Schema.Struct({
+  id: SecretProviderSlug,
+  label: CredentialLabel,
+  value: TrimmedNonEmptyString,
+  envVar: Schema.optionalKey(ProjectCredentialEnvVar),
+  autoGrant: Schema.optionalKey(Schema.Boolean),
+});
+export type SyncedProjectCredentialEntry = typeof SyncedProjectCredentialEntry.Type;
+
+export const ProjectCredentialsSyncInput = Schema.Struct({
+  projectId: ProjectId,
+  credentials: Schema.Array(SyncedProjectCredentialEntry),
+});
+export type ProjectCredentialsSyncInput = typeof ProjectCredentialsSyncInput.Type;
+
+export const ProjectCredentialsSyncResult = Schema.Struct({
+  syncedCount: Schema.Number,
+});
+export type ProjectCredentialsSyncResult = typeof ProjectCredentialsSyncResult.Type;
+
+export const ProjectCredentialsListInput = Schema.Struct({
+  projectId: ProjectId,
+});
+export type ProjectCredentialsListInput = typeof ProjectCredentialsListInput.Type;
+
+export const ProjectCredentialSummary = Schema.Struct({
+  id: SecretProviderSlug,
+  label: CredentialLabel,
+  envVar: Schema.optionalKey(ProjectCredentialEnvVar),
+  autoGrant: Schema.Boolean,
+  source: Schema.Literals(["local", "synced"]),
+  reference: Schema.optionalKey(SecretReference),
+});
+export type ProjectCredentialSummary = typeof ProjectCredentialSummary.Type;
+
+export const ProjectCredentialsListResult = Schema.Struct({
+  credentials: Schema.Array(ProjectCredentialSummary),
+});
+export type ProjectCredentialsListResult = typeof ProjectCredentialsListResult.Type;
+
+export const ProjectCredentialSaveField = Schema.Struct({
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+  label: CredentialLabel,
+  value: TrimmedNonEmptyString,
+  envVar: Schema.optionalKey(ProjectCredentialEnvVar),
+});
+export type ProjectCredentialSaveField = typeof ProjectCredentialSaveField.Type;
+
+export const ProjectCredentialSaveInput = Schema.Union([
+  Schema.Struct({
+    projectId: ProjectId,
+    provider: SecretProviderId,
+    vault: VaultName,
+    label: CredentialLabel,
+    secret: TrimmedNonEmptyString,
+    envVar: Schema.optionalKey(ProjectCredentialEnvVar),
+    autoGrant: Schema.optionalKey(Schema.Boolean),
+  }),
+  Schema.Struct({
+    projectId: ProjectId,
+    provider: SecretProviderId,
+    vault: VaultName,
+    label: CredentialLabel,
+    fields: Schema.Array(ProjectCredentialSaveField).check(Schema.isMinLength(1)),
+    autoGrant: Schema.optionalKey(Schema.Boolean),
+  }),
+]);
+export type ProjectCredentialSaveInput = typeof ProjectCredentialSaveInput.Type;
+
+export const ProjectCredentialSaveResult = Schema.Struct({
+  savedIds: Schema.Array(SecretProviderSlug),
+});
+export type ProjectCredentialSaveResult = typeof ProjectCredentialSaveResult.Type;
 
 /** What the agent reads when its card ends without a secret. */
 export const SECRET_REQUEST_UNSAVED_NOTE = {

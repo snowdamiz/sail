@@ -12,6 +12,7 @@ import * as Semaphore from "effect/Semaphore";
 import type {
   SecretProviderDriver,
   SecretProviderDriverServices,
+  SecretProviderFieldsItemInput,
   SecretProviderItemInput,
 } from "./driver.ts";
 
@@ -35,6 +36,10 @@ export class SecretResolver extends Context.Service<
       provider: SecretReference["provider"],
       input: SecretProviderItemInput,
     ) => Effect.Effect<SecretReference | undefined>;
+    readonly saveFields?: (
+      provider: SecretReference["provider"],
+      input: SecretProviderFieldsItemInput,
+    ) => Effect.Effect<Readonly<Record<string, SecretReference>> | undefined>;
   }
 >()("@t3tools/secret-provider-core/server/SecretResolver") {}
 
@@ -187,7 +192,45 @@ export const make = Effect.fn("SecretResolver.make")(function* (options: {
       : undefined;
   }, Effect.provideContext(context));
 
-  return SecretResolver.of({ read, invalidate, label, saveItem });
+  const saveFields = Effect.fn("SecretResolver.saveFields")(function* (
+    providerId: SecretReference["provider"],
+    input: SecretProviderFieldsItemInput,
+  ) {
+    if (input.fields.length === 0) return undefined;
+    const providers = yield* options.secretProviders;
+    const provider = providers[providerId];
+    const entry = provider === undefined ? undefined : driversByKind.get(provider.kind);
+    if (provider === undefined || entry === undefined) return undefined;
+    const config = entry.decodeConfig(provider.config);
+    if (Option.isNone(config)) return undefined;
+    if (entry.driver.saveFields !== undefined) {
+      const saved = yield* entry.driver.saveFields(config.value, input);
+      if (saved === undefined) return undefined;
+      const references: Record<string, SecretReference> = {};
+      for (const field of input.fields) {
+        const ref = Object.hasOwn(saved, field.id) ? saved[field.id] : undefined;
+        if (ref === undefined || !entry.driver.definition.isReference(ref)) return undefined;
+        references[field.id] = { provider: providerId, reference: ref };
+      }
+      return references;
+    }
+    if (entry.driver.saveItem === undefined) return undefined;
+    const references: Record<string, SecretReference> = {};
+    for (const field of input.fields) {
+      const fieldTitle =
+        input.fields.length === 1 ? input.label : `${input.label} (${field.label})`.slice(0, 100);
+      const ref = yield* entry.driver.saveItem(config.value, {
+        vault: input.vault,
+        label: fieldTitle,
+        value: field.value,
+      });
+      if (ref === undefined || !entry.driver.definition.isReference(ref)) return undefined;
+      references[field.id] = { provider: providerId, reference: ref };
+    }
+    return references;
+  }, Effect.provideContext(context));
+
+  return SecretResolver.of({ read, invalidate, label, saveItem, saveFields });
 });
 
 export const layer = (options: Parameters<typeof make>[0]) =>

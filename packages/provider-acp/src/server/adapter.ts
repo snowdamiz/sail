@@ -3046,9 +3046,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             mcpServers: mcpContext.servers,
             acpMcpServers: mcpContext.acpServers,
             httpMcpServers: mcpContext.httpServers,
-            ...(mcpContext.processEnvironment === undefined
-              ? {}
-              : { processEnvironment: mcpContext.processEnvironment }),
+            ...(() => {
+              const merged = ProviderAdapter.mergeRuntimePolicyEnvironment(
+                mcpContext.processEnvironment ?? {},
+                input.runtimePolicy,
+              );
+              return mcpContext.processEnvironment === undefined && Object.keys(merged).length === 0
+                ? {}
+                : { processEnvironment: merged };
+            })(),
             ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
             interruptPromptOnCancel: flavor.interruptPromptOnCancel ?? false,
             clientCapabilities: {

@@ -109,6 +109,7 @@ import {
   ThreadId,
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
+  SecretRequestError,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -139,6 +140,8 @@ import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as Workflows from "./workflows/Workflows.ts";
 import * as WorkflowRuntime from "./workflows/WorkflowRuntime.ts";
+import * as BoatCredentialSync from "./boat/BoatCredentialSync.ts";
+import * as ProjectCredentials from "./secrets/ProjectCredentials.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as FeedbackStore from "./feedback/FeedbackStore.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
@@ -1533,6 +1536,12 @@ export const layerWsRpc = (
       const toWorkflowRequestError = (error: Workflows.WorkflowError) =>
         new WorkflowRequestError({ message: error.message });
       const secretRequests = yield* SecretRequests.SecretRequests;
+      const projectCredentialsOption = yield* Effect.serviceOption(
+        ProjectCredentials.ProjectCredentials,
+      );
+      const boatCredentialSyncOption = yield* Effect.serviceOption(
+        BoatCredentialSync.BoatCredentialSync,
+      );
       const feedbackStore = yield* FeedbackStore.FeedbackStore;
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -2002,6 +2011,7 @@ export const layerWsRpc = (
           secretReferences: true,
           secretRequestReferences: true,
           projectCredentialBookmarks: true,
+          projectCredentialsSync: true,
           featureFlags: {
             secretProviders: featureFlags.secretProviders,
             tanstackSource: featureFlags.tanstackSource,
@@ -2498,6 +2508,29 @@ export const layerWsRpc = (
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(secretRequests.answer(input)),
           ),
+        [WS_METHODS.secretsSyncProjectCredentials]: (input) =>
+          Option.match(projectCredentialsOption, {
+            onNone: () => Effect.fail(new SecretRequestError({ reason: "store_failed" })),
+            onSome: (service) => service.syncForProject(input),
+          }),
+        [WS_METHODS.secretsListProjectCredentials]: (input) =>
+          Option.match(projectCredentialsOption, {
+            onNone: () => Effect.succeed({ credentials: [] }),
+            onSome: (service) => service.listForProject(input.projectId),
+          }),
+        [WS_METHODS.secretsSaveProjectCredential]: (input) =>
+          Option.match(projectCredentialsOption, {
+            onNone: () => Effect.fail(new SecretRequestError({ reason: "store_failed" })),
+            onSome: (service) =>
+              service.saveToProject(input).pipe(
+                Effect.tap(() =>
+                  Option.match(boatCredentialSyncOption, {
+                    onNone: () => Effect.void,
+                    onSome: (sync) => sync.syncProject(input.projectId),
+                  }),
+                ),
+              ),
+          }),
         [WS_METHODS.agentFeedbackAnswerRequest]: (input) => feedbackStore.answer(input),
         [WS_METHODS.scheduledTasksListWebhookDeliveries]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
@@ -3561,12 +3594,23 @@ export const layerWsRpc = (
         [WS_METHODS.deviceAction]: (input) => deviceService.action(input),
         [WS_METHODS.subscribeDeviceState]: (_input) => DeviceService.stateStream(deviceService),
         [WS_METHODS.boatsInvoke]: (input) =>
-          boats.invoke(input, {
-            owner: terminalViewerPrefix,
-            onHost: boatClientOnHost,
-            session: { sessionId: currentSessionId, scopes: currentSession.scopes },
-            requestPairing: peerClientPairing.request,
-          }),
+          boats
+            .invoke(input, {
+              owner: terminalViewerPrefix,
+              onHost: boatClientOnHost,
+              session: { sessionId: currentSessionId, scopes: currentSession.scopes },
+              requestPairing: peerClientPairing.request,
+            })
+            .pipe(
+              Effect.tap(() =>
+                input.command === "add_project"
+                  ? Option.match(boatCredentialSyncOption, {
+                      onNone: () => Effect.void,
+                      onSome: (sync) => sync.syncAllRunning,
+                    })
+                  : Effect.void,
+              ),
+            ),
         [WS_METHODS.subscribeBoats]: (_input) => boats.events,
         [WS_METHODS.subscribeBoatNotices]: (_input) => boats.notices,
         [WS_METHODS.previewStopLocalServer]: (input) => portDiscovery.stopServer(input),

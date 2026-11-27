@@ -24,7 +24,12 @@ import {
 } from "./baseSchemas.ts";
 import { UsageLimitSourceId } from "./usageLimitSourceId.ts";
 import { UsageModelFilter } from "./usage.ts";
-import { SecretProviderId, SecretProviderSlug, SecretReference } from "./secretReference.ts";
+import {
+  ProjectCredentialEnvVar,
+  SecretProviderId,
+  SecretProviderSlug,
+  SecretReference,
+} from "./secretReference.ts";
 import { containsSecretReference, SettingsSecretValue } from "./settingsSecretValue.ts";
 import { EnvironmentMachineKind, ThreadEnvMode, WorktreeSubmodules } from "./environment.ts";
 import { KeybindingShortcut } from "./keybindings.ts";
@@ -1237,6 +1242,10 @@ export type SecretProviderConfig = typeof SecretProviderConfig.Type;
 export const ProjectCredentialBookmark = Schema.Struct({
   label: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
   reference: SecretReference,
+  /** Optional environment variable name injected into agent sessions and terminals for this project. */
+  envVar: Schema.optionalKey(ProjectCredentialEnvVar),
+  /** Whether agents working on this project (and Boats cloned from it) may use this credential automatically. Omitted means true. */
+  autoGrant: Schema.optionalKey(Schema.Boolean),
 });
 export type ProjectCredentialBookmark = typeof ProjectCredentialBookmark.Type;
 const ProjectCredentialBookmarks = Schema.Record(SecretProviderSlug, ProjectCredentialBookmark);

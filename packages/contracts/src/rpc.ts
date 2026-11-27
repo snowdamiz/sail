@@ -462,7 +462,16 @@ import {
   ScheduledTaskUpsertInput,
   ScheduledTaskMutationResult,
 } from "./scheduledTask.ts";
-import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
+import {
+  ProjectCredentialSaveInput,
+  ProjectCredentialSaveResult,
+  ProjectCredentialsListInput,
+  ProjectCredentialsListResult,
+  ProjectCredentialsSyncInput,
+  ProjectCredentialsSyncResult,
+  SecretRequestAnswerInput,
+  SecretRequestError,
+} from "./secretRequest.ts";
 import { AgentFeedbackAnswerInput, AgentFeedbackRequestError } from "./agentFeedback.ts";
 import {
   ProjectCloneActionInput,
@@ -666,6 +675,9 @@ export const WS_METHODS = {
   scheduledTasksRunNow: "scheduledTasks.runNow",
   scheduledTasksRotateWebhookToken: "scheduledTasks.rotateWebhookToken",
   secretsAnswerRequest: "secrets.answerRequest",
+  secretsSyncProjectCredentials: "secrets.syncProjectCredentials",
+  secretsListProjectCredentials: "secrets.listProjectCredentials",
+  secretsSaveProjectCredential: "secrets.saveProjectCredential",
   agentFeedbackAnswerRequest: "agentFeedback.answerRequest",
   guestShareCreate: "guestShare.create",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
@@ -2478,6 +2490,24 @@ const WsSecretsAnswerRequestRpc = Rpc.make(WS_METHODS.secretsAnswerRequest, {
   error: Schema.Union([SecretRequestError, EnvironmentAuthorizationError]),
 });
 
+const WsSecretsSyncProjectCredentialsRpc = Rpc.make(WS_METHODS.secretsSyncProjectCredentials, {
+  payload: ProjectCredentialsSyncInput,
+  success: ProjectCredentialsSyncResult,
+  error: Schema.Union([SecretRequestError, EnvironmentAuthorizationError]),
+});
+
+const WsSecretsListProjectCredentialsRpc = Rpc.make(WS_METHODS.secretsListProjectCredentials, {
+  payload: ProjectCredentialsListInput,
+  success: ProjectCredentialsListResult,
+  error: Schema.Union([SecretRequestError, EnvironmentAuthorizationError]),
+});
+
+const WsSecretsSaveProjectCredentialRpc = Rpc.make(WS_METHODS.secretsSaveProjectCredential, {
+  payload: ProjectCredentialSaveInput,
+  success: ProjectCredentialSaveResult,
+  error: Schema.Union([SecretRequestError, EnvironmentAuthorizationError]),
+});
+
 const WsAgentFeedbackAnswerRequestRpc = Rpc.make(WS_METHODS.agentFeedbackAnswerRequest, {
   payload: AgentFeedbackAnswerInput,
   error: Schema.Union([AgentFeedbackRequestError, EnvironmentAuthorizationError]),
@@ -2620,6 +2650,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksRunNowRpc,
   WsScheduledTasksRotateWebhookTokenRpc,
   WsSecretsAnswerRequestRpc,
+  WsSecretsSyncProjectCredentialsRpc,
+  WsSecretsListProjectCredentialsRpc,
+  WsSecretsSaveProjectCredentialRpc,
   WsAgentFeedbackAnswerRequestRpc,
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,

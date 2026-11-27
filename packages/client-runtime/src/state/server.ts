@@ -2031,6 +2031,14 @@ export function createServerEnvironmentAtoms<R, E>(
           JSON.stringify([environmentId, input.threadId, input.turnItemId]),
       },
     }),
+    listProjectCredentials: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:secrets:list-project-credentials",
+      tag: WS_METHODS.secretsListProjectCredentials,
+    }),
+    saveProjectCredential: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:secrets:save-project-credential",
+      tag: WS_METHODS.secretsSaveProjectCredential,
+    }),
     answerFeedbackRequest: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:agent-feedback:answer-request",
       tag: WS_METHODS.agentFeedbackAnswerRequest,

@@ -1,5 +1,6 @@
 import { errorDisplayMessage } from "./errors/translatable.ts";
 import {
+  ProjectCredentialEnvVar,
   SecretReference,
   secretRequestPageUrl,
   type OrchestrationV2TurnItem,
@@ -251,6 +252,23 @@ export function secretRequestReference(
 export const secretRequestValue = (values: Readonly<Record<string, string>>, key: string) =>
   Object.hasOwn(values, key) ? (values[key] ?? "") : "";
 
+const decodeCredentialEnvVar = Schema.decodeUnknownOption(ProjectCredentialEnvVar);
+
+export function parseCredentialEnvVar(raw: string): ProjectCredentialEnvVar | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const decoded = decodeCredentialEnvVar(trimmed);
+  return Option.isSome(decoded) ? decoded.value : undefined;
+}
+
+/** Suggests an environment variable name when a field key already looks like one (e.g. AWS_ACCESS_KEY_ID). */
+export function suggestedCredentialEnvVar(name: string): string {
+  const trimmed = name.trim();
+  return /^[A-Z][A-Z0-9_]*$/.test(trimmed) && parseCredentialEnvVar(trimmed) !== undefined
+    ? trimmed
+    : "";
+}
+
 export type SecretRequestReply =
   /** Keyed by `SecretRequestInput.key`. */
   | { readonly type: "save"; readonly values: Readonly<Record<string, string>> }
@@ -260,6 +278,9 @@ export type SecretRequestReply =
       readonly provider: SecretProviderId;
       readonly vault: string;
       readonly label: string;
+      readonly envVar?: string;
+      readonly envVars?: Readonly<Record<string, string>>;
+      readonly autoGrant?: boolean;
     }
   /** Single-value cards only: the server reads it through `source`. */
   | { readonly type: "reference"; readonly source: SecretRequestSource; readonly reference: string }
@@ -286,23 +307,44 @@ export function secretRequestAnswerInput(
   if (answer.type === "save-to-vault") {
     const vault = answer.vault.trim();
     const label = answer.label.trim();
-    if (
-      item.fields !== undefined ||
-      !vault ||
-      vault.length > 120 ||
-      /[\r\n]/.test(vault) ||
-      !label ||
-      label.length > 100
-    )
+    if (!vault || vault.length > 120 || /[\r\n]/.test(vault) || !label || label.length > 100) {
       return null;
+    }
+    if (item.fields === undefined) {
+      const rawEnv = answer.envVar?.trim() ?? "";
+      const envVar = rawEnv.length > 0 ? parseCredentialEnvVar(rawEnv) : undefined;
+      if (rawEnv.length > 0 && envVar === undefined) return null;
+      return {
+        ...base,
+        answer: {
+          type: "save-to-vault",
+          secret: entries[0]?.[1] ?? "",
+          provider: answer.provider,
+          vault,
+          label,
+          ...(envVar !== undefined ? { envVar } : {}),
+          ...(answer.autoGrant !== undefined ? { autoGrant: answer.autoGrant } : {}),
+        },
+      };
+    }
+    const envVars: Record<string, ProjectCredentialEnvVar> = {};
+    for (const [field] of entries) {
+      const rawEnv = secretRequestValue(answer.envVars ?? {}, field).trim();
+      if (!rawEnv) continue;
+      const parsed = parseCredentialEnvVar(rawEnv);
+      if (parsed === undefined) return null;
+      envVars[field] = parsed;
+    }
     return {
       ...base,
       answer: {
         type: "save-to-vault",
-        secret: entries[0]?.[1] ?? "",
+        values: Object.fromEntries(entries),
         provider: answer.provider,
         vault,
         label,
+        ...(Object.keys(envVars).length > 0 ? { envVars } : {}),
+        ...(answer.autoGrant !== undefined ? { autoGrant: answer.autoGrant } : {}),
       },
     };
   }

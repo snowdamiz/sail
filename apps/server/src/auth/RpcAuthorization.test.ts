@@ -1122,3 +1122,49 @@ it.effect("requires provider management to send /logout through chat", () =>
     ]);
   }).pipe(Effect.scoped),
 );
+
+it.effect(
+  "requires both settings:write and providers:manage for secrets.saveProjectCredential",
+  () =>
+    Effect.gen(function* () {
+      const group = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (
+            tag,
+          ): tag is Exclude<
+            keyof typeof RPC_REQUIRED_SCOPES,
+            typeof WS_METHODS.secretsSaveProjectCredential
+          > => tag !== WS_METHODS.secretsSaveProjectCredential,
+        ),
+      );
+      const handler = group.toLayerHandler(WS_METHODS.secretsSaveProjectCredential, () =>
+        Effect.succeed({ savedIds: ["b1" as never] }),
+      );
+      const payload = {
+        projectId: ProjectId.make("project-1"),
+        provider: SecretProviderId.make("personal"),
+        vault: "Engineering",
+        label: "AWS Prod",
+        fields: [{ name: "AWS_ACCESS_KEY_ID", label: "Access Key ID", value: "AKIA123" }],
+      };
+      const clientWith = (...scopes: Parameters<typeof RpcAuthorization.layer>[0]) =>
+        RpcTest.makeClient(group).pipe(
+          Effect.provide(Layer.merge(handler, RpcAuthorization.layer(scopes))),
+        );
+
+      const settingsOnly = yield* clientWith(AuthSettingsWriteScope);
+      expect(
+        yield* settingsOnly[WS_METHODS.secretsSaveProjectCredential](payload).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthProvidersManageScope });
+
+      const providersOnly = yield* clientWith(AuthProvidersManageScope);
+      expect(
+        yield* providersOnly[WS_METHODS.secretsSaveProjectCredential](payload).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
+
+      const both = yield* clientWith(AuthSettingsWriteScope, AuthProvidersManageScope);
+      expect(yield* both[WS_METHODS.secretsSaveProjectCredential](payload)).toEqual({
+        savedIds: ["b1"],
+      });
+    }).pipe(Effect.scoped),
+);

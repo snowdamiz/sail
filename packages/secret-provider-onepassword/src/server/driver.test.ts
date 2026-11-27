@@ -214,4 +214,50 @@ describe("1Password driver", () => {
       assert.isAtMost(yield* Fiber.join(reading), 45_000);
     }).pipe(Effect.provide(Layer.merge(op.layer, templateFile)));
   });
+
+  it.effect("creates a multi-field API_CREDENTIAL item and returns per-field references", () => {
+    let path: string | undefined;
+    const fixture = fakeOp((args) => {
+      path = args.find((arg) => arg.startsWith("--template="))?.slice("--template=".length);
+      if (path === undefined) throw new Error("Expected template");
+      assert.equal(NodeFS.statSync(path).mode & 0o777, 0o600);
+      const parsed = JSON.parse(NodeFS.readFileSync(path, "utf8"));
+      assert.equal(parsed.category, "API_CREDENTIAL");
+      assert.equal(parsed.title, "AWS Prod");
+      assert.equal(parsed.fields.length, 2);
+      assert.equal(parsed.fields[0].value, "AKIA123");
+      assert.equal(parsed.fields[1].value, "SECRET456");
+      assert.isFalse(args.some((arg) => arg.includes("AKIA123") || arg.includes("SECRET456")));
+      return {
+        stdout: JSON.stringify({
+          id: "aws-item-id",
+          vault: { id: "eng-vault-id" },
+          fields: [
+            { id: "f1", label: "AWS_ACCESS_KEY_ID", value: "AKIA123" },
+            { id: "f2", label: "AWS_SECRET_ACCESS_KEY", value: "SECRET456" },
+          ],
+        }),
+      };
+    });
+    return Effect.gen(function* () {
+      if (!driver.saveFields) throw new Error("Expected saveFields");
+      const refs = yield* driver.saveFields(
+        { account },
+        {
+          vault: "Engineering",
+          label: "AWS Prod",
+          fields: [
+            { id: "AWS_ACCESS_KEY_ID", label: "AWS_ACCESS_KEY_ID", value: "AKIA123" },
+            { id: "AWS_SECRET_ACCESS_KEY", label: "AWS_SECRET_ACCESS_KEY", value: "SECRET456" },
+          ],
+        },
+      );
+      assert.deepStrictEqual(refs, {
+        AWS_ACCESS_KEY_ID: "op://eng-vault-id/aws-item-id/AWS_ACCESS_KEY_ID",
+        AWS_SECRET_ACCESS_KEY: "op://eng-vault-id/aws-item-id/AWS_SECRET_ACCESS_KEY",
+      });
+      assert.isDefined(path);
+      assert.isFalse(path !== undefined && NodeFS.existsSync(path));
+    }).pipe(Effect.provide(fixture.layer));
+  });
 });

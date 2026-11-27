@@ -38,6 +38,7 @@ import {
   TurnItemId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
@@ -74,8 +75,24 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
    */
   maxRuntimeMode: Schema.optional(RuntimeMode),
   workspace: Schema.optional(ProviderAdapterV2RuntimeWorkspace),
+  /** Project-scoped authorized credential env vars, kept redacted from logs and errors. */
+  projectEnvironment: Schema.optional(
+    Schema.RedactedFromValue(Schema.Record(Schema.String, Schema.String)),
+  ),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
+
+export function mergeRuntimePolicyEnvironment(
+  base: NodeJS.ProcessEnv,
+  runtimePolicy: Pick<ProviderAdapterV2RuntimePolicy, "projectEnvironment"> | undefined,
+): NodeJS.ProcessEnv {
+  const projectEnv =
+    runtimePolicy?.projectEnvironment === undefined
+      ? undefined
+      : Redacted.value(runtimePolicy.projectEnvironment);
+  if (projectEnv === undefined || Object.keys(projectEnv).length === 0) return base;
+  return { ...base, ...projectEnv };
+}
 
 export const ProviderAdapterV2TurnMessage = Schema.Struct({
   messageId: MessageId,

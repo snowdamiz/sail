@@ -140,6 +140,7 @@ import {
 } from "./delegatedTaskModes.ts";
 import { assertTargetWithinLimits, isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
 import { WITHHELD, withoutWebhookUrlToken } from "../scheduledTasks/webhookUrlToken.ts";
+import * as ProjectCredentials from "../secrets/ProjectCredentials.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
@@ -1399,6 +1400,7 @@ const make = Effect.gen(function* () {
     return selection;
   });
   const secretRequests = yield* SecretRequests.SecretRequests;
+  const projectCredentials = yield* Effect.serviceOption(ProjectCredentials.ProjectCredentials);
 
   const requireCapability = (scope: McpInvocationScope) =>
     scope.capabilities.has("orchestration")
@@ -2685,7 +2687,7 @@ const make = Effect.gen(function* () {
       const turnItemId = TurnItemId.make(
         `turn-item:secret-request:${stablePart(threadId)}:${stablePart(key)}`,
       );
-      const record = (secretStatus: "pending" | "cancelled") =>
+      const record = (secretStatus: "pending" | "saved" | "cancelled") =>
         threadManagement
           .dispatch({
             type: "secret_request.record",
@@ -2722,6 +2724,37 @@ const make = Effect.gen(function* () {
           Effect.logWarning("Could not close a secret request card", { error: error.message }),
         ),
       );
+
+      if (Option.isSome(projectCredentials) && secretRequests.storeAutoGranted !== undefined) {
+        const matched = yield* projectCredentials.value.matchSecretRequest(
+          parent.thread.projectId,
+          {
+            label: input.label,
+            ...(input.fields === undefined ? {} : { fields: input.fields }),
+          },
+        );
+        if (matched !== undefined) {
+          const delivered = yield* secretRequests
+            .storeAutoGranted({
+              threadId,
+              projectId: parent.thread.projectId,
+              turnItemId,
+              delivery,
+              values:
+                matched.kind === "single"
+                  ? [[undefined, matched.value]]
+                  : (input.fields ?? []).map((field) => [
+                      field.name,
+                      matched.values[field.name] ?? "",
+                    ]),
+            })
+            .pipe(Effect.mapError((error) => failure("orchestration_error", error.message)));
+          yield* record("saved");
+          yield* Effect.annotateCurrentSpan({ "secret_request.status": "auto_granted" });
+          yield* Metrics.increment(Metrics.secretRequestsTotal, { status: "saved" });
+          return { status: "saved" as const, ...delivered };
+        }
+      }
 
       const answered = yield* Effect.acquireUseRelease(
         record("pending"),

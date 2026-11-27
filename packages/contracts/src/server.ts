@@ -754,6 +754,7 @@ export const ServerConfig = Schema.Struct({
   /** A secret request card may be answered with a secret provider reference. */
   secretRequestReferences: Schema.optionalKey(Schema.Boolean),
   projectCredentialBookmarks: Schema.optionalKey(Schema.Boolean),
+  projectCredentialsSync: Schema.optionalKey(Schema.Boolean),
   scratchWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
   newProjectsRoot: Schema.optionalKey(TrimmedNonEmptyString),
   /**

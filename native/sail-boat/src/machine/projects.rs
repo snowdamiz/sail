@@ -167,10 +167,38 @@ impl MachineRuntime {
         Ok(failed)
     }
 
-    fn record_project_origin(&self, destination_id: String, source_id: String) {
+    pub(crate) fn record_project_origin(&self, destination_id: String, source_id: String) {
         self.update_record(|record| {
             record.project_origins.insert(destination_id, source_id);
         });
+    }
+
+    /// Pushes scoped, authorized credentials for one project to a running machine over its
+    /// authenticated upstream channel. Returns `Ok(false)` without waking a stopped machine.
+    pub async fn sync_project_credentials(
+        &self,
+        project_id: &str,
+        credentials: Vec<Value>,
+    ) -> Result<bool> {
+        if self.power() != Power::Running {
+            return Ok(false);
+        }
+        let (url, token) = (self.upstream_url(), self.upstream_token());
+        if url.is_empty() || token.is_empty() {
+            return Ok(false);
+        }
+        upstream::call(
+            &url,
+            &token,
+            "secrets.syncProjectCredentials",
+            json!({
+                "projectId": project_id,
+                "credentials": credentials,
+            }),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("syncing project credentials to {}", self.record().name))?;
+        Ok(true)
     }
 
     fn set_adding_status(&self, repo_key: &str, status: &str) {
@@ -334,6 +362,26 @@ mod tests {
         assert_eq!(parts.iter().map(|p| p.len()).collect::<Vec<_>>(), [8, 4, 4, 4, 12]);
         assert!(parts[2].starts_with('4'));
         assert!(matches!(parts[3].chars().next(), Some('8' | '9' | 'a' | 'b')));
+    }
+
+    #[tokio::test]
+    async fn sync_project_credentials_skips_non_running_machine() {
+        let dir = tempfile::tempdir().unwrap();
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let shared = Arc::new(Shared {
+            boat: Boat::at(dir.path().join("boat")),
+            t3: T3Desktop::at(dir.path().join("t3")),
+            settings: RwLock::new(Settings::default()),
+            events,
+            http: reqwest::Client::new(),
+            saving: Mutex::new(Default::default()),
+        });
+        let machine = MachineRuntime::new(shared, old_machine_record(), dir.path().join("m"));
+        let synced = machine
+            .sync_project_credentials("proj-1", vec![json!({"id": "c1", "label": "AWS", "value": "secret"})])
+            .await
+            .unwrap();
+        assert!(!synced);
     }
 
     #[test]

@@ -13,6 +13,12 @@ export const SecretProviderSlug = TrimmedNonEmptyString.check(
 export const SecretProviderId = SecretProviderSlug.pipe(Schema.brand("SecretProviderId"));
 export type SecretProviderId = typeof SecretProviderId.Type;
 
+export const ProjectCredentialEnvVar = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(128),
+  Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/),
+);
+export type ProjectCredentialEnvVar = typeof ProjectCredentialEnvVar.Type;
+
 // Provider-specific syntax is the secret provider driver's to check.
 export const SecretReferencePath = TrimmedNonEmptyString.check(
   Schema.isMaxLength(1024),

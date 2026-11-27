@@ -1,5 +1,7 @@
 import { pipe } from "effect/Function";
 import {
+  configuredSecretSources,
+  parseCredentialEnvVar,
   secretRequestAnswerInput,
   secretRequestDisplay,
   secretRequestFailureMessage,
@@ -9,6 +11,7 @@ import {
   secretRequestReference,
   secretRequestSources,
   secretRequestValue,
+  suggestedCredentialEnvVar,
   type SecretRequestInput,
   type SecretRequestItem,
   type SecretRequestReply,
@@ -19,13 +22,18 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
+  AuthOrchestrationReadScope,
   AuthProvidersManageScope,
   type EnvironmentId,
   type OrchestrationV2ProjectedTurnItem,
+  type ProjectCredentialSaveField,
+  type ProjectId,
   type SecretProviderId,
+  type ServerConfig,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
+import { Atom } from "effect/reactivity";
 import { hasFeatureFlag } from "@t3tools/client-runtime/state/server";
 import { T, useGT, useMessages, Var } from "gt-react";
 import {
@@ -41,10 +49,13 @@ import { useId, useRef, useState, type FormEvent } from "react";
 import { flushSync } from "react-dom";
 
 import { serverEnvironment } from "../../state/server";
+import { localEnvironmentIdAtom } from "../../state/primaryEnvironment";
 import { useEnvironmentScope } from "../../state/session";
 import { useEnvironmentThread } from "../../state/threads";
 import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { useBoatsPage } from "../boats/api";
+import { managedBoatOriginProject } from "../boats/machine";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -84,6 +95,7 @@ export function SecretRequestCard(props: {
 }
 
 const NO_SOURCES: ReadonlyArray<SecretRequestSource> = [];
+const NULL_CONFIG_ATOM = Atom.make<ServerConfig | null>(null);
 
 function useSecretRequestSources(environmentId: EnvironmentId) {
   const config = useAtomValue(serverEnvironment.configValueAtom(environmentId));
@@ -93,6 +105,57 @@ function useSecretRequestSources(environmentId: EnvironmentId) {
   return canUseReferences && hasFeatureFlag(config, "secretProviders")
     ? secretRequestSources(config, config?.settings.secretProviders ?? {}, messages)
     : NO_SOURCES;
+}
+
+function useManagedBoatVaultTarget(input: {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId | undefined;
+  readonly enabled: boolean;
+}) {
+  const messages = useMessages();
+  const managerId = useAtomValue(localEnvironmentIdAtom);
+  const candidateManagerId =
+    input.enabled &&
+    input.projectId !== undefined &&
+    managerId !== null &&
+    managerId !== input.environmentId
+      ? managerId
+      : null;
+  const canReadBoats = useEnvironmentScope(candidateManagerId, AuthOrchestrationReadScope);
+  const canManageProviders = useEnvironmentScope(candidateManagerId, AuthProvidersManageScope);
+  const managerConfig = useAtomValue(
+    candidateManagerId !== null
+      ? serverEnvironment.configValueAtom(candidateManagerId)
+      : NULL_CONFIG_ATOM,
+  );
+  const managerSources =
+    candidateManagerId !== null &&
+    canManageProviders &&
+    managerConfig?.projectCredentialsSync === true &&
+    hasFeatureFlag(managerConfig, "secretProviders")
+      ? configuredSecretSources(managerConfig.settings.secretProviders, messages)
+      : NO_SOURCES;
+  const shouldReadBoats = candidateManagerId !== null && canReadBoats && managerSources.length > 0;
+  const { page: boats } = useBoatsPage(shouldReadBoats ? candidateManagerId : null);
+  if (
+    !shouldReadBoats ||
+    candidateManagerId === null ||
+    input.projectId === undefined ||
+    (boats.kind !== "ready" && boats.kind !== "setup")
+  ) {
+    return null;
+  }
+  const originProjectId = managedBoatOriginProject(
+    boats.state.machines,
+    input.environmentId,
+    input.projectId,
+  );
+  if (originProjectId === undefined) return null;
+  return {
+    managerId: candidateManagerId,
+    originProjectId,
+    sources: managerSources,
+  };
 }
 
 function PendingSecretRequestForm(props: {
@@ -112,7 +175,13 @@ function PendingSecretRequestForm(props: {
     reportFailure: false,
     reportDefect: false,
   });
+  const saveProjectCredential = useAtomCommand(serverEnvironment.saveProjectCredential, {
+    label: "save project credential",
+    reportFailure: false,
+    reportDefect: false,
+  });
   const multiple = item.fields !== undefined;
+  const inputs = secretRequestInputs(item, messages);
   // A reference answers one value, so a card with fields is always typed.
   const configuredSources = useSecretRequestSources(props.environmentId);
   const sources = multiple ? NO_SOURCES : configuredSources;
@@ -132,10 +201,28 @@ function PendingSecretRequestForm(props: {
     serverEnvironment.configValueAtom(props.environmentId),
     (config) => config?.projectCredentialBookmarks === true,
   );
+  const localVaultAvailable = vaultSaveSupported && configuredSources.length > 0;
+  const managedBoatVault = useManagedBoatVaultTarget({
+    environmentId: props.environmentId,
+    projectId,
+    enabled: !localVaultAvailable,
+  });
+  const vaultSources = localVaultAvailable
+    ? configuredSources
+    : (managedBoatVault?.sources ?? NO_SOURCES);
+
   const [saveToVault, setSaveToVault] = useState(false);
   const [vaultProvider, setVaultProvider] = useState<SecretProviderId | null>(null);
   const [vault, setVault] = useState("");
   const [vaultLabel, setVaultLabel] = useState(item.label.slice(0, 100));
+  const [vaultEnvVar, setVaultEnvVar] = useState(() =>
+    multiple ? "" : suggestedCredentialEnvVar(item.label),
+  );
+  const [vaultEnvVars, setVaultEnvVars] = useState<Readonly<Record<string, string>>>(() =>
+    multiple
+      ? Object.fromEntries(inputs.map((input) => [input.key, suggestedCredentialEnvVar(input.key)]))
+      : {},
+  );
   const [sourceId, setSourceId] = useState<SecretProviderId | null>(null);
   const source = sources.find((candidate) => candidate.id === sourceId) ?? null;
   const [values, setValues] = useState<Readonly<Record<string, string>>>({});
@@ -144,16 +231,33 @@ function PendingSecretRequestForm(props: {
   const [error, setError] = useState<string | null>(null);
   // Enter and click can both submit before a render.
   const inFlight = useRef(false);
-  const inputs = secretRequestInputs(item, messages);
   const inputId = (index: number) => `${formId}-${index}`;
   const describedBy = error !== null ? `${privacyId} ${errorId}` : privacyId;
-  const vaultModeAvailable =
-    vaultSaveSupported && !multiple && sources.length > 0 && source === null;
+  const effectiveVaultProvider =
+    vaultProvider !== null && vaultSources.some((entry) => entry.id === vaultProvider)
+      ? vaultProvider
+      : vaultSources.length === 1
+        ? (vaultSources[0]?.id ?? null)
+        : null;
+  const vaultModeAvailable = vaultSources.length > 0 && source === null;
   const vaultMode = vaultModeAvailable && saveToVault;
+  const usingManagedBoatVault = vaultMode && !localVaultAvailable && managedBoatVault !== null;
+
   const typedReply: SecretRequestReply | null = vaultMode
-    ? vaultProvider === null || !sources.some((entry) => entry.id === vaultProvider)
+    ? effectiveVaultProvider === null
       ? null
-      : { type: "save-to-vault", values, provider: vaultProvider, vault, label: vaultLabel }
+      : {
+          type: "save-to-vault",
+          values,
+          provider: effectiveVaultProvider,
+          vault,
+          label: vaultLabel,
+          ...(multiple
+            ? { envVars: vaultEnvVars }
+            : vaultEnvVar.trim().length > 0
+              ? { envVar: vaultEnvVar }
+              : {}),
+        }
     : { type: "save", values };
   const canSave =
     source === null
@@ -170,6 +274,85 @@ function PendingSecretRequestForm(props: {
     // so the card is emptied before it closes; a failed answer puts the values back.
     const typed = values;
     setValues({});
+
+    if (reply.type === "save-to-vault" && usingManagedBoatVault && managedBoatVault !== null) {
+      const fields: Array<ProjectCredentialSaveField> = multiple
+        ? inputs.map((fieldInput) => {
+            const rawEnv = secretRequestValue(reply.envVars ?? {}, fieldInput.key).trim();
+            const parsedEnv = rawEnv ? parseCredentialEnvVar(rawEnv) : undefined;
+            return {
+              name: fieldInput.key,
+              label: fieldInput.label,
+              value: secretRequestValue(typed, fieldInput.key).trim(),
+              ...(parsedEnv !== undefined ? { envVar: parsedEnv } : {}),
+            };
+          })
+        : [
+            (() => {
+              const rawEnv = reply.envVar?.trim() ?? "";
+              const parsedEnv = rawEnv ? parseCredentialEnvVar(rawEnv) : undefined;
+              return {
+                name: parsedEnv ?? reply.label.trim(),
+                label: reply.label.trim(),
+                value: secretRequestValue(typed, "").trim(),
+                ...(parsedEnv !== undefined ? { envVar: parsedEnv } : {}),
+              };
+            })(),
+          ];
+      const saveResult = await saveProjectCredential({
+        environmentId: managedBoatVault.managerId,
+        input: {
+          projectId: managedBoatVault.originProjectId,
+          provider: reply.provider,
+          vault: reply.vault.trim(),
+          label: reply.label.trim(),
+          fields,
+          autoGrant: true,
+        },
+      });
+      if (saveResult._tag === "Failure") {
+        inFlight.current = false;
+        setSubmitting(false);
+        setValues(typed);
+        setSaveToVault(false);
+        if (!isAtomCommandInterrupted(saveResult)) {
+          pipe(
+            squashAtomCommandFailure(saveResult),
+            (failure) => secretRequestFailureMessage(failure, messages),
+            setError,
+          );
+        }
+        return;
+      }
+      const directInput = secretRequestAnswerInput(item, { type: "save", values: typed });
+      if (directInput === null) {
+        inFlight.current = false;
+        setSubmitting(false);
+        setValues(typed);
+        return;
+      }
+      const boatAnswer = await answer({
+        environmentId: props.environmentId,
+        input: directInput,
+      }).finally(() => {
+        inFlight.current = false;
+        setSubmitting(false);
+      });
+      if (boatAnswer._tag === "Success") {
+        setReference("");
+        return;
+      }
+      setValues(typed);
+      if (!isAtomCommandInterrupted(boatAnswer)) {
+        pipe(
+          squashAtomCommandFailure(boatAnswer),
+          (failure) => secretRequestFailureMessage(failure, messages),
+          setError,
+        );
+      }
+      return;
+    }
+
     const result = await answer({ environmentId: props.environmentId, input }).finally(() => {
       inFlight.current = false;
       setSubmitting(false);
@@ -349,19 +532,19 @@ function PendingSecretRequestForm(props: {
           {vaultMode ? (
             <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
               <Select
-                value={vaultProvider}
+                value={effectiveVaultProvider}
                 onValueChange={(id) =>
-                  setVaultProvider(sources.find((entry) => entry.id === id)?.id ?? null)
+                  setVaultProvider(vaultSources.find((entry) => entry.id === id)?.id ?? null)
                 }
               >
                 <SelectTrigger size="sm" aria-label={gt("Secret provider")} disabled={submitting}>
                   <SelectValue>
-                    {sources.find((entry) => entry.id === vaultProvider)?.label ??
+                    {vaultSources.find((entry) => entry.id === effectiveVaultProvider)?.label ??
                       gt("Select a secret provider")}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectPopup>
-                  {sources.map((entry) => (
+                  {vaultSources.map((entry) => (
                     <SelectItem key={entry.id} value={entry.id}>
                       {entry.label}
                     </SelectItem>
@@ -384,10 +567,43 @@ function PendingSecretRequestForm(props: {
                 maxLength={100}
                 onChange={(event) => setVaultLabel(event.currentTarget.value)}
               />
+              {multiple ? (
+                <div className="flex flex-col gap-1.5">
+                  {inputs.map((fieldInput) => (
+                    <Input
+                      key={`env:${fieldInput.key}`}
+                      font="mono"
+                      aria-label={gt("Environment variable for {field} (optional)", {
+                        field: fieldInput.label,
+                      })}
+                      placeholder={gt("Env var for {field} (optional)", {
+                        field: fieldInput.label,
+                      })}
+                      value={secretRequestValue(vaultEnvVars, fieldInput.key)}
+                      disabled={submitting}
+                      maxLength={128}
+                      onChange={(event) => {
+                        const next = event.currentTarget.value;
+                        setVaultEnvVars((current) => ({ ...current, [fieldInput.key]: next }));
+                      }}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <Input
+                  font="mono"
+                  aria-label={gt("Environment variable (optional)")}
+                  placeholder={gt("Environment variable (optional, e.g. AWS_ACCESS_KEY_ID)")}
+                  value={vaultEnvVar}
+                  disabled={submitting}
+                  maxLength={128}
+                  onChange={(event) => setVaultEnvVar(event.currentTarget.value)}
+                />
+              )}
               <p className="text-xs text-muted-foreground">
                 <T>
-                  This creates a new item in the chosen vault. Future requests can use its saved
-                  reference with your approval.
+                  Saves to 1Password and authorizes this project so future sessions and Boats can
+                  use it automatically.
                 </T>
               </p>
             </div>
@@ -434,65 +650,74 @@ function SecretRequestField(props: {
   readonly describedBy: string;
   readonly onChange: (value: string) => void;
 }) {
-  const { input } = props;
   const gt = useGT();
   const [revealed, setRevealed] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const masked = input.secret && !revealed;
-  const toggleRevealed = () => {
-    const field = inputRef.current;
-    const start = field?.selectionStart ?? null;
-    const end = field?.selectionEnd ?? null;
+
+  const toggleReveal = () => {
+    const input = inputRef.current;
+    const selectionStart = input?.selectionStart ?? null;
+    const selectionEnd = input?.selectionEnd ?? null;
+    const selectionDirection = input?.selectionDirection ?? undefined;
     flushSync(() => setRevealed((current) => !current));
-    // After a click changes a focused input's type, Chromium moves the caret to the
-    // start unless the new type is laid out before the selection is restored.
-    field?.getBoundingClientRect();
-    field?.setSelectionRange(start, end);
+    if (input !== null && selectionStart !== null && selectionEnd !== null) {
+      input.focus();
+      input.setSelectionRange(selectionStart, selectionEnd, selectionDirection);
+    }
   };
-  const control = (
+
+  const control = props.input.secret ? (
     <InputGroup>
       <InputGroupInput
         ref={inputRef}
         id={props.id}
-        // A CSS-masked text field still exposes its value to screen readers.
-        type={masked ? "password" : "text"}
-        autoComplete="off"
+        type={revealed ? "text" : "password"}
+        autoComplete="new-password"
         autoCorrect="off"
         autoCapitalize="off"
         spellCheck={false}
-        data-1p-ignore
-        data-lpignore="true"
-        data-bwignore
-        placeholder={input.placeholder}
+        placeholder={props.input.placeholder}
         value={props.value}
         disabled={props.disabled}
         aria-invalid={props.invalid || undefined}
         aria-describedby={props.describedBy}
         onChange={(event) => props.onChange(event.currentTarget.value)}
       />
-      {input.secret ? (
-        <InputGroupAddon align="inline-end">
-          <Button
-            type="button"
-            size="icon-xs"
-            variant="ghost"
-            aria-label={gt("Show {label}", { label: input.label })}
-            aria-pressed={revealed}
-            disabled={props.disabled}
-            // Keep focus, and the caret, in the input.
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={toggleRevealed}
-          >
-            {revealed ? <EyeOffIcon aria-hidden /> : <EyeIcon aria-hidden />}
-          </Button>
-        </InputGroupAddon>
-      ) : null}
+      <InputGroupAddon align="inline-end">
+        <Button
+          type="button"
+          size="icon-xs"
+          variant="ghost"
+          disabled={props.disabled}
+          aria-label={revealed ? gt("Hide secret") : gt("Show secret")}
+          aria-pressed={revealed}
+          onClick={toggleReveal}
+        >
+          {revealed ? <EyeOffIcon className="size-3.5" /> : <EyeIcon className="size-3.5" />}
+        </Button>
+      </InputGroupAddon>
     </InputGroup>
+  ) : (
+    <Input
+      id={props.id}
+      type="text"
+      autoComplete="off"
+      autoCorrect="off"
+      autoCapitalize="off"
+      spellCheck={false}
+      placeholder={props.input.placeholder}
+      value={props.value}
+      disabled={props.disabled}
+      aria-invalid={props.invalid || undefined}
+      aria-describedby={props.describedBy}
+      onChange={(event) => props.onChange(event.currentTarget.value)}
+    />
   );
+
   if (props.label === undefined) return control;
   return (
     <div className="flex min-w-0 flex-col gap-1">
-      <label htmlFor={props.id} className="text-xs font-medium text-muted-foreground">
+      <label htmlFor={props.id} className="text-xs font-medium text-foreground">
         {props.label}
       </label>
       {control}

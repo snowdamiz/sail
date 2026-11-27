@@ -137,6 +137,9 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.workflowsGet]: AuthOrchestrationReadScope,
   [WS_METHODS.workflowsGetDefinition]: AuthFilesystemReadScope,
   [WS_METHODS.secretsAnswerRequest]: AuthOrchestrationOperateScope,
+  [WS_METHODS.secretsSyncProjectCredentials]: AuthProvidersManageScope,
+  [WS_METHODS.secretsListProjectCredentials]: AuthOrchestrationReadScope,
+  [WS_METHODS.secretsSaveProjectCredential]: AuthProvidersManageScope,
   [WS_METHODS.agentFeedbackAnswerRequest]: AuthOrchestrationOperateScope,
   // Delivery logs hold request bodies, so they need the same scope as the URL.
   [WS_METHODS.scheduledTasksListWebhookDeliveries]: AuthOrchestrationOperateScope,
@@ -354,6 +357,9 @@ const requiredScopesForRpcCall = (
     ["reference", "save-to-vault"].includes(decodeSecretRequestAnswer(payload).answer.type)
   ) {
     return [AuthOrchestrationOperateScope, AuthProvidersManageScope];
+  }
+  if (method === WS_METHODS.secretsSaveProjectCredential) {
+    return [AuthSettingsWriteScope, AuthProvidersManageScope];
   }
   if (method === WS_METHODS.projectsMutate) {
     return requiredScopesForProjectMutation(decodeProjectMutation(payload));

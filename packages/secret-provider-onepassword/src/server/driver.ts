@@ -111,6 +111,39 @@ const encodeItemTemplate = Schema.encodeEffect(
     }),
   ),
 );
+const encodeFieldsTemplate = Schema.encodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      category: Schema.Literal("API_CREDENTIAL"),
+      title: Schema.String,
+      fields: Schema.Array(
+        Schema.Struct({
+          id: Schema.String,
+          label: Schema.String,
+          type: Schema.Literal("CONCEALED"),
+          value: Schema.String,
+        }),
+      ),
+    }),
+  ),
+);
+
+function sanitizeOnePasswordFieldId(raw: string, index: number, used: Set<string>): string {
+  const base =
+    raw
+      .trim()
+      .replaceAll(/[^A-Za-z0-9._-]+/g, "_")
+      .replaceAll(/^_+|_+$/g, "")
+      .slice(0, 64) || `field_${index + 1}`;
+  let candidate = base;
+  let suffix = 2;
+  while (used.has(candidate)) {
+    candidate = `${base.slice(0, 56)}_${suffix}`;
+    suffix += 1;
+  }
+  used.add(candidate);
+  return candidate;
+}
 
 export const driver = defineSecretProviderDriver({
   kind: definition.kind,
@@ -149,6 +182,57 @@ export const driver = defineSecretProviderDriver({
       if (Option.isNone(item)) return undefined;
       const reference = `op://${item.value.vault.id}/${item.value.id}/password`;
       return definition.isReference(reference) ? reference : undefined;
+    }).pipe(
+      Effect.scoped,
+      Effect.catch(() => Effect.undefined),
+      Effect.timeoutOption(READ_TIMEOUT),
+    );
+    return Option.getOrUndefined(result);
+  }),
+  saveFields: Effect.fn("OnePasswordDriver.saveFields")(function* ({ account }, input) {
+    if (input.fields.length === 0) return undefined;
+    const result = yield* Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const template = yield* fileSystem.makeTempFileScoped({ prefix: "t3code-op-create-" });
+      yield* fileSystem.chmod(template, 0o600);
+      const usedIds = new Set<string>();
+      const prepared = input.fields.map((field, index) => ({
+        inputId: field.id,
+        opId: sanitizeOnePasswordFieldId(field.id, index, usedIds),
+        label: field.label,
+        value: field.value,
+      }));
+      yield* fileSystem.writeFileString(
+        template,
+        yield* encodeFieldsTemplate({
+          category: "API_CREDENTIAL",
+          title: input.label,
+          fields: prepared.map((field) => ({
+            id: field.opId,
+            label: field.label,
+            type: "CONCEALED",
+            value: field.value,
+          })),
+        }),
+      );
+      const saved = yield* runOnePassword([
+        "item",
+        "create",
+        `--account=${account}`,
+        `--vault=${input.vault}`,
+        `--template=${template}`,
+        "--format=json",
+      ]);
+      if (saved.code !== 0) return undefined;
+      const item = decodeCreatedItem(saved.stdout);
+      if (Option.isNone(item)) return undefined;
+      const references: Record<string, string> = {};
+      for (const field of prepared) {
+        const reference = `op://${item.value.vault.id}/${item.value.id}/${field.opId}`;
+        if (!definition.isReference(reference)) return undefined;
+        references[field.inputId] = reference;
+      }
+      return references;
     }).pipe(
       Effect.scoped,
       Effect.catch(() => Effect.undefined),

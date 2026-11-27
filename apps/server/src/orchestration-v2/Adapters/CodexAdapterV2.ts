@@ -2152,7 +2152,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           providerSessionId: input.providerSessionId,
           runtimePolicy: input.runtimePolicy,
           settings: resolvedRuntime?.config ?? adapterOptions.settings,
-          environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+          environment: ProviderAdapter.mergeRuntimePolicyEnvironment(
+            resolvedRuntime?.environment ?? adapterOptions.environment,
+            input.runtimePolicy,
+          ),
         });
         const codexZone = codexTimeZone(resolvedRuntime?.environment ?? adapterOptions.environment);
         const additionalContextByThread = yield* Ref.make(

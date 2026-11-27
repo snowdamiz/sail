@@ -64,10 +64,29 @@ passes it to the tool that needs it. When an agent has to run a command with the
 says so instead: the value goes into a private file that the agent's commands can read for about 24
 hours.
 
-## Reuse a project credential
+## Project credentials and Boats
 
-Select a project checkout in **Settings → Secrets**. Under **Project credential references**, save a name and a reference to an existing vault item. The password manager still holds the value. When an agent requests one value for that project, choose a saved reference and approve the request. Remove a reference in Settings to stop offering it on future cards; this does not delete the vault item.
+Connect 1Password once on your managing Sail host (desktop or self-hosted server), then authorize
+credentials for a project in **Settings → Secrets** under **Project credentials** — either by
+linking an existing `op://vault/item/field` reference or by saving a new credential directly to
+1Password.
 
-For a single-value private request, you can also choose **Also save in 1Password for this project**. Select a configured account, enter the vault name or ID and an item name, then select **Save to vault and use**. The account needs write access to that vault. Sail creates a new vault item, saves its reference for this project checkout, and answers the request. Ordinary answers do not create vault items. If a save cannot be confirmed, check your vault, add the reference in Settings if the item exists, and answer without saving to the vault.
+Each project credential can specify an optional environment variable name (such as
+`AWS_ACCESS_KEY_ID` or `AWS_SECRET_ACCESS_KEY`) and an **Auto-use** toggle (enabled by default):
 
-References belong to the project checkout on this environment. A fresh Boat still needs its own authorized connection to 1Password. Sail does not copy the account's authentication token to other machines or automatically answer credential requests.
+- **Automatic session & terminal environment**: Auto-use credentials with an environment variable
+  are injected directly into agent sessions and integrated terminals for that project.
+- **Automatic secret requests**: When an agent calls `request_secret` (single-value or
+  multi-field) matching authorized project credentials, Sail fulfills the request automatically
+  without blocking on a prompt card.
+- **Automatic sync to Boats**: When a project is cloned onto a Sail Boat (or when a Boat wakes,
+  or when you add/edit/revoke a project credential), Sail pushes **only that project's authorized
+  credentials** over the Boat's authenticated control channel into the Boat's private server secret
+  store. Your 1Password account token and other projects' credentials are never copied to the Boat.
+  Revoking or turning off **Auto-use** for a credential immediately removes it from running Boats
+  (and from sleeping Boats on next wake).
+
+You can also authorize credentials directly from any single-value or multi-field secret request
+card — including on a Boat — by checking **Also save in 1Password for this project**. Sail creates
+a single 1Password item on the managing host, authorizes the project, fulfills the active request,
+and syncs the scoped credentials to the Boat for future sessions.
