@@ -9,11 +9,13 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Statement from "effect/sql/Statement";
 
+import { makeAdmission, ServerAdmission } from "../../serverAdmission.ts";
 import { listLinkedPullRequestThreads } from "../../pullRequest/linkedThreads.ts";
 import * as EventSink from "../EventSink.ts";
 import * as EventStore from "../EventStore.ts";
@@ -80,6 +82,46 @@ const seedPendingTranscripts = Effect.gen(function* () {
   }
   yield* importer.reconcileShells;
 });
+
+it.effect(
+  "reads a legacy shell without writing during a seal and resumes hydration on reopen",
+  () =>
+    Effect.gen(function* () {
+      const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      yield* seedPendingTranscripts;
+      const admission = makeAdmission(Effect.succeed([]));
+      const token = Symbol();
+      assert.deepEqual(yield* admission.drain(token, "10 seconds"), { kind: "sealed" });
+      const threadId = ThreadId.make("thread:first");
+      const hydrateAndRead = importer
+        .ensureTranscript(threadId)
+        .pipe(Effect.andThen(projections.getThreadProjection(threadId)));
+      const background = yield* importer.importPendingTranscripts.pipe(
+        Effect.provideService(ServerAdmission, admission),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      const shell = yield* hydrateAndRead.pipe(Effect.provideService(ServerAdmission, admission));
+      assert.equal(shell.thread.title, "Legacy thread");
+      assert.deepEqual(
+        shell.messages.map((message) => message.text),
+        ["Latest question"],
+      );
+      assert.equal(yield* importer.pendingThreadCount, 2);
+      assert.isUndefined(background.pollUnsafe());
+
+      assert.isTrue(yield* admission.abort(token));
+      assert.deepEqual(yield* Fiber.join(background), {
+        importedThreadCount: 2,
+        importedMessageCount: 2,
+      });
+      const hydrated = yield* projections.getThreadProjection(threadId);
+      assert.deepEqual(
+        hydrated.messages.map((message) => message.text),
+        ["Old question", "Latest question"],
+      );
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+);
 
 it.effect("routes shell selectors to readers while imports stay writable", () =>
   Effect.gen(function* () {

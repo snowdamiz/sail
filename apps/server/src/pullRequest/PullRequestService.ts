@@ -1,3 +1,4 @@
+import { withAdmission } from "../serverAdmission.ts";
 import { isSshRemoteUrl } from "@t3tools/shared/sourceControl";
 import { parseDiffFilePaths } from "@t3tools/source-control-core/server/diffFileRevisions";
 import * as Cache from "effect/Cache";
@@ -4198,6 +4199,17 @@ export const make = Effect.gen(function* () {
       ),
     );
 
+  const admitMutation =
+    <I, A>(operation: string, work: (input: I) => Effect.Effect<A, PullRequestError>) =>
+    (input: I) =>
+      work(input).pipe(
+        withAdmission("root"),
+        Effect.catchTags({
+          ServerMaintenanceBusy: (cause) =>
+            new PullRequestOperationError({ operation, detail: cause.message, cause }),
+        }),
+      );
+
   return PullRequestService.of({
     withSharedProjectReads,
     routing,
@@ -4244,24 +4256,27 @@ export const make = Effect.gen(function* () {
     diff: credentialCached(diff),
     diffFileContents,
     filesViewed: credentialCached(filesViewed),
-    setFilesViewed,
+    setFilesViewed: admitMutation("setFilesViewed", setFilesViewed),
     changeBreakdown: credentialCached((input) =>
       Cache.get(changeBreakdownCache, refCacheKey(input)),
     ),
-    runAction: runActionAndInvalidate,
+    runAction: admitMutation("runAction", runActionAndInvalidate),
     checkLogs,
-    rerunChecks,
-    update: invalidatedByMutation(update),
-    comment: invalidatedByMutation(comment),
-    updateComment: invalidatedByMutation(updateComment),
-    submitReview: invalidatedByMutation(submitReview),
-    replyToThread: invalidatedByMutation(replyToThread),
-    setThreadResolution: invalidatedByMutation(setThreadResolution),
-    setReaction: invalidatedByMutation(setReaction),
+    rerunChecks: admitMutation("rerunChecks", rerunChecks),
+    update: admitMutation("update", invalidatedByMutation(update)),
+    comment: admitMutation("comment", invalidatedByMutation(comment)),
+    updateComment: admitMutation("updateComment", invalidatedByMutation(updateComment)),
+    submitReview: admitMutation("submitReview", invalidatedByMutation(submitReview)),
+    replyToThread: admitMutation("replyToThread", invalidatedByMutation(replyToThread)),
+    setThreadResolution: admitMutation(
+      "setThreadResolution",
+      invalidatedByMutation(setThreadResolution),
+    ),
+    setReaction: admitMutation("setReaction", invalidatedByMutation(setReaction)),
     reviewerCandidates,
-    requestReviewers: invalidatedByMutation(requestReviewers),
+    requestReviewers: admitMutation("requestReviewers", invalidatedByMutation(requestReviewers)),
     labelCandidates,
-    setLabels: invalidatedByMutation(setLabels),
+    setLabels: admitMutation("setLabels", invalidatedByMutation(setLabels)),
     invalidate,
   });
 });

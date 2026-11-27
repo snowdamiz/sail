@@ -490,6 +490,7 @@ export const buildCliArchive = Effect.fn("buildCliArchive")(function* (
     const boatd = path.join(contentDir, input.platform === "win" ? "sail-boatd.exe" : "sail-boatd");
     yield* fs.copyFile(input.boatdPath.value, boatd);
     if (input.platform !== "win") yield* fs.chmod(boatd, 0o755);
+    yield* fs.writeFileString(path.join(contentDir, ".sail-product"), "sail\n");
   }
   yield* stageServerRuntime({
     repoRoot,

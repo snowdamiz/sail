@@ -1,3 +1,4 @@
+import { ServerMaintenanceBusy, withAdmission } from "../serverAdmission.ts";
 import {
   AuthAccessTokenType,
   AuthAccessWriteScope,
@@ -368,6 +369,7 @@ export class ServerAuthConnectDevicesError extends Schema.TaggedError<ServerAuth
 }
 
 export const ServerAuthInternalError = Schema.Union([
+  ServerMaintenanceBusy,
   ServerAuthBootstrapCredentialValidationError,
   ServerAuthSessionCredentialValidationError,
   ServerAuthAuthenticatedSessionIssueError,
@@ -1656,9 +1658,13 @@ export const make = Effect.gen(function* () {
     if (DateTime.distance(expiresAt, renewed).pipe(Duration.isLessThan(PEER_LINK_RENEWAL_STEP))) {
       return DateTime.toUtc(expiresAt);
     }
-    const current = yield* sessions
-      .extend(sessionId, renewed, PEER_LINK_RENEWAL_STEP)
-      .pipe(mapSessionVerificationErrors);
+    const current = yield* sessions.extend(sessionId, renewed, PEER_LINK_RENEWAL_STEP).pipe(
+      mapSessionVerificationErrors,
+      withAdmission("root"),
+      Effect.catchTags({
+        ServerMaintenanceBusy: () => Effect.succeedSome(DateTime.toUtc(expiresAt)),
+      }),
+    );
     // A revoke can land between the verification and the update.
     if (Option.isNone(current)) {
       return yield* new ServerAuthInvalidCredentialError({
@@ -1773,41 +1779,50 @@ export const make = Effect.gen(function* () {
     pairingLinks: bootstrapCredentials,
   });
 
+  const admitMutation =
+    <Input extends ReadonlyArray<unknown>, A, E, R>(
+      operation: (...input: Input) => Effect.Effect<A, E, R>,
+    ) =>
+    (...input: Input) =>
+      withAdmission("root")(operation(...input));
+
   return EnvironmentAuth.of({
     getDescriptor: Effect.fn("EnvironmentAuth.getDescriptor")(function () {
       return Effect.succeed(descriptor);
     }),
     getSessionState,
-    createBrowserSession,
-    exchangeBootstrapCredentialForAccessToken,
-    renewAccessToken,
-    createPairingLink,
-    issueConnectCredential,
-    approveConnectDevice,
+    createBrowserSession: admitMutation(createBrowserSession),
+    exchangeBootstrapCredentialForAccessToken: admitMutation(
+      exchangeBootstrapCredentialForAccessToken,
+    ),
+    renewAccessToken: admitMutation(renewAccessToken),
+    createPairingLink: admitMutation(createPairingLink),
+    issueConnectCredential: admitMutation(issueConnectCredential),
+    approveConnectDevice: admitMutation(approveConnectDevice),
     connectRequestsShowingCode,
     listConnectDevices,
-    revokeConnectDevice,
+    revokeConnectDevice: admitMutation(revokeConnectDevice),
     connectDevicesShowingCode,
-    issuePairingCredential,
-    issueStartupPairingCredential,
+    issuePairingCredential: admitMutation(issuePairingCredential),
+    issueStartupPairingCredential: admitMutation(issueStartupPairingCredential),
     listPairingLinks,
-    revokePairingLink,
-    issueSession,
+    revokePairingLink: admitMutation(revokePairingLink),
+    issueSession: admitMutation(issueSession),
     listSessions,
-    revokeSession,
+    revokeSession: admitMutation(revokeSession),
     listClientSessions,
-    revokeClient,
-    revokeClientSession,
-    revokeOtherClientSessions,
+    revokeClient: admitMutation(revokeClient),
+    revokeClientSession: admitMutation(revokeClientSession),
+    revokeOtherClientSessions: admitMutation(revokeOtherClientSessions),
     authenticateHttpRequest,
     authenticateWebSocketUpgrade,
-    issueWebSocketTicket,
-    issueStartupPairingUrl,
+    issueWebSocketTicket: admitMutation(issueWebSocketTicket),
+    issueStartupPairingUrl: admitMutation(issueStartupPairingUrl),
     authenticateMcpClient,
-    revokeMcpClientToken,
+    revokeMcpClientToken: admitMutation(revokeMcpClientToken),
     otherSessionRevocationCount: Ref.get(otherSessionRevocations),
-    issueMcpClientSession,
-    consumeMcpApprovalCode,
+    issueMcpClientSession: admitMutation(issueMcpClientSession),
+    consumeMcpApprovalCode: admitMutation(consumeMcpApprovalCode),
   });
 });
 
@@ -1881,6 +1896,6 @@ const layerStorage = Layer.mergeAll(ServerSecretStore.layer, SqlitePersistence.l
 
 export const layerRuntime = layer.pipe(
   Layer.provideMerge(ManagedPolicy.layer),
-  Layer.provideMerge(layerStorage),
   Layer.provideMerge(ServerEnvironment.layerIdentity),
+  Layer.provideMerge(layerStorage),
 );

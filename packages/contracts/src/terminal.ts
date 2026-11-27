@@ -520,7 +520,17 @@ export class TerminalResizeError extends Schema.TaggedError<TerminalResizeError>
   }
 }
 
+export class TerminalMaintenanceBusy extends Schema.TaggedError<TerminalMaintenanceBusy>()(
+  "TerminalMaintenanceBusy",
+  { retryable: Schema.Literal(true) },
+) {
+  override get message() {
+    return "Server maintenance is in progress. Retry the same request.";
+  }
+}
+
 export const TerminalError = Schema.Union([
+  TerminalMaintenanceBusy,
   TerminalCwdError,
   TerminalHistoryError,
   TerminalSessionLookupError,

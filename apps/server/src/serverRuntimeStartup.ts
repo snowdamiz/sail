@@ -1,3 +1,5 @@
+import { ProcessLauncher } from "./process/ProcessLauncher.ts";
+import { ServerAdmission } from "./serverAdmission.ts";
 import {
   CommandId,
   DEFAULT_MODEL,
@@ -12,6 +14,7 @@ import {
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -26,6 +29,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
+import { sweepStalePendingAttachments } from "./attachmentStore.ts";
 import * as ServerConfig from "./config.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import { flushCompileCache } from "./compileCache.ts";
@@ -45,6 +49,7 @@ import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import { forkParked, forkParkedFiber } from "./serverActivation.ts";
+import { afterAdmissionReopens } from "./serverAdmission.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { getServerOwners } from "./telemetry/Identify.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
@@ -241,6 +246,7 @@ export const autoPullProjects = Effect.fn("autoPullProjects")(function* (
           refName: result.refName,
         });
       }).pipe(
+        afterAdmissionReopens,
         Effect.catch((cause) =>
           Effect.logWarning("Automatic project pull failed", {
             cwd,
@@ -480,6 +486,16 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
   const random = yield* SecureRandom.SecureRandom;
   const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
+  const admission = yield* ServerAdmission;
+  const processLauncher = yield* ProcessLauncher;
+  const reconcileSealed = providerRuntimeRecovery.reconcile("shutdown").pipe(
+    Effect.tap((summary) =>
+      Effect.logInfo("Sealed server shutdown reconciliation completed", summary),
+    ),
+    Effect.asVoid,
+    Effect.orDie,
+    Effect.andThen(processLauncher.parkForMaintenance ?? Effect.void),
+  );
 
   const commandGate = yield* makeCommandGate;
   const httpListening = yield* Deferred.make<void>();
@@ -499,6 +515,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
       if (workerFiber !== null) {
         yield* Fiber.interrupt(workerFiber).pipe(Effect.ignore);
       }
+      if (yield* admission?.isConfirmedSeal ?? Effect.succeed(false)) return;
       yield* providerRuntimeRecovery.prepareForShutdown.pipe(
         Effect.ensuring(providerSessions.shutdown),
       );
@@ -609,6 +626,22 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
       forkParked,
     );
 
+    yield* forkParked(
+      afterAdmissionReopens(
+        Effect.gen(function* () {
+          const swept = sweepStalePendingAttachments({
+            attachmentsDir: serverConfig.attachmentsDir,
+            nowMs: yield* Clock.currentTimeMillis,
+          });
+          if (swept.deleted > 0) {
+            yield* Effect.logInfo("Removed expired attachment uploads.", {
+              deleted: swept.deleted,
+            });
+          }
+        }),
+      ),
+    );
+
     const importPendingTranscripts = legacyV1ThreadImporter.importPendingTranscripts.pipe(
       Effect.tap((summary) =>
         summary.importedThreadCount === 0
@@ -666,7 +699,15 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
     yield* runStartupPhase("http.wait", Deferred.await(httpListening));
     yield* runStartupPhase("auxiliary-roots.parked", options?.awaitAuxiliaryParked ?? Effect.void);
 
-    const updateOutcome = yield* launcher.prepareTrial({ baseDir: serverConfig.baseDir });
+    const maintenanceIdentity = {
+      baseDir: serverConfig.baseDir,
+      dbPath: serverConfig.dbPath,
+      environmentId: environment.environmentId,
+    };
+    const updateOutcome = yield* launcher.prepareTrial({
+      baseDir: serverConfig.baseDir,
+      maintenanceIdentity,
+    });
 
     yield* Effect.logDebug("startup phase: publishing welcome event", {
       environmentId: environment.environmentId,
@@ -703,6 +744,13 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
           ...(updateOutcome === undefined ? {} : { updateOutcome }),
         },
       }),
+    );
+    yield* (
+      launcher.maintenanceReady?.(
+        maintenanceIdentity,
+        reconcileSealed,
+        processLauncher.resumeAfterMaintenance,
+      ) ?? Effect.void
     );
     yield* Effect.logDebug("startup phase: complete");
     yield* flushCompileCache;

@@ -24,6 +24,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
@@ -91,6 +92,10 @@ const projectedThreadIds = (events: ReadonlyArray<OrchestrationV2DomainEvent>) =
   );
 
 export interface EventSinkV2Shape {
+  readonly onCommittedRunUpdates: (
+    listener: (stored: OrchestrationV2StoredEvent) => void,
+  ) => Effect.Effect<void, never, Scope.Scope>;
+
   /** Items that are not provider snapshots, such as a consumer's own control items, never batch. */
   readonly consumeProviderEvents: <A extends { readonly type: string }, E, R, E2, R2>(
     source: Stream.Stream<A, E, R>,
@@ -296,6 +301,17 @@ const layerBase: Layer.Layer<
       OrchestrationV2DomainEvent["type"],
       PubSub.PubSub<OrchestrationV2StoredEvent>
     >();
+    const runUpdateListeners = new Set<(stored: OrchestrationV2StoredEvent) => void>();
+    const onCommittedRunUpdates: EventSinkV2Shape["onCommittedRunUpdates"] = (listener) =>
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          runUpdateListeners.add(listener);
+        }),
+        () =>
+          Effect.sync(() => {
+            runUpdateListeners.delete(listener);
+          }),
+      );
     const publishLiveEvents =
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
       Effect.fnUntraced(function* (events: ReadonlyArray<OrchestrationV2StoredEvent>) {
@@ -318,12 +334,17 @@ const layerBase: Layer.Layer<
       events: ReadonlyArray<OrchestrationV2StoredEvent>,
       outcomes: ReadonlyArray<RunOutcome>,
     ) =>
-      runOutcomes
-        .record(outcomes)
-        .pipe(
-          Effect.andThen(eventStore.publishCommitted(events)),
-          Effect.andThen(publishLiveEvents(events)),
-        );
+      Effect.sync(() => {
+        for (const stored of events) {
+          if (stored.event.type === "run.updated") {
+            for (const listener of runUpdateListeners) listener(stored);
+          }
+        }
+      }).pipe(
+        Effect.andThen(runOutcomes.record(outcomes)),
+        Effect.andThen(eventStore.publishCommitted(events)),
+        Effect.andThen(publishLiveEvents(events)),
+      );
 
     // Serialize commit and publish; reordered publication makes clients drop earlier sequences.
     const publishLane = yield* Semaphore.make(1);
@@ -1183,6 +1204,7 @@ const layerBase: Layer.Layer<
 
     return EventSinkV2.of({
       consumeProviderEvents: coordinator.consume,
+      onCommittedRunUpdates,
       withProviderBatch,
       write: (input) =>
         writeEffect({ ...input, effects: [] }).pipe(

@@ -25,6 +25,7 @@ import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { withAdmission } from "../serverAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as WorkflowAgentLinks from "./WorkflowAgentLinks.ts";
@@ -140,98 +141,104 @@ const make = Effect.gen(function* () {
   });
 
   return WorkflowAgents.of({
-    start: Effect.fn("WorkflowAgentThreads.start")(function* (input) {
-      const id = yield* idOf(input.key);
-      const environment = elsewhere(input.environment);
-      if (environment !== undefined) return yield* linked.start(input, environment, id, here);
-      const commandId = CommandId.make(id);
-      const messageId = MessageId.make(id);
-      const outputSchema =
-        input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema };
+    start: Effect.fn("WorkflowAgentThreads.start")(
+      function* (input) {
+        const id = yield* idOf(input.key);
+        const environment = elsewhere(input.environment);
+        if (environment !== undefined) return yield* linked.start(input, environment, id, here);
+        const commandId = CommandId.make(id);
+        const messageId = MessageId.make(id);
+        const outputSchema =
+          input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema };
 
-      if (input.thread !== undefined) {
-        if (input.launch !== undefined) return yield* launchOnContinue;
-        const threadId = ThreadId.make(input.thread);
-        const shell = yield* threads
-          .getThreadShell(threadId)
-          .pipe(Effect.mapError(failed("Could not read the thread to continue")));
-        if (shell === null || shell.deletedAt !== null) {
+        if (input.thread !== undefined) {
+          if (input.launch !== undefined) return yield* launchOnContinue;
+          const threadId = ThreadId.make(input.thread);
+          const shell = yield* threads
+            .getThreadShell(threadId)
+            .pipe(Effect.mapError(failed("Could not read the thread to continue")));
+          if (shell === null || shell.deletedAt !== null) {
+            return yield* new WorkflowAgentError({
+              reason: `Thread ${input.thread} no longer exists, so it cannot be continued.`,
+            });
+          }
+          const sent = yield* threads
+            .sendToThread({
+              projectId: shell.projectId,
+              commandId,
+              threadId,
+              messageId,
+              text: input.prompt,
+              attachments: [],
+              mode: "queue",
+              ...outputSchema,
+              createdBy: "system",
+              creationSource: "server",
+            })
+            .pipe(Effect.mapError(failed("Could not send to the thread")));
+          yield* showIssue(input.issue, threadId);
+          return { threadId, turnId: sent.run.id };
+        }
+
+        if (input.project === undefined) {
           return yield* new WorkflowAgentError({
-            reason: `Thread ${input.thread} no longer exists, so it cannot be continued.`,
+            reason: "An agent step needs a `project` to start in, or a `thread` to continue.",
           });
         }
-        const sent = yield* threads
-          .sendToThread({
-            projectId: shell.projectId,
+        const projectId = yield* projectIdOf(input.project);
+        const defaults = yield* projectDefaults(projectId);
+        const modelSelection: ModelSelection | undefined =
+          input.model === undefined
+            ? (resolveNewThreadModelSelection({
+                defaultSelection: defaults.defaultModelSelection,
+                fallbackSelection: defaults.fallbackModelSelection,
+                providers: yield* providers.getProviders,
+                settings: defaults,
+                projectId,
+                now: DateTime.toEpochMillis(yield* DateTime.now),
+              }).selection ?? undefined)
+            : {
+                instanceId: ProviderInstanceId.make(input.model.instanceId),
+                model: input.model.model,
+                ...(input.model.options === undefined ? {} : { options: input.model.options }),
+              };
+        if (modelSelection === undefined) {
+          return yield* new WorkflowAgentError({
+            reason: `Project ${input.project} has no default model. Give the agent step a \`model\`.`,
+          });
+        }
+        const launched = yield* launches
+          .launch({
             commandId,
-            threadId,
-            messageId,
-            text: input.prompt,
-            attachments: [],
-            mode: "queue",
-            ...outputSchema,
+            threadId: ThreadId.make(id),
+            projectId,
+            title: input.title,
+            modelSelection,
+            runtimeMode: input.launch?.runtimeMode ?? defaults.defaultRuntimeMode,
+            interactionMode: input.launch?.interactionMode ?? "default",
+            workspaceStrategy: input.launch?.workspace ?? { type: "root" },
+            initialMessage: { messageId, text: input.prompt, attachments: [], ...outputSchema },
             createdBy: "system",
             creationSource: "server",
+            workflowRun: { environmentId: here, ...input.origin },
           })
-          .pipe(Effect.mapError(failed("Could not send to the thread")));
-        yield* showIssue(input.issue, threadId);
-        return { threadId, turnId: sent.run.id };
-      }
-
-      if (input.project === undefined) {
-        return yield* new WorkflowAgentError({
-          reason: "An agent step needs a `project` to start in, or a `thread` to continue.",
-        });
-      }
-      const projectId = yield* projectIdOf(input.project);
-      const defaults = yield* projectDefaults(projectId);
-      const modelSelection: ModelSelection | undefined =
-        input.model === undefined
-          ? (resolveNewThreadModelSelection({
-              defaultSelection: defaults.defaultModelSelection,
-              fallbackSelection: defaults.fallbackModelSelection,
-              providers: yield* providers.getProviders,
-              settings: defaults,
-              projectId,
-              now: DateTime.toEpochMillis(yield* DateTime.now),
-            }).selection ?? undefined)
-          : {
-              instanceId: ProviderInstanceId.make(input.model.instanceId),
-              model: input.model.model,
-              ...(input.model.options === undefined ? {} : { options: input.model.options }),
-            };
-      if (modelSelection === undefined) {
-        return yield* new WorkflowAgentError({
-          reason: `Project ${input.project} has no default model. Give the agent step a \`model\`.`,
-        });
-      }
-      const launched = yield* launches
-        .launch({
-          commandId,
-          threadId: ThreadId.make(id),
-          projectId,
-          title: input.title,
-          modelSelection,
-          runtimeMode: input.launch?.runtimeMode ?? defaults.defaultRuntimeMode,
-          interactionMode: input.launch?.interactionMode ?? "default",
-          workspaceStrategy: input.launch?.workspace ?? { type: "root" },
-          initialMessage: { messageId, text: input.prompt, attachments: [], ...outputSchema },
-          createdBy: "system",
-          creationSource: "server",
-          workflowRun: { environmentId: here, ...input.origin },
-        })
-        .pipe(Effect.mapError(failed("Could not start the thread")));
-      const run = launched.projection.runs.find(
-        (candidate) => candidate.userMessageId === messageId,
-      );
-      if (run === undefined) {
-        return yield* new WorkflowAgentError({
-          reason: `Thread ${launched.threadId} started without a turn for its first message.`,
-        });
-      }
-      yield* showIssue(input.issue, launched.threadId);
-      return { threadId: launched.threadId, turnId: run.id };
-    }),
+          .pipe(Effect.mapError(failed("Could not start the thread")));
+        const run = launched.projection.runs.find(
+          (candidate) => candidate.userMessageId === messageId,
+        );
+        if (run === undefined) {
+          return yield* new WorkflowAgentError({
+            reason: `Thread ${launched.threadId} started without a turn for its first message.`,
+          });
+        }
+        yield* showIssue(input.issue, launched.threadId);
+        return { threadId: launched.threadId, turnId: run.id };
+      },
+      withAdmission("continuation"),
+      Effect.catchTags({
+        ServerMaintenanceBusy: (cause) => new WorkflowAgentError({ reason: cause.message }),
+      }),
+    ),
     result: Effect.fn("WorkflowAgentThreads.result")(function* (turn, options) {
       const environment = elsewhere(turn.environment);
       if (environment !== undefined) return yield* linked.result(turn, environment, options);

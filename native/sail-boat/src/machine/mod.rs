@@ -31,7 +31,7 @@ const WATCHDOG_POLL: Duration = Duration::from_secs(5);
 const BOAT_POLL: Duration = Duration::from_secs(60);
 const OVERDUE_STOP_RETRY: Duration = Duration::from_secs(120);
 /// A running machine on older scripts takes this app's in place, retried this often.
-const UPGRADE_RETRY: Duration = Duration::from_secs(10 * 60);
+const WATCHDOG_REFRESH_RETRY: Duration = Duration::from_secs(10 * 60);
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(20);
 const READY_TIMEOUT: Duration = Duration::from_secs(180);
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -130,9 +130,32 @@ pub struct WatchdogStatus {
     #[serde(default)]
     pub work_due: bool,
     pub manifest: Option<Manifest>,
+    #[serde(default)]
+    pub sandbox: Option<String>,
+    #[serde(default)]
+    pub maintenance_eligible: bool,
+    #[serde(default)]
+    pub stop_fenced: bool,
+    #[serde(default)]
+    pub maintenance_ready: Option<MaintenanceReady>,
     /// When this app got the status: what its second counts are relative to.
     #[serde(skip, default = "SystemTime::now")]
     pub received: SystemTime,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceReady {
+    environment_id: String,
+    release: MaintenanceRelease,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MaintenanceRelease {
+    version: String,
+    archive_sha256: String,
+    tree_sha256: String,
 }
 
 #[derive(Clone, Debug)]
@@ -183,17 +206,23 @@ pub struct MachineRuntime {
     pub(crate) waking: tokio::sync::Mutex<()>,
     /// One capture at a time: "sleep now" and the background poll can see the same drain.
     capturing: tokio::sync::Mutex<()>,
+    flushing_deferred: tokio::sync::Mutex<()>,
     last_heartbeat: Mutex<Option<Instant>>,
     /// When the watchdog was seen stopping the machine; cleared once Boat reports it stopped or
     /// the watchdog is active again.
     stop_seen: Mutex<Option<Instant>>,
     /// The last failed wake: its message and when.
     wake_failure: Mutex<Option<(String, Instant)>>,
+    target_version: Mutex<Option<String>>,
     /// Saving the snapshot failing, until a save succeeds.
     save_failure: Mutex<Option<disk::SaveFailure>>,
     /// Its T3 projects as last read, and those Sail Boat is adding.
     projects: Mutex<Vec<projects::MachineProject>>,
     adding: Mutex<Vec<projects::MachineProject>>,
+}
+
+fn watchdog_is_current(recorded: &str, revision: &str) -> bool {
+    recorded.strip_prefix("watchdog:").unwrap_or(recorded) == revision
 }
 
 impl MachineRuntime {
@@ -212,9 +241,11 @@ impl MachineRuntime {
             watchdog: Mutex::new(None),
             waking: tokio::sync::Mutex::new(()),
             capturing: tokio::sync::Mutex::new(()),
+            flushing_deferred: tokio::sync::Mutex::new(()),
             last_heartbeat: Mutex::new(None),
             stop_seen: Mutex::new(None),
             wake_failure: Mutex::new(None),
+            target_version: Mutex::new(None),
             save_failure: Mutex::new(None),
             projects: Mutex::new(Vec::new()),
             adding: Mutex::new(Vec::new()),
@@ -276,7 +307,11 @@ impl MachineRuntime {
         });
         if changed {
             if p != Power::Running {
-                *self.watchdog.lock().unwrap() = None;
+                let mut watchdog = self.watchdog.lock().unwrap();
+                // Preserve the fenced stop observation until Boat reports the disk stopped.
+                if p != Power::Stopping || !watchdog.as_ref().is_some_and(|status| status.stop_fenced) {
+                    *watchdog = None;
+                }
             }
             self.shared.changed();
         }
@@ -291,6 +326,11 @@ impl MachineRuntime {
 
     pub fn last_error(&self) -> Option<String> {
         self.wake_failure.lock().unwrap().as_ref().map(|(e, _)| e.clone())
+    }
+
+    pub fn server_upgrade_pending(&self, record: &Machine) -> bool {
+        record.provision_revision != provision::revision()
+            || self.target_version.lock().unwrap().as_ref().is_some_and(|v| *v != record.t3_version)
     }
 
     /// The machine is about to freeze or frozen: user actions must wait for it and wake it again.
@@ -328,6 +368,16 @@ impl MachineRuntime {
                 *self.lifetime_ends.lock().unwrap() = sb.trial_deadline();
                 let mut p = Power::from_sandbox(&sb);
                 if p == Power::Stopped {
+                    let guarded = self.watchdog_status().is_some_and(|status| {
+                        status.stop_fenced && status.sandbox.as_deref() == Some(id.as_str())
+                    });
+                    if let Some(stop) = sb.stopped_at.filter(|_| guarded) {
+                        self.update_record(|record| {
+                            if record.sandbox_id == id {
+                                record.saved_stop = Some(stop);
+                            }
+                        });
+                    }
                     *self.stop_seen.lock().unwrap() = None;
                 } else if p == Power::Running && self.stop_pending() {
                     // Boat lags behind the watchdog by a few seconds.
@@ -352,6 +402,11 @@ impl MachineRuntime {
                 Err(e)
             }
         }
+    }
+
+    pub(crate) fn stopped_with_lifecycle_receipt(&self) -> bool {
+        self.power() == Power::Stopped
+            && self.stopped_at.lock().unwrap().is_some_and(|stop| self.record().saved_stop == Some(stop))
     }
 
     /// Waits out transitional states, so callers see Running or Stopped (or Missing). A wake
@@ -410,7 +465,9 @@ impl MachineRuntime {
                 return Err(anyhow!(e));
             }
         }
-        if self.power() == Power::Running && !self.is_stopping() && self.fetch_descriptor().await.is_some() {
+        let resume_ack_pending = self.record.read().unwrap().pending_resume.is_some();
+        if self.power() == Power::Running && !self.is_stopping() &&
+            !resume_ack_pending && self.fetch_descriptor().await.is_some() {
             if self.watchdog_status().is_some_and(|w| matches!(w.phase, WatchdogPhase::Saving | WatchdogPhase::Draining)) {
                 // Someone needs it after all: call the sleep off before it stops.
                 self.send_activity(false).await;
@@ -460,6 +517,8 @@ impl MachineRuntime {
                     if self.shared.boat.resume(&record.sandbox_id, &record.size).await? == Resume::DataExpired {
                         self.restore().await?;
                         restored = true;
+                    } else if record.lifecycle_enrolled {
+                        self.update_record(|current| current.pending_resume = Some(record.sandbox_id));
                     }
                     resumed = true;
                     break;
@@ -474,31 +533,59 @@ impl MachineRuntime {
         }
         // From here on the machine runs: whatever it slept with is history. A sleep the proxy
         // did not see may have outdated the recorded reads too.
-        if !fresh {
-            self.cache.lock().unwrap().bump_epoch();
+        if !fresh || restored {
+            let mut cache = self.cache.lock().unwrap();
+            cache.bump_epoch();
+            if restored {
+                cache.streams.clear();
+            }
+        }
+        if restored {
+            // The snapshot may predate the proxy's cached chats.
+            threads::sweep(&self.dir, &HashSet::new());
         }
         self.drop_capture();
+        if restored {
+            self.save_cache();
+        }
         self.set_power(Power::Starting);
-        if self.fetch_descriptor().await.is_none() {
+        if restored || self.fetch_descriptor().await.is_none() {
             self.rehost().await?;
         }
-        self.wait_ready(started).await?;
-        if resumed {
-            // T3 serves now and may have started work on its own, or an agent waits on the user;
-            // restarting it would kill that. A restored machine booted fresh from its snapshot:
-            // nothing to kill, and the upgrade drops the snapshot's stale chats.
-            if !restored && self.watchdog_get("/status?fresh").await.is_ok_and(|s| s.busy || s.waiting_threads > 0) {
-                tracing::info!("{id} is busy: T3 upgrade deferred to the next wake");
-            } else if let Err(e) = self.upgrade_if_needed().await {
-                tracing::warn!("upgrading {id}: {e:#}");
+        let record = self.record();
+        if record.lifecycle_enrolled && record.provision_revision.is_empty() {
+            self.refresh_watchdog().await?;
+        }
+        let acknowledge_resume = record.pending_resume.as_deref() == Some(record.sandbox_id.as_str());
+        if acknowledge_resume {
+            let sandbox = record.sandbox_id;
+            loop {
+                if let Ok(status) = self.watchdog_post("/activity", json!({ "resumed": true, "sandbox": sandbox })).await {
+                    if status.sandbox.as_deref() == Some(sandbox.as_str()) {
+                        self.accept_version_receipt(&status);
+                        self.update_record(|current| current.pending_resume = None);
+                        *self.watchdog.lock().unwrap() = Some(status);
+                        break;
+                    }
+                }
+                if started.elapsed() >= READY_TIMEOUT {
+                    bail!("Boat watchdog did not acknowledge the resumed sandbox");
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
             }
+        } else if resumed {
+            self.send_activity(true).await;
+        }
+        self.wait_ready(started).await?;
+        if resumed || acknowledge_resume {
+            self.maybe_stage_wake().await;
         }
         // Before Running is published: Sail reconnects then, and must find the messages
         // accepted while asleep ahead of anything it sends next.
         self.on_ready().await;
         self.set_power(Power::Running);
         tracing::info!("{id} awake after {:?}", started.elapsed());
-        self.send_activity(resumed).await;
+        self.send_activity(false).await;
         Ok(())
     }
 
@@ -540,92 +627,62 @@ impl MachineRuntime {
         Ok(())
     }
 
-    /// Keeps the machine on the desktop app's T3 version and on this app's scripts.
-    pub async fn upgrade_if_needed(&self) -> Result<()> {
-        let desktop = self.shared.t3.version().await?;
-        self.upgrade(Some(desktop)).await
+    async fn refresh_target_version(&self) {
+        if let Ok(Ok(version)) = tokio::time::timeout(Duration::from_secs(5), self.shared.t3.version()).await {
+            let mut target = self.target_version.lock().unwrap();
+            if target.as_ref() != Some(&version) {
+                *target = Some(version);
+                self.shared.changed();
+            }
+        }
     }
 
-    /// No T3 version: this app's scripts only, T3 neither installed nor restarted, so nobody using
-    /// it loses anything; a new T3 version waits for the next wake.
-    async fn upgrade(&self, t3_version: Option<String>) -> Result<()> {
-        let revision = provision::revision();
+    async fn refresh_watchdog(&self) -> Result<()> {
         let record = self.record();
-        let new_server = t3_version.as_ref().is_some_and(|v| *v != record.t3_version);
-        if !new_server && revision == record.provision_revision {
-            return Ok(());
+        provision::refresh_watchdog(&self.shared.boat, &record).await?;
+        let mut current = self.record.write().unwrap();
+        // A restore may have replaced the sandbox during the refresh.
+        if current.sandbox_id == record.sandbox_id {
+            current.provision_revision = format!("watchdog:{}", provision::revision());
+            drop(current);
+            self.shared.persist();
+            self.shared.changed();
         }
-        tracing::info!(
-            "upgrading {} (T3 {}, scripts {revision})",
-            self.id(),
-            t3_version.as_deref().unwrap_or("left as it runs")
-        );
-        provision::run(
-            &self.shared.boat,
-            &record.sandbox_id,
-            &record.name,
-            t3_version.as_deref(),
-            &record.watchdog_secret,
-            &provision::snapshot_name(&record.name, &record.id),
-            false,
-        )
-        .await?;
-        let live = t3_version.is_none();
-        self.update_record(|m| {
-            if let Some(v) = t3_version {
-                m.t3_version = v;
-            }
-            m.provision_revision = revision;
-        });
-        // T3 ran on untouched: nothing it served changed.
-        if live {
-            return Ok(());
-        }
-        {
-            let mut cache = self.cache.lock().unwrap();
-            cache.bump_epoch();
-            if new_server {
-                // Recorded streams and stored chats are in the old server's encoding.
-                cache.streams.clear();
-            }
-        }
-        if new_server {
-            threads::sweep(&self.dir, &HashSet::new());
-            self.save_cache();
-        }
-        self.wait_ready(Instant::now()).await
+        Ok(())
     }
 
     async fn flush_deferred_commands(&self) {
-        // Left queued until delivered: the run loop retries a failed send.
-        let commands = self.cache.lock().unwrap().deferred_commands.clone();
-        if commands.is_empty() {
-            return;
+        let _flush = self.flushing_deferred.lock().await;
+        if let Err(error) = self.deliver_deferred_commands().await {
+            tracing::warn!("sending deferred commands: {error:#}");
         }
-        let requests = commands
-            .iter()
-            .map(|c| ("orchestration.dispatchCommand".to_owned(), c.clone()))
-            .collect();
-        match upstream::call_many(&self.upstream_url(), &self.upstream_token(), requests).await {
-            Ok(results) => {
-                self.cache.lock().unwrap().deferred_commands.retain(|c| !commands.contains(c));
-                // Sail was told they were accepted: a refused message is said here or nowhere.
-                for (command, result) in commands.iter().zip(results) {
-                    if let Err(e) = result
-                        && command["type"] == "message.dispatch"
-                    {
-                        tracing::warn!("message to {} refused: {e}", self.id());
-                        self.shared.notify(format!("{}: a message was not sent", self.record().name), "Send it again.");
-                    }
-                }
+    }
+
+    async fn deliver_deferred_commands(&self) -> Result<()> {
+        let count = self.cache.lock().unwrap().deferred_commands.len();
+        if count == 0 {
+            return Ok(());
+        }
+        let mut ws = upstream::connect(&self.upstream_url(), &self.upstream_token(), &upstream::rpc_target("")).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        for i in 1..=count {
+            let Some(command) = self.cache.lock().unwrap().deferred_commands.first().cloned() else {
+                break;
+            };
+            let outcome = upstream::dispatch_deferred(&mut ws, &i.to_string(), &command, deadline).await?;
+            if matches!(outcome, upstream::DeferredDispatch::Retry) {
+                break;
             }
-            // Resent on the next try; the server dedupes them by commandId.
-            Err(e) => {
-                tracing::warn!("sending deferred commands: {e:#}");
-                return;
+            self.cache.lock().unwrap().deferred_commands.remove(0);
+            self.save_cache();
+            if let upstream::DeferredDispatch::Rejected(reason) = outcome
+                && command["type"] == "message.dispatch"
+            {
+                tracing::warn!("message to {} refused: {reason}", self.id());
+                self.shared.notify(format!("{}: a message was not sent", self.record().name), "Send it again.");
             }
         }
-        self.save_cache();
+        Ok(())
     }
 
     /// Someone used the machine: it stays awake, and recorded answers may be outdated.
@@ -650,10 +707,53 @@ impl MachineRuntime {
     async fn send_activity(&self, resumed: bool) {
         *self.last_heartbeat.lock().unwrap() = Some(Instant::now());
         // Refused when the watchdog already stops the machine: watchdog_request records that.
-        if let Ok(s) = self.watchdog_post("/activity", json!({ "resumed": resumed })).await {
-            *self.watchdog.lock().unwrap() = Some(s);
+        let sandbox = self.sandbox_id();
+        if let Ok(status) = self.watchdog_post("/activity", json!({ "resumed": resumed, "sandbox": sandbox })).await {
+            self.accept_version_receipt(&status);
+            *self.watchdog.lock().unwrap() = Some(status);
             self.shared.changed();
         }
+    }
+
+    fn accept_version_receipt(&self, status: &WatchdogStatus) {
+        let Some(ready) = &status.maintenance_ready else { return };
+        let valid_digest = |digest: &str| {
+            digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        };
+        if !valid_digest(&ready.release.archive_sha256) || !valid_digest(&ready.release.tree_sha256) {
+            return;
+        }
+        let record = self.record();
+        if status.sandbox.as_deref() == Some(record.sandbox_id.as_str())
+            && ready.environment_id == record.environment_id
+            && ready.release.version != record.t3_version
+        {
+            self.update_record(|current| {
+                if current.sandbox_id == record.sandbox_id {
+                    current.t3_version = ready.release.version.clone();
+                }
+            });
+        }
+    }
+
+    async fn maybe_stage_wake(&self) {
+        let record = self.record();
+        if !record.lifecycle_enrolled { return }
+        let Ok(status) = self.watchdog_get("/status").await else { return };
+        self.accept_version_receipt(&status);
+        if !status.maintenance_eligible || status.sandbox.as_deref() != Some(record.sandbox_id.as_str()) {
+            return;
+        }
+        let Ok(Ok(target)) = tokio::time::timeout(Duration::from_secs(5), self.shared.t3.version()).await else {
+            return;
+        };
+        if target == self.record().t3_version { return }
+        let shared = self.shared.clone();
+        tokio::spawn(async move {
+            if let Err(error) = provision::stage_wake(&shared.boat, &record, &target).await {
+                tracing::warn!("staging Sail for {}: {error:#}", record.id);
+            }
+        });
     }
 
     async fn watchdog_get(&self, path: &str) -> Result<WatchdogStatus> {
@@ -804,6 +904,7 @@ impl MachineRuntime {
     }
 
     async fn on_watchdog_status(&self, s: WatchdogStatus) {
+        self.accept_version_receipt(&s);
         if s.busy {
             self.cache.lock().unwrap().bump_epoch();
         }
@@ -943,7 +1044,7 @@ impl MachineRuntime {
         let mut overdue_stop_failed = false;
         // Told the user its own sleep is broken: once per run of this app.
         let mut overdue_stop_told = false;
-        let mut last_upgrade: Option<Instant> = None;
+        let mut last_watchdog_refresh: Option<Instant> = None;
         let mut watchdog_failures = 0u32;
         let mut was_busy = false;
         let mut was_running = false;
@@ -995,9 +1096,14 @@ impl MachineRuntime {
                     tracing::warn!("waking {} for work due failed", self.id());
                 }
             }
-            if let Some((sandbox, stop)) = self.begin_save() {
+            if self.power() == Power::Stopped {
                 let this = self.clone();
-                tokio::spawn(async move { this.save_snapshot(sandbox, stop).await });
+                tokio::spawn(async move {
+                    let Ok(_waking) = this.waking.try_lock() else { return };
+                    if let Some((sandbox, stop)) = this.begin_save() {
+                        this.save_snapshot(sandbox, stop).await;
+                    }
+                });
             }
             let running = self.power() == Power::Running;
             let came_up = running && !was_running;
@@ -1007,6 +1113,7 @@ impl MachineRuntime {
                     last_link_check = Some(Instant::now());
                     let this = self.clone();
                     tokio::spawn(async move {
+                        this.refresh_target_version().await;
                         if let Err(e) = this.ensure_linked().await {
                             tracing::warn!("linking {} into Sail: {e:#}", this.id());
                         }
@@ -1035,15 +1142,12 @@ impl MachineRuntime {
                             tokio::spawn(async move { this.on_ready().await });
                         }
                         let sleep_broken = s.sleep_broken;
-                        // Otherwise only a resume upgrades it, and an older watchdog whose own stop
-                        // always fails never sleeps. Scripts only: T3 runs on under whatever works
-                        // there. Not during a save, which restarting the watchdog would kill, nor
-                        // while T3 can't be checked: a restarted one takes that for T3 starting,
-                        // not maybe mid-turn.
-                        let upgrade = s.phase == WatchdogPhase::Active
+                        // A watchdog refresh can interrupt a save. It also needs a responding
+                        // T3 server to check for active work immediately after it starts.
+                        let refresh_watchdog = s.phase == WatchdogPhase::Active
                             && !s.saving
                             && !s.agents_unknown
-                            && self.record().provision_revision != provision::revision();
+                            && !watchdog_is_current(&self.record().provision_revision, provision::revision());
                         self.on_watchdog_status(s).await;
                         if sleep_broken && last_overdue_stop.is_none_or(|t| t.elapsed() >= OVERDUE_STOP_RETRY) {
                             last_overdue_stop = Some(Instant::now());
@@ -1067,12 +1171,12 @@ impl MachineRuntime {
                                     }
                                 }
                             }
-                        } else if upgrade && last_upgrade.is_none_or(|t| t.elapsed() >= UPGRADE_RETRY) {
-                            last_upgrade = Some(Instant::now());
-                            // Not kept awake: that counts as use, so an upgrade failing every
+                        } else if refresh_watchdog && last_watchdog_refresh.is_none_or(|t| t.elapsed() >= WATCHDOG_REFRESH_RETRY) {
+                            last_watchdog_refresh = Some(Instant::now());
+                            // Not kept awake: that counts as use, so a refresh failing every
                             // retry would never let it sleep.
-                            if let Err(e) = self.upgrade(None).await {
-                                tracing::warn!("upgrading {}: {e:#}", self.id());
+                            if let Err(e) = self.refresh_watchdog().await {
+                                tracing::warn!("refreshing {}'s watchdog: {e:#}", self.id());
                             }
                         }
                     }

@@ -22,6 +22,7 @@ import * as Path from "effect/Path";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Schema from "effect/Schema";
 
+import { ServerMaintenanceBusy, withAdmission } from "../serverAdmission.ts";
 import { makeIsServerInternalPath } from "../auth/serverInternalPaths.ts";
 import * as KnownWorkspaces from "./KnownWorkspaces.ts";
 import * as WorkspaceEntries from "./WorkspaceEntries.ts";
@@ -131,6 +132,7 @@ export class WorkspaceFileSystem extends Context.Service<
       | WorkspaceFileSystemError
       | WorkspacePaths.WorkspacePathOutsideRootError
       | KnownWorkspaces.UnknownWorkspaceError
+      | ServerMaintenanceBusy
     >;
   }
 >()("t3/workspace/WorkspaceFileSystem") {}
@@ -586,61 +588,65 @@ export const make = Effect.gen(function* () {
 
   const writeFile: WorkspaceFileSystem["Service"]["writeFile"] = Effect.fn(
     "WorkspaceFileSystem.writeFile",
-  )(function* (input) {
-    yield* knownWorkspaces.assertContains(input.cwd);
-    const target = yield* resolveWriteTarget(input);
-    const realTargetPath = target.realTargetPath;
-    const replacesFile = yield* fileSystem
-      .exists(realTargetPath)
-      .pipe(Effect.orElseSucceed(() => false));
-    // readFile decodes the BOM away, so an editor save would otherwise drop it from the file.
-    const keepsBom =
-      replacesFile &&
-      !input.contents.startsWith(UTF8_BOM) &&
-      (yield* Effect.promise(() => startsWithUtf8Bom(realTargetPath)));
-    const contents = keepsBom ? UTF8_BOM + input.contents : input.contents;
+  )(
+    function* (input) {
+      yield* knownWorkspaces.assertContains(input.cwd);
+      const target = yield* resolveWriteTarget(input);
+      const realTargetPath = target.realTargetPath;
+      const replacesFile = yield* fileSystem
+        .exists(realTargetPath)
+        .pipe(Effect.orElseSucceed(() => false));
+      // readFile decodes the BOM away, so an editor save would otherwise drop it from the file.
+      const keepsBom =
+        replacesFile &&
+        !input.contents.startsWith(UTF8_BOM) &&
+        (yield* Effect.promise(() => startsWithUtf8Bom(realTargetPath)));
+      const contents = keepsBom ? UTF8_BOM + input.contents : input.contents;
 
-    yield* fileSystem.makeDirectory(path.dirname(realTargetPath), { recursive: true }).pipe(
-      Effect.mapError(
-        (cause) =>
+      yield* fileSystem.makeDirectory(path.dirname(realTargetPath), { recursive: true }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new WorkspaceFileSystemOperationError({
+              workspaceRoot: input.cwd,
+              relativePath: input.relativePath,
+              resolvedPath: realTargetPath,
+              operationPath: path.dirname(realTargetPath),
+              operation: "make-directory",
+              cause,
+            }),
+        ),
+      );
+      yield* Effect.tryPromise({
+        // A symlink swapped in after the check is not followed. Windows lacks O_NOFOLLOW.
+        try: () =>
+          NodeFSP.writeFile(realTargetPath, contents, {
+            flag:
+              NodeFS.constants.O_WRONLY |
+              NodeFS.constants.O_CREAT |
+              NodeFS.constants.O_TRUNC |
+              (NodeFS.constants.O_NOFOLLOW ?? 0),
+          }),
+        catch: (cause) =>
           new WorkspaceFileSystemOperationError({
             workspaceRoot: input.cwd,
             relativePath: input.relativePath,
             resolvedPath: realTargetPath,
-            operationPath: path.dirname(realTargetPath),
-            operation: "make-directory",
+            operationPath: realTargetPath,
+            operation: "write-file",
             cause,
           }),
-      ),
-    );
-    yield* Effect.tryPromise({
-      // A symlink swapped in after the check is not followed. Windows lacks O_NOFOLLOW.
-      try: () =>
-        NodeFSP.writeFile(realTargetPath, contents, {
-          flag:
-            NodeFS.constants.O_WRONLY |
-            NodeFS.constants.O_CREAT |
-            NodeFS.constants.O_TRUNC |
-            (NodeFS.constants.O_NOFOLLOW ?? 0),
-        }),
-      catch: (cause) =>
-        new WorkspaceFileSystemOperationError({
-          workspaceRoot: input.cwd,
-          relativePath: input.relativePath,
-          resolvedPath: realTargetPath,
-          operationPath: realTargetPath,
-          operation: "write-file",
-          cause,
-        }),
-    });
-    // Editor autosave overwrites existing files, which leaves the indexed paths unchanged, and
-    // fff's watcher applies the new contents on its own. A forced rescan re-walks the whole
-    // workspace, and the save would wait for it.
-    if (!replacesFile) {
-      yield* workspaceEntries.refresh(input.cwd);
-    }
-    return { relativePath: target.relativePath };
-  });
+      });
+      // Editor autosave overwrites existing files, which leaves the indexed paths unchanged, and
+      // fff's watcher applies the new contents on its own. A forced rescan re-walks the whole
+      // workspace, and the save would wait for it.
+      if (!replacesFile) {
+        yield* workspaceEntries.refresh(input.cwd);
+      }
+      return { relativePath: target.relativePath };
+    },
+    Effect.uninterruptible,
+    withAdmission("root"),
+  );
 
   return WorkspaceFileSystem.of({ getMetadata, readFile, writeFile });
 });

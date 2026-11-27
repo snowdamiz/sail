@@ -29,6 +29,10 @@ impl MachineRuntime {
         if self.save_failure.lock().unwrap().as_ref().is_some_and(|f| f.last.elapsed() < SAVE_RETRY) {
             return None;
         }
+        if self.record.read().unwrap().lifecycle_enrolled {
+            // Managed watchdogs snapshot while holding the sandbox-side lifecycle.
+            return None;
+        }
         let stop = (*self.stopped_at.lock().unwrap())?;
         if Utc::now() - stop >= DISK_KEPT || self.record.read().unwrap().saved_stop.is_some_and(|s| s >= stop) {
             return None;
@@ -91,13 +95,14 @@ impl MachineRuntime {
             )
             .await
             .context("Boat deleted this machine's disk after 14 days asleep, and restoring its snapshot failed")?;
-        // The snapshot can predate the last upgrade and the stored chats: clearing the version
-        // makes the wake re-provision and drop them. Its watchdog still names the old sandbox:
-        // clearing the revision too makes the run loop's live upgrade retry if the wake's fails.
+        // The snapshot may contain an older runtime and its watchdog still names the old sandbox.
+        // Clear both receipts so Boats shows the pending server upgrade and refreshes the watchdog.
         self.update_record(|m| {
+            m.pending_resume = m.lifecycle_enrolled.then(|| sandbox.clone());
             m.sandbox_id = sandbox;
             m.t3_version.clear();
             m.provision_revision.clear();
+            m.saved_stop = None;
         });
         if let Err(e) = boat.delete(&record.sandbox_id).await {
             tracing::warn!("deleting {}'s expired sandbox {}: {e:#}", record.id, record.sandbox_id);

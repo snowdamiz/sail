@@ -4,6 +4,7 @@ import type * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - models the service manager reading disk through the launcher's Promise callback.
 import * as NodeFSP from "node:fs/promises";
+import { stagedTreeSha256 } from "./cloud/stagedSailRelease.ts";
 import * as NodeSqlite from "node:sqlite";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -41,6 +42,8 @@ import {
   decodeServiceUnit,
   disabledServiceTask,
   SERVICE_ENV_FILE,
+  SERVICE_STATE_FILE,
+  type ServiceState,
   SERVICE_LAUNCHER_PROTOCOL,
   SERVICE_RESTART_PENDING_FILE,
   SERVICE_STOP_MARKER_FILE,
@@ -2006,3 +2009,333 @@ setInterval(() => {}, 1_000);
     }),
   );
 });
+
+const maintenanceChild = (dbPath: string) =>
+  [
+    'const { DatabaseSync } = require("node:sqlite");',
+    "const append = (value) => {",
+    "  const db = new DatabaseSync(" + JSON.stringify(dbPath) + ");",
+    '  db.prepare("INSERT INTO history (phase) VALUES (?)").run(value);',
+    "  db.close();",
+    "};",
+    "const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);",
+    "const { maintenancePeer: peer, maintenanceFence: fence, update } = context;",
+    "let drain;",
+    "let stopCode = 0;",
+    'process.on("disconnect", () => process.exit(0));',
+    'process.on("message", (message) => {',
+    '  if (message.type === "stop") process.exit(stopCode);',
+    '  if (message.type === "maintenance-drain") {',
+    "    drain = message.fence;",
+    '    process.send({ type: "fixture-draining" });',
+    '  } else if (message.type === "maintenance-abort") {',
+    '    process.send({ type: "maintenance-aborted", fence: message.fence });',
+    '  } else if (message.type === "fixture-settle") {',
+    "    stopCode = message.stopCode ?? 0;",
+    '    process.send({ type: "maintenance-sealed", fence: message.stale ? { ...drain, updateId: peer.instanceId } : drain });',
+    '    process.send({ type: "fixture-seal-sent" });',
+    '  } else if (message.type === "fixture-prepare") {',
+    '    process.send({ type: "maintenance-prepared", peer, fence });',
+    '  } else if (message.type === "maintenance-committed") {',
+    '    append("committed");',
+    '    process.send({ type: "fixture-committed" });',
+    '  } else if (message.type === "fixture-ready") {',
+    '    process.send({ type: "maintenance-ready", peer, fence: message.stale ? { ...fence, release: { ...fence.release, archiveSha256: "f".repeat(64) } } : fence });',
+    '    process.send({ type: "fixture-ready-sent" });',
+    '  } else if (message.type === "fixture-exit") process.exit(1);',
+    "});",
+    'if (update?.status === "pending") {',
+    '  append("migrated");',
+    '  process.send({ type: "fixture-trial" });',
+    "} else if (fence === undefined) {",
+    '  process.send({ type: "maintenance-ready", peer });',
+    '  process.send({ type: "fixture-active" });',
+    "} else {",
+    '  process.send({ type: "fixture-recovered" });',
+    "}",
+  ].join("\n");
+
+const setupMaintenance = Effect.fnUntraced(function* (
+  drainBudgetMs: number,
+  processProof?: (incumbentPid: number) => void,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = yield* fs
+    .makeTempDirectoryScoped({ prefix: "t3-maintenance-" })
+    .pipe(Effect.flatMap(fs.realPath));
+  const dbPath = path.join(root, "userdata", "statev2.sqlite");
+  yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
+  const database = new NodeSqlite.DatabaseSync(dbPath);
+  try {
+    database.exec("CREATE TABLE history (phase TEXT); INSERT INTO history VALUES ('incumbent')");
+  } finally {
+    database.close();
+  }
+  const runtime = path.join(root, "runtime");
+  const staged = path.join(runtime, "boat-staged", "1.1.0");
+  for (const dir of [path.join(runtime, "versions", "1.0.0"), staged]) {
+    yield* writeFakeRuntime(fs, path, dir, maintenanceChild(dbPath));
+  }
+  const archiveSha256 = "a".repeat(64);
+  yield* fs.writeFileString(path.join(staged, ".sail-product"), "sail\n");
+  yield* fs.writeFileString(path.join(staged, ".sail-archive-sha256"), archiveSha256 + "\n");
+  const release = {
+    version: "1.1.0",
+    archiveSha256,
+    treeSha256: yield* Effect.promise((signal) => stagedTreeSha256(staged, signal)),
+  };
+  const statePath = path.join(runtime, SERVICE_STATE_FILE);
+  const state: ServiceState = { protocol: SERVICE_LAUNCHER_PROTOCOL, activeVersion: "1.0.0" };
+  yield* Effect.promise(() => writeServiceState(statePath, state));
+  let held = false;
+  let onRelease = Promise.withResolvers<void>();
+  const launches: Array<string> = [];
+  const messages = new Map<
+    string,
+    ReturnType<typeof Promise.withResolvers<NodeChildProcess.ChildProcess>>
+  >();
+  const event = (type: string) => {
+    let signal = messages.get(type);
+    if (signal === undefined) {
+      signal = Promise.withResolvers();
+      messages.set(type, signal);
+    }
+    return signal;
+  };
+  const running = new Set<Launcher>();
+  yield* Effect.addFinalizer(() =>
+    Effect.promise(async () => {
+      spawnHook.current = undefined;
+      await Promise.all([...running].map((launcher) => launcher.stop("SIGTERM")));
+    }),
+  );
+  spawnHook.current = (child) => {
+    child.on("message", (msg: unknown) => {
+      if (
+        typeof msg !== "object" ||
+        msg === null ||
+        !("type" in msg) ||
+        typeof msg.type !== "string"
+      )
+        return;
+      if (["fixture-active", "fixture-trial", "fixture-recovered"].includes(msg.type))
+        launches.push(msg.type);
+      event(msg.type).resolve(child);
+    });
+  };
+  return {
+    dbPath,
+    statePath,
+    target: path.join(runtime, "versions", release.version, "t3"),
+    release,
+    launches,
+    wait: (type: string) =>
+      event(type).promise.then((child) => {
+        messages.delete(type);
+        return child;
+      }),
+    released: () => onRelease.promise,
+    competingLifecycle: () => !held,
+    start: () => {
+      const launcher = new Launcher(root, state, {
+        maintenanceCoordinator: {
+          installation: { baseDir: root, environmentId: "environment-1", installationId: "boat-1" },
+          drainBudgetMs,
+          assertPreCutover: (pid) => {
+            assert.isTrue(held);
+            processProof?.(pid);
+          },
+          acquire: async () => {
+            if (held) throw new Error("Lifecycle held");
+            held = true;
+            onRelease = Promise.withResolvers();
+            return () => {
+              held = false;
+              onRelease.resolve();
+            };
+          },
+        },
+      });
+      running.add(launcher);
+      const done = launcher.run().finally(() => running.delete(launcher));
+      void done.catch(() => undefined);
+      return { launcher, done };
+    },
+  };
+});
+
+it.live("stages, waits for a matching seal and confirms only matching replacement readiness", () =>
+  Effect.gen(function* () {
+    const f = yield* setupMaintenance(20_000);
+    const { launcher } = f.start();
+    yield* Effect.promise(async () => {
+      const incumbent = await f.wait("fixture-active");
+      await expect(
+        launcher.requestMaintenance({ ...f.release, treeSha256: "0".repeat(64) }),
+      ).rejects.toThrow("does not match its verified release");
+      assert.isTrue(f.competingLifecycle());
+      assert.isUndefined((await readServiceState(f.statePath)).update);
+      const id = await launcher.requestMaintenance(f.release);
+      await f.wait("fixture-draining");
+      assert.isFalse(f.competingLifecycle());
+      assert.equal((await readServiceState(f.statePath)).maintenance?.phase, "draining");
+      assert.isFalse(NodeFS.existsSync(f.target));
+      await expect(launcher.requestMaintenance(f.release)).rejects.toThrow("No eligible");
+      assert.isFalse(f.competingLifecycle());
+      incumbent.send({ type: "fixture-settle", stale: true });
+      await f.wait("fixture-seal-sent");
+      assert.equal((await readServiceState(f.statePath)).activeVersion, "1.0.0");
+      assert.isNull(incumbent.exitCode);
+      assert.isNull(incumbent.signalCode);
+
+      incumbent.send({ type: "fixture-settle" });
+      const trial = await f.wait("fixture-trial");
+      assert.equal(incumbent.exitCode, 0);
+      assert.equal((await readServiceState(f.statePath)).maintenance?.phase, "cutover");
+      trial.send({ type: "fixture-prepare" });
+      await f.wait("fixture-committed");
+      assert.equal((await readServiceState(f.statePath)).maintenance?.phase, "committed");
+      assert.isFalse(f.competingLifecycle());
+      trial.send({ type: "fixture-ready", stale: true });
+      await f.wait("fixture-ready-sent");
+      assert.isFalse(f.competingLifecycle());
+      trial.send({ type: "fixture-ready" });
+      await f.released();
+      const final = await readServiceState(f.statePath);
+      assert.equal(final.activeVersion, "1.1.0");
+      assert.equal(final.update?.id, id);
+      assert.equal(final.update?.status, "committed");
+      assert.isUndefined(final.maintenance);
+      assert.deepEqual(f.launches, ["fixture-active", "fixture-trial"]);
+    });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("defers a matching seal when the process proof is unavailable", () =>
+  Effect.gen(function* () {
+    let observedPid: number | undefined;
+    const f = yield* setupMaintenance(20_000, (incumbentPid) => {
+      observedPid = incumbentPid;
+      throw new Error("An additional cgroup member is still live.");
+    });
+    const { launcher } = f.start();
+    yield* Effect.promise(async () => {
+      const incumbent = await f.wait("fixture-active");
+      await launcher.requestMaintenance(f.release);
+      await f.wait("fixture-draining");
+      incumbent.send({ type: "fixture-settle" });
+      await f.released();
+      assert.equal(observedPid, incumbent.pid);
+      assert.isNull(incumbent.exitCode);
+      assert.isNull(incumbent.signalCode);
+      assert.isFalse(NodeFS.existsSync(f.target));
+      assert.deepEqual(f.launches, ["fixture-active"]);
+      const state = await readServiceState(f.statePath);
+      assert.equal(state.activeVersion, "1.0.0");
+      assert.equal(state.update?.status, "failed");
+      assert.isUndefined(state.maintenance);
+    });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("restores the incumbent without a backup after an unclean maintenance exit", () =>
+  Effect.gen(function* () {
+    const f = yield* setupMaintenance(20_000);
+    const { launcher } = f.start();
+    yield* Effect.promise(async () => {
+      const incumbent = await f.wait("fixture-active");
+      await launcher.requestMaintenance(f.release);
+      await f.wait("fixture-draining");
+      incumbent.send({ type: "fixture-settle", stopCode: 1 });
+      await f.wait("fixture-active");
+      await f.released();
+      const state = await readServiceState(f.statePath);
+      assert.equal(state.activeVersion, "1.0.0");
+      assert.equal(state.update?.status, "failed");
+      assert.isUndefined(state.maintenance);
+      assert.deepEqual(f.launches, ["fixture-active", "fixture-active"]);
+      assert.isFalse(NodeFS.existsSync(f.target));
+    });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("reopens the incumbent after the drain expires without cutting over", () =>
+  Effect.gen(function* () {
+    const f = yield* setupMaintenance(150);
+    const { launcher } = f.start();
+    yield* Effect.promise(async () => {
+      const incumbent = await f.wait("fixture-active");
+      const id = await launcher.requestMaintenance(f.release);
+      await f.wait("fixture-draining");
+      await f.released();
+      const final = await readServiceState(f.statePath);
+      assert.equal(final.update?.id, id);
+      assert.equal(final.update?.status, "failed");
+      assert.equal(final.activeVersion, "1.0.0");
+      assert.isNull(incumbent.signalCode);
+      assert.deepEqual(f.launches, ["fixture-active"]);
+    });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live.each(["draining", "cutover", "committed"] as const)(
+  "recovers a persisted %s maintenance transaction across launcher restart",
+  (phase) =>
+    Effect.gen(function* () {
+      const f = yield* setupMaintenance(20_000);
+      const first = f.start();
+      yield* Effect.promise(async () => {
+        const incumbent = await f.wait("fixture-active");
+        const id = await first.launcher.requestMaintenance(f.release);
+        await f.wait("fixture-draining");
+        let trial: NodeChildProcess.ChildProcess | undefined;
+        if (phase !== "draining") {
+          incumbent.send({ type: "fixture-settle" });
+          trial = await f.wait("fixture-trial");
+          if (phase === "committed") {
+            trial.send({ type: "fixture-prepare" });
+            await f.wait("fixture-committed");
+          }
+        }
+        assert.equal((await readServiceState(f.statePath)).maintenance?.phase, phase);
+        if (phase === "committed" && trial !== undefined) {
+          trial.send({ type: "fixture-exit" });
+          await expect(first.done).rejects.toThrow("exited before matching readiness");
+        } else {
+          await first.launcher.stop("SIGTERM");
+          await first.done;
+        }
+
+        f.start();
+        if (phase === "committed") {
+          const recovered = await f.wait("fixture-recovered");
+          recovered.send({ type: "fixture-ready" });
+          await f.released();
+        } else {
+          await f.wait("fixture-active");
+        }
+        const final = await readServiceState(f.statePath);
+        assert.equal(final.update?.id, id);
+        assert.isUndefined(final.maintenance);
+        assert.equal(final.activeVersion, phase === "committed" ? "1.1.0" : "1.0.0");
+        const db = new NodeSqlite.DatabaseSync(f.dbPath, { readOnly: true });
+        try {
+          assert.deepEqual(
+            db
+              .prepare("SELECT phase FROM history ORDER BY rowid")
+              .all()
+              .map((row) => row.phase),
+            phase === "committed" ? ["incumbent", "migrated", "committed"] : ["incumbent"],
+          );
+        } finally {
+          db.close();
+        }
+        assert.equal(NodeFS.existsSync(f.target), phase === "committed");
+        assert.equal(
+          f.launches.filter((name) => name === "fixture-trial").length,
+          phase === "draining" ? 0 : 1,
+        );
+      });
+    }).pipe(Effect.provide(NodeServices.layer)),
+);

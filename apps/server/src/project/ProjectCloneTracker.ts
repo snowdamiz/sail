@@ -1,3 +1,4 @@
+import { forkAccepted, type ServerMaintenanceBusy, withAdmission } from "../serverAdmission.ts";
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import type {
   ProjectCloneSnapshot,
@@ -45,7 +46,7 @@ export class ProjectCloneTracker extends Context.Service<
       SourceControlRepositoryError | OrchestrationDispatchCommandError
     >;
     /** Interrupts a running clone and deletes the partial checkout. */
-    readonly cancel: (projectId: ProjectId) => Effect.Effect<boolean>;
+    readonly cancel: (projectId: ProjectId) => Effect.Effect<boolean, SourceControlRepositoryError>;
     readonly retry: (projectId: ProjectId) => Effect.Effect<boolean, SourceControlRepositoryError>;
     /** Stops tracking, interrupts any running clone and removes unfinished checkouts. */
     readonly discard: (projectId: ProjectId) => Effect.Effect<void>;
@@ -257,11 +258,29 @@ export const make = Effect.gen(function* () {
       Effect.ignoreCause(),
     );
 
+  const cloneBusy =
+    (operation: "clone" | "retryClone" | "cancelClone", provider: SourceControlProviderKind) =>
+    (cause: ServerMaintenanceBusy) =>
+      Effect.fail(
+        new SourceControlRepositoryError({
+          operation,
+          provider,
+          detail: cause.message,
+          retryable: true,
+          cause,
+        }),
+      );
+
   const launch = Effect.fn("ProjectCloneTracker.launch")(function* (projectId: ProjectId) {
     const current = yield* Ref.get(clones);
     const tracked = current.get(projectId);
     if (!tracked) return;
-    const fiber = yield* runClone(projectId, tracked).pipe(Effect.forkIn(cloneScope));
+    const fiber = yield* runClone(projectId, tracked).pipe(
+      forkAccepted(cloneScope),
+      Effect.catchTags({
+        ServerMaintenanceBusy: cloneBusy("clone", SourceControlProviderKind.make("unknown")),
+      }),
+    );
     yield* Ref.update(clones, (map) => {
       const existing = map.get(projectId);
       if (!existing) return map;
@@ -389,7 +408,15 @@ export const make = Effect.gen(function* () {
           if (after?.phase === "done") return;
           if (after?.phase === "running") yield* finish(projectId, "cancelled", null);
           yield* repositories.discardClone(tracked.input.destinationPath).pipe(Effect.ignore);
-        }),
+        }).pipe(
+          withAdmission("continuation"),
+          Effect.catchTags({
+            ServerMaintenanceBusy: cloneBusy(
+              "cancelClone",
+              tracked.input.repository?.provider ?? SourceControlProviderKind.make("unknown"),
+            ),
+          }),
+        ),
       );
       return true;
     },
@@ -463,13 +490,26 @@ export const make = Effect.gen(function* () {
   // Forwarders retain the underlying operation spans.
   return ProjectCloneTracker.of({
     start: Effect.fnUntraced(function* (input, hooks) {
-      return yield* locked(start(input, hooks));
+      return yield* locked(start(input, hooks)).pipe(
+        withAdmission("root"),
+        Effect.catchTags({
+          ServerMaintenanceBusy: cloneBusy(
+            "clone",
+            input.provider ?? SourceControlProviderKind.make("unknown"),
+          ),
+        }),
+      );
     }),
     cancel: Effect.fnUntraced(function* (projectId) {
       return yield* locked(cancel(projectId));
     }),
     retry: Effect.fnUntraced(function* (projectId) {
-      return yield* locked(retry(projectId));
+      return yield* locked(retry(projectId)).pipe(
+        withAdmission("root"),
+        Effect.catchTags({
+          ServerMaintenanceBusy: cloneBusy("retryClone", SourceControlProviderKind.make("unknown")),
+        }),
+      );
     }),
     discard: Effect.fnUntraced(function* (projectId) {
       return yield* locked(discard(projectId));

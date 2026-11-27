@@ -1,3 +1,4 @@
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -166,12 +167,24 @@ it.effect("clones a looked-up repository after creating missing parent directori
 
     yield* Effect.gen(function* () {
       const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
-      const result = yield* service.cloneRepository({
-        provider: SourceControlProviderKind.make("github"),
-        repository: "octocat/t3code",
-        destinationPath,
-        protocol: "https",
-      });
+      const admission = makeAdmission(Effect.succeed([]));
+      const token = Symbol();
+      assert.deepStrictEqual(yield* admission.drain(token, "1 second"), { kind: "sealed" });
+      const clone = service
+        .cloneRepository({
+          provider: SourceControlProviderKind.make("github"),
+          repository: "octocat/t3code",
+          destinationPath,
+          protocol: "https",
+        })
+        .pipe(Effect.provideService(ServerAdmission, admission));
+      const refusal = yield* Effect.result(clone);
+      assert.strictEqual(refusal._tag, "Failure");
+      if (refusal._tag === "Failure") assert.isTrue(refusal.failure.retryable);
+      assert.isFalse(yield* fs.exists(parent));
+      assert.deepStrictEqual(cloneCalls, []);
+      assert.isTrue(yield* admission.abort(token));
+      const result = yield* clone;
 
       assert.deepStrictEqual(result, {
         cwd: destinationPath,

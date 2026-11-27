@@ -20,6 +20,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import WorkflowsMigration from "../persistence/Migrations/110_Workflows.ts";
 import WorkflowSkippedRunsMigration from "../persistence/Migrations/113_WorkflowSkippedRuns.ts";
 import WorkflowRunTagsMigration from "../persistence/Migrations/115_WorkflowRunTags.ts";
+import { ServerActivation } from "../serverActivation.ts";
 import { type AgentResult, WorkflowAgents } from "./WorkflowAgents.ts";
 import * as WorkflowEngine from "./WorkflowEngine.ts";
 import * as WorkflowRuntime from "./WorkflowRuntime.ts";
@@ -522,6 +523,42 @@ it.effect(
         assert.equal(done.result, "all done");
       }).pipe(Effect.provide(runtime), Effect.scoped);
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+it.effect("keeps enabled workflow definitions and the engine parked until activation", () =>
+  Effect.gen(function* () {
+    const { directory, made } = yield* setup();
+    const activated = yield* Deferred.make<void>();
+    const engineStarting = yield* Deferred.make<void>();
+    const permitEngine = yield* Deferred.make<void>();
+    const gated = yield* WorkflowRuntime.gate(
+      Deferred.succeed(engineStarting, undefined).pipe(
+        Effect.andThen(Deferred.await(permitEngine)),
+        Effect.andThen(made),
+      ),
+      directory,
+      Effect.succeed(true),
+    ).pipe(Effect.provideService(ServerActivation, Deferred.await(activated)));
+    const definitions = Context.get(gated.context, WorkflowRuntime.WorkflowDefinitions);
+    const readComplete = yield* Deferred.make<void>();
+    const read = yield* definitions.read.pipe(
+      Effect.tap(() => Deferred.succeed(readComplete, undefined)),
+      Effect.forkChild({ startImmediately: true }),
+    );
+
+    assert.isFalse(yield* Deferred.isDone(engineStarting));
+    assert.isFalse(yield* Deferred.isDone(readComplete));
+
+    yield* Deferred.succeed(activated, undefined);
+    yield* Deferred.await(engineStarting);
+    assert.isFalse(yield* Deferred.isDone(readComplete));
+
+    yield* Deferred.succeed(permitEngine, undefined);
+    assert.deepStrictEqual(
+      (yield* Fiber.join(read)).files.map((file) => file.workflows),
+      [["hold@1"]],
+    );
+  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );
 
 it.effect(

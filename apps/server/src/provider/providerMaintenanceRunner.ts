@@ -1,3 +1,4 @@
+import { forkAccepted, withAdmission } from "../serverAdmission.ts";
 import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
@@ -397,9 +398,9 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
       }),
     );
 
-  const updateProvider: ProviderMaintenanceRunnerShape["updateProvider"] = Effect.fn(
-    "ProviderMaintenanceRunner.updateProvider",
-  )(function* (target) {
+  const updateProvider = Effect.fn("ProviderMaintenanceRunner.updateProvider")(function* (
+    target: Parameters<ProviderMaintenanceRunnerShape["updateProvider"]>[0],
+  ) {
     const provider = typeof target === "string" ? target : target.provider;
     const instanceId =
       typeof target === "string"
@@ -685,7 +686,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
             );
           }).pipe(Effect.ignore),
         ),
-        Effect.forkIn(serviceScope),
+        forkAccepted(serviceScope),
       );
     return yield* Fiber.join(updateFiber).pipe(
       Effect.mapError((error) =>
@@ -700,7 +701,20 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
   });
 
   return ProviderMaintenanceRunner.of({
-    updateProvider,
+    updateProvider: Effect.fnUntraced(function* (target) {
+      return yield* updateProvider(target).pipe(
+        withAdmission("root"),
+        Effect.catchTags({
+          ServerMaintenanceBusy: (error) =>
+            Effect.fail(
+              new ServerProviderUpdateError({
+                provider: typeof target === "string" ? target : target.provider,
+                reason: error.message,
+              }),
+            ),
+        }),
+      );
+    }),
   });
 });
 

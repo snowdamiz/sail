@@ -1,3 +1,4 @@
+import { isServerMaintenanceBusy, withAdmission } from "../serverAdmission.ts";
 // Stores agent feedback reports and shows the cards of requested ones. A card is answered from
 // what it recorded, so it stays answerable after its turn ends and after a restart.
 import {
@@ -369,7 +370,24 @@ const make = Effect.gen(function* () {
       );
   });
 
-  return FeedbackStore.of({ store, showCard, answer });
+  const whileOpen = <A, E, R>(work: Effect.Effect<A, E, R>) =>
+    work.pipe(
+      withAdmission("root"),
+      Effect.catchIf(isServerMaintenanceBusy, (cause) => Effect.fail(storageError(cause))),
+    );
+
+  return FeedbackStore.of({
+    store: Effect.fn("FeedbackStore.admitStore")(store, whileOpen),
+    showCard: Effect.fn("FeedbackStore.admitShowCard")(showCard, whileOpen),
+    answer: Effect.fn("FeedbackStore.admitAnswer")(
+      answer,
+      withAdmission("continuation"),
+      Effect.catchTags({
+        ServerMaintenanceBusy: (cause) =>
+          new AgentFeedbackRequestError({ reason: "maintenance", cause }),
+      }),
+    ),
+  });
 });
 
 export const layer = Layer.effect(FeedbackStore, make);

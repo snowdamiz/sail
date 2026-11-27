@@ -1,3 +1,4 @@
+import { forkAccepted } from "../serverAdmission.ts";
 import {
   ProviderSetupError,
   type ProviderAuthState,
@@ -482,7 +483,10 @@ export const makeAntigravityAuth = Effect.fn("makeAntigravityAuth")(function* <
             yield* publishFlow(flow, state);
             flow.fiber = yield* runSignIn(flow, stopSessions).pipe(
               Effect.interruptible,
-              Effect.forkIn(instanceScope),
+              forkAccepted(instanceScope),
+              Effect.catchTags({
+                ServerMaintenanceBusy: (cause) => setupError("start", cause.message),
+              }),
             );
             return state;
           }),

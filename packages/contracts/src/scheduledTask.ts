@@ -418,6 +418,7 @@ export class ScheduledTaskError extends Schema.TaggedError<ScheduledTaskError>()
   "ScheduledTaskError",
   {
     message: Schema.String,
+    retryable: Schema.optional(Schema.Literal(true)),
     taskId: Schema.optional(ScheduledTaskId),
     cause: Schema.optional(Schema.Defect()),
   },

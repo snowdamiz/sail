@@ -1016,12 +1016,12 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
   /** The run there that carries the task; absent on tasks recorded before it was kept. */
   runId: Schema.optional(RunId),
   /**
-   * Nothing is left to stop there: a stop reached it, was refused for good, or the thread
-   * or link is gone. A run ending there by itself sets it too, unless the task here was
-   * cancelled or stopped and still owes a stop, which its follower keeps sending across
-   * restarts. `false`: a Stop here owes one to a task that already had its result.
+   * Whether a stop is still owed. Older servers also set true on some permanent refusals.
+   * A run ending there sets true unless the task here still owes a stop.
    */
   stoppedThere: Schema.optional(Schema.Boolean),
+  /** A peer accepted the stop or confirmed the run and its delegated work settled. */
+  settlementVerified: Schema.optionalKey(Schema.Literal(true)),
   /**
    * Stops asked for here once the task had its result. The count names the
    * one owed, so each reaches the thread there once however often it is sent.
@@ -3961,6 +3961,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
      * the stop owed for whatever follows it.
      */
     stoppedThere: Schema.optional(Schema.Literals(["ran-out", "stopped"])),
+    settlementVerified: Schema.optionalKey(Schema.Literal(true)),
     /** The stop generation this report acknowledges; absent for the original unnumbered stop. */
     stopCount: Schema.optional(NonNegativeInt),
   }),
@@ -4469,6 +4470,7 @@ export class OrchestrationV2DispatchCommandError extends Schema.TaggedError<Orch
     commandId: CommandId,
     commandType: Schema.String,
     message: Schema.String,
+    retryable: Schema.optional(Schema.Literal(true)),
     detail: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
@@ -4497,6 +4499,7 @@ export class OrchestrationV2ThreadLaunchError extends Schema.TaggedError<Orchest
     commandId: CommandId,
     projectId: ProjectId,
     message: Schema.String,
+    retryable: Schema.optional(Schema.Literal(true)),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}

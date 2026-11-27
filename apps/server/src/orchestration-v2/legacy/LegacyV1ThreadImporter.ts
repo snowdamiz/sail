@@ -1,3 +1,4 @@
+import { afterAdmissionReopens, withAdmission } from "../../serverAdmission.ts";
 import {
   threadPullRequestKeysEqual,
   threadPullRequestsOf,
@@ -687,6 +688,8 @@ const make = Effect.gen(function* () {
   // Both results are final for this process: transcript_imported_at never resets, and only startup shell reconciliation creates legacy rows.
   const confirmedTranscriptThreadIds = new Set<ThreadId>();
 
+  const noTranscriptImported = { importedThreadCount: 0, importedMessageCount: 0 };
+
   const ensureTranscriptBase = (threadId: ThreadId) =>
     transcriptImports.withLock(
       threadId,
@@ -700,12 +703,13 @@ const make = Effect.gen(function* () {
         const imported = imports[0];
         if (imported === undefined || imported.transcript_imported_at !== null) {
           confirmedTranscriptThreadIds.add(threadId);
-          return { importedThreadCount: 0, importedMessageCount: 0 };
+          return noTranscriptImported;
         }
-        const importedAt = yield* DateTime.now;
-        const messages = yield* listMessages(threadId);
-        // Hint the index to skip V1 events without scanning their payloads.
-        const existingRows = yield* sql<{ readonly event_id: string }>`
+        return yield* Effect.gen(function* () {
+          const importedAt = yield* DateTime.now;
+          const messages = yield* listMessages(threadId);
+          // Hint the index to skip V1 events without scanning their payloads.
+          const existingRows = yield* sql<{ readonly event_id: string }>`
           SELECT event_id
           FROM orchestration_events INDEXED BY idx_orchestration_events_agent_stream_sequence
           WHERE application_event_version = 2
@@ -713,15 +717,15 @@ const make = Effect.gen(function* () {
             AND stream_id = ${threadId}
             AND event_id LIKE ${`${IMPORT_EVENT_PREFIX}:message:%`}
         `.pipe(NodeSqliteClient.readOnly);
-        const existing = new Set(existingRows.map((row) => row.event_id));
-        const missing = messages.filter(
-          (message) => !existing.has(`${IMPORT_EVENT_PREFIX}:message:${message.message_id}`),
-        );
-        for (const batch of chunks(missing, TRANSCRIPT_EVENT_BATCH_SIZE / 2)) {
-          yield* Effect.forEach(
-            batch,
-            (message) =>
-              sql`
+          const existing = new Set(existingRows.map((row) => row.event_id));
+          const missing = messages.filter(
+            (message) => !existing.has(`${IMPORT_EVENT_PREFIX}:message:${message.message_id}`),
+          );
+          for (const batch of chunks(missing, TRANSCRIPT_EVENT_BATCH_SIZE / 2)) {
+            yield* Effect.forEach(
+              batch,
+              (message) =>
+                sql`
                 INSERT INTO orchestration_v2_turn_item_positions (
                   thread_id,
                   turn_item_id,
@@ -734,15 +738,15 @@ const make = Effect.gen(function* () {
                 )
                 ON CONFLICT(thread_id, turn_item_id) DO NOTHING
               `,
-            { discard: true },
-          );
-          yield* eventSink.write({
-            events: batch.flatMap((message) => messageEvents(message, importedAt)),
-          });
-          yield* Effect.yieldNow;
-        }
-        const now = DateTime.formatIso(yield* DateTime.now);
-        yield* sql`
+              { discard: true },
+            );
+            yield* eventSink.write({
+              events: batch.flatMap((message) => messageEvents(message, importedAt)),
+            });
+            yield* Effect.yieldNow;
+          }
+          const now = DateTime.formatIso(yield* DateTime.now);
+          yield* sql`
           UPDATE orchestration_v2_legacy_imports
           SET
             transcript_imported_at = ${now},
@@ -750,17 +754,21 @@ const make = Effect.gen(function* () {
             last_error = NULL
           WHERE thread_id = ${threadId}
         `;
-        confirmedTranscriptThreadIds.add(threadId);
-        return {
-          importedThreadCount: 1,
-          importedMessageCount: missing.length,
-        };
+          confirmedTranscriptThreadIds.add(threadId);
+          return {
+            importedThreadCount: 1,
+            importedMessageCount: missing.length,
+          };
+        }).pipe(
+          withAdmission("root"),
+          Effect.catchTags({ ServerMaintenanceBusy: () => Effect.succeed(noTranscriptImported) }),
+        );
       }),
     );
 
   const ensureTranscript = (threadId: ThreadId) =>
     confirmedTranscriptThreadIds.has(threadId)
-      ? Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 })
+      ? Effect.succeed(noTranscriptImported)
       : ensureTranscriptBase(threadId).pipe(
           Effect.mapError(
             (cause) =>
@@ -805,6 +813,7 @@ const make = Effect.gen(function* () {
               Effect.as({ importedThreadCount: 0, importedMessageCount: 0 }),
             ),
         ),
+        afterAdmissionReopens,
       );
       importedThreadCount += result.importedThreadCount;
       importedMessageCount += result.importedMessageCount;

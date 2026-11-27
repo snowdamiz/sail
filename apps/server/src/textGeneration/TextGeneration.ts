@@ -1,3 +1,4 @@
+import { withAdmission } from "../serverAdmission.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -166,12 +167,20 @@ export const make = Effect.gen(function* () {
           "No text generation provider is available. Enable a provider that can generate text in Settings → Providers.",
       });
     }
-    return yield* installationGate.execute(
-      selection.instanceId,
-      resolveInstance(registry, operation, selection.instanceId).pipe(
-        Effect.flatMap((service) => invoke(service, selection)),
-      ),
-    );
+    return yield* installationGate
+      .execute(
+        selection.instanceId,
+        resolveInstance(registry, operation, selection.instanceId).pipe(
+          Effect.flatMap((service) => invoke(service, selection)),
+        ),
+      )
+      .pipe(
+        withAdmission("root"),
+        Effect.catchTags({
+          ServerMaintenanceBusy: (cause) =>
+            new TextGenerationError({ operation, detail: cause.message, cause }),
+        }),
+      );
   });
   return TextGeneration.of({
     generateCommitMessage: Effect.fn("TextGeneration.generateCommitMessage")(function (input) {

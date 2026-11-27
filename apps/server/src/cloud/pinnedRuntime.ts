@@ -1,3 +1,4 @@
+import { acquireBoatMutation, boatRuntime } from "./boatLifecycle.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
@@ -493,7 +494,17 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
 });
 
 export const ensurePinnedRuntimeInstalled = (input: PinnedRuntimeInstallInput) =>
-  pinnedRuntimeInstallLock.withPermit(installPinnedRuntime(input));
+  pinnedRuntimeInstallLock.withPermit(
+    Effect.acquireUseRelease(
+      Effect.try({
+        try: () => acquireBoatMutation(input.baseDir),
+        catch: (cause) =>
+          new PinnedRuntimeInstallError({ step: "acquiring Boat lifecycle", cause }),
+      }),
+      () => installPinnedRuntime(input),
+      (release) => Effect.sync(release),
+    ),
+  );
 
 const PINNED_RUNTIME_STAGING_PREFIX = ".staging-";
 const PINNED_RUNTIME_PRUNED_PREFIX = ".pruned-";
@@ -934,6 +945,8 @@ export const prunePinnedRuntimes = Effect.fn("cloud.pinned_runtime.prune")(funct
   readonly keep: ReadonlyArray<string>;
   readonly references?: ReadonlyArray<string>;
 }) {
+  // The Boat launcher retains its previous selectable runtime for rollback and recovery.
+  if (yield* Effect.sync(() => boatRuntime(input.baseDir) !== undefined)) return [];
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   // Only selection and the renames race an install; deleting renamed trees can take a while.

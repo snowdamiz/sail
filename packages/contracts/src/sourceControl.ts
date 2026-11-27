@@ -205,6 +205,7 @@ export type SourceControlSignInResult = typeof SourceControlSignInResult.Type;
 
 export const SourceControlSignInFailure = Schema.Literals([
   "unsupported",
+  "maintenance",
   "not-started",
   "cancelled",
   "denied",
@@ -254,6 +255,7 @@ export class SourceControlRepositoryError extends Schema.TaggedError<SourceContr
     provider: SourceControlProviderKind,
     operation: Schema.String,
     detail: Schema.String,
+    retryable: Schema.optionalKey(Schema.Literal(true)),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {

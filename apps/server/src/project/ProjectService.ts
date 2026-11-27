@@ -17,6 +17,7 @@ import { isWslSharePath } from "@t3tools/shared/path";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import { forkAccepted, withAdmission, isServerMaintenanceBusy } from "../serverAdmission.ts";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -269,7 +270,12 @@ export const make = Effect.gen(function* () {
 
   const hydrate = Effect.fn("ProjectService.hydrate")(function* (row: ProjectStore.ProjectRow) {
     if (row.deletedAt === null) {
-      yield* syncFolders(row).pipe(Effect.ignoreCause({ log: true }), Effect.forkIn(scope));
+      yield* syncFolders(row).pipe(
+        Effect.ignoreCause({ log: true }),
+        forkAccepted(scope),
+        withAdmission("root"),
+        Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
+      );
     }
     const enrichment =
       row.deletedAt === null
@@ -583,123 +589,138 @@ export const make = Effect.gen(function* () {
           ),
         );
 
-  const create: ProjectService["Service"]["create"] = Effect.fn("ProjectService.create")(
-    function* (input) {
-      yield* rejectWslSharePath(input.projectId, input.workspaceRoot);
-      const workspaceRoot = yield* normalizeWorkspaceRoot({
-        projectId: input.projectId,
-        workspaceRoot: input.workspaceRoot,
-        createIfMissing: input.createWorkspaceRootIfMissing ?? false,
-      });
-      yield* rejectWorktreeContainer(input.projectId, workspaceRoot);
-      const trackedFolders = yield* normalizeTrackedFolders(
-        input.projectId,
-        workspaceRoot,
-        input.trackedFolders ?? [],
-      );
-      yield* commit(
-        {
-          type: "project.create",
-          commandId: input.commandId,
-          projectId: input.projectId,
-          title: input.title,
-          workspaceRoot,
-          ...(input.scripts === undefined ? {} : { scripts: input.scripts }),
-          trackedFolders,
-        },
-        undefined,
-        saveProjectSettings(input.projectId, { scripts: input.scripts }),
-      );
-      yield* projectEnrichment.invalidate([workspaceRoot]);
-      return yield* readCommitted(input.projectId);
-    },
-  );
+  const admitMutation = <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+    input: { readonly projectId: ProjectId },
+  ) =>
+    effect.pipe(
+      withAdmission("root"),
+      Effect.catchIf(
+        isServerMaintenanceBusy,
+        (cause) =>
+          new ProjectOperationError({
+            projectId: input.projectId,
+            operation: "dispatch-project-command",
+            cause,
+          }),
+      ),
+    );
 
-  const update: ProjectService["Service"]["update"] = Effect.fn("ProjectService.update")(
-    function* (input) {
-      const existing = yield* readRow(input.projectId);
-      if (Option.isNone(existing)) {
-        return yield* new ProjectNotFoundError({ projectId: input.projectId });
-      }
-      const previousRoot = existing.value.workspaceRoot;
-      if (input.workspaceRoot !== undefined && input.workspaceRoot !== previousRoot) {
-        yield* rejectWslSharePath(input.projectId, input.workspaceRoot);
-      }
-      const workspaceRoot =
-        input.workspaceRoot === undefined
-          ? previousRoot
-          : yield* normalizeWorkspaceRoot({
-              projectId: input.projectId,
-              workspaceRoot: input.workspaceRoot,
-            });
-      if (workspaceRoot !== previousRoot) {
-        yield* rejectWorktreeContainer(input.projectId, workspaceRoot);
-      }
-      const command = {
-        type: "project.meta.update",
+  const create: ProjectService["Service"]["create"] = Effect.fn("ProjectService.create")(function* (
+    input,
+  ) {
+    yield* rejectWslSharePath(input.projectId, input.workspaceRoot);
+    const workspaceRoot = yield* normalizeWorkspaceRoot({
+      projectId: input.projectId,
+      workspaceRoot: input.workspaceRoot,
+      createIfMissing: input.createWorkspaceRootIfMissing ?? false,
+    });
+    yield* rejectWorktreeContainer(input.projectId, workspaceRoot);
+    const trackedFolders = yield* normalizeTrackedFolders(
+      input.projectId,
+      workspaceRoot,
+      input.trackedFolders ?? [],
+    );
+    yield* commit(
+      {
+        type: "project.create",
         commandId: input.commandId,
         projectId: input.projectId,
-        ...(input.title === undefined ? {} : { title: input.title }),
-        ...(workspaceRoot === previousRoot ? {} : { workspaceRoot }),
-        ...(input.defaultModelSelection === undefined
-          ? {}
-          : { defaultModelSelection: input.defaultModelSelection }),
-        ...(input.autoPull === undefined ? {} : { autoPull: input.autoPull }),
-        ...(input.projectIcon === undefined ? {} : { projectIcon: input.projectIcon }),
-        ...(input.faviconPath === undefined ? {} : { faviconPath: input.faviconPath }),
-        ...(input.defaultThreadEnvMode === undefined
-          ? {}
-          : { defaultThreadEnvMode: input.defaultThreadEnvMode }),
+        title: input.title,
+        workspaceRoot,
         ...(input.scripts === undefined ? {} : { scripts: input.scripts }),
-        ...(input.pinned === undefined ? {} : { pinned: input.pinned }),
-        ...(input.archived === undefined ? {} : { archived: input.archived }),
-      } as const;
-      // Checked against the row under the lock: an update that ran meanwhile may have moved the
-      // project's folder or changed what it tracks.
-      yield* commit(
-        command,
-        Effect.fnUntraced(function* (current) {
-          if (current === undefined || current.deletedAt !== null) return command;
-          const root = command.workspaceRoot ?? current.workspaceRoot;
-          // Moving the project's folder re-checks the folders it keeps tracking.
-          const untracked = new Set(
-            (input.untrackFolders ?? []).map((entry) => path.resolve(entry)),
-          );
-          const tracking = input.trackFolders ?? [];
-          if (
-            input.trackedFolders === undefined &&
-            untracked.size === 0 &&
-            tracking.length === 0 &&
-            root === current.workspaceRoot
-          )
-            return command;
-          const listed: ReadonlyArray<ProjectTrackedFolder> =
-            input.trackedFolders ?? current.trackedFolders;
-          const kept = listed.filter(
-            (folder) => folder.discovered !== true && !untracked.has(path.resolve(folder.path)),
-          );
-          const trackedFolders = yield* normalizeTrackedFolders(
-            input.projectId,
-            root,
-            [
-              ...kept,
-              ...tracking.filter(
-                (folder) =>
-                  !kept.some((entry) => path.resolve(entry.path) === path.resolve(folder.path)),
-              ),
-            ],
-            current.trackedFolders,
-          );
-          return { ...command, trackedFolders };
-        }),
-        saveProjectSettings(input.projectId, input),
-      );
-      if (workspaceRoot !== previousRoot || input.faviconPath !== undefined) {
-        yield* projectEnrichment.invalidate([previousRoot, workspaceRoot]);
-      }
-      return yield* readCommitted(input.projectId);
-    },
-  );
+        trackedFolders,
+      },
+      undefined,
+      saveProjectSettings(input.projectId, { scripts: input.scripts }),
+    );
+    yield* projectEnrichment.invalidate([workspaceRoot]);
+    return yield* readCommitted(input.projectId);
+  }, admitMutation);
+
+  const update: ProjectService["Service"]["update"] = Effect.fn("ProjectService.update")(function* (
+    input,
+  ) {
+    const existing = yield* readRow(input.projectId);
+    if (Option.isNone(existing)) {
+      return yield* new ProjectNotFoundError({ projectId: input.projectId });
+    }
+    const previousRoot = existing.value.workspaceRoot;
+    if (input.workspaceRoot !== undefined && input.workspaceRoot !== previousRoot) {
+      yield* rejectWslSharePath(input.projectId, input.workspaceRoot);
+    }
+    const workspaceRoot =
+      input.workspaceRoot === undefined
+        ? previousRoot
+        : yield* normalizeWorkspaceRoot({
+            projectId: input.projectId,
+            workspaceRoot: input.workspaceRoot,
+          });
+    if (workspaceRoot !== previousRoot) {
+      yield* rejectWorktreeContainer(input.projectId, workspaceRoot);
+    }
+    const command = {
+      type: "project.meta.update",
+      commandId: input.commandId,
+      projectId: input.projectId,
+      ...(input.title === undefined ? {} : { title: input.title }),
+      ...(workspaceRoot === previousRoot ? {} : { workspaceRoot }),
+      ...(input.defaultModelSelection === undefined
+        ? {}
+        : { defaultModelSelection: input.defaultModelSelection }),
+      ...(input.autoPull === undefined ? {} : { autoPull: input.autoPull }),
+      ...(input.projectIcon === undefined ? {} : { projectIcon: input.projectIcon }),
+      ...(input.faviconPath === undefined ? {} : { faviconPath: input.faviconPath }),
+      ...(input.defaultThreadEnvMode === undefined
+        ? {}
+        : { defaultThreadEnvMode: input.defaultThreadEnvMode }),
+      ...(input.scripts === undefined ? {} : { scripts: input.scripts }),
+      ...(input.pinned === undefined ? {} : { pinned: input.pinned }),
+      ...(input.archived === undefined ? {} : { archived: input.archived }),
+    } as const;
+    // Checked against the row under the lock: an update that ran meanwhile may have moved the
+    // project's folder or changed what it tracks.
+    yield* commit(
+      command,
+      Effect.fnUntraced(function* (current) {
+        if (current === undefined || current.deletedAt !== null) return command;
+        const root = command.workspaceRoot ?? current.workspaceRoot;
+        // Moving the project's folder re-checks the folders it keeps tracking.
+        const untracked = new Set((input.untrackFolders ?? []).map((entry) => path.resolve(entry)));
+        const tracking = input.trackFolders ?? [];
+        if (
+          input.trackedFolders === undefined &&
+          untracked.size === 0 &&
+          tracking.length === 0 &&
+          root === current.workspaceRoot
+        )
+          return command;
+        const listed: ReadonlyArray<ProjectTrackedFolder> =
+          input.trackedFolders ?? current.trackedFolders;
+        const kept = listed.filter(
+          (folder) => folder.discovered !== true && !untracked.has(path.resolve(folder.path)),
+        );
+        const trackedFolders = yield* normalizeTrackedFolders(
+          input.projectId,
+          root,
+          [
+            ...kept,
+            ...tracking.filter(
+              (folder) =>
+                !kept.some((entry) => path.resolve(entry.path) === path.resolve(folder.path)),
+            ),
+          ],
+          current.trackedFolders,
+        );
+        return { ...command, trackedFolders };
+      }),
+      saveProjectSettings(input.projectId, input),
+    );
+    if (workspaceRoot !== previousRoot || input.faviconPath !== undefined) {
+      yield* projectEnrichment.invalidate([previousRoot, workspaceRoot]);
+    }
+    return yield* readCommitted(input.projectId);
+  }, admitMutation);
 
   const bootstrap: ProjectService["Service"]["bootstrap"] = Effect.fn("ProjectService.bootstrap")(
     function* (input) {
@@ -832,6 +853,7 @@ export const make = Effect.gen(function* () {
       yield* projectEnrichment.invalidate([existing.value.workspaceRoot]);
       return yield* readCommitted(projectId);
     },
+    admitMutation,
   );
 
   const enrichShell = (shell: OrchestrationProjectShell) =>

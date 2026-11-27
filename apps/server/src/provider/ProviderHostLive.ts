@@ -5,10 +5,12 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
+import { ServerAdmission } from "../serverAdmission.ts";
 import * as ServerConfig from "../config.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
 import * as ServerLifecycleEvents from "../serverLifecycleEvents.ts";
@@ -21,6 +23,7 @@ export const layer = Layer.effect(
   ProviderHost.ProviderHost,
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
+    const admission = yield* ServerAdmission;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
     const secrets = yield* ServerSecretStore.ServerSecretStore;
@@ -55,6 +58,23 @@ export const layer = Layer.effect(
         changes: serverSettings.streamChanges,
         subscribe: serverSettings.subscribeChanges,
       },
+      ...(admission === undefined
+        ? {}
+        : {
+            tryStandaloneWork: (work) =>
+              admission.run("root", Effect.result(work)).pipe(
+                Effect.asSome,
+                Effect.catchTags({ ServerMaintenanceBusy: () => Effect.succeedNone }),
+                Effect.flatMap((result) =>
+                  Option.isNone(result)
+                    ? Effect.succeedNone
+                    : Result.match(result.value, {
+                        onFailure: Effect.fail,
+                        onSuccess: Effect.succeedSome,
+                      }),
+                ),
+              ),
+          }),
       shouldRunBackgroundWork: backgroundPolicy.shouldRunScopeWork,
       ...Option.match(lifecycleEvents, {
         onNone: () => ({}),

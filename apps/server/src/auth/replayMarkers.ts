@@ -1,3 +1,4 @@
+import { withAdmission } from "../serverAdmission.ts";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -58,6 +59,8 @@ export const pruneExpiredReplayMarkers = Effect.fn("replayMarkers.pruneExpired")
 export const layer = Layer.effectDiscard(
   forkParked(
     pruneExpiredReplayMarkers().pipe(
+      withAdmission("root"),
+      Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
       Effect.catch((cause) =>
         Effect.logWarning("Failed to prune expired replay markers", { cause }),
       ),

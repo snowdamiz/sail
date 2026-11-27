@@ -8,6 +8,7 @@ import {
   type VcsInitInput,
   VcsUnsupportedOperationError,
 } from "@t3tools/contracts";
+import { withAdmission } from "../serverAdmission.ts";
 import * as VcsDriverRegistry from "./VcsDriverRegistry.ts";
 
 export class VcsProvisioningService extends Context.Service<
@@ -41,11 +42,25 @@ export const make = Effect.gen(function* () {
 
   const initRepository: VcsProvisioningService["Service"]["initRepository"] = Effect.fn(
     "VcsProvisioningService.initRepository",
-  )(function* (input) {
-    const kind = yield* resolveRequestedKind(input.kind);
-    const driver = yield* registry.get(kind);
-    return yield* driver.initRepository(input);
-  });
+  )(
+    function* (input) {
+      const kind = yield* resolveRequestedKind(input.kind);
+      const driver = yield* registry.get(kind);
+      return yield* driver.initRepository(input);
+    },
+    withAdmission("root"),
+    (work, input) =>
+      work.pipe(
+        Effect.catchTags({
+          ServerMaintenanceBusy: (cause) =>
+            new VcsUnsupportedOperationError({
+              operation: "VcsProvisioningService.initRepository",
+              kind: input.kind ?? "git",
+              detail: cause.message,
+            }),
+        }),
+      ),
+  );
 
   return VcsProvisioningService.of({
     initRepository,

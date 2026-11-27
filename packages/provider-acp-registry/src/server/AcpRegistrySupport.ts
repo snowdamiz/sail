@@ -1141,6 +1141,21 @@ export const makeAcpRegistryCatalog = Effect.fn("AcpRegistryCatalog.make")(funct
     });
   });
 
+  const host = yield* Effect.serviceOption(ProviderHost.ProviderHost);
+  const withAdmission = <A, R>(work: Effect.Effect<A, AcpRegistryError, R>) =>
+    (Option.getOrUndefined(host)?.tryStandaloneWork?.(work) ?? Effect.asSome(work)).pipe(
+      Effect.flatMap((result) =>
+        Effect.fromOption(
+          result,
+          () =>
+            new AcpRegistryError({
+              reason: "maintenance_busy",
+              detail: "Server maintenance is in progress. Retry the same request.",
+            }),
+        ),
+      ),
+    );
+
   const refreshIndex: AcpRegistryCatalog["Service"]["refreshIndex"] = Effect.fn(
     "AcpRegistryCatalog.refreshIndex",
   )(function* (options) {
@@ -1153,7 +1168,7 @@ export const makeAcpRegistryCatalog = Effect.fn("AcpRegistryCatalog.make")(funct
           )
         : yield* recentRegistry(options.maxAgeMs, options.failureBackoffMs);
     return result.changed;
-  });
+  }, withAdmission);
 
   const invalidateIndex: AcpRegistryCatalog["Service"]["invalidateIndex"] = Effect.fn(
     "AcpRegistryCatalog.invalidateIndex",
@@ -1969,6 +1984,7 @@ export const makeAcpRegistryCatalog = Effect.fn("AcpRegistryCatalog.make")(funct
         })),
       } satisfies AcpRegistrySearchResult;
     },
+    withAdmission,
   );
 
   const prepare: AcpRegistryCatalog["Service"]["prepare"] = Effect.fn("AcpRegistryCatalog.prepare")(
@@ -1995,6 +2011,7 @@ export const makeAcpRegistryCatalog = Effect.fn("AcpRegistryCatalog.make")(funct
         prepared: true,
       } satisfies AcpRegistryPrepareResult;
     },
+    withAdmission,
   );
 
   const validateLocalExecutable = (command: string) =>
@@ -2130,6 +2147,7 @@ export const makeAcpRegistryCatalog = Effect.fn("AcpRegistryCatalog.make")(funct
             runner,
           } as const);
     },
+    withAdmission,
   );
 
   const resolveWithRegistry = Effect.fn("AcpRegistryCatalog.resolveWithRegistry")(function* (
@@ -2272,9 +2290,10 @@ export const makeAcpRegistryCatalog = Effect.fn("AcpRegistryCatalog.make")(funct
         ),
       );
     },
+    withAdmission,
   );
 
-  const uninstallManagedBinary: AcpRegistryCatalog["Service"]["uninstallManagedBinary"] = (input) =>
+  const uninstall = (input: AcpRegistryManagedBinaryUninstallInput) =>
     hostSettings
       .withSnapshot((settings) =>
         withInstallPermit(input.agentId)(
@@ -2365,6 +2384,11 @@ export const makeAcpRegistryCatalog = Effect.fn("AcpRegistryCatalog.make")(funct
             }),
         }),
       );
+
+  const uninstallManagedBinary = Effect.fn("AcpRegistryCatalog.uninstallManagedBinary")(
+    uninstall,
+    withAdmission,
+  );
 
   return AcpRegistryCatalog.of({
     search,

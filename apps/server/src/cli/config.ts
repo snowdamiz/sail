@@ -666,8 +666,7 @@ export const resolveCliAuthConfig = (
     cliLogLevel,
     { servesHome: false },
   );
-  // Logs go to stdout, where --json and --token-only print, and resolving can
-  // log, for example when it sweeps abandoned attachment uploads.
+  // Logs go to stdout, where --json and --token-only print.
   return options?.quietLogs === true
     ? resolved.pipe(Effect.provideService(References.MinimumLogLevel, "Error"))
     : resolved;

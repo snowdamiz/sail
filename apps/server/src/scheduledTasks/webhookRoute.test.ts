@@ -263,6 +263,7 @@ describe("webhook route", () => {
       [{ _tag: "accepted", deliveryId, outcome: "duplicate" }, 202, "duplicate"],
       [{ _tag: "accepted", deliveryId, outcome: "prompt_too_long" }, 202, "prompt_too_long"],
       [{ _tag: "accepted", deliveryId, outcome: "filtered" }, 202, "filtered"],
+      [{ _tag: "maintenance_busy", retryable: true }, 503, "error"],
       [{ _tag: "not_found" }, 404, "not_found"],
       [{ _tag: "rejected_signature" }, 401, "rejected_signature"],
       [{ _tag: "disabled" }, 409, "disabled"],
@@ -278,6 +279,10 @@ describe("webhook route", () => {
         expect(response.status).toBe(status);
         expect(response.headers.get("x-t3-hook-outcome")).toBe(outcome);
         if (status === 429) expect(await response.json()).toEqual({ error: outcome });
+        if (status === 503) {
+          expect(response.headers.get("retry-after")).toBe("1");
+          expect(await response.json()).toEqual({ error: "maintenance_busy" });
+        }
       } finally {
         await dispose();
       }

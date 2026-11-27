@@ -29,6 +29,12 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
 import * as Effect from "effect/Effect";
+import {
+  afterAdmissionReopens,
+  ServerAdmission,
+  withAdmission,
+  isServerMaintenanceBusy,
+} from "./serverAdmission.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -970,10 +976,45 @@ const make = Effect.gen(function* () {
     return { settings: migrated, parseFailure };
   });
 
-  const settingsCache = yield* Cache.makeWith((_key: typeof cacheKey) => loadSettingsFromDisk, {
-    capacity: 1,
-    timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.infinity : Duration.zero),
-  });
+  const admission = yield* ServerAdmission;
+  const admitSettingsWrite = <A, E, R>(work: Effect.Effect<A, E, R>) =>
+    work.pipe(
+      withAdmission("root"),
+      Effect.catchIf(
+        isServerMaintenanceBusy,
+        (cause) => new ServerSettingsError({ settingsPath, operation: "write-file", cause }),
+      ),
+    );
+  const settingsCache = yield* Cache.makeWith(
+    (_key: typeof cacheKey) => admitSettingsWrite(loadSettingsFromDisk),
+    {
+      capacity: 1,
+      timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.infinity : Duration.zero),
+    },
+  );
+
+  yield* (
+    admission?.registerObserver(
+      Cache.getSuccess(settingsCache, cacheKey).pipe(
+        Effect.map((cached) => {
+          if (Option.isNone(cached) || Option.isSome(cached.value.parseFailure)) {
+            return ["settings-state-unknown"];
+          }
+          const effective = toEffective(cached.value.settings);
+          return [
+            ...(effective.guestSharingEnabled ? (["guest-sharing-configured"] as const) : []),
+            ...(effective.workflowsEnabled ? (["workflow-configured"] as const) : []),
+            ...(effective.enableDeviceSupport ||
+            effective.deviceHosts.length > 0 ||
+            effective.easDeviceHosts.length > 0 ||
+            (effective.simlockDeviceHostsEnabled && effective.simlockDeviceHosts.length > 0)
+              ? (["device-host-configured"] as const)
+              : []),
+          ];
+        }),
+      ),
+    ) ?? Effect.void
+  );
 
   const getSettingsFromCache = Cache.get(settingsCache, cacheKey).pipe(
     Effect.map((loaded) => loaded.settings),
@@ -1231,80 +1272,85 @@ const make = Effect.gen(function* () {
     patch: ServerSettingsPatch,
     update: (current: ServerSettings) => Effect.Effect<ServerSettings, ServerSettingsError>,
   ): Effect.Effect<ServerSettings, ServerSettingsError> =>
-    writeSemaphore.withPermits(1)(
-      Effect.gen(function* () {
-        const { settings: current, parseFailure } = yield* reloadSettings;
-        if (Option.isSome(parseFailure)) {
-          return yield* new ServerSettingsError({
-            settingsPath,
-            operation: "read-file",
-            cause: parseFailure.value,
+    writeSemaphore
+      .withPermits(1)(
+        Effect.gen(function* () {
+          const { settings: current, parseFailure } = yield* reloadSettings;
+          if (Option.isSome(parseFailure)) {
+            return yield* new ServerSettingsError({
+              settingsPath,
+              operation: "read-file",
+              cause: parseFailure.value,
+            });
+          }
+          // An older client echoes a reference as the redacted marker; restore it before vetting so
+          // a removed provider's reference is cleared below rather than restored by persistence.
+          const updated = withoutRedirectedSimlockTokens(
+            current,
+            withEchoedSecretReferences(current, yield* update(current)),
+          );
+          // Vet before secrets: a variable the policy hides from clients is not one they removed.
+          const vetted = managed.vetWrite(current, yield* normalizeServerSettings(updated), patch);
+          if (vetted._tag === "Locked") {
+            return yield* new ServerSettingsError({
+              settingsPath,
+              operation: "write-managed-setting",
+              managedSetting: vetted.path,
+              managedBy: managedPolicy?.organization,
+            });
+          }
+          const vettedProviders = managedProviders.vetWrite(current, vetted.settings);
+          if (vettedProviders._tag === "Locked") {
+            return yield* new ServerSettingsError({
+              settingsPath,
+              operation: "write-managed-setting",
+              managedSetting: vettedProviders.path,
+              managedBy: managedPolicy?.organization,
+            });
+          }
+          if (vettedProviders._tag === "Disallowed") {
+            return yield* new ServerSettingsError({
+              settingsPath,
+              operation: "use-disallowed-provider",
+              providerInstanceId: vettedProviders.instanceId,
+              providerLabel: vettedProviders.label,
+              managedBy: managedPolicy?.organization,
+            });
+          }
+          // After vetting, which can keep stored variables a policy hides from clients.
+          const persisted = yield* persistSettingsSecrets(
+            current,
+            withoutRemovedSecretProviderReferences(current, vettedProviders.settings),
+          );
+          const next = yield* normalizeServerSettings(persisted.settings);
+          const materializedNext = yield* Effect.uninterruptibleMask(() =>
+            Effect.gen(function* () {
+              yield* invalidateMaterialized;
+              const rollbackSecretChanges = yield* applySettingsSecretChanges(persisted.changes);
+              const materializedExit = yield* Effect.exit(materializeSettingsSecrets(next));
+              if (Exit.isFailure(materializedExit)) {
+                yield* rollbackSecretChanges;
+                return yield* Effect.failCause(materializedExit.cause);
+              }
+              const writeExit = yield* Effect.exit(writeSettingsAtomically(next));
+              if (Exit.isFailure(writeExit)) {
+                yield* rollbackSecretChanges;
+                return yield* Effect.failCause(writeExit.cause);
+              }
+              return materializedExit.value;
+            }).pipe(Effect.ensuring(invalidateMaterialized)),
+          );
+          yield* Cache.set(settingsCache, cacheKey, {
+            settings: next,
+            parseFailure: Option.none(),
           });
-        }
-        // An older client echoes a reference as the redacted marker; restore it before vetting so
-        // a removed provider's reference is cleared below rather than restored by persistence.
-        const updated = withoutRedirectedSimlockTokens(
-          current,
-          withEchoedSecretReferences(current, yield* update(current)),
-        );
-        // Vet before secrets: a variable the policy hides from clients is not one they removed.
-        const vetted = managed.vetWrite(current, yield* normalizeServerSettings(updated), patch);
-        if (vetted._tag === "Locked") {
-          return yield* new ServerSettingsError({
-            settingsPath,
-            operation: "write-managed-setting",
-            managedSetting: vetted.path,
-            managedBy: managedPolicy?.organization,
-          });
-        }
-        const vettedProviders = managedProviders.vetWrite(current, vetted.settings);
-        if (vettedProviders._tag === "Locked") {
-          return yield* new ServerSettingsError({
-            settingsPath,
-            operation: "write-managed-setting",
-            managedSetting: vettedProviders.path,
-            managedBy: managedPolicy?.organization,
-          });
-        }
-        if (vettedProviders._tag === "Disallowed") {
-          return yield* new ServerSettingsError({
-            settingsPath,
-            operation: "use-disallowed-provider",
-            providerInstanceId: vettedProviders.instanceId,
-            providerLabel: vettedProviders.label,
-            managedBy: managedPolicy?.organization,
-          });
-        }
-        // After vetting, which can keep stored variables a policy hides from clients.
-        const persisted = yield* persistSettingsSecrets(
-          current,
-          withoutRemovedSecretProviderReferences(current, vettedProviders.settings),
-        );
-        const next = yield* normalizeServerSettings(persisted.settings);
-        const materializedNext = yield* Effect.uninterruptibleMask(() =>
-          Effect.gen(function* () {
-            yield* invalidateMaterialized;
-            const rollbackSecretChanges = yield* applySettingsSecretChanges(persisted.changes);
-            const materializedExit = yield* Effect.exit(materializeSettingsSecrets(next));
-            if (Exit.isFailure(materializedExit)) {
-              yield* rollbackSecretChanges;
-              return yield* Effect.failCause(materializedExit.cause);
-            }
-            const writeExit = yield* Effect.exit(writeSettingsAtomically(next));
-            if (Exit.isFailure(writeExit)) {
-              yield* rollbackSecretChanges;
-              return yield* Effect.failCause(writeExit.cause);
-            }
-            return materializedExit.value;
-          }).pipe(Effect.ensuring(invalidateMaterialized)),
-        );
-        yield* Cache.set(settingsCache, cacheKey, { settings: next, parseFailure: Option.none() });
-        const resolved = toEffective(materializedNext);
-        materialized = { source: next, value: resolved };
-        yield* emitChange(next);
-        return resolved;
-      }),
-    );
+          const resolved = toEffective(materializedNext);
+          materialized = { source: next, value: resolved };
+          yield* emitChange(next);
+          return resolved;
+        }),
+      )
+      .pipe(admitSettingsWrite);
 
   const withSettingsSnapshot: ServerSettingsService["Service"]["withSettingsSnapshot"] = (use) =>
     writeSemaphore.withPermits(1)(getMaterializedSettings.pipe(Effect.flatMap(use)));
@@ -1370,7 +1416,9 @@ const make = Effect.gen(function* () {
       ),
     );
 
-    const revalidateAndEmitSafely = revalidateAndEmit.pipe(Effect.ignoreCause({ log: true }));
+    const revalidateAndEmitSafely = afterAdmissionReopens(revalidateAndEmit).pipe(
+      Effect.ignoreCause({ log: true }),
+    );
 
     // Watch symlink targets' directories for rewrites; re-resolve link changes to follow repointing.
     const watchLinkTarget = Effect.gen(function* () {
@@ -1401,7 +1449,9 @@ const make = Effect.gen(function* () {
       const linkTargetEvents = Stream.fromEffect(
         Deferred.await(settingsReady).pipe(Effect.andThen(watchLinkTarget)),
       ).pipe(
-        Stream.concat(resolveEvents.pipe(Stream.mapEffect(() => watchLinkTarget))),
+        Stream.concat(
+          resolveEvents.pipe(Stream.mapEffect(() => afterAdmissionReopens(watchLinkTarget))),
+        ),
         Stream.changes,
         Stream.switchMap(
           Option.match({

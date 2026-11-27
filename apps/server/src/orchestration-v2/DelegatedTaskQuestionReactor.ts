@@ -17,6 +17,7 @@ import { reportLabel } from "@t3tools/provider-core/server/notification";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 
 import { forkParked } from "../serverActivation.ts";
+import { withAdmission } from "../serverAdmission.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
@@ -198,6 +199,8 @@ const make = Effect.gen(function* () {
       );
       if (
         task === undefined ||
+        task.childThreadId !== child.id ||
+        ["completed", "failed", "cancelled", "interrupted"].includes(task.status) ||
         parent.thread.archivedAt !== null ||
         parent.thread.deletedAt !== null
       ) {
@@ -219,6 +222,7 @@ const make = Effect.gen(function* () {
     },
     (effect, event) =>
       effect.pipe(
+        withAdmission("continuation"),
         Effect.catchCause((cause) =>
           Effect.logWarning("waking the parent of a delegated task question failed", {
             threadId: event.threadId,

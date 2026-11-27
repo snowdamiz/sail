@@ -1,3 +1,6 @@
+import * as Fiber from "effect/Fiber";
+import { forkAccepted } from "../serverAdmission.ts";
+import { admitMcp } from "./maintenanceAdmission.ts";
 import {
   type EnvironmentId,
   type OrchestrationV2LinkOrigin,
@@ -147,11 +150,10 @@ const requireThreadCaller = McpInvocationContext.McpInvocationContext.pipe(
   Effect.flatMap((scope) => McpInvocationContext.requireThreadScope(scope, "This tool")),
 );
 
+const readRemote = () => Effect.void;
+
 export const reads = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
-  declare(
-    (params: P) => handle(params),
-    () => Effect.void,
-  );
+  declare((params: P) => handle(params), readRemote);
 
 export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare((params: P) => requireThreadCaller.pipe(Effect.flatMap(() => handle(params))), undefined);
@@ -451,6 +453,7 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
 ) {
   // Optional so toolkits that never leave this environment build without it.
   const forwarding = yield* Effect.serviceOption(PeerForwarding.PeerForwarding);
+  const forwardingScope = yield* Effect.scope;
   const handlers: Record<string, unknown> = { ...checked };
   for (const [name, declaration] of Object.entries<Declaration<unknown>>(declarations)) {
     const tool = toolkit.tools[name];
@@ -463,7 +466,26 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
       return yield* Effect.die(
         `${name} acts as its calling thread, so outside clients must not be offered it.`,
       );
-    if (!takesLinkedEnvironment(tool)) continue;
+    const here = handlers[name] as (
+      params: object,
+    ) => Effect.Effect<unknown, Tool.Failure<Tools[keyof Tools]>>;
+    const lane = name === "t3_thread_interrupt" ? "continuation" : "root";
+    const handleHere = (
+      scope: McpInvocationContext.McpInvocationScope,
+      params: object,
+    ): Effect.Effect<unknown, Tool.Failure<Tools[keyof Tools]> | OrchestratorMcpFailure> =>
+      scope.client?.linked === true && remote !== readRemote
+        ? here(params).pipe(admitMcp(lane))
+        : here(params);
+    if (!takesLinkedEnvironment(tool)) {
+      if (remote !== readRemote) {
+        handlers[name] = (params: object) =>
+          McpInvocationContext.McpInvocationContext.pipe(
+            Effect.flatMap((scope) => handleHere(scope, params)),
+          );
+      }
+      continue;
+    }
     const forwarded = forwardedOf(declaration) as
       | Forwarded<object, unknown, Tool.Failure<Tools[keyof Tools]>, never>
       | undefined;
@@ -471,22 +493,38 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
       return yield* Effect.die(
         `${name} takes a linked environment, but it acts as its calling thread, which is here.`,
       );
-    const here = handlers[name] as (
-      params: object,
-    ) => Effect.Effect<unknown, Tool.Failure<Tools[keyof Tools]>>;
-    handlers[name] = ({ environmentId, ...params }: { readonly environmentId?: EnvironmentId }) =>
+    handlers[name] = ({
+      environmentId,
+      ...params
+    }: {
+      readonly environmentId?: EnvironmentId;
+      readonly clientRequestId?: string;
+    }) =>
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.McpInvocationContext;
         const target = PeerForwarding.remoteTarget(scope, environmentId);
-        if (target === undefined) return yield* here(params);
+        if (target === undefined) return yield* handleHere(scope, params);
         if (scope.linkedEnvironments === false) return yield* PeerForwarding.linkedEnvironmentsOff;
         yield* (remote as RemoteCheck<typeof params>)(params);
         if (Option.isNone(forwarding)) return yield* linksUnavailable;
-        const result = yield* forwarding.value.call(scope, tool, target, {
-          ...params,
-          environmentId,
-        });
-        return forwarded === undefined ? result : yield* forwarded(params, target, result);
+        const peer = forwarding.value;
+        const send = (args: typeof params) => {
+          const call = peer.call(scope, tool, target, { ...args, environmentId });
+          return forwarded === undefined
+            ? call
+            : call.pipe(Effect.flatMap((result) => forwarded(args, target, result)));
+        };
+        switch (name) {
+          case "t3_thread_launch":
+          case "t3_thread_send":
+            return yield* peer
+              .trackMutation(scope, target, name, params.clientRequestId, (clientRequestId) =>
+                send({ ...params, clientRequestId }),
+              )
+              .pipe(forkAccepted(forwardingScope), Effect.flatMap(Fiber.join), admitMcp("root"));
+          default:
+            return yield* remote === readRemote ? send(params) : send(params).pipe(admitMcp(lane));
+        }
       });
   }
   return handlers as Toolkit.HandlersFrom<Tools>;

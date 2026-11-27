@@ -1,4 +1,5 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -6,13 +7,22 @@ import * as Schema from "effect/Schema";
 import { Command, GlobalFlag } from "effect/cli";
 import * as CliError from "effect/cli/CliError";
 
-import { awaitServiceLauncherStop } from "../cloud/serviceLauncherClient.ts";
+import {
+  awaitServiceLauncherStop,
+  claimUnmanagedBoatStart,
+  verifyServiceMaintenanceHome,
+} from "../cloud/serviceLauncherClient.ts";
 import * as ServerConfig from "../config.ts";
 import { stopOnLauncherLoss } from "../launcherWatch.ts";
 import * as DatabaseMaintenance from "../persistence/DatabaseMaintenance.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as AutomaticPort from "./automaticPort.ts";
 import { type CliServerFlags, resolveServerConfig, sharedServerCommandFlags } from "./config.ts";
+
+export class ServiceLauncherStopped extends Context.Reference<() => void>(
+  "t3/cli/ServiceLauncherStopped",
+  { defaultValue: () => () => {} },
+) {}
 
 const encodeCommand = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 
@@ -29,9 +39,10 @@ const runServerCommand = Effect.fn("server.runServerCommand")(function* (
   const logLevel = yield* GlobalFlag.LogLevel;
   const selectAutomaticPort = yield* AutomaticPort.make.pipe(Effect.provide(ProcessRunner.layer));
   const config = yield* resolveServerConfig(flags, logLevel, { ...options, selectAutomaticPort });
+  yield* verifyServiceMaintenanceHome(config);
   const run = Effect.raceFirst(
-    runServer.pipe(Effect.provideService(ServerConfig.ServerConfig, config)),
-    awaitServiceLauncherStop().pipe(Effect.andThen(Effect.interrupt)),
+    runServer.pipe(Effect.provideService(ServerConfig.ServerConfig, config), Effect.as(false)),
+    awaitServiceLauncherStop().pipe(Effect.as(true)),
   ).pipe(
     // Settings' Reclaim stops the server; repair once the database is closed, before the restart.
     Effect.ensuring(
@@ -40,8 +51,15 @@ const runServerCommand = Effect.fn("server.runServerCommand")(function* (
       ),
     ),
   );
-  if (config.mode !== "desktop" || config.desktopBootstrapToken === undefined) return yield* run;
-  return yield* stopOnLauncherLoss(run);
+  const stoppedByLauncher = yield* Effect.acquireUseRelease(
+    claimUnmanagedBoatStart(config.baseDir),
+    () =>
+      config.mode !== "desktop" || config.desktopBootstrapToken === undefined
+        ? run
+        : stopOnLauncherLoss(run),
+    (release) => Effect.sync(release),
+  );
+  if (stoppedByLauncher) yield* Effect.sync(yield* ServiceLauncherStopped);
 });
 
 export const runDefaultServerCommand = Effect.fn("server.runDefaultServerCommand")(function* (

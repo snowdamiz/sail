@@ -1006,5 +1006,6 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "target_required",
     ]),
     message: Schema.String,
+    retryable: Schema.optionalKey(Schema.Literal(true)),
   },
 ) {}

@@ -1,3 +1,4 @@
+import { admitMcp } from "./maintenanceAdmission.ts";
 import {
   CommandId,
   type RunId,
@@ -2095,6 +2096,7 @@ const make = Effect.gen(function* () {
               `Unable to acknowledge delegated task ${taskId}: ${errorMessage(error)}`,
             ),
           ),
+          admitMcp("continuation"),
         );
     }
     return response;
@@ -2214,6 +2216,7 @@ const make = Effect.gen(function* () {
               `Unable to acknowledge delegated task ${task.id}: ${errorMessage(error)}`,
             ),
           ),
+          admitMcp("continuation"),
         );
     }
     return {
@@ -3096,13 +3099,16 @@ const make = Effect.gen(function* () {
             ? awaitTask(scope, taskId, key, input.timeoutMs, restore)
             : restore(readTask(scope, taskId, false, true));
         }),
-      );
+      ).pipe(admitMcp("root"));
     }),
     taskStatus: Effect.fn("OrchestratorMcpService.taskStatus")(function* (callerScope, taskId) {
       const scope = yield* requireThreadScope(callerScope, "task_status");
       return yield* readTask(scope, taskId, false, true);
     }),
-    cancelTask: Effect.fn("OrchestratorMcpService.cancelTask")(function* (callerScope, input) {
+    cancelTask: Effect.fn("OrchestratorMcpService.cancelTask")(function* (
+      callerScope,
+      input,
+    ): Effect.fn.Return<OrchestratorMcpTaskCancelResult, OrchestratorMcpFailure> {
       const scope = yield* requireThreadScope(callerScope, "task_cancel");
       const current = yield* readTask(scope, input.taskId);
       const childThreadId = current.childThreadId;
@@ -3314,7 +3320,7 @@ const make = Effect.gen(function* () {
         taskId: input.taskId,
         status: "cancel_requested",
       };
-    }),
+    }, admitMcp("continuation")),
     createThreads: Effect.fn("OrchestratorMcpService.createThreads")(
       function* (callerScope, input) {
         const { scope, parent } = yield* loadThreadCaller(callerScope, "create_threads");

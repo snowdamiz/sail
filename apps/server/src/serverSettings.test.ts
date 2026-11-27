@@ -1,3 +1,4 @@
+import { makeAdmission, ServerAdmission } from "./serverAdmission.ts";
 import { deriveProviderInstanceConfigMap } from "./provider/ProviderInstanceRegistryHydration.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -89,6 +90,43 @@ const layerServerSettingsWithSecrets = () =>
       ),
     ),
   );
+
+it.effect("keeps optional workflow configuration stable during closure", () =>
+  Effect.gen(function* () {
+    const admission = makeAdmission(Effect.succeed([]));
+    yield* Effect.gen(function* () {
+      const settings = yield* ServerSettingsModule.ServerSettingsService;
+      const patch = yield* decodeServerSettingsPatch({ workflowsEnabled: true });
+      assert.isFalse((yield* settings.getSettings).workflowsEnabled);
+      const idle = Symbol();
+      assert.deepEqual(yield* admission.drain(idle, "1 second"), { kind: "sealed" });
+      assert.equal(
+        (yield* settings.updateSettings(patch).pipe(Effect.flip)).operation,
+        "write-file",
+      );
+      assert.isFalse((yield* settings.getSettings).workflowsEnabled);
+      assert.isTrue(yield* admission.abort(idle));
+      assert.isTrue((yield* settings.updateSettings(patch)).workflowsEnabled);
+      const configured = yield* admission
+        .drain(Symbol(), "1 second")
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* TestClock.adjust("1 second");
+      assert.deepEqual(yield* Fiber.join(configured), {
+        kind: "aborted",
+        retryable: true,
+        reason: "deadline",
+        blockers: ["workflow-configured"],
+      });
+    }).pipe(
+      Effect.provide(
+        layerServerSettings().pipe(
+          Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+        ),
+      ),
+      Effect.provideService(ServerAdmission, admission),
+    );
+  }),
+);
 
 const layerFailingSecretStore = (cause: ServerSecretStore.SecretStoreError) =>
   Layer.succeed(

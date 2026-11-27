@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { Command, Flag, GlobalFlag, Prompt } from "effect/cli";
 
+import { holdBoatCliAccess } from "../cloud/boatCliAccess.ts";
 import * as BootService from "../cloud/bootService.ts";
 import * as DatabaseMaintenance from "../persistence/DatabaseMaintenance.ts";
 import * as ServerOwnership from "../serverOwnership.ts";
@@ -63,12 +64,19 @@ const lockServerHome = Effect.fn("runDoctor.lockServerHome")(function* (paths: {
 });
 
 export const runDoctor = Effect.fn("runDoctor")(function* (
-  paths: { readonly dbPath: string; readonly serverRuntimeStatePath: string },
+  paths: {
+    readonly baseDir: string;
+    readonly dbPath: string;
+    readonly serverRuntimeStatePath: string;
+  },
   options: { readonly fix: boolean; readonly dryRun: boolean; readonly interactive?: boolean },
 ) {
   const databasePath = paths.dbPath;
   const maintenance = yield* DatabaseMaintenance.DatabaseMaintenance;
-  const status = yield* maintenance.inspect(databasePath);
+  const status = yield* holdBoatCliAccess(paths.baseDir).pipe(
+    Effect.andThen(maintenance.inspect(databasePath)),
+    Effect.scoped,
+  );
   yield* Console.log(
     `Database: ${formatBytes(status.databaseBytes)}, ${formatBytes(status.reclaimableBytes)} reclaimable.`,
   );
@@ -187,7 +195,10 @@ export const runDoctor = Effect.fn("runDoctor")(function* (
   }
   if (selected.includes("legacy")) {
     // Only pre-0.1.0 servers use this file; removal refuses while they hold it open.
-    yield* maintenance.removeLegacyDatabase(databasePath);
+    yield* holdBoatCliAccess(paths.baseDir).pipe(
+      Effect.andThen(maintenance.removeLegacyDatabase(databasePath)),
+      Effect.scoped,
+    );
     yield* Console.log("\nDeleted the database from before 0.1.0.");
   }
 });

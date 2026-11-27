@@ -77,7 +77,7 @@ const notarySubcommands = (calls: ReadonlyArray<ReadonlyArray<string>>) =>
   calls.filter((argv) => argv[1] === "notarytool").map((argv) => argv.slice(2));
 
 it.layer(NodeServices.layer)("build-cli-archive contents", (it) => {
-  it.effect("archives sail-boatd as an executable beside t3 and resource-monitor", () =>
+  it.effect("archives the Sail marker and executable sail-boatd beside t3", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -134,6 +134,7 @@ it.layer(NodeServices.layer)("build-cli-archive contents", (it) => {
       );
       assert.equal(Number(extracted), 0);
       const sidecar = path.join(root, stem, "sail-boatd");
+      assert.equal(yield* fs.readFileString(path.join(root, stem, ".sail-product")), "sail\n");
       assert.equal(yield* fs.readFileString(sidecar), "Boat fixture");
       assert.equal((yield* fs.stat(sidecar)).mode & 0o777, 0o755);
     }),

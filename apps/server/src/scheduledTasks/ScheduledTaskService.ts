@@ -1,4 +1,10 @@
 import {
+  afterAdmissionReopens,
+  forkAccepted,
+  withAdmission,
+  isServerMaintenanceBusy,
+} from "../serverAdmission.ts";
+import {
   CommandId,
   MessageId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
@@ -58,6 +64,8 @@ import { OrchestratorDispatchError } from "../orchestration-v2/Orchestrator.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import { forkParked, ServerActivation } from "../serverActivation.ts";
+import * as Deferred from "effect/Deferred";
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { latestRootProviderFailure } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -179,6 +187,7 @@ export type WebhookTriggerResult =
       readonly deliveryId: ScheduledTaskWebhookDeliveryId;
       readonly outcome: "accepted" | "duplicate" | "coalesced" | "prompt_too_long" | "filtered";
     }
+  | { readonly _tag: "maintenance_busy"; readonly retryable: true }
   | { readonly _tag: "not_found" }
   | { readonly _tag: "rejected_signature" }
   | { readonly _tag: "disabled" }
@@ -1235,7 +1244,7 @@ export const layer = Layer.effect(
                 cause,
               }),
             ),
-            Effect.forkIn(serviceScope),
+            forkAccepted(serviceScope),
           );
         }
         // The stored row can belong to a replacement, so report this dispatch separately.
@@ -1354,6 +1363,8 @@ export const layer = Layer.effect(
                 )
               : runTask(task, "scheduled"),
           ).pipe(
+            withAdmission("root"),
+            Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
             Effect.catch((cause) =>
               Effect.logWarning("Scheduled task run failed", { taskId: task.id, cause }),
             ),
@@ -1363,7 +1374,7 @@ export const layer = Layer.effect(
     });
 
     // Recover crash-left running rows that the due-task filter would otherwise skip forever.
-    yield* Effect.gen(function* () {
+    const recoverInterruptedRuns = Effect.gen(function* () {
       const rows = yield* selectAllRows();
       const stuck = rows.filter((row) => row.last_run_status === "running");
       if (stuck.length === 0) return;
@@ -1415,7 +1426,30 @@ export const layer = Layer.effect(
       ),
     );
 
-    yield* scheduler.register("scheduled-tasks", runDueTasks());
+    const recovery = yield* Deferred.make<void>();
+    if ((yield* ServerActivation) === undefined) {
+      yield* afterAdmissionReopens(recoverInterruptedRuns);
+      yield* Deferred.succeed(recovery, undefined);
+    } else {
+      yield* forkParked(
+        afterAdmissionReopens(recoverInterruptedRuns).pipe(
+          Effect.andThen(Deferred.succeed(recovery, undefined)),
+        ),
+      );
+    }
+    yield* scheduler.register(
+      "scheduled-tasks",
+      Deferred.await(recovery).pipe(Effect.andThen(runDueTasks())),
+    );
+
+    const admitMutation = <A, E, R>(work: Effect.Effect<A, E, R>) =>
+      work.pipe(
+        withAdmission("root"),
+        Effect.catchIf(
+          isServerMaintenanceBusy,
+          (cause) => new ScheduledTaskError({ message: cause.message, retryable: true, cause }),
+        ),
+      );
 
     const list: ScheduledTaskService["Service"]["list"] = () =>
       listRows().pipe(
@@ -1631,7 +1665,7 @@ export const layer = Layer.effect(
       );
       yield* notifyChanged;
       return { task: (yield* findTask(id)) ?? task };
-    });
+    }, admitMutation);
 
     const setEnabled: ScheduledTaskService["Service"]["setEnabled"] = Effect.fn(
       "ScheduledTaskService.setEnabled",
@@ -1680,7 +1714,7 @@ export const layer = Layer.effect(
       return {
         task: { ...existing, enabled: input.enabled, nextRunAt: next, updatedAt: iso(now) },
       };
-    });
+    }, admitMutation);
 
     const forgetWebhookTask = (id: ScheduledTaskId) =>
       Effect.all(
@@ -1719,6 +1753,7 @@ export const layer = Layer.effect(
         Effect.andThen(forgetWebhookTask(input.id)),
         Effect.andThen(notifyChanged),
         Effect.as({ id: input.id }),
+        admitMutation,
       );
 
     const deleteForThread = Effect.fn("ScheduledTaskService.deleteForThread")(function* (
@@ -1747,7 +1782,7 @@ export const layer = Layer.effect(
         discard: true,
       });
       if (removed.length > 0) yield* notifyChanged;
-    });
+    }, admitMutation);
 
     const moveThreadTasks: ScheduledTaskService["Service"]["moveThreadTasks"] = Effect.fn(
       "ScheduledTaskService.moveThreadTasks",
@@ -1763,25 +1798,40 @@ export const layer = Layer.effect(
         ),
       );
       if (moved.length > 0) yield* notifyChanged;
-    });
+    }, admitMutation);
 
     const runNow: ScheduledTaskService["Service"]["runNow"] = Effect.fn(
       "ScheduledTaskService.runNow",
-    )(function* (input: ScheduledTaskRunNowInput) {
-      const task = yield* loadTask(input.id);
-      if (task.schedule.type === "webhook") {
-        return yield* taskError("Webhook tasks run when their URL receives a request.", {
-          taskId: input.id,
-        });
-      }
-      return yield* runTask(task, "manual").pipe(
-        Effect.mapError((cause) =>
-          isScheduledTaskError(cause)
-            ? cause
-            : taskError("Could not run schedule task.", { taskId: input.id, cause }),
+    )(
+      function* (input: ScheduledTaskRunNowInput) {
+        const task = yield* loadTask(input.id);
+        if (task.schedule.type === "webhook") {
+          return yield* taskError("Webhook tasks run when their URL receives a request.", {
+            taskId: input.id,
+          });
+        }
+        return yield* runTask(task, "manual").pipe(
+          Effect.mapError((cause) =>
+            isScheduledTaskError(cause)
+              ? cause
+              : taskError("Could not run schedule task.", { taskId: input.id, cause }),
+          ),
+        );
+      },
+      withAdmission("root"),
+      (effect, input) =>
+        effect.pipe(
+          Effect.catchTags({
+            ServerMaintenanceBusy: (cause) =>
+              new ScheduledTaskError({
+                message: cause.message,
+                retryable: true,
+                taskId: input.id,
+                cause,
+              }),
+          }),
         ),
-      );
-    });
+    );
 
     const rotateWebhookToken: ScheduledTaskService["Service"]["rotateWebhookToken"] = Effect.fn(
       "ScheduledTaskService.rotateWebhookToken",
@@ -1809,7 +1859,7 @@ export const layer = Layer.effect(
       }
       yield* notifyChanged;
       return { task: yield* loadTask(input.id) };
-    });
+    }, admitMutation);
 
     const deliveryHeaders = (row: WebhookDeliveryRow): Readonly<Record<string, string>> =>
       Option.getOrElse(decodeHeadersJson(row.headers_json), () => ({}));
@@ -2170,6 +2220,11 @@ export const layer = Layer.effect(
 
     const triggerWebhook: ScheduledTaskService["Service"]["triggerWebhook"] = (request) =>
       triggerWebhookUnobserved(request).pipe(
+        withAdmission("root"),
+        Effect.catchTags({
+          ServerMaintenanceBusy: () =>
+            Effect.succeed({ _tag: "maintenance_busy", retryable: true } as const),
+        }),
         // Accepted deliveries may have queued a coalescing window.
         Effect.ensuring(pendingWebhooks.invalidate),
         Effect.tapError(() => observeDelivery(request, "error", undefined, undefined)),
@@ -2557,7 +2612,7 @@ export const layer = Layer.effect(
             // A relay-delivered webhook is traced to the relay; the run it starts is local work
             // whose spans carry workspace paths.
             withLocalTracing,
-            Effect.forkIn(serviceScope),
+            forkAccepted(serviceScope),
           );
           // Dispatch owns the accepted delivery now; retries must keep its claim.
           claimAcquired = false;
@@ -2685,12 +2740,18 @@ export const layer = Layer.effect(
                     return next;
                   })
                 : Effect.void,
-          ).pipe(Effect.forkIn(serviceScope));
+          ).pipe(forkAccepted(serviceScope));
         },
         { discard: true },
       );
     });
-    yield* scheduler.register("webhook-coalescing", dispatchPending());
+    yield* scheduler.register(
+      "webhook-coalescing",
+      dispatchPending().pipe(
+        withAdmission("continuation"),
+        Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
+      ),
+    );
 
     return ScheduledTaskService.of({
       list,

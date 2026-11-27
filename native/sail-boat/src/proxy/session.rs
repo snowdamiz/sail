@@ -222,7 +222,7 @@ impl Session {
                 self.held.push(req);
                 self.wake();
             }
-            Phase::Live => self.forward(req),
+            Phase::Live => self.forward(req).await?,
             Phase::Asleep => self.on_asleep(req).await?,
             Phase::Settling | Phase::Waking | Phase::Connecting => self.held.push(req),
         }
@@ -247,9 +247,24 @@ impl Session {
         Ok(())
     }
 
-    fn forward(&mut self, req: Value) {
+    async fn forward(&mut self, req: Value) -> Result<()> {
         let tag = req["tag"].as_str().unwrap_or_default().to_owned();
         let payload = &req["payload"];
+        if tag == "orchestration.dispatchCommand"
+            && payload["type"] == "message.dispatch"
+            && let (Some(thread_id), Some(command_id)) = (payload["threadId"].as_str(), payload["commandId"].as_str())
+            && self.m.cache.lock().unwrap().deferred_commands.iter().any(|queued|
+                queued["type"] == "message.dispatch" && queued["threadId"] == thread_id)
+        {
+            return self.send(&json!({
+                "_tag": "Exit", "requestId": req["id"],
+                "exit": {"_tag": "Failure", "cause": [{"_tag": "Fail", "error": {
+                    "_tag": "OrchestrationV2DispatchCommandError", "commandId": command_id,
+                    "commandType": "message.dispatch", "retryable": true,
+                    "message": "A queued message for this thread is still being delivered. Retry the same request."
+                }}]}
+            })).await;
+        }
         let key = request_key(&tag, payload);
         let record = recorded_unary(&tag, payload);
         // Counted only when it reaches the machine: a call answered locally changes nothing.
@@ -265,6 +280,7 @@ impl Session {
         self.forwarded
             .insert(id_key(&req["id"]), Forwarded { id: req["id"].clone(), tag, key, epoch, record, chunks: 0 });
         self.send_up(&req);
+        Ok(())
     }
 
     /// A call or finite stream awaits its answer from the machine.
@@ -419,7 +435,7 @@ impl Session {
                 self.connect_attempts = 0;
                 self.attach_upstream(ws);
                 self.phase = Phase::Live;
-                return self.release_held();
+                return self.release_held().await;
             }
             Internal::Connected(Err(e)) => {
                 tracing::warn!("upstream connect for {}: {e:#}", self.m.id());
@@ -447,17 +463,19 @@ impl Session {
         Ok(())
     }
 
-    fn release_held(&mut self) -> Step {
+    async fn release_held(&mut self) -> Step {
         let held = std::mem::take(&mut self.held);
-        if self.cached.is_empty() {
-            held.into_iter().for_each(|r| self.forward(r));
-            return Ok(None);
-        }
         // Streams answered from cache cannot turn live in place: finish the calls and finite
         // streams, then close so Sail resubscribes against the live server.
-        held.into_iter()
-            .filter(|r| !classify::is_subscription(r["tag"].as_str().unwrap_or_default()))
-            .for_each(|r| self.forward(r));
+        let cached = !self.cached.is_empty();
+        for request in held {
+            if !cached || !classify::is_subscription(request["tag"].as_str().unwrap_or_default()) {
+                self.forward(request).await?;
+            }
+        }
+        if !cached {
+            return Ok(None);
+        }
         if !self.calls_in_flight() {
             return Ok(Some("machine woke".into()));
         }

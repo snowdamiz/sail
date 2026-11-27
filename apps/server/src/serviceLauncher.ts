@@ -7,12 +7,30 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
+import {
+  checkStagedSailRelease,
+  publishStagedSailRelease,
+  removeMaintenanceRuntime,
+  verifyStagedSailRelease,
+} from "./cloud/stagedSailRelease.ts";
+import {
+  acquireBoatLifecycle,
+  BoatLifecycleBusy,
+  boatRuntime,
+  BOAT_CAPABILITY,
+  BOAT_READY,
+  BOAT_REQUEST,
+  openBoatCoordinator,
+} from "./cloud/boatLifecycle.ts";
 import { acquireServiceSelectionLock } from "./cloud/serviceSelectionLock.ts";
 import { RESTORE_OOMD_WATCH_SCRIPT } from "./cloud/userManagerOom.ts";
 import { windowsSystem32Path } from "@t3tools/shared/windowsSystem";
 import { isNoCopyOnWrite, markNoCopyOnWrite } from "./noCopyOnWrite.ts";
 
 import type {
+  MaintenanceInstallation,
+  MaintenancePeer,
+  StagedSailRelease,
   PendingServiceUpdate,
   ServiceLauncherChildMessage,
   ServiceLauncherContext,
@@ -22,6 +40,10 @@ import type {
 } from "./cloud/serviceProtocol.ts";
 import {
   compareExactServiceVersions,
+  sameMaintenanceFence,
+  sameMaintenanceInstallation,
+  sameMaintenancePeer,
+  SERVICE_MAINTENANCE_STATE_FORMAT,
   decodeServiceLauncherChildMessage,
   isExactServiceVersion,
   parseLegacyServiceState,
@@ -32,6 +54,7 @@ import {
   serviceTaskIsDisabled,
   serviceUnitBaseDirOf,
   serviceUnitLogPathOf,
+  serviceUnitProgramOf,
   SERVICE_ENV_FILE,
   SERVICE_LAUNCHER_LOCK_FILE,
   SERVICE_SERVING_LOCK_FILE,
@@ -64,14 +87,32 @@ const LOCK_ATTEMPTS = 240;
 // Match contracts' SERVER_EXIT_CODE_STATE_DIR_OWNED without depending on Effect.
 const STATE_DIR_OWNED_EXIT_CODE = 78;
 const STATE_DIR_OWNER_POLL_MS = 30_000;
+const BOAT_MAINTENANCE_RETRY_MS = 30_000;
 
 type TerminalStatus = "committed" | "rolled-back" | "failed";
 type ChildRole = "active" | "trial";
 
 interface ManagedChild {
   readonly version: string;
+  readonly maintenancePeer?: MaintenancePeer;
+  maintenanceReady: boolean;
+  censusComplete?: true;
   role: ChildRole;
   readonly process: NodeChildProcess.ChildProcess;
+}
+
+interface MaintenanceCoordinator {
+  readonly installation: MaintenanceInstallation;
+  readonly drainBudgetMs: number;
+  readonly assertPreCutover?: (incumbentPid: number) => void;
+  readonly assertReaped?: () => void;
+  readonly automatic?: NonNullable<ReturnType<typeof openBoatCoordinator>>["automatic"];
+  // The owner excludes service starts, installer/selector changes and Boat stop/snapshot.
+  // On recovery it also establishes that the previous launcher's children have exited.
+  readonly acquire: (input: {
+    readonly recovering: boolean;
+    readonly signal: AbortSignal;
+  }) => Promise<() => void>;
 }
 
 const runtimePaths = (baseDir: string, version: string) => {
@@ -85,9 +126,9 @@ const runtimePaths = (baseDir: string, version: string) => {
   };
 };
 
-const runtimeSpawnArguments = (paths: ReturnType<typeof runtimePaths>) => ({
+const runtimeSpawnArguments = (paths: ReturnType<typeof runtimePaths>, baseDir?: string) => ({
   command: paths.entryPath,
-  args: ["serve"],
+  args: baseDir === undefined ? ["serve"] : ["serve", "--base-dir", baseDir],
 });
 
 function isRegularFile(fd: number): boolean {
@@ -579,6 +620,7 @@ async function startOnlineDatabaseBackup(
       const walCopy = databaseBackupFile(stagingDir, "-wal");
       await copyWithoutOpening(wal, walCopy);
       await syncFile(walCopy);
+      await syncDirectory(stagingDir);
       release();
       await NodeFSP.rename(stagingDir, backupDir);
       await syncDirectory(NodePath.dirname(backupDir));
@@ -610,6 +652,7 @@ async function backupDatabaseOnce(
       await copyDatabaseFile(source, destination, signal);
       await syncFile(destination);
     }
+    await syncDirectory(stagingDir);
     await NodeFSP.rename(stagingDir, backupDir);
     await syncDirectory(NodePath.dirname(backupDir));
   } catch (cause) {
@@ -667,6 +710,9 @@ async function restoreDatabaseBackup(
 ): Promise<void> {
   const backupDir = databaseBackupDir(baseDir, pending.id);
   if (!(await pathExists(backupDir))) return;
+  if (!(await NodeFSP.lstat(databaseBackupFile(backupDir, ""))).isFile()) {
+    throw new Error("The database snapshot is missing its main file.");
+  }
 
   await markDatabaseRestorePending(backupDir);
   const directories = new Set([NodePath.dirname(pending.dbPath)]);
@@ -715,7 +761,11 @@ function adoptLegacyServiceState(contents: string): ServiceState | undefined {
 
 export async function writeServiceState(filePath: string, state: ServiceState): Promise<void> {
   await NodeFSP.mkdir(NodePath.dirname(filePath), { recursive: true, mode: 0o700 });
-  await replaceFileDurably(filePath, `${JSON.stringify(state, null, 2)}\n`);
+  const disk =
+    state.maintenance === undefined
+      ? state
+      : { ...state, protocol: SERVICE_MAINTENANCE_STATE_FORMAT };
+  await replaceFileDurably(filePath, `${JSON.stringify(disk, null, 2)}\n`);
 }
 
 async function replaceFileDurably(filePath: string, contents: string | Uint8Array): Promise<void> {
@@ -775,7 +825,20 @@ function sendMessage(
       reject(new Error("service child IPC is disconnected."));
       return;
     }
-    child.send(message, (error) => (error === null ? resolve() : reject(error)));
+    const timer =
+      message.type === "stop" || message.type.startsWith("maintenance-")
+        ? setTimeout(() => reject(new Error("Maintenance IPC send timed out.")), 1_000)
+        : undefined;
+    try {
+      child.send(message, (error) => {
+        clearTimeout(timer);
+        if (error === null) resolve();
+        else reject(error);
+      });
+    } catch (error) {
+      clearTimeout(timer);
+      reject(error);
+    }
   });
 }
 
@@ -921,12 +984,22 @@ export class Launcher {
   readonly #lockPath: string | undefined;
   #servingLock: { readonly close: () => void } | undefined;
   readonly #stopChildOverIpc: boolean;
+  readonly #maintenance: MaintenanceCoordinator | undefined;
+  #releaseLifecycle: (() => void) | undefined;
+  #releaseSelection: (() => void) | undefined;
+  #drainDeadline = 0;
+  readonly #boatRuntime: string | undefined;
+  #releaseStart: (() => void) | undefined;
+  #lastAutomaticRequest: string | undefined;
+  #automaticRetry: NodeJS.Timeout | undefined;
 
   constructor(
     baseDir: string,
     state: ServiceState,
     options: {
       readonly backupSpaceProbe?: Partial<BackupSpaceProbe>;
+      readonly maintenanceCoordinator?: MaintenanceCoordinator;
+      readonly boatRuntime?: string;
       readonly serviceUnit?: ServiceUnit;
       readonly environment?: Readonly<NodeJS.ProcessEnv>;
       readonly stateDirOwnerPollMs?: number;
@@ -944,7 +1017,13 @@ export class Launcher {
     this.#serviceUnit = options.serviceUnit;
     this.#environment = { ...(options.environment ?? process.env) };
     this.#output = options.output;
-    this.#lockPath = options.lockPath;
+    this.#maintenance = options.maintenanceCoordinator;
+    this.#boatRuntime = options.boatRuntime;
+    this.#lockPath =
+      options.lockPath ??
+      (this.#maintenance === undefined && this.#boatRuntime === undefined
+        ? undefined
+        : serviceLauncherLockPath(baseDir));
     // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
     this.#stopChildOverIpc = options.stopChildOverIpc ?? process.platform === "win32";
     this.#statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
@@ -956,6 +1035,16 @@ export class Launcher {
     const onSigint = () => void this.stop("SIGINT");
     process.once("SIGTERM", onSigterm);
     process.once("SIGINT", onSigint);
+    const automatic = this.#maintenance?.automatic;
+    const watcher =
+      automatic === undefined
+        ? undefined
+        : NodeFS.watch(automatic.runtime, { persistent: false }, (_, filename) => {
+            if (filename === BOAT_REQUEST) this.#considerAutomaticMaintenance();
+          });
+    watcher?.on("error", (error) =>
+      this.#log(`[service-launcher] Boat request watcher: ${error.message}\n`),
+    );
     try {
       const lock =
         this.#lockPath === undefined ? undefined : await this.#acquireLock(this.#lockPath);
@@ -963,16 +1052,19 @@ export class Launcher {
         // The launcher that held the lock may have moved the state since main read it.
         if (lock !== undefined) this.#state = await readServiceState(this.#statePath);
         // A stop that arrived before this point leaves nothing to start or recover.
-        if (!this.#stopRequested) this.#enqueue(() => this.#recover());
+        if (!this.#stopRequested) this.#enqueue(() => this.#recoverWithBoatLock());
         await this.#completion.promise;
       } finally {
         if (lock !== undefined) {
           // Releasing the lock says this launcher is done with the home.
           await this.#transitions.catch(() => undefined);
+          this.#releaseMaintenance();
           lock.close();
         }
       }
     } finally {
+      watcher?.close();
+      clearTimeout(this.#automaticRetry);
       this.#releaseServing();
       process.off("SIGTERM", onSigterm);
       process.off("SIGINT", onSigint);
@@ -1099,7 +1191,7 @@ export class Launcher {
     // A stop during the probe must not arm a retry that outlives it.
     if (this.#stopRequested) return true;
     this.#clearTimer();
-    this.#releaseServing();
+    if (this.#state.maintenance === undefined) this.#releaseServing();
     this.#log(`[service-launcher] ${reason} Waiting for free space before retrying.\n`);
     this.#timer = setInterval(
       () =>
@@ -1116,7 +1208,10 @@ export class Launcher {
   }
 
   async #selectState(next: ServiceState): Promise<void> {
-    const release = await acquireServiceSelectionLock(this.#statePath);
+    const release =
+      this.#releaseSelection === undefined
+        ? await acquireServiceSelectionLock(this.#statePath)
+        : undefined;
     try {
       const selected = await readServiceState(this.#statePath);
       // Local installs replace the selection and clear its update record. An old
@@ -1124,19 +1219,84 @@ export class Launcher {
       if (
         selected.activeVersion !== this.#state.activeVersion ||
         selected.update?.id !== this.#state.update?.id ||
-        selected.update?.status !== this.#state.update?.status
+        selected.update?.status !== this.#state.update?.status ||
+        selected.maintenance?.phase !== this.#state.maintenance?.phase ||
+        (selected.maintenance !== undefined &&
+          this.#state.maintenance !== undefined &&
+          !sameMaintenanceFence(selected.maintenance.fence, this.#state.maintenance.fence))
       ) {
         throw new Error("Service selection changed. Restart the service before updating.");
       }
       await writeServiceState(this.#statePath, next);
       this.#state = next;
     } finally {
-      release();
+      release?.();
     }
+  }
+
+  async #withBoatStart(work: () => Promise<void>): Promise<void> {
+    const runtime = this.#boatRuntime;
+    if (
+      runtime === undefined ||
+      this.#releaseStart !== undefined ||
+      this.#releaseLifecycle !== undefined
+    ) {
+      return work();
+    }
+    while (!this.#stopRequested) {
+      try {
+        this.#releaseStart = acquireBoatLifecycle(runtime, "recover");
+        break;
+      } catch (error) {
+        if (!(error instanceof BoatLifecycleBusy)) throw error;
+        await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_MS));
+      }
+    }
+    const release = this.#releaseStart;
+    if (release === undefined) return;
+    try {
+      await work();
+    } finally {
+      if (this.#releaseStart === release) {
+        this.#releaseStart = undefined;
+        release();
+      }
+    }
+  }
+
+  async #recoverWithBoatLock(): Promise<void> {
+    await this.#withBoatStart(async () => {
+      if (this.#boatRuntime !== undefined) this.#state = await readServiceState(this.#statePath);
+      const automatic = this.#maintenance?.automatic;
+      if (automatic !== undefined) {
+        await NodeFSP.rm(NodePath.join(automatic.runtime, BOAT_CAPABILITY), { force: true });
+      }
+      await this.#recover();
+    });
   }
 
   async #recover(): Promise<void> {
     await this.#claimServing();
+    if (this.#state.maintenance !== undefined) {
+      await this.#acquireMaintenance(true);
+      await NodeFSP.rm(stopMarkerPath(this.#baseDir), { force: true });
+      const update = this.#state.update;
+      if (this.#state.maintenance.phase === "committed" && update?.status === "committed") {
+        await this.#startChild(update.targetVersion, "active", update);
+      } else if (update?.status === "pending") {
+        if (this.#state.maintenance.phase === "cutover") {
+          await this.#returnToPrevious(update, "rolled-back", "maintenance-interrupted");
+        } else {
+          await this.#finishMaintenanceAbort(update, "maintenance-interrupted");
+          try {
+            await this.#startChild(update.fromVersion, "active", this.#state.update);
+          } finally {
+            this.#releaseMaintenance();
+          }
+        }
+      }
+      return;
+    }
     // Clear old stop markers to preserve future tunnels; clear restart-pending only for the awaited version to avoid CLI races.
     await NodeFSP.rm(stopMarkerPath(this.#baseDir), { force: true }).catch(() => undefined);
     const restartPending = restartPendingPath(this.#baseDir);
@@ -1189,10 +1349,24 @@ export class Launcher {
     await this.#startTrial(update);
   }
 
+  async #withMaintenanceDatabaseLock(work: () => Promise<void>): Promise<void> {
+    if (this.#state.maintenance?.phase !== "cutover") return work();
+    const lockPath = NodePath.join(this.#baseDir, "userdata", "server-owner.sqlite");
+    const lock = await tryAcquireSqliteLock(lockPath);
+    if (lock === undefined) throw new Error("The pinned database still has a server owner.");
+    try {
+      await work();
+    } finally {
+      lock.close();
+    }
+  }
+
   async #startTrial(pending: PendingServiceUpdate): Promise<void> {
     if (await this.#deferForDiskSpace(() => this.#startTrial(pending))) return;
     try {
-      await backupDatabaseOnce(this.#baseDir, pending, this.#stopSignal.signal);
+      await this.#withMaintenanceDatabaseLock(() =>
+        backupDatabaseOnce(this.#baseDir, pending, this.#stopSignal.signal),
+      );
     } catch {
       // A stop aborts the copy and leaves the update pending for the next start.
       if (this.#stopRequested) return;
@@ -1208,7 +1382,19 @@ export class Launcher {
   }
 
   async #startChild(version: string, role: ChildRole, update?: ServiceUpdateRecord): Promise<void> {
-    if (this.#stopping) return;
+    await this.#withBoatStart(async () => {
+      if (
+        this.#boatRuntime !== undefined &&
+        !NodeUtil.isDeepStrictEqual(await readServiceState(this.#statePath), this.#state)
+      ) {
+        throw new Error("Boat service selection changed before starting the child.");
+      }
+      await this.#spawnChild(version, role, update);
+    });
+  }
+
+  async #spawnChild(version: string, role: ChildRole, update?: ServiceUpdateRecord): Promise<void> {
+    if (this.#stopping || (this.#stopRequested && this.#state.maintenance !== undefined)) return;
     if (
       await this.#deferForDiskSpace(() =>
         role === "trial" && update?.status === "pending"
@@ -1222,12 +1408,33 @@ export class Launcher {
     }
     if (this.#stopping) return;
     const paths = runtimePaths(this.#baseDir, version);
+    const maintenancePeer =
+      this.#maintenance === undefined
+        ? undefined
+        : { ...this.#maintenance.installation, instanceId: NodeCrypto.randomUUID() };
+    const maintenanceFence =
+      this.#state.maintenance?.phase === "committed" || role === "trial"
+        ? this.#state.maintenance?.fence
+        : undefined;
+    if (maintenanceFence !== undefined) {
+      await verifyStagedSailRelease(
+        paths.versionDir,
+        maintenanceFence.release,
+        this.#stopSignal.signal,
+      );
+      if (this.#stopRequested) return;
+    }
     const context: ServiceLauncherContext = {
       protocol: SERVICE_LAUNCHER_PROTOCOL,
       childVersion: version,
+      ...(maintenancePeer === undefined ? {} : { maintenancePeer }),
+      ...(this.#maintenance?.automatic === undefined
+        ? {}
+        : { maintenanceProfile: "idle-boat" as const }),
+      ...(maintenanceFence === undefined ? {} : { maintenanceFence }),
       ...(update === undefined ? {} : { update }),
     };
-    const spawnArguments = runtimeSpawnArguments(paths);
+    const spawnArguments = runtimeSpawnArguments(paths, maintenancePeer?.baseDir);
     const appendStdout = this.#output === undefined && isRegularFile(1);
     const appendStderr = this.#output === undefined && isRegularFile(2);
     const child = NodeChildProcess.spawn(spawnArguments.command, spawnArguments.args, {
@@ -1256,6 +1463,8 @@ export class Launcher {
     const managed: ManagedChild = {
       version,
       role,
+      ...(maintenancePeer === undefined ? {} : { maintenancePeer }),
+      maintenanceReady: false,
       process: child,
     };
     this.#child = managed;
@@ -1267,6 +1476,9 @@ export class Launcher {
       this.#enqueue(() => this.#handleExit(managed, code, signal)),
     );
 
+    if (role === "active" && maintenanceFence !== undefined) {
+      this.#armMaintenanceReadinessTimeout(managed);
+    }
     if (role === "trial") {
       this.#timer = setTimeout(
         () => this.#enqueue(() => this.#handlePreparedTimeout(managed)),
@@ -1281,7 +1493,411 @@ export class Launcher {
       await this.#handleUpdateRequest(child, message);
       return;
     }
-    await this.#handlePrepared(child, message.updateId);
+    if (message.type === "prepared") {
+      if (this.#state.maintenance === undefined)
+        await this.#handlePrepared(child, message.updateId);
+      return;
+    }
+    await this.#handleMaintenanceMessage(child, message);
+  }
+
+  async #acquireMaintenance(recovering: boolean): Promise<MaintenanceCoordinator> {
+    const coordinator = this.#maintenance;
+    const recorded = this.#state.maintenance?.fence.incumbent;
+    if (
+      coordinator === undefined ||
+      this.#servingLock === undefined ||
+      (await NodeFSP.realpath(this.#baseDir)) !== coordinator.installation.baseDir ||
+      (recorded !== undefined && !sameMaintenanceInstallation(recorded, coordinator.installation))
+    ) {
+      throw new Error("The launcher cannot establish maintenance ownership for this installation.");
+    }
+    this.#releaseLifecycle =
+      this.#releaseStart ??
+      (await coordinator.acquire({
+        recovering,
+        signal: this.#stopSignal.signal,
+      }));
+    this.#releaseStart = undefined;
+    try {
+      if (recovering) coordinator.assertReaped?.();
+      this.#stopSignal.signal.throwIfAborted();
+      this.#releaseSelection = await acquireServiceSelectionLock(this.#statePath);
+      const selected = await readServiceState(this.#statePath);
+      if (
+        recovering &&
+        selected.update?.status === "pending" &&
+        selected.update.dbPath !==
+          NodePath.join(coordinator.installation.baseDir, "userdata", "statev2.sqlite")
+      ) {
+        throw new Error("The maintenance journal does not name the pinned database.");
+      }
+      if (!NodeUtil.isDeepStrictEqual(selected, this.#state)) {
+        throw new Error("Service selection changed before maintenance acquired it.");
+      }
+      return coordinator;
+    } catch (error) {
+      this.#releaseMaintenance();
+      throw error;
+    }
+  }
+
+  #releaseMaintenance(): void {
+    this.#releaseSelection?.();
+    this.#releaseSelection = undefined;
+    this.#releaseLifecycle?.();
+    this.#releaseLifecycle = undefined;
+  }
+
+  requestMaintenance(release: StagedSailRelease): Promise<string> {
+    if (this.#done || this.#stopRequested)
+      return Promise.reject(new Error("The launcher is stopping."));
+    const request = Promise.withResolvers<string>();
+    this.#enqueue(async () => {
+      let acquired = false;
+      const child = this.#child;
+      const peer = child?.maintenancePeer;
+      const signal = this.#stopSignal.signal;
+      let budgetMs: number;
+      let dbPath: string;
+      try {
+        if (
+          child?.role !== "active" ||
+          !child.maintenanceReady ||
+          (this.#maintenance?.automatic !== undefined && child.censusComplete !== true) ||
+          peer === undefined ||
+          !child.process.connected ||
+          this.#releaseLifecycle !== undefined ||
+          this.#state.maintenance !== undefined ||
+          this.#state.update?.status === "pending" ||
+          !isExactServiceVersion(release.version) ||
+          !/^[0-9a-f]{64}$/.test(release.archiveSha256) ||
+          !/^[0-9a-f]{64}$/.test(release.treeSha256) ||
+          compareExactServiceVersions(release.version, child.version) <= 0
+        ) {
+          throw new Error("No eligible serving child and staged Sail release for maintenance.");
+        }
+        const coordinator = await this.#acquireMaintenance(false);
+        acquired = true;
+        coordinator.automatic?.assertInstalledOwnership(child.version, child.process.pid);
+        budgetMs = coordinator.drainBudgetMs;
+        if (!Number.isSafeInteger(budgetMs) || budgetMs < 1 || budgetMs > 120_000) {
+          throw new Error("Invalid maintenance drain budget.");
+        }
+        dbPath = NodePath.join(peer.baseDir, "userdata", "statev2.sqlite");
+        if ((await NodeFSP.realpath(dbPath)) !== dbPath) {
+          throw new Error("Maintenance requires the canonical pinned SQLite database.");
+        }
+        const paths = runtimePaths(this.#baseDir, release.version);
+        await checkStagedSailRelease(peer.baseDir, release, paths.versionDir, signal);
+        const blocker = await databaseBackupBlocker(this.#baseDir, dbPath, this.#backupSpaceProbe);
+        if (blocker !== undefined) throw new Error(blocker);
+        const diskBlocker = await this.#serviceStartDiskSpaceBlocker();
+        if (diskBlocker !== undefined) throw new Error(diskBlocker);
+        signal.throwIfAborted();
+        if (!child.process.connected)
+          throw new Error("The serving child disconnected during preflight.");
+      } catch (error) {
+        if (acquired) this.#releaseMaintenance();
+        request.reject(error);
+        return;
+      }
+      const id = NodeCrypto.randomUUID();
+      const fence = { updateId: id, incumbent: peer, release };
+      const pending: PendingServiceUpdate = {
+        id,
+        status: "pending",
+        fromVersion: child.version,
+        targetVersion: release.version,
+        dbPath,
+      };
+      try {
+        await this.#selectState({
+          ...this.#state,
+          update: pending,
+          maintenance: { phase: "draining", fence },
+        });
+        this.#drainDeadline = performance.now() + budgetMs;
+        this.#timer = setTimeout(
+          () => this.#enqueue(() => this.#abortMaintenance(pending, "drain-timeout")),
+          budgetMs,
+        );
+        await sendMessage(child.process, { type: "maintenance-drain", fence, budgetMs });
+        request.resolve(id);
+      } catch (error) {
+        request.reject(error);
+        if (this.#state.maintenance !== undefined) {
+          await this.#abortMaintenance(pending, "drain-send-failed");
+        } else {
+          const selected = await readServiceState(this.#statePath).catch(() => undefined);
+          if (NodeUtil.isDeepStrictEqual(selected, this.#state)) this.#releaseMaintenance();
+          else
+            this.#log(
+              "[service-launcher] Maintenance journal is uncertain. Keeping the incumbent serving until recovery.\n",
+            );
+        }
+      }
+    });
+    return request.promise;
+  }
+
+  async #abortMaintenance(pending: PendingServiceUpdate, reason: string): Promise<void> {
+    const attempt = this.#state.maintenance;
+    if (attempt?.phase !== "draining" || attempt.fence.updateId !== pending.id) return;
+    this.#clearTimer();
+    await this.#selectState({ ...this.#state, maintenance: { ...attempt, phase: "aborting" } });
+    if (this.#child === null) return;
+    const child = this.#child;
+    const deadline = performance.now() + 5_000;
+    const notify = async () => {
+      if (
+        this.#stopRequested ||
+        this.#child !== child ||
+        this.#state.maintenance?.phase !== "aborting" ||
+        this.#state.update?.id !== pending.id
+      )
+        return;
+      await sendMessage(child.process, { type: "maintenance-abort", fence: attempt.fence }).catch(
+        () => undefined,
+      );
+      if (performance.now() < deadline) {
+        this.#timer = setTimeout(() => this.#enqueue(notify), 1_000);
+      } else {
+        this.#log(
+          "[service-launcher] Maintenance abort is unconfirmed. Preserving the incumbent and the journal.\n",
+        );
+      }
+    };
+    this.#log(`[service-launcher] Deferring maintenance: ${reason}.\n`);
+    await notify();
+  }
+
+  async #finishMaintenanceAbort(pending: PendingServiceUpdate, reason: string): Promise<void> {
+    this.#clearTimer();
+    await this.#selectState({
+      protocol: SERVICE_LAUNCHER_PROTOCOL,
+      activeVersion: pending.fromVersion,
+      update: terminalUpdate({ pending, status: "failed", reason }),
+    });
+  }
+
+  #considerAutomaticMaintenance(): void {
+    const automatic = this.#maintenance?.automatic;
+    const child = this.#child;
+    if (
+      automatic === undefined ||
+      child?.censusComplete !== true ||
+      this.#stopRequested ||
+      this.#state.maintenance !== undefined
+    )
+      return;
+    try {
+      const request = automatic.readRequest();
+      if (request === undefined || request.instanceId !== child.maintenancePeer?.instanceId) return;
+      const key = JSON.stringify(request);
+      if (key === this.#lastAutomaticRequest) return;
+      clearTimeout(this.#automaticRetry);
+      this.#lastAutomaticRequest = key;
+      void this.requestMaintenance(request.release).catch((error: unknown) =>
+        this.#log(`[service-launcher] Boat update remains pending: ${String(error)}\n`),
+      );
+    } catch (error) {
+      this.#log(`[service-launcher] Invalid Boat update request: ${String(error)}\n`);
+    }
+  }
+
+  async #publishBoatCapability(child: ManagedChild, censusComplete: true | undefined) {
+    const automatic = this.#maintenance?.automatic;
+    const peer = child.maintenancePeer;
+    if (automatic === undefined || peer === undefined) return;
+    delete child.censusComplete;
+    if (censusComplete === true) {
+      try {
+        automatic.assertInstalledOwnership(child.version, child.process.pid);
+        child.censusComplete = true;
+      } catch (cause) {
+        this.#log(`[service-launcher] Boat runtime ownership is unverified: ${String(cause)}\n`);
+      }
+    }
+    try {
+      await replaceFileDurably(
+        NodePath.join(automatic.runtime, BOAT_CAPABILITY),
+        JSON.stringify({
+          ...peer,
+          bootId: automatic.bootId,
+          launcherPid: automatic.pid,
+          launcherStart: automatic.launcherStart,
+          childPid: child.process.pid,
+          version: child.version,
+          censusComplete: child.censusComplete === true,
+        }),
+      );
+    } catch (error) {
+      this.#log(
+        `[service-launcher] Could not publish the Boat serving capability: ${String(error)}\n`,
+      );
+      return;
+    }
+    this.#considerAutomaticMaintenance();
+  }
+
+  async #handleMaintenanceMessage(
+    child: ManagedChild,
+    message: Exclude<ServiceLauncherChildMessage, { type: "prepared" | "request-update" }>,
+  ): Promise<void> {
+    const peer = child.maintenancePeer;
+    if (peer === undefined || this.#stopRequested || !child.process.connected) return;
+    if ("peer" in message && !sameMaintenancePeer(message.peer, peer)) return;
+    const attempt = this.#state.maintenance;
+    const update = this.#state.update;
+    if (message.type === "maintenance-ready" && message.fence === undefined) {
+      if (child.role === "active" && attempt === undefined) {
+        child.maintenanceReady = true;
+        await this.#publishBoatCapability(child, message.censusComplete);
+      }
+      return;
+    }
+    if (
+      attempt === undefined ||
+      message.fence === undefined ||
+      !sameMaintenanceFence(message.fence, attempt.fence)
+    )
+      return;
+
+    if (
+      message.type === "maintenance-ready" &&
+      child.role === "active" &&
+      attempt.phase === "committed" &&
+      update?.status === "committed" &&
+      child.version === update.targetVersion
+    ) {
+      this.#clearTimer();
+      const automatic = this.#maintenance?.automatic;
+      if (automatic !== undefined) {
+        automatic.assertInstalledCli(child.version);
+        await this.#repointServiceUnit(child.version, true);
+        await replaceFileDurably(
+          NodePath.join(automatic.runtime, BOAT_READY),
+          JSON.stringify({
+            environmentId: peer.environmentId,
+            installationId: peer.installationId,
+            instanceId: peer.instanceId,
+            updateId: update.id,
+            release: attempt.fence.release,
+          }),
+        );
+      }
+      await this.#selectState({
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        activeVersion: child.version,
+        update,
+      });
+      child.maintenanceReady = true;
+      await discardDatabaseBackup(this.#baseDir, update.id).catch(() => undefined);
+      this.#releaseMaintenance();
+      if (automatic === undefined) await this.#repointServiceUnit(child.version);
+      await this.#publishBoatCapability(child, message.censusComplete);
+      return;
+    }
+    if (update?.status !== "pending") return;
+
+    if (
+      message.type === "maintenance-prepared" &&
+      child.role === "trial" &&
+      attempt.phase === "cutover"
+    ) {
+      await this.#handlePrepared(child, attempt.fence.updateId);
+      return;
+    }
+    if (child.role !== "active" || !sameMaintenancePeer(peer, attempt.fence.incumbent)) return;
+    if (message.type === "maintenance-aborted" && attempt.phase === "aborting") {
+      await this.#finishMaintenanceAbort(update, "drain-deferred");
+      this.#releaseMaintenance();
+      if (this.#maintenance?.automatic !== undefined) {
+        this.#automaticRetry = setTimeout(() => {
+          this.#lastAutomaticRequest = undefined;
+          this.#considerAutomaticMaintenance();
+        }, BOAT_MAINTENANCE_RETRY_MS).unref();
+      }
+      return;
+    }
+    if (attempt.phase !== "draining") return;
+    if (message.type === "maintenance-deferred" || performance.now() >= this.#drainDeadline) {
+      await this.#abortMaintenance(update, "drain-deferred");
+      return;
+    }
+    if (message.type !== "maintenance-sealed") return;
+    try {
+      const paths = runtimePaths(this.#baseDir, update.targetVersion);
+      await checkStagedSailRelease(
+        peer.baseDir,
+        attempt.fence.release,
+        paths.versionDir,
+        this.#stopSignal.signal,
+      );
+      const backupBlocker = await databaseBackupBlocker(
+        this.#baseDir,
+        update.dbPath,
+        this.#backupSpaceProbe,
+      );
+      if (
+        backupBlocker !== undefined ||
+        (await this.#serviceStartDiskSpaceBlocker()) !== undefined
+      ) {
+        await this.#abortMaintenance(update, "insufficient-backup-space");
+        return;
+      }
+    } catch {
+      await this.#abortMaintenance(update, "maintenance-recheck-failed");
+      return;
+    }
+    if (
+      this.#stopRequested ||
+      !child.process.connected ||
+      performance.now() >= this.#drainDeadline
+    ) {
+      await this.#abortMaintenance(update, "incumbent-unavailable");
+      return;
+    }
+    try {
+      const pid = child.process.pid;
+      if (pid === undefined) throw new Error("The incumbent PID is unavailable.");
+      this.#maintenance?.automatic?.assertInstalledOwnership(child.version, pid);
+      this.#maintenance?.assertPreCutover?.(pid);
+    } catch {
+      await this.#abortMaintenance(update, "process-ownership-unverified");
+      return;
+    }
+    if (performance.now() >= this.#drainDeadline) {
+      await this.#abortMaintenance(update, "drain-timeout");
+      return;
+    }
+    this.#clearTimer();
+    await this.#selectState({ ...this.#state, maintenance: { ...attempt, phase: "cutover" } });
+    this.#child = null;
+    await terminateChild(child.process, "SIGTERM", true);
+    this.#maintenance?.assertReaped?.();
+    if (child.process.exitCode !== 0) {
+      this.#log(
+        `[service-launcher] The sealed incumbent exited with ${String(child.process.exitCode ?? child.process.signalCode)}.\n`,
+      );
+      await this.#returnToPrevious(update, "failed", "unclean-maintenance-shutdown");
+      return;
+    }
+    try {
+      await publishStagedSailRelease(
+        peer.baseDir,
+        attempt.fence.release,
+        runtimePaths(this.#baseDir, update.targetVersion).versionDir,
+        update.id,
+        this.#stopSignal.signal,
+      );
+    } catch {
+      if (this.#stopRequested) return;
+      await this.#returnToPrevious(update, "failed", "staged-release-publication-failed");
+      return;
+    }
+    await this.#startTrial(update);
   }
 
   async #handleUpdateRequest(
@@ -1290,6 +1906,10 @@ export class Launcher {
   ): Promise<void> {
     const reject = (reason: string) =>
       sendMessage(child.process, { type: "update-rejected", reason });
+    if (this.#boatRuntime !== undefined) {
+      await reject("This Boat installation selects updates through its maintenance lifecycle.");
+      return;
+    }
     if (child.role !== "active") {
       await reject("Only the active server can request an update.");
       return;
@@ -1298,7 +1918,7 @@ export class Launcher {
       await reject("The requesting server is not the selected active version.");
       return;
     }
-    if (this.#state.update?.status === "pending") {
+    if (this.#state.update?.status === "pending" || this.#releaseLifecycle !== undefined) {
       await reject("Another server update is already pending.");
       return;
     }
@@ -1384,14 +2004,25 @@ export class Launcher {
       throw new Error("Trial child reported prepared for an unexpected update.");
     }
     this.#clearTimer();
+    const maintenance = this.#state.maintenance;
     const committed = terminalUpdate({ pending, status: "committed" });
     const next: ServiceState = {
       ...this.#state,
       activeVersion: pending.targetVersion,
       update: committed,
+      ...(maintenance === undefined ? {} : { maintenance: { ...maintenance, phase: "committed" } }),
     };
     await this.#selectState(next);
     child.role = "active";
+    if (maintenance !== undefined && child.maintenancePeer !== undefined) {
+      await sendMessage(child.process, {
+        type: "maintenance-committed",
+        peer: child.maintenancePeer,
+        fence: maintenance.fence,
+      });
+      this.#armMaintenanceReadinessTimeout(child);
+      return;
+    }
     await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
     try {
       await sendMessage(child.process, { type: "committed", updateId: committed.id });
@@ -1401,9 +2032,12 @@ export class Launcher {
   }
 
   // Selection is durable before this best-effort unit reconciliation.
-  async #repointServiceUnit(version: string): Promise<void> {
+  async #repointServiceUnit(version: string, required = false): Promise<void> {
     const unit = this.#serviceUnit;
-    if (unit === undefined) return;
+    if (unit === undefined) {
+      if (required) throw new Error("The Boat systemd unit could not be located.");
+      return;
+    }
     try {
       const release = await acquireServiceSelectionLock(unit.path);
       try {
@@ -1415,6 +2049,7 @@ export class Launcher {
           selected.update?.id !== this.#state.update?.id ||
           selected.update?.status !== this.#state.update?.status
         ) {
+          if (required) throw new Error("The Boat service selection or unit has changed.");
           return;
         }
         const contents = decodeServiceUnit(await NodeFSP.readFile(unit.path));
@@ -1424,9 +2059,19 @@ export class Launcher {
           installedBaseDir === undefined ||
           (await real(installedBaseDir)) !== (await real(this.#baseDir))
         ) {
+          if (required) throw new Error("The Boat service selection or unit has changed.");
           return;
         }
         const repointed = repointServiceUnit(contents, version);
+        if (required) {
+          const executable = serviceUnitProgramOf(repointed);
+          if (
+            executable === undefined ||
+            (await NodeFSP.realpath(executable)) !== runtimePaths(this.#baseDir, version).entryPath
+          ) {
+            throw new Error("The Boat unit does not start the committed runtime.");
+          }
+        }
         if (repointed !== contents) {
           await replaceFileDurably(
             unit.path,
@@ -1439,10 +2084,23 @@ export class Launcher {
         release();
       }
     } catch (error) {
+      if (required) throw error;
       process.stderr.write(
         `[service-launcher] Could not point ${unit.path} at t3@${version}: ${error instanceof Error ? error.message : String(error)}\n`,
       );
     }
+  }
+
+  #armMaintenanceReadinessTimeout(child: ManagedChild): void {
+    this.#timer = setTimeout(
+      () =>
+        this.#enqueue(async () => {
+          if (this.#child === child && this.#state.maintenance?.phase === "committed") {
+            throw new Error("Committed maintenance child did not report matching readiness.");
+          }
+        }),
+      PREPARED_TIMEOUT_MS,
+    );
   }
 
   async #handlePreparedTimeout(child: ManagedChild): Promise<void> {
@@ -1461,6 +2119,31 @@ export class Launcher {
   ): Promise<void> {
     if (this.#child !== child || this.#stopping) return;
     this.#child = null;
+    const maintenance = this.#state.maintenance;
+    const interrupted = this.#state.update;
+    if (maintenance !== undefined && interrupted?.status === "pending") {
+      this.#clearTimer();
+      if (maintenance.phase === "cutover") {
+        if (code === STATE_DIR_OWNED_EXIT_CODE) {
+          throw new Error(
+            "Maintenance lost exclusive ownership before the trial acquired the home.",
+          );
+        }
+        await this.#returnToPrevious(interrupted, "rolled-back", "maintenance-trial-exited");
+      } else {
+        await this.#finishMaintenanceAbort(interrupted, "incumbent-exited");
+        try {
+          if (!this.#stopRequested)
+            await this.#startChild(interrupted.fromVersion, "active", this.#state.update);
+        } finally {
+          this.#releaseMaintenance();
+        }
+      }
+      return;
+    }
+    if (maintenance?.phase === "committed") {
+      throw new Error("Committed maintenance child exited before matching readiness.");
+    }
     if (code === STATE_DIR_OWNED_EXIT_CODE) {
       await this.#idleWhileStateDirOwned();
       return;
@@ -1560,10 +2243,21 @@ export class Launcher {
     }
     if (await this.#deferForDiskSpace(() => this.#returnToPrevious(pending, status, reason)))
       return;
-    await restoreDatabaseBackup(this.#baseDir, pending);
+    const maintenance = this.#state.maintenance;
+    if (maintenance?.phase === "cutover" && this.#stopRequested) return;
+    if (maintenance?.phase === "cutover") this.#maintenance?.assertReaped?.();
+    await this.#withMaintenanceDatabaseLock(() => restoreDatabaseBackup(this.#baseDir, pending));
+    if (maintenance?.phase === "cutover") {
+      await removeMaintenanceRuntime(
+        runtimePaths(this.#baseDir, pending.targetVersion).versionDir,
+        maintenance.fence.release,
+        pending.id,
+        this.#stopSignal.signal,
+      );
+    }
     const outcome = terminalUpdate({ pending, status, reason });
     const next: ServiceState = {
-      ...this.#state,
+      protocol: SERVICE_LAUNCHER_PROTOCOL,
       activeVersion: pending.fromVersion,
       update: outcome,
     };
@@ -1572,6 +2266,7 @@ export class Launcher {
     try {
       await this.#startChild(next.activeVersion, "active", outcome);
     } finally {
+      this.#releaseMaintenance();
       await this.#repointServiceUnit(next.activeVersion);
     }
   }
@@ -1585,10 +2280,12 @@ export interface LauncherOptions {
 }
 
 export async function main(options: LauncherOptions = {}): Promise<void> {
-  const baseDir = options.baseDir ?? process.env.T3CODE_HOME;
-  if (baseDir === undefined || baseDir.trim() === "") {
+  const configuredHome = options.baseDir ?? process.env.T3CODE_HOME;
+  if (configuredHome === undefined || configuredHome.trim() === "") {
     throw new Error("T3CODE_HOME is required by the T3 Code service launcher.");
   }
+  const runtime = boatRuntime(configuredHome);
+  const baseDir = runtime === undefined ? configuredHome : NodePath.dirname(runtime);
   const output =
     options.logFile === undefined ? undefined : NodeFS.openSync(options.logFile, "a", 0o600);
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
@@ -1624,7 +2321,13 @@ export async function main(options: LauncherOptions = {}): Promise<void> {
         SERVICE_LOG_CHECK_INTERVAL_MS,
       ).unref();
     }
+    const maintenanceCoordinator =
+      runtime === undefined
+        ? undefined
+        : openBoatCoordinator(runtime, managerEnvironment[SERVICE_UNIT_ENV]);
     const launcher = new Launcher(baseDir, state, {
+      ...(runtime === undefined ? {} : { boatRuntime: runtime }),
+      ...(maintenanceCoordinator === undefined ? {} : { maintenanceCoordinator }),
       environment,
       ...(serviceUnit === undefined ? {} : { serviceUnit }),
       ...(output === undefined ? {} : { output }),

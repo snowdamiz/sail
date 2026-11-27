@@ -1,3 +1,4 @@
+import { withAdmission } from "./serverAdmission.ts";
 import { GitCommandError, OrchestrationDispatchCommandError } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest inside the pure provider mapping.
 import * as NodeCrypto from "node:crypto";
@@ -290,7 +291,11 @@ import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
-import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
+import {
+  failEnvironmentAuthInvalid,
+  failEnvironmentAuthInternal,
+  failEnvironmentInternal,
+} from "./auth/http.ts";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import { isNetworkPath } from "@t3tools/shared/path";
 import * as RelayClient from "@t3tools/shared/relayClient";
@@ -543,75 +548,83 @@ function unexpectedCompatibilityError(error: never): never {
   throw new Error(`Unhandled compatibility error: ${String(error)}`);
 }
 
-const persistChatAttachments = Effect.fn("ws.assets.persistChatAttachments")(function* (input: {
-  readonly threadId: ThreadId;
-  readonly messageId: MessageId;
-  readonly attachments: ReadonlyArray<{
-    readonly type: "image";
-    readonly name: string;
-    readonly mimeType: string;
-    readonly sizeBytes: number;
-    readonly dataUrl: string;
-  }>;
-}) {
-  const config = yield* ServerConfig.ServerConfig;
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  return yield* Effect.forEach(
-    input.attachments.map((attachment, index) => ({ attachment, index })),
-    Effect.fn("ws.assets.persistChatAttachment")(function* ({ attachment, index }) {
-      const parsed = parseBase64DataUrl(attachment.dataUrl);
-      if (parsed === null || parsed.mimeType !== attachment.mimeType.toLowerCase()) {
-        return yield* new PersistChatAttachmentsError({
-          message: `Attachment ${attachment.name} has an invalid image payload.`,
-        });
-      }
-      const bytes = yield* Effect.fromResult(Base64.decode(parsed.base64)).pipe(
-        Effect.mapError(
-          (cause) =>
-            new PersistChatAttachmentsError({
-              message: `Attachment ${attachment.name} is not valid base64.`,
-              cause,
-            }),
-        ),
-      );
-      if (bytes.byteLength !== attachment.sizeBytes) {
-        return yield* new PersistChatAttachmentsError({
-          message: `Attachment ${attachment.name} size does not match its payload.`,
-        });
-      }
-      const rawId = createDeterministicAttachmentId(
-        input.threadId,
-        chatAttachmentStableKey(input.messageId, index, bytes),
-      );
-      if (rawId === null) {
-        return yield* new PersistChatAttachmentsError({
-          message: "Could not allocate an attachment identifier.",
-        });
-      }
-      const persisted = {
-        type: "image" as const,
-        id: ChatAttachmentId.make(rawId),
-        name: attachment.name,
-        mimeType: attachment.mimeType,
-        sizeBytes: attachment.sizeBytes,
-      };
-      yield* fileSystem
-        .writeFile(path.join(config.attachmentsDir, attachmentRelativePath(persisted)!), bytes)
-        .pipe(
+const persistChatAttachments = Effect.fn("ws.assets.persistChatAttachments")(
+  function* (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+    readonly attachments: ReadonlyArray<{
+      readonly type: "image";
+      readonly name: string;
+      readonly mimeType: string;
+      readonly sizeBytes: number;
+      readonly dataUrl: string;
+    }>;
+  }) {
+    const config = yield* ServerConfig.ServerConfig;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    return yield* Effect.forEach(
+      input.attachments.map((attachment, index) => ({ attachment, index })),
+      Effect.fn("ws.assets.persistChatAttachment")(function* ({ attachment, index }) {
+        const parsed = parseBase64DataUrl(attachment.dataUrl);
+        if (parsed === null || parsed.mimeType !== attachment.mimeType.toLowerCase()) {
+          return yield* new PersistChatAttachmentsError({
+            message: `Attachment ${attachment.name} has an invalid image payload.`,
+          });
+        }
+        const bytes = yield* Effect.fromResult(Base64.decode(parsed.base64)).pipe(
           Effect.mapError(
             (cause) =>
               new PersistChatAttachmentsError({
-                message: `Could not persist attachment ${attachment.name}.`,
+                message: `Attachment ${attachment.name} is not valid base64.`,
                 cause,
               }),
           ),
         );
-      return persisted;
-    }),
-    { concurrency: 2 },
-  );
-});
+        if (bytes.byteLength !== attachment.sizeBytes) {
+          return yield* new PersistChatAttachmentsError({
+            message: `Attachment ${attachment.name} size does not match its payload.`,
+          });
+        }
+        const rawId = createDeterministicAttachmentId(
+          input.threadId,
+          chatAttachmentStableKey(input.messageId, index, bytes),
+        );
+        if (rawId === null) {
+          return yield* new PersistChatAttachmentsError({
+            message: "Could not allocate an attachment identifier.",
+          });
+        }
+        const persisted = {
+          type: "image" as const,
+          id: ChatAttachmentId.make(rawId),
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+        };
+        yield* fileSystem
+          .writeFile(path.join(config.attachmentsDir, attachmentRelativePath(persisted)!), bytes)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new PersistChatAttachmentsError({
+                  message: `Could not persist attachment ${attachment.name}.`,
+                  cause,
+                }),
+            ),
+          );
+        return persisted;
+      }),
+      { concurrency: 2 },
+    );
+  },
+  Effect.uninterruptible,
+  withAdmission("root"),
+  Effect.catchTags({
+    ServerMaintenanceBusy: (cause) =>
+      new PersistChatAttachmentsError({ message: cause.message, cause }),
+  }),
+);
 
 function projectEntriesFailureContext(error: WorkspaceEntries.WorkspaceEntriesError): {
   readonly failure: ProjectEntriesFailure;
@@ -1664,6 +1677,19 @@ export const layerWsRpc = (
           ? effect
           : Effect.fail(rpcAuthorizationError(requiredScope));
 
+      const admitAcpRegistryWork = <A, R>(work: Effect.Effect<A, AcpRegistryOperationError, R>) =>
+        work.pipe(
+          withAdmission("root"),
+          Effect.catchTags({
+            ServerMaintenanceBusy: (cause) =>
+              new AcpRegistryOperationError({
+                reason: "maintenance_busy",
+                message: cause.message,
+                cause,
+              }),
+          }),
+        );
+
       const listAcpRegistrySessions = Effect.fn("ws.acpRegistry.listSessions")(function* (
         input: AcpRegistryListSessionsInput,
       ) {
@@ -2100,8 +2126,12 @@ export const layerWsRpc = (
                   Effect.map((result) => ({ sequence: result.sequence })),
                   Effect.mapError((cause) => {
                     if (cause._tag === "EnvironmentAuthorizationError") return cause;
-                    const detail = userFacingDispatchErrorMessage(cause);
+                    const retryable = cause._tag === "ServerMaintenanceBusy";
+                    const detail = retryable
+                      ? cause.message
+                      : userFacingDispatchErrorMessage(cause);
                     return new OrchestrationV2DispatchCommandError({
+                      ...(retryable ? { retryable: true } : {}),
                       commandId: command.commandId,
                       commandType: command.type,
                       message: detail ?? "Failed to dispatch orchestration V2 command",
@@ -2324,6 +2354,14 @@ export const layerWsRpc = (
                     projection: projectThreadProjectionForWire(result.projection),
                   })),
                   Effect.catchTags({
+                    ServerMaintenanceBusy: (cause) =>
+                      new OrchestrationV2ThreadLaunchError({
+                        commandId: input.commandId,
+                        projectId: input.projectId,
+                        message: cause.message,
+                        retryable: true,
+                        cause,
+                      }),
                     AttachmentClaimError: (cause) =>
                       new OrchestrationV2ThreadLaunchError({
                         commandId: input.commandId,
@@ -2519,7 +2557,7 @@ export const layerWsRpc = (
           Effect.annotateCurrentSpan({
             "provider.instance_id": input.instanceId,
             "project.id": input.projectId,
-          }).pipe(Effect.andThen(acpRegistrySessions.importSession(input))),
+          }).pipe(Effect.andThen(admitAcpRegistryWork(acpRegistrySessions.importSession(input)))),
         [WS_METHODS.serverDeleteAcpRegistrySession]: (input) =>
           Effect.annotateCurrentSpan({
             "provider.instance_id": input.instanceId,
@@ -2534,12 +2572,12 @@ export const layerWsRpc = (
           Effect.annotateCurrentSpan({
             "provider.instance_id": input.instanceId,
             "project.id": input.projectId,
-          }).pipe(Effect.andThen(setAcpRegistryProvider(input))),
+          }).pipe(Effect.andThen(admitAcpRegistryWork(setAcpRegistryProvider(input)))),
         [WS_METHODS.serverDisableAcpRegistryProvider]: (input) =>
           Effect.annotateCurrentSpan({
             "provider.instance_id": input.instanceId,
             "project.id": input.projectId,
-          }).pipe(Effect.andThen(disableAcpRegistryProvider(input))),
+          }).pipe(Effect.andThen(admitAcpRegistryWork(disableAcpRegistryProvider(input)))),
         [WS_METHODS.serverLogoutAcpRegistry]: (input) =>
           Effect.annotateCurrentSpan({ "provider.instance_id": input.instanceId }).pipe(
             Effect.andThen(
@@ -2580,7 +2618,7 @@ export const layerWsRpc = (
                 }
                 yield* providerRegistry.refreshInstance(input.instanceId);
                 return { loggedOut: true } as const;
-              }),
+              }).pipe(admitAcpRegistryWork),
             ),
           ),
         [WS_METHODS.serverRefreshProviders]:
@@ -3150,7 +3188,9 @@ export const layerWsRpc = (
                 new ProjectWriteFileError({
                   cwd: input.cwd,
                   relativePath: input.relativePath,
-                  ...projectFileFailureContext(cause),
+                  ...(cause._tag === "ServerMaintenanceBusy"
+                    ? ({ failure: "operation_failed", operation: "write-file" } as const)
+                    : projectFileFailureContext(cause)),
                   cause,
                 }),
             ),
@@ -3348,6 +3388,19 @@ export const layerWsRpc = (
                       ),
                       Effect.andThen(refreshGitStatus(input.cwd)),
                       Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
+                    ),
+                }),
+                withAdmission("root"),
+                Effect.catchTags({
+                  ServerMaintenanceBusy: (cause) =>
+                    Queue.fail(
+                      queue,
+                      new GitCommandError({
+                        operation: "gitRunStackedAction",
+                        command: "vcs-route",
+                        cwd: input.cwd,
+                        detail: cause.message,
+                      }),
                     ),
                 }),
               ),
@@ -3831,7 +3884,7 @@ export const layer = Layer.unwrap(
             ),
           ),
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-            failEnvironmentInternal("internal_error", error),
+            failEnvironmentAuthInternal("internal_error", error),
           ),
         );
         // Desktop bootstrap sessions connect to their own backend, including same-machine WSL.
@@ -3961,6 +4014,7 @@ export const layer = Layer.unwrap(
         Effect.catchTags({
           EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
           EnvironmentInternalError: HttpServerRespondable.toResponse,
+          EnvironmentMaintenanceError: HttpServerRespondable.toResponse,
         }),
       ),
     );

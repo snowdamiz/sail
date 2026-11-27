@@ -8,6 +8,8 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
+import * as Queue from "effect/Queue";
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 
 import {
   SERVICE_LAUNCHER_CONTEXT_ENV,
@@ -20,12 +22,14 @@ import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 
 class FakeLauncherProcess {
   readonly connected: boolean;
+  readonly hasLauncherIpc: boolean;
   readonly env: Record<string, string | undefined>;
   readonly sent: ServiceLauncherChildMessage[] = [];
   readonly #listeners = new Map<string, Set<(...args: ReadonlyArray<unknown>) => void>>();
 
-  constructor(context: unknown, connected = true) {
+  constructor(context: unknown, connected = true, hasLauncherIpc = connected) {
     this.connected = connected;
+    this.hasLauncherIpc = hasLauncherIpc;
     this.env = { [SERVICE_LAUNCHER_CONTEXT_ENV]: JSON.stringify(context) };
   }
 
@@ -430,3 +434,95 @@ it.layer(NodeServices.layer)("self-update launchers", (it) => {
     }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 });
+
+it.effect(
+  "allows accepted settlement, seals admission, and reopens only for the matching abort",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped().pipe(Effect.flatMap(fs.realPath));
+      const dbPath = path.join(baseDir, "userdata", "statev2.sqlite");
+      yield* fs.makeDirectory(path.dirname(dbPath));
+      yield* fs.writeFileString(dbPath, "fixture");
+      const peer = {
+        baseDir,
+        installationId: "fixture-boat",
+        environmentId: "fixture-environment",
+        instanceId: "00000000-0000-0000-0000-000000000001",
+      };
+      const fence = {
+        incumbent: peer,
+        updateId: "00000000-0000-0000-0000-000000000002",
+        release: { version: "1.1.0", treeSha256: "a".repeat(64), archiveSha256: "b".repeat(64) },
+      };
+      const host = new FakeLauncherProcess({
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        childVersion: "1.0.0",
+        maintenancePeer: peer,
+      });
+      const replies = yield* Queue.unbounded<ServiceLauncherChildMessage>();
+      host.send = (reply, callback) => {
+        Queue.offerUnsafe(replies, reply);
+        callback?.(null);
+        return true;
+      };
+      const observed = yield* Deferred.make<void>();
+      const admission = makeAdmission(Deferred.succeed(observed, undefined).pipe(Effect.as([])));
+      const release = yield* admission.run(
+        "root",
+        Effect.sync(() => admission.trackLifetime("native-child")),
+      );
+      const entered = yield* Deferred.make<void>();
+      const reconciled = yield* Deferred.make<void>();
+      const reconcile = Deferred.succeed(entered, undefined).pipe(
+        Effect.andThen(Deferred.await(reconciled)),
+      );
+      const client = yield* makeClient(host, "1.0.0");
+      assert.isDefined(client.maintenanceReady);
+      yield* client
+        .maintenanceReady({ baseDir, dbPath, environmentId: peer.environmentId }, reconcile)
+        .pipe(Effect.provideService(ServerAdmission, admission));
+      assert.equal((yield* Queue.take(replies)).type, "maintenance-ready");
+      host.emit({ type: "maintenance-drain", fence, budgetMs: 10_000 });
+      yield* Deferred.await(observed);
+      const refused = yield* Effect.flip(admission.run("root", Effect.void));
+      assert.isTrue(refused.retryable);
+      yield* admission.run("continuation", Effect.sync(release));
+      yield* Deferred.await(entered);
+      assert.isFalse(yield* admission.isConfirmedSeal);
+      yield* Effect.flip(admission.run("continuation", Effect.void));
+      yield* Deferred.succeed(reconciled, undefined);
+      assert.deepEqual(yield* Queue.take(replies), { type: "maintenance-sealed", fence });
+      assert.isTrue(yield* admission.isConfirmedSeal);
+
+      host.emit({ type: "maintenance-abort", fence: { ...fence, updateId: peer.instanceId } });
+      yield* Effect.flip(admission.run("continuation", Effect.void));
+      host.emit({ type: "maintenance-abort", fence });
+      assert.deepEqual(yield* Queue.take(replies), { type: "maintenance-aborted", fence });
+      assert.equal(yield* admission.run("root", Effect.succeed("accepted")), "accepted");
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "distinguishes a disconnected maintenance child from a descendant that inherited its environment",
+  () =>
+    Effect.gen(function* () {
+      const context = {
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        childVersion: "1.0.0",
+        maintenancePeer: {
+          baseDir: "/fixture",
+          installationId: "fixture-boat",
+          environmentId: "fixture-environment",
+          instanceId: "00000000-0000-0000-0000-000000000001",
+        },
+      };
+      const disconnected = new FakeLauncherProcess(context, false, true);
+      const error = yield* makeClient(disconnected, "1.0.0").pipe(Effect.flip);
+      assert.equal(error.operation, "disconnect");
+      const descendant = new FakeLauncherProcess(context, false);
+      const unmanaged = yield* makeClient(descendant, "1.0.0");
+      assert.isFalse(unmanaged.managed);
+    }),
+);

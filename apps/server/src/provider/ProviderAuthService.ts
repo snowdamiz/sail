@@ -1,3 +1,4 @@
+import { ServerAdmission, withAdmission } from "../serverAdmission.ts";
 import {
   ProviderSetupError,
   type ChatGptReconnectProfile,
@@ -202,93 +203,153 @@ export const makeProviderAuthService = Effect.gen(function* () {
     }
   });
 
+  let startedSignIn = false;
+  const admission = yield* ServerAdmission;
+  yield* (
+    admission?.registerObserver(
+      Effect.sync(() => (startedSignIn ? ["provider-auth-unqualified"] : [])),
+    ) ?? Effect.void
+  );
+  const admit =
+    (lane: "root" | "continuation", operation: ProviderSetupError["operation"]) =>
+    <A, R>(work: Effect.Effect<A, ProviderSetupError, R>, input: ProviderAuthTarget) =>
+      work.pipe(
+        withAdmission(lane),
+        Effect.catchTags({
+          ServerMaintenanceBusy: (cause) =>
+            new ProviderSetupError({
+              instanceId: input.instanceId,
+              operation,
+              detail: cause.message,
+            }),
+        }),
+      );
+
   return ProviderAuthService.of({
-    reconnectProfile: Effect.fnUntraced(function* (input) {
-      const auth = yield* getController(input.instanceId, "export");
-      if (!auth.reconnectProfile)
-        return yield* new ProviderSetupError({
-          instanceId: input.instanceId,
-          operation: "export",
-          detail: "This provider does not support ChatGPT profile transfer.",
-        });
-      return yield* auth.reconnectProfile(input.methodId);
-    }),
-    importProfile: Effect.fn("ProviderAuthService.importProfile")(function (input) {
-      return credentialChanges.withPermit(
-        Effect.gen(function* () {
-          const auth = yield* getController(input.instanceId, "import");
-          yield* checkSharedBinding(input.instanceId, "start", auth);
-          if (!auth.importProfile)
-            return yield* new ProviderSetupError({
-              instanceId: input.instanceId,
-              operation: "import",
-              detail: "This provider does not support ChatGPT profile transfer.",
-            });
-          return yield* auth.importProfile(
-            input.profile,
-            stopSessions(input.instanceId, auth.credentialBinding),
-          );
-        }),
-      );
-    }),
-    start: Effect.fn("ProviderAuthService.start")(function* (input, ownerSessionId) {
-      return yield* credentialChanges.withPermit(
-        Effect.gen(function* () {
-          const auth = yield* getController(input.instanceId, "start");
-          yield* checkSharedBinding(input.instanceId, "start", auth);
-          return yield* auth.start(
-            ownerSessionId,
-            stopSessions(input.instanceId, auth.credentialBinding),
-            input.methodId,
-            input.returnUrl,
-            input.callbackMode,
-          );
-        }),
-      );
-    }),
-    respond: Effect.fn("ProviderAuthService.respond")(function* (input, ownerSessionId) {
-      const auth = yield* getController(input.instanceId, "respond");
-      if (!auth.respond) {
-        return yield* new ProviderSetupError({
-          instanceId: input.instanceId,
-          operation: "respond",
-          detail: "This provider does not accept this sign-in interaction.",
-        });
-      }
-      return yield* auth.respond(ownerSessionId, input);
-    }),
-    complete: Effect.fn("ProviderAuthService.complete")(function* (input, ownerSessionId) {
-      const auth = yield* getController(input.instanceId, "complete");
-      return yield* auth.complete(ownerSessionId, input);
-    }),
-    cancel: Effect.fn("ProviderAuthService.cancel")(function* (input, ownerSessionId) {
-      const auth = yield* getController(input.instanceId, "cancel");
-      return yield* auth.cancel(ownerSessionId, input.flowId);
-    }),
-    removeMethod: Effect.fn("ProviderAuthService.removeMethod")(function (input) {
-      return credentialChanges.withPermit(
-        Effect.gen(function* () {
-          const auth = yield* getController(input.instanceId, "removeMethod");
-          yield* checkSharedBinding(input.instanceId, "removeMethod", auth);
-          if (!auth.removeMethod)
-            return yield* new ProviderSetupError({
-              instanceId: input.instanceId,
-              operation: "removeMethod",
-              detail: "This provider does not support removing saved sign-in methods.",
-            });
-          return yield* auth.removeMethod(input.methodId);
-        }),
-      );
-    }),
-    logout: Effect.fn("ProviderAuthService.logout")(function* (input) {
-      return yield* credentialChanges.withPermit(
-        Effect.gen(function* () {
-          const auth = yield* getController(input.instanceId, "logout");
-          yield* checkSharedBinding(input.instanceId, "logout", auth);
-          return yield* auth.logout(stopSessions(input.instanceId, auth.credentialBinding));
-        }),
-      );
-    }),
+    reconnectProfile: Effect.fnUntraced(
+      function* (input) {
+        const auth = yield* getController(input.instanceId, "export");
+        if (!auth.reconnectProfile)
+          return yield* new ProviderSetupError({
+            instanceId: input.instanceId,
+            operation: "export",
+            detail: "This provider does not support ChatGPT profile transfer.",
+          });
+        return yield* auth.reconnectProfile(input.methodId);
+      },
+      admit("root", "export"),
+    ),
+    importProfile: Effect.fn("ProviderAuthService.importProfile")(
+      function (input) {
+        return credentialChanges.withPermit(
+          Effect.gen(function* () {
+            const auth = yield* getController(input.instanceId, "import");
+            yield* checkSharedBinding(input.instanceId, "start", auth);
+            if (!auth.importProfile)
+              return yield* new ProviderSetupError({
+                instanceId: input.instanceId,
+                operation: "import",
+                detail: "This provider does not support ChatGPT profile transfer.",
+              });
+            return yield* auth.importProfile(
+              input.profile,
+              stopSessions(input.instanceId, auth.credentialBinding),
+            );
+          }),
+        );
+      },
+      admit("root", "import"),
+    ),
+    start: Effect.fn("ProviderAuthService.start")(
+      function* (input, ownerSessionId) {
+        return yield* credentialChanges.withPermit(
+          Effect.gen(function* () {
+            const auth = yield* getController(input.instanceId, "start");
+            yield* checkSharedBinding(input.instanceId, "start", auth);
+            yield* (
+              admission?.providerLifetimes?.recordAuth.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderSetupError({
+                      instanceId: input.instanceId,
+                      operation: "start",
+                      detail: "Could not record the provider sign-in lifetime.",
+                      cause,
+                    }),
+                ),
+              ) ?? Effect.void
+            );
+            startedSignIn = true;
+            return yield* auth.start(
+              ownerSessionId,
+              stopSessions(input.instanceId, auth.credentialBinding),
+              input.methodId,
+              input.returnUrl,
+              input.callbackMode,
+            );
+          }),
+        );
+      },
+      admit("root", "start"),
+    ),
+    respond: Effect.fn("ProviderAuthService.respond")(
+      function* (input, ownerSessionId) {
+        const auth = yield* getController(input.instanceId, "respond");
+        if (!auth.respond) {
+          return yield* new ProviderSetupError({
+            instanceId: input.instanceId,
+            operation: "respond",
+            detail: "This provider does not accept this sign-in interaction.",
+          });
+        }
+        return yield* auth.respond(ownerSessionId, input);
+      },
+      admit("continuation", "respond"),
+    ),
+    complete: Effect.fn("ProviderAuthService.complete")(
+      function* (input, ownerSessionId) {
+        const auth = yield* getController(input.instanceId, "complete");
+        return yield* auth.complete(ownerSessionId, input);
+      },
+      admit("continuation", "complete"),
+    ),
+    cancel: Effect.fn("ProviderAuthService.cancel")(
+      function* (input, ownerSessionId) {
+        const auth = yield* getController(input.instanceId, "cancel");
+        return yield* auth.cancel(ownerSessionId, input.flowId);
+      },
+      admit("continuation", "cancel"),
+    ),
+    removeMethod: Effect.fn("ProviderAuthService.removeMethod")(
+      function (input) {
+        return credentialChanges.withPermit(
+          Effect.gen(function* () {
+            const auth = yield* getController(input.instanceId, "removeMethod");
+            yield* checkSharedBinding(input.instanceId, "removeMethod", auth);
+            if (!auth.removeMethod)
+              return yield* new ProviderSetupError({
+                instanceId: input.instanceId,
+                operation: "removeMethod",
+                detail: "This provider does not support removing saved sign-in methods.",
+              });
+            return yield* auth.removeMethod(input.methodId);
+          }),
+        );
+      },
+      admit("root", "removeMethod"),
+    ),
+    logout: Effect.fn("ProviderAuthService.logout")(
+      function* (input) {
+        return yield* credentialChanges.withPermit(
+          Effect.gen(function* () {
+            const auth = yield* getController(input.instanceId, "logout");
+            yield* checkSharedBinding(input.instanceId, "logout", auth);
+            return yield* auth.logout(stopSessions(input.instanceId, auth.credentialBinding));
+          }),
+        );
+      },
+      admit("root", "logout"),
+    ),
     subscribe: Function.flow(
       Effect.fn("ProviderAuthService.subscribe")(function* (input, ownerSessionId) {
         const changes = yield* registry.subscribeChanges;

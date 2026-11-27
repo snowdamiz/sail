@@ -65,6 +65,7 @@ const AGENT_FEEDBACK_REQUEST_FAILURE_MESSAGES = {
   already_answered: "This feedback report was already answered.",
   feedback_off: "Agent feedback is off, so this report was not sent.",
   record_failed: "Could not record your answer.",
+  maintenance: "Server maintenance is in progress. Retry the same answer.",
 } as const;
 
 export class AgentFeedbackRequestError extends Schema.TaggedError<AgentFeedbackRequestError>()(

@@ -20,6 +20,7 @@ import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import { afterAdmissionReopens, forkAccepted } from "../serverAdmission.ts";
 import * as FiberSet from "effect/FiberSet";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -742,6 +743,7 @@ export const make = Effect.gen(function* () {
   ) =>
     sweep(mergedPullRequest, threadId).pipe(
       Effect.provideService(GitVcsDriver.BackgroundGitWork, true),
+      afterAdmissionReopens,
       Effect.catchCauseIf(
         (cause) => !Cause.hasInterruptsOnly(cause),
         (cause) =>
@@ -840,11 +842,12 @@ export const make = Effect.gen(function* () {
       });
       settleActionRunAt.set(threadId, settledAtMs);
       if (run.status === "started" && run.completion) {
-        yield* run.completion.pipe(Effect.forkDetach);
+        yield* run.completion.pipe(forkAccepted());
       }
     },
     (effect, threadId) =>
       effect.pipe(
+        afterAdmissionReopens,
         Effect.catchCauseIf(
           (cause) => !Cause.hasInterruptsOnly(cause),
           (cause) =>

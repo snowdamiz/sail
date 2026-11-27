@@ -7,6 +7,8 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import * as Option from "effect/Option";
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
 import { findModelConfigOption } from "@t3tools/provider-acp/server/runtimeModel";
@@ -28,6 +30,7 @@ export const makeAcpRegistryTextGeneration = Effect.fn("AcpRegistryTextGeneratio
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const random = yield* SecureRandom.SecureRandom;
   const fs = yield* FileSystem.FileSystem;
+  const host = Option.getOrUndefined(yield* Effect.serviceOption(ProviderHost.ProviderHost));
   const run: TextGenerationOperations.Runner = Effect.fn("AcpRegistryTextGeneration.run")(
     function* (request) {
       const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-acp-text-" });
@@ -93,6 +96,19 @@ export const makeAcpRegistryTextGeneration = Effect.fn("AcpRegistryTextGeneratio
     (effect, request) =>
       effect.pipe(
         Effect.scoped,
+        (work) =>
+          (host?.tryStandaloneWork?.(work) ?? Effect.asSome(work)).pipe(
+            Effect.flatMap((result) =>
+              Effect.fromOption(
+                result,
+                () =>
+                  new TextGenerationError({
+                    operation: request.operation,
+                    detail: "Server maintenance is in progress. Retry the same request.",
+                  }),
+              ),
+            ),
+          ),
         Effect.timeoutOrElse({
           duration: TIMEOUT,
           orElse: () =>

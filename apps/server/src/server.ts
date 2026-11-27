@@ -65,6 +65,12 @@ import * as IssueTrackerConnections from "./issue/IssueTrackerConnections.ts";
 import * as IssueTrackerBindings from "./persistence/IssueTrackerBindings.ts";
 import * as IssueTrackerRegistry from "./issue/IssueTrackerRegistry.ts";
 import * as SqlitePersistence from "./persistence/Sqlite.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import { makeAdmission, ServerAdmission } from "./serverAdmission.ts";
+import {
+  makeProviderLifetimeLedger,
+  observeDurableObligations,
+} from "./serverAdmissionObligations.ts";
 import * as PullRequestFilesViewed from "./persistence/PullRequestFilesViewed.ts";
 import * as PullRequestReviewGuides from "./persistence/PullRequestReviewGuides.ts";
 import * as PullRequestReviewGuideService from "./pullRequest/PullRequestReviewGuideService.ts";
@@ -444,6 +450,18 @@ const layerPlatformServices = DocumentText.layer.pipe(
 );
 
 const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
+const layerAdmission = Layer.effect(
+  ServerAdmission,
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
+    return makeAdmission(
+      observeDurableObligations().pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      launcher.maintenanceProfile === "idle-boat" ? "complete" : "incomplete",
+      { providerLifetimes: makeProviderLifetimeLedger(sql) },
+    );
+  }),
+).pipe(Layer.provide(layerPersistence));
 
 const layerVcsDriverRegistry = VcsDriverRegistry.layer.pipe(Layer.provide(VcsProjectConfig.layer));
 
@@ -1451,6 +1469,7 @@ const layerMakeServer = Layer.unwrap(
         ),
       ),
       Layer.provide(layerActivation),
+      Layer.provideMerge(layerAdmission.pipe(Layer.provide(layerLauncher))),
       Layer.provideMerge(
         RelayTracing.layerServerRelayBroker.pipe(Layer.provide(ManagedPolicy.layer)),
       ),
@@ -1467,9 +1486,10 @@ const layerMakeServer = Layer.unwrap(
   }),
 ).pipe(Layer.provide(ProcessRunner.layer));
 
-export const runServer = Layer.launch(
+export const layerServer =
   // For the layers above whose spawner requirement is not met by one of them.
   layerMakeServer.pipe(
     Layer.provide(ProcessLauncher.layerServer.pipe(Layer.provide(layerSpawner))),
-  ),
-);
+  );
+
+export const runServer = Layer.launch(layerServer);

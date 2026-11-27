@@ -1,3 +1,5 @@
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
+import { observeDurableObligations } from "../serverAdmissionObligations.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no createHmac.
 import * as NodeCrypto from "node:crypto";
 
@@ -274,6 +276,114 @@ const withService = <A, E>(
         : Layer.succeed(SqlClient.SqlClient, options.sql),
     ),
   );
+
+it.effect(
+  "keeps a due timer and new relay delivery retryable while an accepted delivery settles",
+  () =>
+    Effect.gen(function* () {
+      const workers = new Map<string, Effect.Effect<void>>();
+      const release = yield* Deferred.make<void>();
+      yield* withService(
+        ({ service, launches, sql }) =>
+          Effect.gen(function* () {
+            const { task: timer } = yield* service.upsert(
+              yield* webhookTaskInput({
+                id: "scheduled-task:maintenance-timer",
+                title: "Timer",
+                schedule: { type: "interval", everyMs: 60_000 },
+              }),
+            );
+            const { task: hook } = yield* service.upsert(yield* webhookTaskInput());
+            const scanned = yield* Deferred.make<void>();
+            const observe = observeDurableObligations().pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
+            const admission = makeAdmission(
+              observe.pipe(Effect.tap(() => Deferred.succeed(scanned, undefined))),
+            );
+            const underAdmission = Effect.provideService(ServerAdmission, admission);
+            const relay = (relayDeliveryId: string) => requestFor(hook, { relayDeliveryId });
+            const accepted = yield* service.triggerWebhook(relay("first")).pipe(underAdmission);
+            assert.equal(accepted._tag, "accepted");
+            yield* Queue.take(launches);
+            const token = Symbol();
+            const draining = yield* admission
+              .drain(token, "2 minutes")
+              .pipe(Effect.forkScoped({ startImmediately: true }));
+            yield* TestClock.adjust("1 minute");
+            yield* workers.get("scheduled-tasks")!.pipe(underAdmission);
+            const refused = yield* service
+              .runNow({ id: timer.id })
+              .pipe(underAdmission, Effect.flip);
+            assert.isTrue(refused.retryable);
+            const relayRefused = yield* service.triggerWebhook(relay("retry")).pipe(underAdmission);
+            assert.deepEqual(relayRefused, { _tag: "maintenance_busy", retryable: true });
+            const [unchanged] = (yield* service.list()).tasks.filter(
+              (task) => task.id === timer.id,
+            );
+            assert.equal(unchanged?.nextRunAt, timer.nextRunAt);
+            assert.equal(unchanged?.runCount, 0);
+            const claims = yield* sql<{ relay_delivery_id: string }>`
+          SELECT relay_delivery_id FROM scheduled_task_webhook_relay_deliveries ORDER BY relay_delivery_id
+        `;
+            assert.deepEqual(
+              claims.map((claim) => claim.relay_delivery_id),
+              ["first"],
+            );
+            yield* Deferred.succeed(release, undefined);
+            yield* Deferred.await(scanned);
+            assert.deepEqual(yield* Fiber.join(draining), { kind: "sealed" });
+            assert.isTrue(yield* admission.abort(token));
+            const retried = yield* service.triggerWebhook(relay("retry")).pipe(underAdmission);
+            assert.equal(retried._tag, "accepted");
+            yield* Queue.take(launches);
+            const pending = yield* workers
+              .get("scheduled-tasks")!
+              .pipe(underAdmission, Effect.forkScoped);
+            yield* Queue.take(launches);
+            yield* Fiber.join(pending);
+          }).pipe(Effect.scoped),
+        { workers, gate: release },
+      );
+    }),
+);
+
+it.effect("dispatches an accepted coalescing window while admission is closed", () => {
+  const workers = new Map<string, Effect.Effect<void>>();
+  return withService(
+    ({ service, sql, launches }) =>
+      Effect.gen(function* () {
+        const { task } = yield* service.upsert(
+          yield* webhookTaskInput({
+            schedule: {
+              type: "webhook",
+              dedupe: { coalesceKey: "{{body}}", coalesceWindowSeconds: 10 },
+            },
+          }),
+        );
+        const observed = yield* Deferred.make<void>();
+        const observe = observeDurableObligations().pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        const admission = makeAdmission(
+          observe.pipe(Effect.tap(() => Deferred.succeed(observed, undefined))),
+        );
+        const admitted = Effect.provideService(ServerAdmission, admission);
+        const delivery = yield* service.triggerWebhook(requestFor(task)).pipe(admitted);
+        assert.equal(delivery._tag, "accepted");
+        assert.deepEqual(yield* observe, ["scheduled-delivery"]);
+        const draining = yield* admission.drain(Symbol(), "30 seconds").pipe(Effect.forkScoped);
+        yield* Deferred.await(observed);
+        yield* TestClock.adjust("10 seconds");
+        yield* drainPendingDispatch(workers).pipe(admitted);
+        yield* Queue.take(launches);
+        assert.deepEqual(yield* observe, []);
+        yield* TestClock.adjust("100 millis");
+        assert.deepEqual(yield* Fiber.join(draining), { kind: "sealed" });
+      }).pipe(Effect.scoped),
+    { workers },
+  );
+});
 
 it.effect("dispatches exactly the rendered prompt and logs the delivery", () =>
   withService(({ service, launches }) =>

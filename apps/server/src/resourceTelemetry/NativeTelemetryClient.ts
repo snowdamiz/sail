@@ -36,6 +36,7 @@ import * as Ndjson from "effect/encoding/Ndjson";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as ResourceMonitorBinary from "./ResourceMonitorBinary.ts";
+import { forkRestartableWorker } from "../serverAdmission.ts";
 import * as ServerConfig from "../config.ts";
 import { subscribeBeforeSnapshotWithoutMutex } from "../utils/subscribeBeforeSnapshot.ts";
 
@@ -772,7 +773,7 @@ export const make = Effect.fn("resourceTelemetry.nativeTelemetryClient.make")(fu
             ),
           ),
     ),
-    Effect.forkScoped,
+    forkRestartableWorker,
   );
 
   // Desktop power samples reach this even when the control state has not changed.

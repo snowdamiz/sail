@@ -27,6 +27,7 @@ import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import { afterAdmissionReopens } from "../serverAdmission.ts";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Schedule from "effect/Schedule";
@@ -717,6 +718,7 @@ export const make = Effect.gen(function* () {
       return pullRequests.withSharedProjectReads(sweep(scope));
     }).pipe(
       Effect.provideService(VcsProcess.Background, true),
+      afterAdmissionReopens,
       Effect.catchCause(logSkipped("pull request sync sweep failed", {})),
     ),
   );
@@ -825,7 +827,7 @@ export const make = Effect.gen(function* () {
       threadReactions.run(
         threadId,
         // The reactions log their own failures, so this sees only defects and shutdown.
-        Effect.catchCause(reaction, (cause) =>
+        Effect.catchCause(afterAdmissionReopens(reaction), (cause) =>
           Cause.hasInterruptsOnly(cause)
             ? Effect.interrupt
             : Effect.logWarning("pull request sync reaction failed", { threadId, cause }),

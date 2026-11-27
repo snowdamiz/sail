@@ -1,3 +1,4 @@
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
@@ -1532,6 +1533,7 @@ it.effect(
     Effect.gen(function* () {
       const { boot, counts, failures, latch, clock } = yield* harness();
       const ended = (step: { readonly name: string }) => step.name === "onEnd";
+      const admission = makeAdmission(Effect.succeed([]));
       const heldId = yield* boot(
         Effect.gen(function* () {
           const workflows = yield* Workflows.Workflows;
@@ -1565,10 +1567,20 @@ it.effect(
           const rested = (yield* workflows.get(held.runId)).steps.find(ended);
           assert.deepStrictEqual([rested?.status, rested?.attempts], ["failed", 1]);
           assert.deepInclude(yield* workflows.unfinished, { workflow: "owned", version: 1 });
+          const draining = yield* admission
+            .drain(Symbol(), "5 seconds")
+            .pipe(Effect.forkScoped({ startImmediately: true }));
+          yield* TestClock.adjust("5 seconds");
+          assert.deepEqual(yield* Fiber.join(draining), {
+            kind: "aborted",
+            retryable: true,
+            reason: "deadline",
+            blockers: ["workflow"],
+          });
           yield* clock.open;
           return held.runId;
-        }),
-      );
+        }).pipe(Effect.scoped),
+      ).pipe(Effect.provideService(ServerAdmission, admission));
       // Days with the server down do not end the tries.
       yield* TestClock.adjust("2 days");
       yield* boot(
@@ -2348,6 +2360,43 @@ it.effect("questions carry their kind and runs their tags, and both can be filte
           "completed",
         );
       }),
+    );
+  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+it.effect("a draining workflow accepts its pending answer and defers a new run", () =>
+  Effect.gen(function* () {
+    const { boot } = yield* harness();
+    yield* boot(
+      Effect.gen(function* () {
+        const workflows = yield* Workflows.Workflows;
+        const input = { tags: [], kind: "intended" };
+        const start = (key: string) => workflows.start("sorter", input, { idempotencyKey: key });
+        const accepted = yield* start("accepted");
+        yield* workflows.waitFor(accepted.runId, status("waiting"));
+        const inspected = yield* Deferred.make<void>();
+        const admission = makeAdmission(
+          workflows.unfinished.pipe(
+            Effect.tap(() => Deferred.succeed(inspected, undefined)),
+            Effect.map((runs) => (runs.length > 0 ? (["workflow"] as const) : [])),
+          ),
+        );
+        const token = Symbol();
+        const draining = yield* admission.drain(token, "1 hour").pipe(Effect.forkScoped);
+        yield* Deferred.await(inspected);
+        const admitted = Effect.provideService(ServerAdmission, admission);
+        const refused = yield* start("retry").pipe(admitted, Effect.flip);
+        assert.isTrue(refused._tag === "WorkflowInputError" && refused.retryable);
+        assert.deepEqual(
+          (yield* workflows.list()).map((run) => run.runId),
+          [accepted.runId],
+        );
+        yield* workflows.answer(accepted.runId, "sort", { choice: "Yes" }).pipe(admitted);
+        yield* workflows.waitFor(accepted.runId, status("completed"));
+        assert.deepEqual(yield* Fiber.join(draining), { kind: "sealed" });
+        assert.isTrue(yield* admission.abort(token));
+        assert.notEqual((yield* start("retry").pipe(admitted)).runId, accepted.runId);
+      }).pipe(Effect.scoped),
     );
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );

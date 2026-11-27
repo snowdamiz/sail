@@ -9,6 +9,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -255,8 +256,15 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     yield* restartSnapshotEnrichment(nextSettings, nextSnapshot, nextGeneration);
     return nextSnapshot;
   });
+  const snapshotNow = Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot));
+  const admitCheck = <A, E, R>(work: Effect.Effect<A, E, R>, ifClosed: Effect.Effect<A>) =>
+    (host.tryStandaloneWork?.(work) ?? Effect.asSome(work)).pipe(
+      Effect.flatMap(Option.match({ onNone: () => ifClosed, onSome: Effect.succeed })),
+    );
   const applySnapshot = (nextSettings: Settings, options?: { readonly forceRefresh?: boolean }) =>
-    refreshSemaphore.withPermits(1)(applySnapshotBase(nextSettings, options));
+    refreshSemaphore.withPermits(1)(
+      admitCheck(applySnapshotBase(nextSettings, options), snapshotNow),
+    );
 
   // Providers call this on every token-usage tick, usually without changing the snapshot.
   const applyUsageLimits: ManagedServerProvider["applyUsageLimits"] = Effect.fnUntraced(
@@ -320,12 +328,16 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
             ? Effect.void
             : restore(
                 refreshSemaphore.withPermits(1)(
-                  release.pipe(
-                    Effect.andThen(input.invalidateUsageCache ?? Effect.void),
-                    Effect.andThen(input.getSettings),
-                    Effect.flatMap((settings) =>
-                      applySnapshotBase(settings, { forceRefresh: true }),
+                  admitCheck(
+                    release.pipe(
+                      Effect.andThen(input.invalidateUsageCache ?? Effect.void),
+                      Effect.andThen(input.getSettings),
+                      Effect.flatMap((settings) =>
+                        applySnapshotBase(settings, { forceRefresh: true }),
+                      ),
+                      Effect.asVoid,
                     ),
+                    Effect.asVoid(release),
                   ),
                 ),
               ).pipe(Effect.onInterrupt(() => release)),
@@ -436,7 +448,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
               ? shouldRefreshOnInterval.pipe(
                   Effect.flatMap((shouldRefresh) =>
                     shouldRefresh
-                      ? refreshSemaphore.withPermits(1)(refreshOnInterval(!recheckPending))
+                      ? refreshSemaphore.withPermits(1)(
+                          admitCheck(refreshOnInterval(!recheckPending), Effect.void),
+                        )
                       : Effect.void,
                   ),
                 )
@@ -454,7 +468,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
       // Read under the lock, so a settings check in flight cannot be overwritten with older settings.
       refreshSemaphore.withPermits(1)(
         Ref.get(settingsRef).pipe(
-          Effect.flatMap((settings) => applySnapshotBase(settings, { forceRefresh: true })),
+          Effect.flatMap((settings) =>
+            admitCheck(applySnapshotBase(settings, { forceRefresh: true }), snapshotNow),
+          ),
         ),
       ),
     ),

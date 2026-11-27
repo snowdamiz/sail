@@ -1,3 +1,6 @@
+import * as Fiber from "effect/Fiber";
+import { makeAdmission, ServerAdmission, withAdmission } from "../serverAdmission.ts";
+import * as ProviderContinuationInbox from "./ProviderContinuationInbox.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
@@ -113,6 +116,49 @@ function layerTest(input: {
   );
   return Layer.merge(ProviderContinuationRequests.layer, layerWorker);
 }
+
+it.effect("counts an inbox entry before pickup and dispatches its wake during drain", () =>
+  Effect.gen(function* () {
+    const scanned = yield* Deferred.make<void>();
+    const admission = makeAdmission(Deferred.succeed(scanned, undefined).pipe(Effect.as([])));
+    yield* Effect.gen(function* () {
+      const inbox = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+      const dispatched = yield* Deferred.make<void>();
+      yield* inbox.offer(request());
+      const token = Symbol();
+      const draining = yield* admission
+        .drain(token, "1 second")
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* Deferred.await(scanned);
+      assert.isUndefined(draining.pollUnsafe());
+
+      const layerWorker = ProviderContinuationService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            Layer.succeed(ProviderContinuationRequests.ProviderContinuationRequests, inbox),
+            Layer.mock(ThreadManagementService.ThreadManagementService)({
+              getThreadRecords: () => Effect.succeed(projection),
+              dispatch: () =>
+                Deferred.succeed(dispatched, undefined).pipe(
+                  Effect.as({ sequence: 0, storedEvents: [] }),
+                  withAdmission("root"),
+                ),
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        yield* Deferred.await(dispatched);
+        assert.deepEqual(yield* Fiber.join(draining), { kind: "sealed" });
+      }).pipe(Effect.provide(layerWorker));
+      yield* admission.abort(token);
+    }).pipe(
+      Effect.provide(ProviderContinuationInbox.layer),
+      Effect.provideService(ServerAdmission, admission),
+    );
+  }),
+);
 
 describe("ProviderContinuationService", () => {
   it.effect("recovers an unaccepted persisted steer using the same delivery identity", () =>

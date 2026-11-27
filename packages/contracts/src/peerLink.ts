@@ -82,6 +82,7 @@ export class PeerLinkError extends Schema.TaggedError<PeerLinkError>()("PeerLink
     "unknown_link",
     "storage",
     "disabled",
+    "maintenance",
   ]),
   message: Schema.String,
   /** The environment that answered at the addresses of the one the user picked, when one did. */
@@ -262,6 +263,7 @@ const PEER_LINK_REQUEST_FAILURE_MESSAGES = {
   not_found: "This link request no longer exists.",
   already_answered: "This link request was already answered.",
   record_failed: "Could not update the link request.",
+  maintenance: "Server maintenance is in progress. Retry this request.",
 } as const;
 
 export const PeerLinkRequestFailureReason = Schema.Literals(

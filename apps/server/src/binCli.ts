@@ -5,6 +5,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Runtime from "effect/Runtime";
 import { Argument, Command } from "effect/cli";
 import * as CliError from "effect/cli/CliError";
 
@@ -23,7 +24,12 @@ import { projectCommand } from "./cli/project.ts";
 import { feedbackCommand } from "./cli/feedback.ts";
 import { threadCommand } from "./cli/thread.ts";
 import { workflowCommand } from "./cli/workflow.ts";
-import { runDefaultServerCommand, serveCommand, startCommand } from "./cli/server.ts";
+import {
+  runDefaultServerCommand,
+  serveCommand,
+  ServiceLauncherStopped,
+  startCommand,
+} from "./cli/server.ts";
 import { updateCommand } from "./cli/update.ts";
 import {
   confirmCliInstall,
@@ -126,6 +132,7 @@ export const cli = makeCli();
 export function runCli() {
   extendConnectionAttemptTimeout();
   keepOutboundFetchOnHttp1();
+  let stoppedByLauncher = false;
   offerCliInstall({
     args: process.argv.slice(2),
     // A child started over IPC (a service launcher) has no one to answer.
@@ -144,6 +151,16 @@ export function runCli() {
     ),
     Effect.scoped,
     Effect.provide(layerCliRuntime),
-    NodeRuntime.runMain,
+    Effect.provideService(ServiceLauncherStopped, () => {
+      stoppedByLauncher = true;
+    }),
+    NodeRuntime.runMain({
+      teardown: (exit, finish) =>
+        Runtime.defaultTeardown(exit, (code) => {
+          // IPC stop must exit after scoped shutdown, even if Node still has idle handles.
+          if (stoppedByLauncher && code === 0) process.exit(0);
+          finish(code);
+        }),
+    }),
   );
 }

@@ -1,3 +1,5 @@
+import { admitCommand } from "./CommandAdmission.ts";
+import { withAdmission } from "../serverAdmission.ts";
 import { remapComposerContextAttachments } from "@t3tools/shared/composerContextReferences";
 import { appendUserInputAttachmentPaths } from "../provider/userInputAttachments.ts";
 import {
@@ -23,6 +25,7 @@ function dispatchWasNotAccepted(
   error: Orchestrator.OrchestratorV2Error | ThreadManagement.ThreadManagementError,
 ) {
   switch (error._tag) {
+    case "ServerMaintenanceBusy":
     case "OrchestratorCommandRejectedError":
     case "OrchestratorThreadAlreadyExistsError":
     case "OrchestratorProjectionError":
@@ -127,157 +130,157 @@ export const withQueuedAttachmentsOnSignOutText = Effect.fn(
  * has already checked every command whose payload shows a provider sign-out; a queued edit
  * that keeps its attachments is the one case decided here.
  */
-export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(function* (
-  incoming: OrchestrationV2Command,
-  sender: { readonly managesProviders: boolean },
-) {
-  const command =
-    incoming.type === "message.dispatch"
-      ? yield* withGuestAttachments(incoming)
-      : incoming.type === "queued-run.edit" && !sender.managesProviders
-        ? yield* withQueuedAttachmentsOnSignOutText(incoming)
-        : incoming;
-  const threads = yield* ThreadManagement.ThreadManagementService;
-  if (command.type === "runtime-request.respond" && command.attachmentsByQuestionId) {
-    const config = yield* ServerConfig.ServerConfig;
-    const incomingByQuestionId = command.attachmentsByQuestionId;
-    yield* AttachmentClaims.validateAttachmentLimits(Object.values(incomingByQuestionId).flat());
-    const claimedPaths: string[] = [];
-    const prepared = yield* Effect.gen(function* () {
-      const attachmentsByQuestionId: import("@t3tools/contracts").UserInputAttachments = {};
-      for (const [questionId, attachments] of Object.entries(incomingByQuestionId)) {
-        const claimed = yield* AttachmentClaims.claimPendingAttachments({
-          threadId: command.threadId,
-          attachments,
-        });
-        claimedPaths.push(...claimed.claimedPaths);
-        Object.defineProperty(attachmentsByQuestionId, questionId, {
-          value: claimed.attachments,
-          enumerable: true,
-        });
-      }
-      // An answer by message carries its files as message attachments, not paths in its text.
-      const { runtimeRequests } = yield* threads
-        .getThreadRecords(command.threadId, ["runtimeRequests"], {
-          runtimeRequestStatuses: ["pending"],
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new AttachmentClaims.AttachmentClaimError({
-                message: "Failed to read the question.",
-                cause,
-              }),
-          ),
-        );
-      const answersByMessage =
-        runtimeRequests.find((request) => request.id === command.requestId)?.responseCapability
-          .type === "message";
-      const answers = answersByMessage
-        ? (command.answers ?? {})
-        : yield* appendUserInputAttachmentPaths({
-            answers: command.answers ?? {},
-            attachmentsByQuestionId,
-            attachmentsDir: config.attachmentsDir,
-          }).pipe(
+export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
+  function* (incoming: OrchestrationV2Command, sender: { readonly managesProviders: boolean }) {
+    const command =
+      incoming.type === "message.dispatch"
+        ? yield* withGuestAttachments(incoming)
+        : incoming.type === "queued-run.edit" && !sender.managesProviders
+          ? yield* withQueuedAttachmentsOnSignOutText(incoming)
+          : incoming;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    if (command.type === "runtime-request.respond" && command.attachmentsByQuestionId) {
+      const config = yield* ServerConfig.ServerConfig;
+      const incomingByQuestionId = command.attachmentsByQuestionId;
+      yield* AttachmentClaims.validateAttachmentLimits(Object.values(incomingByQuestionId).flat());
+      const claimedPaths: string[] = [];
+      const prepared = yield* Effect.gen(function* () {
+        const attachmentsByQuestionId: import("@t3tools/contracts").UserInputAttachments = {};
+        for (const [questionId, attachments] of Object.entries(incomingByQuestionId)) {
+          const claimed = yield* AttachmentClaims.claimPendingAttachments({
+            threadId: command.threadId,
+            attachments,
+          });
+          claimedPaths.push(...claimed.claimedPaths);
+          Object.defineProperty(attachmentsByQuestionId, questionId, {
+            value: claimed.attachments,
+            enumerable: true,
+          });
+        }
+        // An answer by message carries its files as message attachments, not paths in its text.
+        const { runtimeRequests } = yield* threads
+          .getThreadRecords(command.threadId, ["runtimeRequests"], {
+            runtimeRequestStatuses: ["pending"],
+          })
+          .pipe(
             Effect.mapError(
-              (cause) => new AttachmentClaims.AttachmentClaimError({ message: cause.issue }),
+              (cause) =>
+                new AttachmentClaims.AttachmentClaimError({
+                  message: "Failed to read the question.",
+                  cause,
+                }),
             ),
           );
-      return { answers, attachmentsByQuestionId };
-    }).pipe(Effect.onError(() => AttachmentClaims.releaseClaimedAttachments(claimedPaths)));
+        const answersByMessage =
+          runtimeRequests.find((request) => request.id === command.requestId)?.responseCapability
+            .type === "message";
+        const answers = answersByMessage
+          ? (command.answers ?? {})
+          : yield* appendUserInputAttachmentPaths({
+              answers: command.answers ?? {},
+              attachmentsByQuestionId,
+              attachmentsDir: config.attachmentsDir,
+            }).pipe(
+              Effect.mapError(
+                (cause) => new AttachmentClaims.AttachmentClaimError({ message: cause.issue }),
+              ),
+            );
+        return { answers, attachmentsByQuestionId };
+      }).pipe(Effect.onError(() => AttachmentClaims.releaseClaimedAttachments(claimedPaths)));
+      return yield* threads
+        .dispatch({
+          ...command,
+          answers: prepared.answers,
+          attachmentsByQuestionId: prepared.attachmentsByQuestionId,
+        })
+        .pipe(
+          Effect.tap((result) => {
+            // Replayed receipts refer to the first answer; release this attempt's unused copies only with a resolved item.
+            // Missing questionAnswer means no accepted attachments; missing resolution leaves delivery ambiguous.
+            const answeredItems = result.storedEvents.flatMap(({ event }) =>
+              event.type === "turn-item.updated" &&
+              event.payload.type === "user_input_request" &&
+              event.payload.requestId === command.requestId
+                ? [event.payload]
+                : [],
+            );
+            return answeredItems.length > 0
+              ? releaseUnusedClaims(
+                  claimedPaths,
+                  answeredItems.flatMap((item) =>
+                    item.questionAnswer === undefined
+                      ? []
+                      : Object.values(item.questionAnswer.attachmentsByQuestionId).flat(),
+                  ),
+                )
+              : Effect.void;
+          }),
+          Effect.tapError((error) =>
+            dispatchWasNotAccepted(error)
+              ? AttachmentClaims.releaseClaimedAttachments(claimedPaths)
+              : Effect.void,
+          ),
+        );
+    }
+    if (
+      command.type !== "message.dispatch" &&
+      (command.type !== "queued-run.edit" || command.attachments === undefined)
+    )
+      return yield* threads.dispatch(command);
+    // An accepted edit's retry replays its receipt even if a later cleanup removed its files.
+    if (command.type === "queued-run.edit" && !(yield* threads.hasReceipt(command.commandId))) {
+      const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      // A stale view can keep a file that another client's edit dropped and deleted.
+      for (const attachment of command.attachments ?? []) {
+        if (AttachmentClaims.attachmentIsPendingUpload(attachment)) continue;
+        const path = resolveAttachmentPath({ attachmentsDir: config.attachmentsDir, attachment });
+        if (
+          path !== null &&
+          !(yield* fileSystem.exists(path).pipe(Effect.orElseSucceed(() => false)))
+        ) {
+          return yield* new AttachmentClaims.AttachmentClaimError({
+            message: `Attachment '${attachment.name}' cannot be sent: attachment not found.`,
+          });
+        }
+      }
+    }
+    const claimed = yield* AttachmentClaims.claimPendingAttachments({
+      threadId: command.threadId,
+      attachments: command.attachments ?? [],
+    });
     return yield* threads
       .dispatch({
         ...command,
-        answers: prepared.answers,
-        attachmentsByQuestionId: prepared.attachmentsByQuestionId,
+        attachments: claimed.attachments,
+        ...(command.context
+          ? {
+              context: remapComposerContextAttachments(
+                command.context,
+                command.attachments ?? [],
+                claimed.attachments,
+              ),
+            }
+          : {}),
       })
       .pipe(
-        Effect.tap((result) => {
-          // Replayed receipts refer to the first answer; release this attempt's unused copies only with a resolved item.
-          // Missing questionAnswer means no accepted attachments; missing resolution leaves delivery ambiguous.
-          const answeredItems = result.storedEvents.flatMap(({ event }) =>
-            event.type === "turn-item.updated" &&
-            event.payload.type === "user_input_request" &&
-            event.payload.requestId === command.requestId
-              ? [event.payload]
-              : [],
-          );
-          return answeredItems.length > 0
-            ? releaseUnusedClaims(
-                claimedPaths,
-                answeredItems.flatMap((item) =>
-                  item.questionAnswer === undefined
-                    ? []
-                    : Object.values(item.questionAnswer.attachmentsByQuestionId).flat(),
-                ),
-              )
-            : Effect.void;
-        }),
+        Effect.tap((result) =>
+          releaseUnusedClaims(
+            claimed.claimedPaths,
+            result.storedEvents.flatMap(({ event }) =>
+              event.type === "message.updated" ? event.payload.attachments : [],
+            ),
+          ),
+        ),
         Effect.tapError((error) =>
           dispatchWasNotAccepted(error)
-            ? AttachmentClaims.releaseClaimedAttachments(claimedPaths)
+            ? AttachmentClaims.releaseClaimedAttachments(claimed.claimedPaths)
             : Effect.void,
         ),
       );
-  }
-  if (
-    command.type !== "message.dispatch" &&
-    (command.type !== "queued-run.edit" || command.attachments === undefined)
-  )
-    return yield* threads.dispatch(command);
-  // An accepted edit's retry replays its receipt even if a later cleanup removed its files.
-  if (command.type === "queued-run.edit" && !(yield* threads.hasReceipt(command.commandId))) {
-    const config = yield* ServerConfig.ServerConfig;
-    const fileSystem = yield* FileSystem.FileSystem;
-    // A stale view can keep a file that another client's edit dropped and deleted.
-    for (const attachment of command.attachments ?? []) {
-      if (AttachmentClaims.attachmentIsPendingUpload(attachment)) continue;
-      const path = resolveAttachmentPath({ attachmentsDir: config.attachmentsDir, attachment });
-      if (
-        path !== null &&
-        !(yield* fileSystem.exists(path).pipe(Effect.orElseSucceed(() => false)))
-      ) {
-        return yield* new AttachmentClaims.AttachmentClaimError({
-          message: `Attachment '${attachment.name}' cannot be sent: attachment not found.`,
-        });
-      }
-    }
-  }
-  const claimed = yield* AttachmentClaims.claimPendingAttachments({
-    threadId: command.threadId,
-    attachments: command.attachments ?? [],
-  });
-  return yield* threads
-    .dispatch({
-      ...command,
-      attachments: claimed.attachments,
-      ...(command.context
-        ? {
-            context: remapComposerContextAttachments(
-              command.context,
-              command.attachments ?? [],
-              claimed.attachments,
-            ),
-          }
-        : {}),
-    })
-    .pipe(
-      Effect.tap((result) =>
-        releaseUnusedClaims(
-          claimed.claimedPaths,
-          result.storedEvents.flatMap(({ event }) =>
-            event.type === "message.updated" ? event.payload.attachments : [],
-          ),
-        ),
-      ),
-      Effect.tapError((error) =>
-        dispatchWasNotAccepted(error)
-          ? AttachmentClaims.releaseClaimedAttachments(claimed.claimedPaths)
-          : Effect.void,
-      ),
-    );
-});
+  },
+  (effect, command) => admitCommand(command)(effect),
+);
 
 export const sendToThread = Effect.fn("ThreadMessageIntake.sendToThread")(function* (
   input: ThreadManagement.ThreadManagementSendInput,
@@ -292,7 +295,7 @@ export const sendToThread = Effect.fn("ThreadMessageIntake.sendToThread")(functi
         : Effect.void,
     ),
   );
-});
+}, withAdmission("root"));
 
 export const launchThread = Effect.fn("ThreadMessageIntake.launchThread")(function* (
   input: ThreadLaunch.ThreadLaunchInput,
@@ -336,7 +339,7 @@ export const launchThread = Effect.fn("ThreadMessageIntake.launchThread")(functi
         ),
       ),
       Effect.tapError((error) => {
-        if (error._tag === "ThreadManagementProviderInstanceDisabledError") {
+        if (error._tag !== "ThreadLaunchError") {
           return AttachmentClaims.releaseClaimedAttachments(claimed.claimedPaths);
         }
         // Project/receipt reads precede dispatch; create-thread errors can wrap post-message reads and prove nothing alone.
@@ -354,4 +357,4 @@ export const launchThread = Effect.fn("ThreadMessageIntake.launchThread")(functi
           : Effect.void;
       }),
     );
-});
+}, withAdmission("root"));

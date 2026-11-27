@@ -1,3 +1,4 @@
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 import * as NodeOS from "node:os";
 
 import { expect, it } from "@effect/vitest";
@@ -394,6 +395,24 @@ const input = {
 const requested = { ...input, userRequested: true };
 const decodeFeedbackInput = Schema.decodeUnknownSync(FeedbackInput);
 const fromThread = { source: "mcp" as const, threadId };
+
+it.effect("keeps a pending feedback answer unwritten under seal and accepts it on reopen", () =>
+  Effect.gen(function* () {
+    const { cards, layer } = yield* harness;
+    const admission = makeAdmission(Effect.succeed([]));
+    yield* Effect.gen(function* () {
+      const card = yield* show(cards, requested);
+      const token = Symbol();
+      expect(yield* admission.drain(token, "10 seconds")).toEqual({ kind: "sealed" });
+      const refusal = yield* answer(card, "send").pipe(Effect.flip);
+      expect(refusal).toMatchObject({ reason: "maintenance" });
+      expect(yield* listFeedbackReports).toEqual([]);
+      expect(yield* admission.abort(token)).toBe(true);
+      yield* answer(card, "send");
+      expect(yield* listFeedbackReports).toHaveLength(1);
+    }).pipe(Effect.provide(layer), Effect.provideService(ServerAdmission, admission));
+  }),
+);
 
 it.effect("stores nothing and fails when agent feedback is off", () =>
   Effect.gen(function* () {

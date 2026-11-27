@@ -31,6 +31,8 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import * as ServerConfig from "../config.ts";
+import { afterAdmissionReopens, ServerAdmission, withAdmission } from "../serverAdmission.ts";
+import { forkParked } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { engineTag, text, type WorkflowDefinition } from "./workflow.ts";
 import type * as WorkflowEngine from "./WorkflowEngine.ts";
@@ -545,7 +547,7 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
     retrying = true;
     return Effect.suspend(() => {
       retrying = false;
-      return lock.withPermits(1)(reload());
+      return afterAdmissionReopens(lock.withPermits(1)(reload()));
     }).pipe(
       Effect.delay(LIST_RETRY),
       Effect.catchCause((cause) =>
@@ -564,13 +566,11 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
   yield* fileSystem.watch(directory).pipe(
     Stream.debounce(RELOAD_SETTLE),
     Stream.runForEach(() =>
-      lock
-        .withPermits(1)(reload())
-        .pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Reloading workflow definitions failed", Cause.pretty(cause)),
-          ),
+      afterAdmissionReopens(lock.withPermits(1)(reload())).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Reloading workflow definitions failed", Cause.pretty(cause)),
         ),
+      ),
     ),
     Effect.catchCause((cause) =>
       Effect.logWarning("Workflow definitions are not watched for changes", Cause.pretty(cause)),
@@ -580,7 +580,9 @@ export const make = Effect.fn("WorkflowRuntime.make")(function* <E, R>(
 
   yield* Effect.sleep(HELD_RETRY).pipe(
     Effect.andThen(
-      Effect.suspend(() => (held.size > 0 ? lock.withPermits(1)(reload()) : Effect.void)),
+      Effect.suspend(() =>
+        held.size > 0 ? afterAdmissionReopens(lock.withPermits(1)(reload())) : Effect.void,
+      ),
     ),
     Effect.catchCause((cause) =>
       Effect.logWarning("Reloading workflow definitions failed", Cause.pretty(cause)),
@@ -786,6 +788,7 @@ export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
     R | Scope.Scope
   >,
   where: string,
+  initialEnabled?: Effect.Effect<boolean>,
 ) {
   const path = yield* Path.Path;
   const outer = yield* Scope.Scope;
@@ -828,6 +831,7 @@ export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
       if (scope !== undefined) yield* Scope.close(scope, Exit.void);
       scope = undefined;
       if (on) {
+        runnerStarted = true;
         const opened = yield* Scope.fork(outer);
         const started = yield* runtime.pipe(
           Effect.provideService(Scope.Scope, opened),
@@ -849,9 +853,29 @@ export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
     // Once `ready` is replaced it must be settled, or every caller waits on it for good.
     Effect.uninterruptible,
     lock.withPermits(1),
+    afterAdmissionReopens,
   );
 
-  const live = Effect.suspend(() => Deferred.await(ready));
+  let runnerStarted = false;
+  const admission = yield* ServerAdmission;
+  yield* (
+    admission?.registerObserver(
+      Effect.sync(() => (runnerStarted ? ["workflow-runner-unqualified"] : [])),
+    ) ?? Effect.void
+  );
+
+  const initialized = yield* Deferred.make<void>();
+  const finishInitialization = Deferred.succeed(initialized, undefined);
+  if (initialEnabled === undefined) {
+    yield* finishInitialization;
+  } else {
+    // The cluster runner can resume persisted work as soon as its layer is built.
+    yield* forkParked(
+      initialEnabled.pipe(Effect.flatMap(turn), Effect.ensuring(finishInitialization)),
+    );
+  }
+  const awaitInitial = Deferred.await(initialized);
+  const live = awaitInitial.pipe(Effect.andThen(Effect.suspend(() => Deferred.await(ready))));
   const current = Effect.map(live, Context.get(Workflows.Workflows));
   const definitions = Effect.map(live, Context.get(WorkflowDefinitions));
   // A watcher outlives a turn: each one hands it the next service's stream.
@@ -918,17 +942,32 @@ export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
 
   return {
     turn,
+    awaitInitial,
     context: Context.make(Workflows.Workflows, service).pipe(
       Context.add(
         WorkflowDefinitions,
         WorkflowDefinitions.of({
           read: Effect.flatMap(definitions, (files) => files.read),
-          save: Effect.fn("WorkflowDefinitions.save")(function* (name, source) {
-            return yield* (yield* definitions).save(name, source);
-          }),
-          remove: Effect.fn("WorkflowDefinitions.remove")(function* (name) {
-            return yield* (yield* definitions).remove(name);
-          }),
+          save: Effect.fn("WorkflowDefinitions.save")(
+            function* (name, source) {
+              return yield* (yield* definitions).save(name, source);
+            },
+            withAdmission("root"),
+            Effect.catchTags({
+              ServerMaintenanceBusy: (cause) =>
+                Effect.succeed({ changed: false, problems: [{ message: cause.message }] }),
+            }),
+          ),
+          remove: Effect.fn("WorkflowDefinitions.remove")(
+            function* (name) {
+              return yield* (yield* definitions).remove(name);
+            },
+            withAdmission("root"),
+            Effect.catchTags({
+              ServerMaintenanceBusy: (cause) =>
+                Effect.succeed({ changed: false, problems: [{ message: cause.message }] }),
+            }),
+          ),
         }),
       ),
     ),
@@ -949,6 +988,10 @@ export const layer = Layer.effectContext(
     const settings = yield* ServerSettings.ServerSettingsService;
     const where = Option.getOrElse(override, () => config.workflowsDir);
     const changes = yield* settings.subscribeChanges;
+    const enabled = settings.getSettings.pipe(
+      Effect.map((current) => current.workflowsEnabled),
+      Effect.orElseSucceed(() => false),
+    );
     const gated = yield* gate(
       make(
         Effect.map(
@@ -965,15 +1008,15 @@ export const layer = Layer.effectContext(
         ),
       ),
       where,
+      enabled,
     );
-    const enabled = yield* settings.getSettings.pipe(
-      Effect.map((current) => current.workflowsEnabled),
-      Effect.orElseSucceed(() => false),
-    );
-    yield* gated.turn(enabled);
-    yield* changes.pipe(
-      Stream.map((current) => current.workflowsEnabled),
-      Stream.runForEach(gated.turn),
+    yield* gated.awaitInitial.pipe(
+      Effect.andThen(
+        changes.pipe(
+          Stream.mapEffect(() => enabled),
+          Stream.runForEach(gated.turn),
+        ),
+      ),
       Effect.forkScoped,
     );
     return gated.context;

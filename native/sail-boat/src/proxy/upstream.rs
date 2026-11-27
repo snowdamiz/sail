@@ -77,6 +77,58 @@ pub async fn call_many(
     Ok(results)
 }
 
+pub enum DeferredDispatch {
+    Accepted,
+    Retry,
+    Rejected(String),
+}
+
+pub async fn dispatch_deferred(
+    ws: &mut Upstream,
+    id: &str,
+    command: &Value,
+    deadline: tokio::time::Instant,
+) -> Result<DeferredDispatch> {
+    tokio::time::timeout_at(deadline, async {
+        let frame = json!({"_tag": "Request", "id": id, "tag": "orchestration.dispatchCommand", "payload": command, "headers": []});
+        ws.send(Message::text(frame.to_string())).await?;
+        while let Some(message) = ws.next().await {
+            let Message::Text(text) = message? else { continue };
+            for reply in super::session::messages(&text)? {
+                if reply["_tag"] != "Exit" || super::session::id_key(&reply["requestId"]) != id {
+                    continue;
+                }
+                let exit = &reply["exit"];
+                if exit["_tag"] == "Success" {
+                    return Ok(DeferredDispatch::Accepted);
+                }
+                if let Some(causes) = exit["cause"].as_array()
+                    && let [cause] = causes.as_slice()
+                    && cause["_tag"] == "Fail"
+                {
+                    let error = &cause["error"];
+                    if error["_tag"] == "OrchestrationV2DispatchCommandError" {
+                        if error["commandId"] != command["commandId"]
+                            || error["commandType"] != command["type"]
+                            || error["retryable"] == true
+                        {
+                            return Ok(DeferredDispatch::Retry);
+                        }
+                        return Ok(DeferredDispatch::Rejected(failure_message(exit)));
+                    }
+                    if error["_tag"] == "EnvironmentAuthorizationError" {
+                        return Ok(DeferredDispatch::Rejected(failure_message(exit)));
+                    }
+                }
+                return Ok(DeferredDispatch::Retry);
+            }
+        }
+        bail!("connection closed before acknowledging deferred command")
+    })
+    .await
+    .context("timed out delivering deferred commands")?
+}
+
 /// One request, as a T3 client makes it: its value, or the server's own failure message.
 pub async fn call(base_url: &str, token: &str, tag: &str, payload: Value) -> Result<Value> {
     subscribe_until(base_url, token, tag, payload, Duration::from_secs(60), |_| None::<()>)

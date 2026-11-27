@@ -1,3 +1,4 @@
+import { forkAccepted, ServerMaintenanceBusy, withAdmission } from "../serverAdmission.ts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
@@ -240,7 +241,9 @@ export class ThreadLaunchService extends Context.Service<
       input: ThreadLaunchInput,
     ) => Effect.Effect<
       ThreadLaunchResult,
-      ThreadLaunchError | ThreadManagement.ThreadManagementProviderInstanceDisabledError
+      | ThreadLaunchError
+      | ThreadManagement.ThreadManagementProviderInstanceDisabledError
+      | ServerMaintenanceBusy
     >;
     /** Check a new worktree's base ref and branch name before creation for early errors; launch otherwise accepts and reports these failures inside the thread. */
     readonly checkWorktreeBase: (
@@ -713,7 +716,7 @@ const make = Effect.gen(function* () {
           ? yield* generateBranchNameFor(
               worktreePath ?? project.workspaceRoot,
               initialMessage,
-            ).pipe(Effect.forkIn(preparationScope))
+            ).pipe(forkAccepted(preparationScope))
           : null;
       if (branchName !== null) stopBranchName = Fiber.interrupt(branchName);
       if (input.workspaceStrategy.type === "worktree") {
@@ -1052,7 +1055,7 @@ const make = Effect.gen(function* () {
               ),
             ),
           ),
-          Effect.forkIn(preparationScope),
+          forkAccepted(preparationScope),
         );
       } else {
         yield* stopBranchName;
@@ -1396,7 +1399,7 @@ const make = Effect.gen(function* () {
       ),
       Effect.ignoreCause,
       Effect.ensuring(releasePreparation(input.commandId)),
-      Effect.forkIn(preparationScope),
+      forkAccepted(preparationScope),
     );
   });
 
@@ -1709,46 +1712,55 @@ const make = Effect.gen(function* () {
     // The message commits a preparing run that only this call schedules, so a
     // caller that goes away must not stop the launch between the two.
     Effect.uninterruptible,
+    withAdmission("root"),
   );
 
   const prepareRun: ThreadLaunchService["Service"]["prepareRun"] = Effect.fn(
     "ThreadLaunchService.prepareRun",
-  )(function* (input) {
-    const scheduled = yield* Effect.gen(function* () {
-      const { thread, runs } = yield* threads.getThreadRecords(input.threadId, ["runs"], {
-        runIds: [input.runId],
-      });
-      const run = runs.find((candidate) => candidate.id === input.runId);
-      const workspacePreparation = run?.workspacePreparation;
-      if (run?.status !== "preparing" || workspacePreparation === undefined) return;
-      if (!(yield* reservePreparation(input.commandId))) return;
-      yield* scheduleRunPreparation(input, thread, run, workspacePreparation).pipe(
-        Effect.onError(() => releasePreparation(input.commandId)),
-      );
-    }).pipe(Effect.exit);
-    if (Exit.isFailure(scheduled)) {
-      yield* failPreparedRun(
-        input,
-        input.threadId,
-        input.runId,
-        Cause.squash(scheduled.cause),
-        false,
-      );
-    }
-  });
+  )(
+    function* (input) {
+      const scheduled = yield* Effect.gen(function* () {
+        const { thread, runs } = yield* threads.getThreadRecords(input.threadId, ["runs"], {
+          runIds: [input.runId],
+        });
+        const run = runs.find((candidate) => candidate.id === input.runId);
+        const workspacePreparation = run?.workspacePreparation;
+        if (run?.status !== "preparing" || workspacePreparation === undefined) return;
+        if (!(yield* reservePreparation(input.commandId))) return;
+        yield* scheduleRunPreparation(input, thread, run, workspacePreparation).pipe(
+          Effect.onError(() => releasePreparation(input.commandId)),
+        );
+      }).pipe(Effect.exit);
+      if (Exit.isFailure(scheduled)) {
+        yield* failPreparedRun(
+          input,
+          input.threadId,
+          input.runId,
+          Cause.squash(scheduled.cause),
+          false,
+        );
+      }
+    },
+    withAdmission("continuation"),
+    Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
+  );
 
   const retryPreparation: ThreadLaunchService["Service"]["retryPreparation"] = Effect.fn(
     "ThreadLaunchService.retryPreparation",
-  )(function* (input) {
-    const dispatched = yield* threads.dispatch({
-      type: "prepared-run.retry",
-      commandId: input.commandId,
-      threadId: input.threadId,
-      runId: input.runId,
-    });
-    yield* prepareRun(input);
-    return dispatched;
-  });
+  )(
+    function* (input) {
+      const dispatched = yield* threads.dispatch({
+        type: "prepared-run.retry",
+        commandId: input.commandId,
+        threadId: input.threadId,
+        runId: input.runId,
+      });
+      yield* prepareRun(input);
+      return dispatched;
+    },
+    Effect.uninterruptible,
+    withAdmission("root"),
+  );
 
   const scheduleRunPreparation = Effect.fn("ThreadLaunchService.scheduleRunPreparation")(function* (
     input: ThreadLaunchPreparationInput,

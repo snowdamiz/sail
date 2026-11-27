@@ -10,6 +10,7 @@ import * as CliError from "effect/cli/CliError";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import { holdBoatCliAccess } from "../cloud/boatCliAccess.ts";
 import * as BootService from "../cloud/bootService.ts";
 import * as CliState from "../cloud/CliState.ts";
 import { CLOUD_ENDPOINT_RUNTIME_CONFIG, CLOUD_LINK_REVOKED } from "../cloud/config.ts";
@@ -350,7 +351,10 @@ const setUp = Effect.fn("cli.up")(function* (flags: {
           !routes.connect || current.connect
             ? Effect.void
             : priorPublishOnly
-              ? CliState.setCliDesiredCloudLink(true, "publish_only")
+              ? holdBoatCliAccess(baseDir).pipe(
+                  Effect.andThen(CliState.setCliDesiredCloudLink(true, "publish_only")),
+                  Effect.scoped,
+                )
               : disconnectCloud({ clearAuthorization: false }).pipe(Effect.asVoid),
         ),
       )

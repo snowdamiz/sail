@@ -1,8 +1,10 @@
+import { withAdmission } from "../serverAdmission.ts";
 import {
   type PreviewCloseInput,
   type PreviewEvent,
   type PreviewError,
   PreviewInvalidUrlError,
+  PreviewMaintenanceError,
   type PreviewListInput,
   type PreviewListResult,
   type PreviewOpenInput,
@@ -237,6 +239,11 @@ export const make = Effect.gen(function* PreviewManagerMake() {
       );
       return snapshot;
     },
+    withAdmission("root"),
+    Effect.catchTags({
+      ServerMaintenanceBusy: (cause) =>
+        new PreviewMaintenanceError({ message: cause.message, retryable: true }),
+    }),
   );
 
   const reportStatus: PreviewManager["Service"]["reportStatus"] = Effect.fn(

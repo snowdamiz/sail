@@ -1004,6 +1004,8 @@ mod tests {
             local_port,
             t3_version: "0.0.0".into(),
             provision_revision: String::new(),
+            lifecycle_enrolled: false,
+            pending_resume: None,
             environment_id: "env-dev".into(),
             client_tokens: Vec::new(),
             link_tokens: Vec::new(),

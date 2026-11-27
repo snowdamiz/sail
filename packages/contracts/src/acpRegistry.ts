@@ -320,6 +320,7 @@ export const AcpRegistryOperationErrorReason = Schema.Literals([
   "instance_not_found",
   "logout_unsupported",
   "logout_failed",
+  "maintenance_busy",
   "probe_failed",
   "project_not_found",
   "registry_unavailable",

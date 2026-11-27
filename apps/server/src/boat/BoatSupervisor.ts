@@ -33,6 +33,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { resolveEntryPath } from "../cli/invocation.ts";
 import * as ServerConfig from "../config.ts";
+import { forkAccepted, ServerAdmission, withAdmission } from "../serverAdmission.ts";
 import * as ServerActivation from "../serverActivation.ts";
 import { loopbackUrlHostForAddress } from "../startupAccess.ts";
 import * as BoatDaemonBinary from "./BoatDaemonBinary.ts";
@@ -187,6 +188,7 @@ const SERVER_ENV_FORWARDED_TO_DAEMON = new Set([
   "SAIL_DEEP_LINK_SCHEME",
   "SAIL_APP_BUNDLE_ID",
   "SAIL_CLI_INSTALL_URL",
+  "SAIL_BOAT_BIN",
   "SAIL_MCP_PORT",
 ]);
 
@@ -225,6 +227,7 @@ const make = Effect.gen(function* () {
   const executablePath = yield* HostProcess.ExecutablePath;
   const entryPath = isExecutable ? undefined : path.resolve(yield* resolveEntryPath);
   const serviceScope = yield* Effect.scope;
+  const admission = yield* ServerAdmission;
 
   const dataDir = hostEnvironment.SAIL_BOAT_DATA_DIR?.trim() || path.join(config.baseDir, "boat");
   const daemonLogPath = path.join(config.logsDir, "sail-boatd.log");
@@ -253,6 +256,25 @@ const make = Effect.gen(function* () {
     Effect.map(savedStateNeedsDaemon),
     Effect.orElseSucceed(() => false),
   );
+
+  if (admission !== undefined) {
+    yield* admission.registerObserver(
+      SynchronizedRef.get(lifecycle).pipe(
+        Effect.flatMap((current) =>
+          current._tag === "Running" || current._tag === "Starting"
+            ? Effect.succeed(true)
+            : fileSystem.readFileString(path.join(dataDir, "state.json")).pipe(
+                Effect.map(
+                  (saved) =>
+                    Option.isNone(decodeSavedBoatState(saved)) || savedStateNeedsDaemon(saved),
+                ),
+                Effect.catch((cause) => Effect.succeed(cause.reason._tag !== "NotFound")),
+              ),
+        ),
+        Effect.map((busy) => (busy ? ["boat-supervisor-unqualified"] : [])),
+      ),
+    );
+  }
 
   const enter = (next: Lifecycle) =>
     (next._tag === "Running" ? Effect.void : Ref.set(latestState, Option.none())).pipe(
@@ -509,7 +531,7 @@ const make = Effect.gen(function* () {
   const startIf = (shouldStart: (current: Lifecycle) => boolean) =>
     SynchronizedRef.updateEffect(lifecycle, (current) =>
       shouldStart(current) ? Effect.map(start, ([, next]) => next) : Effect.succeed(current),
-    );
+    ).pipe(withAdmission("root"), Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }));
 
   const startIfStopped = startIf((current) => current._tag === "Stopped");
 
@@ -565,18 +587,24 @@ const make = Effect.gen(function* () {
   });
 
   const outlivingCaller = <A, E>(effect: Effect.Effect<A, E>) =>
-    Effect.forkIn(effect, serviceScope).pipe(Effect.flatMap(Fiber.join));
+    effect.pipe(forkAccepted(serviceScope), Effect.flatMap(Fiber.join));
 
-  const invoke = Effect.fn("BoatSupervisor.invoke")(function* (input: BoatInvokeInput) {
-    const daemon = yield* Effect.flatten(ensureStarted);
-    const reply = yield* outlivingCaller(send(daemon, input));
-    if (!reply.ok) return yield* new BoatError({ message: reply.error });
-    return {
-      data: reply.data ?? null,
-      ...(reply.openUrl ? { openUrl: reply.openUrl } : {}),
-      ...(reply.userCode ? { userCode: reply.userCode } : {}),
-    } satisfies BoatInvokeResult;
-  });
+  const invoke = Effect.fn("BoatSupervisor.invoke")(
+    function* (input: BoatInvokeInput) {
+      const daemon = yield* Effect.flatten(ensureStarted);
+      const reply = yield* outlivingCaller(send(daemon, input));
+      if (!reply.ok) return yield* new BoatError({ message: reply.error });
+      return {
+        data: reply.data ?? null,
+        ...(reply.openUrl ? { openUrl: reply.openUrl } : {}),
+        ...(reply.userCode ? { userCode: reply.userCode } : {}),
+      } satisfies BoatInvokeResult;
+    },
+    withAdmission("root"),
+    Effect.catchTags({
+      ServerMaintenanceBusy: (cause) => new BoatError({ message: cause.message }),
+    }),
+  );
 
   const subscribeWithCurrentStatus = SynchronizedRef.modifyEffect(lifecycle, (current) =>
     PubSub.subscribe(hub).pipe(

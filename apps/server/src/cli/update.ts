@@ -1,3 +1,4 @@
+import { acquireBoatMutation } from "../cloud/boatLifecycle.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   CLI_RELEASE_BASE_URL_ENV,
@@ -551,11 +552,15 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   );
 
   const launchedAs = (yield* HostProcess.IsExecutable) ? yield* resolveLauncherPath : undefined;
-  const repointed = yield* repointLauncher({
-    launchedAs,
-    baseDir: input.baseDir,
-    targetEntryPath: runtime.entryPath,
-  });
+  const repointed = yield* Effect.acquireUseRelease(
+    Effect.try({
+      try: () => acquireBoatMutation(input.baseDir),
+      catch: (cause) => new CliUpdateError({ reason: String(cause) }),
+    }),
+    () =>
+      repointLauncher({ launchedAs, baseDir: input.baseDir, targetEntryPath: runtime.entryPath }),
+    (release) => Effect.sync(release),
+  );
 
   // Use today's service manager for the target version. Inside the service it hands off to
   // the target CLI, so stopping this process cannot interrupt the switch.

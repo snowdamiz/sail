@@ -20,6 +20,7 @@ import * as Stream from "effect/Stream";
 
 import * as CodexInstallation from "./CodexInstallation.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { forkAccepted, withAdmission } from "../serverAdmission.ts";
 import * as AntigravityInstallation from "./AntigravityInstallation.ts";
 import { deriveProviderInstanceConfigMap } from "./ProviderInstanceRegistryHydration.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
@@ -153,38 +154,52 @@ const make = Effect.fn("makeProviderInstallation")(function* () {
     }
   });
 
-  const start = Effect.fn("ProviderInstallation.start")(function* (input: ProviderSetupInput) {
-    const { installation, driver } = yield* requireInstance(input.instanceId, "install", true);
-    const started = yield* installation.start.pipe(Effect.mapError(failure(input.instanceId)));
-    if (
-      driver === ANTIGRAVITY &&
-      started.operationId !== null &&
-      accountCheckOperation !== started.operationId
-    ) {
-      accountCheckOperation = started.operationId;
-      // Installation outlives the request and may finish while every client is disconnected.
-      yield* installation.changes.pipe(
-        Stream.filter(
-          (state) =>
-            state.operationId !== started.operationId ||
-            state.phase === "succeeded" ||
-            state.phase === "failed" ||
-            state.phase === "cancelled",
-        ),
-        Stream.runHead,
-        Effect.flatMap((result) =>
-          Option.isSome(result) &&
-          result.value.operationId === started.operationId &&
-          result.value.phase === "succeeded"
-            ? checkManagedRuntimeInstances(input.instanceId)
-            : Effect.void,
-        ),
-        Effect.ignore({ log: true }),
-        Effect.forkIn(scope),
-      );
-    }
-    return started;
-  });
+  const start = Effect.fn("ProviderInstallation.start")(
+    function* (input: ProviderSetupInput) {
+      const { installation, driver } = yield* requireInstance(input.instanceId, "install", true);
+      const started = yield* installation.start.pipe(Effect.mapError(failure(input.instanceId)));
+      if (
+        driver === ANTIGRAVITY &&
+        started.operationId !== null &&
+        accountCheckOperation !== started.operationId
+      ) {
+        accountCheckOperation = started.operationId;
+        // Installation outlives the request and may finish while every client is disconnected.
+        yield* installation.changes.pipe(
+          Stream.filter(
+            (state) =>
+              state.operationId !== started.operationId ||
+              state.phase === "succeeded" ||
+              state.phase === "failed" ||
+              state.phase === "cancelled",
+          ),
+          Stream.runHead,
+          Effect.flatMap((result) =>
+            Option.isSome(result) &&
+            result.value.operationId === started.operationId &&
+            result.value.phase === "succeeded"
+              ? checkManagedRuntimeInstances(input.instanceId)
+              : Effect.void,
+          ),
+          Effect.ignore({ log: true }),
+          forkAccepted(scope),
+        );
+      }
+      return started;
+    },
+    withAdmission("root"),
+    (effect, input) =>
+      effect.pipe(
+        Effect.catchTags({
+          ServerMaintenanceBusy: (cause) =>
+            new ProviderSetupError({
+              instanceId: input.instanceId,
+              operation: "install",
+              detail: cause.message,
+            }),
+        }),
+      ),
+  );
 
   const cancel = Effect.fn("ProviderInstallation.cancel")(function* (
     input: ProviderInstallCancelInput,

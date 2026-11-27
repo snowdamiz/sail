@@ -81,11 +81,13 @@ export type AgentSessionImportResult = typeof AgentSessionImportResult.Type;
 export class AgentSessionScanError extends Schema.TaggedError<AgentSessionScanError>()(
   "AgentSessionScanError",
   {
-    operation: Schema.Literals(["read-settings", "read-projects"]),
+    operation: Schema.Literals(["read-settings", "read-projects", "maintenance"]),
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `Failed to scan agent sessions during ${this.operation}.`;
+    return this.operation === "maintenance"
+      ? "Server maintenance is in progress. Retry this request."
+      : `Failed to scan agent sessions during ${this.operation}.`;
   }
 }

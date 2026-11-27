@@ -770,6 +770,8 @@ export interface ProviderAdapterV2SessionRuntime {
   /** False keeps conversations alive when the provider cannot restore them after a restart. */
   readonly canResumeAfterRestart?: boolean;
   readonly events: Stream.Stream<ProviderAdapterV2Event, ProviderAdapterV2Error>;
+  /** The adapter ends the stream after its scope stops producing, allowing the pump to drain. */
+  readonly eventsEndOnClose?: true;
   /** Manager runtimes broadcast independent subscriptions; adapters may expose only a single-consumer stream. */
   readonly subscribeEvents?: Effect.Effect<ProviderAdapterV2EventSubscription>;
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;

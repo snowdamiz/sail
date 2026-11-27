@@ -1,3 +1,4 @@
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -4504,6 +4505,26 @@ const GITLAB_REFERENCE = {
   repository: "group/project",
   number: 1,
 };
+
+it.effect("leaves viewed-file marks unchanged until maintenance reopens", () => {
+  const admission = makeAdmission(Effect.succeed([]));
+  return Effect.gen(function* () {
+    const service = yield* environmentViewedService(new Map([["alpha.ts", "b485fe5"]]), []);
+    const update = service.setFilesViewed({
+      ...GITLAB_REFERENCE,
+      files: [{ path: "alpha.ts", viewed: true }],
+    });
+    const token = Symbol();
+    assert.deepEqual(yield* admission.drain(token, "1 second"), { kind: "sealed" });
+    assert.include((yield* update.pipe(Effect.flip)).message, "maintenance is in progress");
+    assert.deepEqual((yield* service.filesViewed(GITLAB_REFERENCE)).files, []);
+    assert.isTrue(yield* admission.abort(token));
+    yield* update;
+    assert.deepEqual((yield* service.filesViewed(GITLAB_REFERENCE)).files, [
+      { path: "alpha.ts", state: "viewed" },
+    ]);
+  }).pipe(Effect.provideService(ServerAdmission, admission));
+});
 
 it.effect("tracks environment viewed files by revision and refuses a baseline it cannot read", () =>
   Effect.gen(function* () {

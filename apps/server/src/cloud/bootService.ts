@@ -1,3 +1,4 @@
+import { acquireBoatMutation } from "./boatLifecycle.ts";
 import { DESKTOP_UPDATE_RESTART_MARKER_FILE } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Config from "effect/Config";
@@ -1203,6 +1204,15 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     if (remaining[0]) return yield* new BootServicePrerequisiteError({ problem: remaining[0] });
   });
 
+  const acquireBoatMutationEffect = Effect.try({
+    try: () => acquireBoatMutation(input.baseDir),
+    catch: (cause) => new BootServiceInstallError({ cause }),
+  });
+
+  const acquireBoatMutationScoped = Effect.acquireRelease(acquireBoatMutationEffect, (release) =>
+    Effect.sync(release),
+  );
+
   const withSelectionLock = <A, E, R>(selectionPath: string, operation: Effect.Effect<A, E, R>) =>
     Effect.acquireUseRelease(
       Effect.tryPromise({
@@ -1347,6 +1357,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
           : new BootServiceInstallError({ cause: error }),
       ),
     );
+    yield* acquireBoatMutationScoped;
     const installed = yield* fs
       .exists(unitPath)
       .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
@@ -1492,7 +1503,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
       ),
     );
     return handoff !== undefined ? { ...installedPlan, handedOff: true } : installedPlan;
-  });
+  }, Effect.scoped);
 
   const restart: BootService["Service"]["restart"] = Effect.gen(function* () {
     const manager = yield* requireManager;
@@ -1502,6 +1513,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     if (installedBaseDir === undefined || !(yield* isThisHome(installedBaseDir))) {
       return "skipped" as const;
     }
+    yield* acquireBoatMutationScoped;
     // Writes no state, and the launcher lets an update transition in flight
     // finish before the queued stop tears it down.
     if (runningInsideService && manager.handoff !== undefined) {
@@ -1518,59 +1530,74 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     Effect.mapError((cause) =>
       cause._tag === "PlatformError" ? new BootServiceInstallError({ cause }) : cause,
     ),
+    Effect.scoped,
     Effect.withSpan("cloud.boot_service.restart"),
   );
 
   const withStopped = Effect.fn("cloud.boot_service.with_stopped")(function* <A, E, R>(
     operation: Effect.Effect<A, E, R>,
   ): Effect.fn.Return<A, E | BootServiceError, R> {
-    if (detectedManager === undefined) return yield* operation;
+    const withoutService = acquireBoatMutationScoped.pipe(Effect.andThen(operation), Effect.scoped);
+    if (detectedManager === undefined) return yield* withoutService;
     const manager = detectedManager;
     const unit = yield* readUnit().pipe(Effect.option);
-    if (Option.isNone(unit)) return yield* operation;
+    if (Option.isNone(unit)) return yield* withoutService;
     const installedBaseDir = bootServiceBaseDirOf(unit.value);
     if (installedBaseDir === undefined || !(yield* isThisHome(installedBaseDir))) {
-      return yield* operation;
+      return yield* withoutService;
     }
-    // `is-active` misses crash-looping systemd units; launchd can be loaded without a pid.
-    // Always stop; restore only if previously active, enabled, or loaded,
-    // so disabled crash loops stay stopped.
-    const restore =
-      manager.kind === "systemd"
-        ? yield* Effect.map(
-            Effect.all(
-              [
-                probe("systemctl", ["--user", "is-enabled", BOOT_SERVICE_UNIT_FILE]),
-                probe("systemctl", ["--user", "is-active", BOOT_SERVICE_UNIT_FILE]),
-              ],
-              { concurrency: "unbounded" },
-            ),
-            ([enabled, active]) => succeeded(active) || succeeded(enabled),
-          )
-        : manager.kind === "schtasks"
-          ? // A task disabled while its launcher runs was left that way by an interrupted stop.
-            yield* Effect.map(
-              readSchtasksProblems(unit),
-              (problems) =>
-                !problems.includes("service-disabled") || !problems.includes("service-stopped"),
-            )
-          : succeeded(
-              yield* probe("launchctl", ["print", `gui/${uid}/${BOOT_SERVICE_LAUNCHD_LABEL}`]),
-            );
     return yield* Effect.acquireUseRelease(
-      // Require every stop before repair when restoring, so the server releases the database.
-      // Otherwise stops are best-effort; launchd rejects bootout of an unloaded job.
-      // A failed stop may still stop the service, so restoration runs either way.
-      runSteps(manager.stop.map((step) => ({ ...step, optional: !restore }))).pipe(Effect.exit),
-      (stopped): Effect.Effect<A, E | BootServiceError, R> =>
-        Exit.isSuccess(stopped) ? operation : Effect.failCause(stopped.cause),
-      (_, exit) => {
-        if (!restore) return Effect.void;
-        // Start only: `activate` would also enable a unit the user disabled.
-        // When the operation itself failed, its error is the one worth reporting.
-        const start = runSteps(manager.restart);
-        return Exit.isFailure(exit) ? Effect.ignore(start) : start;
-      },
+      acquireBoatMutationEffect,
+      () =>
+        Effect.gen(function* () {
+          // `is-active` misses crash-looping systemd units; launchd can be loaded without a pid.
+          // Always stop; restore only if previously active, enabled, or loaded,
+          // so disabled crash loops stay stopped.
+          const restore =
+            manager.kind === "systemd"
+              ? yield* Effect.map(
+                  Effect.all(
+                    [
+                      probe("systemctl", ["--user", "is-enabled", BOOT_SERVICE_UNIT_FILE]),
+                      probe("systemctl", ["--user", "is-active", BOOT_SERVICE_UNIT_FILE]),
+                    ],
+                    { concurrency: "unbounded" },
+                  ),
+                  ([enabled, active]) => succeeded(active) || succeeded(enabled),
+                )
+              : manager.kind === "schtasks"
+                ? // A task disabled while its launcher runs was left that way by an interrupted stop.
+                  yield* Effect.map(
+                    readSchtasksProblems(unit),
+                    (problems) =>
+                      !problems.includes("service-disabled") ||
+                      !problems.includes("service-stopped"),
+                  )
+                : succeeded(
+                    yield* probe("launchctl", [
+                      "print",
+                      `gui/${uid}/${BOOT_SERVICE_LAUNCHD_LABEL}`,
+                    ]),
+                  );
+          return yield* Effect.acquireUseRelease(
+            // Require every stop before repair when restoring, so the server releases the database.
+            // Otherwise stops are best-effort; launchd rejects bootout of an unloaded job.
+            // A failed stop may still stop the service, so restoration runs either way.
+            runSteps(manager.stop.map((step) => ({ ...step, optional: !restore }))).pipe(
+              Effect.exit,
+            ),
+            (stopped): Effect.Effect<A, E | BootServiceError, R> =>
+              Exit.isSuccess(stopped) ? operation : Effect.failCause(stopped.cause),
+            (_, exit) => {
+              if (!restore) return Effect.void;
+              // Start only: `activate` would also enable a unit the user disabled.
+              // When the operation itself failed, its error is the one worth reporting.
+              const start = runSteps(manager.restart);
+              return Exit.isFailure(exit) ? Effect.ignore(start) : start;
+            },
+          );
+        }),
+      (release) => Effect.sync(release),
     );
   });
 
@@ -1582,13 +1609,14 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
         .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause }))))
     )
       return false;
+    yield* acquireBoatMutationScoped;
     yield* runSteps(manager.deactivate);
     yield* fs
       .remove(unitPath)
       .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
     yield* runSteps(manager.finalize);
     return true;
-  }).pipe(Effect.withSpan("cloud.boot_service.uninstall"));
+  }).pipe(Effect.scoped, Effect.withSpan("cloud.boot_service.uninstall"));
 
   const status: BootService["Service"]["status"] = Effect.gen(function* () {
     const manager = detectedManager;

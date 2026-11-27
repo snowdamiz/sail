@@ -1,3 +1,4 @@
+import { afterAdmissionReopens, ServerAdmission, withAdmission } from "../serverAdmission.ts";
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - Playwright callbacks run outside the Effect runtime.
 // Screencasts ignore emulated device scale; real 2x keeps captures sharp.
 // --disable-gpu uses cheaper software compositing while preserving SwiftShader WebGL.
@@ -597,6 +598,13 @@ const make = Effect.gen(function* () {
   const launchersDir = NodePath.join(config.stateDir, "server-browser", "launchers");
 
   const tabs = new Map<string, ServerTab>();
+  let runtimeStarted = false;
+  const admission = yield* ServerAdmission;
+  yield* (
+    admission?.registerObserver(
+      Effect.sync(() => (runtimeStarted ? ["preview-runtime-unqualified"] : [])),
+    ) ?? Effect.void
+  );
   const pendingTabs = new Map<
     string,
     { readonly agentId: string | null; promise?: Promise<ServerTab> }
@@ -1763,6 +1771,7 @@ const make = Effect.gen(function* () {
     if (pending?.promise) return pending.promise;
     const existing = tabs.get(key);
     if (existing) return Promise.resolve(existing);
+    runtimeStarted = true;
     const opening = createTab(snapshot)
       .catch((cause: unknown) => {
         runFork(
@@ -1792,7 +1801,13 @@ const make = Effect.gen(function* () {
     return yield* Effect.tryPromise({
       try: () => ensureTab(snapshot),
       catch: (cause) => (isTabNotFound(cause) ? cause : new ServerBrowserLaunchError({ cause })),
-    });
+    }).pipe(
+      Effect.uninterruptible,
+      withAdmission("root"),
+      Effect.catchTags({
+        ServerMaintenanceBusy: (cause) => new ServerBrowserLaunchError({ cause }),
+      }),
+    );
   });
 
   const openingReservations = () =>
@@ -1849,61 +1864,66 @@ const make = Effect.gen(function* () {
   };
 
   // A Playwright launch must settle before its capacity can be released.
-  const openTab = Effect.fn("ServerBrowser.openTab")(function* (
-    input: Parameters<typeof manager.open>[0],
-    options: { readonly reclaimIdleSlot?: boolean } = {},
-  ) {
-    let key: string = NodeCrypto.randomUUID();
-    const reservation = { agentId: input.automationOwner ?? null };
-    return yield* Effect.acquireUseRelease(
-      Effect.tryPromise({
-        try: async () => {
-          if (input.automationOwner !== undefined) {
-            while (
-              options.reclaimIdleSlot &&
-              serverAtTabLimit() &&
-              !agentAtTabLimit(input.automationOwner) &&
-              idleAgentTabs().length > 0
-            ) {
-              await freeIdleAgentSlot(input.automationOwner);
+  const openTab = Effect.fn("ServerBrowser.openTab")(
+    function* (
+      input: Parameters<typeof manager.open>[0],
+      options: { readonly reclaimIdleSlot?: boolean } = {},
+    ) {
+      let key: string = NodeCrypto.randomUUID();
+      const reservation = { agentId: input.automationOwner ?? null };
+      return yield* Effect.acquireUseRelease(
+        Effect.tryPromise({
+          try: async () => {
+            if (input.automationOwner !== undefined) {
+              while (
+                options.reclaimIdleSlot &&
+                serverAtTabLimit() &&
+                !agentAtTabLimit(input.automationOwner) &&
+                idleAgentTabs().length > 0
+              ) {
+                await freeIdleAgentSlot(input.automationOwner);
+              }
+              assertTabCapacity(input.automationOwner);
             }
-            assertTabCapacity(input.automationOwner);
-          }
-          pendingTabs.set(key, reservation);
-        },
-        catch: ServerBrowserPage.toOperationError,
-      }),
-      () =>
-        manager
-          .open({
-            ...input,
-            beforePublish: (snapshot) => {
-              pendingTabs.delete(key);
-              key = tabKey(snapshot.threadId, snapshot.tabId);
-              pendingTabs.set(key, reservation);
-              input.beforePublish?.(snapshot);
-            },
-          })
-          .pipe(
-            Effect.flatMap((snapshot) =>
-              Effect.tryPromise({
-                try: () => ensureTab(snapshot),
-                catch: ServerBrowserPage.toOperationError,
-              }).pipe(
-                Effect.onError(() =>
-                  manager
-                    .close({ threadId: ThreadId.make(snapshot.threadId), tabId: snapshot.tabId })
-                    .pipe(Effect.ignore),
+            pendingTabs.set(key, reservation);
+          },
+          catch: ServerBrowserPage.toOperationError,
+        }),
+        () =>
+          manager
+            .open({
+              ...input,
+              beforePublish: (snapshot) => {
+                pendingTabs.delete(key);
+                key = tabKey(snapshot.threadId, snapshot.tabId);
+                pendingTabs.set(key, reservation);
+                input.beforePublish?.(snapshot);
+              },
+            })
+            .pipe(
+              Effect.flatMap((snapshot) =>
+                Effect.tryPromise({
+                  try: () => ensureTab(snapshot),
+                  catch: ServerBrowserPage.toOperationError,
+                }).pipe(
+                  Effect.onError(() =>
+                    manager
+                      .close({ threadId: ThreadId.make(snapshot.threadId), tabId: snapshot.tabId })
+                      .pipe(Effect.ignore),
+                  ),
                 ),
               ),
             ),
-          ),
-      () =>
-        Effect.sync(() => {
-          pendingTabs.delete(key);
-        }),
-    );
-  }, Effect.uninterruptible);
+        () =>
+          Effect.sync(() => {
+            pendingTabs.delete(key);
+          }),
+      );
+    },
+    Effect.uninterruptible,
+    withAdmission("root"),
+    Effect.catchTags({ ServerMaintenanceBusy: (cause) => new ServerBrowserLaunchError({ cause }) }),
+  );
 
   // Desktop browsing bypasses streamed viewers and server input tracking,
   // so these idle signals only apply to headless tabs.
@@ -3006,14 +3026,19 @@ const make = Effect.gen(function* () {
       Effect.ignore,
     );
 
-  const mirrorManagerEvent = (event: PreviewEvent) =>
-    Effect.promise(async () => {
-      if (event.type === "opened" && event.snapshot.runtime === "server") {
-        const key = tabKey(event.snapshot.threadId, event.snapshot.tabId);
-        if (event.snapshot.automationOwner === undefined || pendingTabs.has(key) || tabs.has(key))
-          await ensureTab(event.snapshot).catch(constVoid);
-        return;
-      }
+  const mirrorManagerEvent = (event: PreviewEvent) => {
+    if (event.type === "opened" && event.snapshot.runtime === "server") {
+      const snapshot = event.snapshot;
+      return afterAdmissionReopens(
+        Effect.promise(async () => {
+          const key = tabKey(snapshot.threadId, snapshot.tabId);
+          if (snapshot.automationOwner === undefined || pendingTabs.has(key) || tabs.has(key)) {
+            await ensureTab(snapshot).catch(constVoid);
+          }
+        }).pipe(Effect.uninterruptible),
+      );
+    }
+    return Effect.promise(async () => {
       const key = tabKey(event.threadId, event.tabId);
       const tab = tabs.get(key);
       if (event.type === "closed" && !tab && pendingTabs.has(key)) closedPendingTabs.add(key);
@@ -3049,6 +3074,7 @@ const make = Effect.gen(function* () {
           );
       }
     });
+  };
 
   const releaseViewerInput = async (viewer: ViewerState, session: CDPSession) => {
     for (const { key, code } of viewer.pressedKeys.values()) {
@@ -3238,252 +3264,260 @@ const make = Effect.gen(function* () {
 
   const attachViewer: ServerBrowser["Service"]["attachViewer"] = Effect.fn(
     "ServerBrowser.attachViewer",
-  )(function* (input) {
-    const tab = yield* findTab(input.threadId, input.tabId);
-    const output = yield* Queue.make<ServerBrowserViewerOutput>({
-      capacity: VIEWER_OUTPUT_LIMIT,
-      strategy: "dropping",
-    });
-    const session = yield* Effect.acquireRelease(
-      Effect.tryPromise({
-        try: () => tab.page.context().newCDPSession(tab.page),
-        catch: (cause) => new ServerBrowserLaunchError({ cause }),
-      }),
-      (session) =>
-        Effect.promise(() =>
-          session
-            .send("Page.stopScreencast")
-            .catch(constVoid)
-            .then(() => session.detach())
-            .catch(constVoid),
-        ),
-    );
-    const quality = Math.min(100, Math.max(1, Math.round(input.quality)));
-    // Chromium may drop the final frame during a burst; send a still when it settles.
-    let framesInFlight = 0;
-    let mayHaveDropped = false;
-    let motion = false;
-    const recentFrames: Array<number> = [];
-    let screencastParams = Promise.resolve();
-    let screencastScale = 1;
-    const startScreencast = (scale: number) => {
-      screencastScale = scale;
-      screencastParams = screencastParams.then(async () => {
-        if (tab.capturing > 0) return;
-        await session.send("Page.stopScreencast").catch(constVoid);
-        await session
-          .send("Page.startScreencast", {
-            format: "jpeg",
-            quality: screencastScale < 1 ? Math.min(quality, SCREENCAST_MOTION_QUALITY) : quality,
-            maxWidth: Math.max(1, Math.round(input.maxWidth * screencastScale)),
-            maxHeight: Math.max(1, Math.round(input.maxHeight * screencastScale)),
-          })
-          .catch(constVoid);
+  )(
+    function* (input) {
+      const tab = yield* findTab(input.threadId, input.tabId);
+      const output = yield* Queue.make<ServerBrowserViewerOutput>({
+        capacity: VIEWER_OUTPUT_LIMIT,
+        strategy: "dropping",
       });
-      return screencastParams;
-    };
-    const viewer: ViewerState = {
-      id: NodeCrypto.randomUUID(),
-      canOperate: input.canOperate,
-      pressedKeys: new Map(),
-      pressedButtons: new Map(),
-      push: (next) => {
-        // Dropped frames must still release Chromium.
-        if (Queue.offerUnsafe(output, next)) return;
-        if (next._tag === "frame") runFork(next.ack);
-        // State a stalled viewer cannot miss compacts its backlog. It runs
-        // synchronously so an older compaction can never land after a newer one.
-        else if (["gone", "reconnect", "control", "viewport", "fileChooser"].includes(next._tag)) {
-          const dropped = runSyncExit(Queue.clear(output));
-          if (dropped._tag === "Failure") return;
-          const items = [...dropped.value, next];
-          // Without its latest size and control the viewer cannot map input at all.
-          const state = (["control", "viewport"] as const).flatMap(
-            (tag) => items.findLast((item) => item._tag === tag) ?? [],
-          );
-          // Everything else is one-time; if it no longer fits, the oldest goes first.
-          const rest = items.filter(
-            (item) => item._tag !== "frame" && item._tag !== "control" && item._tag !== "viewport",
-          );
-          for (const item of [...rest.slice(state.length - VIEWER_OUTPUT_LIMIT), ...state])
-            Queue.offerUnsafe(output, item);
-          for (const item of dropped.value) if (item._tag === "frame") runFork(item.ack);
-        }
-      },
-      pause: () => {
-        screencastParams = screencastParams.then(() =>
-          session.send("Page.stopScreencast").then(constVoid, constVoid),
-        );
+      const session = yield* Effect.acquireRelease(
+        Effect.tryPromise({
+          try: () => tab.page.context().newCDPSession(tab.page),
+          catch: (cause) => new ServerBrowserLaunchError({ cause }),
+        }),
+        (session) =>
+          Effect.promise(() =>
+            session
+              .send("Page.stopScreencast")
+              .catch(constVoid)
+              .then(() => session.detach())
+              .catch(constVoid),
+          ),
+      );
+      const quality = Math.min(100, Math.max(1, Math.round(input.quality)));
+      // Chromium may drop the final frame during a burst; send a still when it settles.
+      let framesInFlight = 0;
+      let mayHaveDropped = false;
+      let motion = false;
+      const recentFrames: Array<number> = [];
+      let screencastParams = Promise.resolve();
+      let screencastScale = 1;
+      const startScreencast = (scale: number) => {
+        screencastScale = scale;
+        screencastParams = screencastParams.then(async () => {
+          if (tab.capturing > 0) return;
+          await session.send("Page.stopScreencast").catch(constVoid);
+          await session
+            .send("Page.startScreencast", {
+              format: "jpeg",
+              quality: screencastScale < 1 ? Math.min(quality, SCREENCAST_MOTION_QUALITY) : quality,
+              maxWidth: Math.max(1, Math.round(input.maxWidth * screencastScale)),
+              maxHeight: Math.max(1, Math.round(input.maxHeight * screencastScale)),
+            })
+            .catch(constVoid);
+        });
         return screencastParams;
-      },
-      resume: () => startScreencast(screencastScale),
-      scrolledAt: 0,
-      requestedSize: null,
-    };
-    yield* Effect.acquireRelease(
-      Effect.sync(() => {
-        tab.viewers.add(viewer);
-        tab.viewerAttached?.resolve();
-        tab.viewerAttached = null;
-        reportLiveTabs();
-      }),
-      () =>
-        Effect.promise(async () => {
-          await tab.control.disconnect(viewer.id, () => releaseViewerInput(viewer, session));
-          tab.viewers.delete(viewer);
-          broadcastControl(tab);
+      };
+      const viewer: ViewerState = {
+        id: NodeCrypto.randomUUID(),
+        canOperate: input.canOperate,
+        pressedKeys: new Map(),
+        pressedButtons: new Map(),
+        push: (next) => {
+          // Dropped frames must still release Chromium.
+          if (Queue.offerUnsafe(output, next)) return;
+          if (next._tag === "frame") runFork(next.ack);
+          // State a stalled viewer cannot miss compacts its backlog. It runs
+          // synchronously so an older compaction can never land after a newer one.
+          else if (
+            ["gone", "reconnect", "control", "viewport", "fileChooser"].includes(next._tag)
+          ) {
+            const dropped = runSyncExit(Queue.clear(output));
+            if (dropped._tag === "Failure") return;
+            const items = [...dropped.value, next];
+            // Without its latest size and control the viewer cannot map input at all.
+            const state = (["control", "viewport"] as const).flatMap(
+              (tag) => items.findLast((item) => item._tag === tag) ?? [],
+            );
+            // Everything else is one-time; if it no longer fits, the oldest goes first.
+            const rest = items.filter(
+              (item) =>
+                item._tag !== "frame" && item._tag !== "control" && item._tag !== "viewport",
+            );
+            for (const item of [...rest.slice(state.length - VIEWER_OUTPUT_LIMIT), ...state])
+              Queue.offerUnsafe(output, item);
+            for (const item of dropped.value) if (item._tag === "frame") runFork(item.ack);
+          }
+        },
+        pause: () => {
+          screencastParams = screencastParams.then(() =>
+            session.send("Page.stopScreencast").then(constVoid, constVoid),
+          );
+          return screencastParams;
+        },
+        resume: () => startScreencast(screencastScale),
+        scrolledAt: 0,
+        requestedSize: null,
+      };
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          tab.viewers.add(viewer);
+          tab.viewerAttached?.resolve();
+          tab.viewerAttached = null;
           reportLiveTabs();
         }),
-    );
-    if (input.canOperate && tab.control.agentId === null && tab.control.controller === null) {
-      yield* Effect.promise(() => tab.control.take(viewer.id));
-    }
-    broadcastControl(tab);
-    pushFileChooser(tab);
-    const pushStill = async () => {
-      const data = await withCaptureLock(tab, async () => {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        try {
-          return await Promise.race([
-            ServerBrowserPage.captureViewport(session, { format: "jpeg", quality }),
-            new Promise<null>((resolve) => {
-              timer = setTimeout(() => resolve(null), VIEWER_STILL_TIMEOUT_MS);
-            }),
-          ]);
-        } finally {
-          clearTimeout(timer);
-        }
-      }).catch(() => null);
-      if (data) viewer.push({ _tag: "frame", data: Buffer.from(data, "base64"), ack: Effect.void });
-    };
-    let settleTimer: ReturnType<typeof setTimeout> | null = null;
-    yield* Effect.addFinalizer(() =>
-      Effect.sync(() => {
-        if (settleTimer !== null) clearTimeout(settleTimer);
-      }),
-    );
-    let screencastStarted = false;
-    session.on("Page.screencastFrame", (frame) => {
-      screencastStarted = true;
-      if (framesInFlight > 0) mayHaveDropped = true;
-      framesInFlight += 1;
-      const arrivedAt = Date.now();
-      recentFrames.push(arrivedAt);
-      while (recentFrames[0]! < arrivedAt - SCREENCAST_MOTION_WINDOW_MS) recentFrames.shift();
-      if (
-        !motion &&
-        recentFrames.length >= SCREENCAST_MOTION_FRAMES &&
-        arrivedAt - viewer.scrolledAt < SCREENCAST_MOTION_WINDOW_MS
-      ) {
-        motion = true;
-        void startScreencast(0.5);
-      } else if (motion && arrivedAt - viewer.scrolledAt > SCREENCAST_SETTLE_MS) {
-        motion = false;
-        recentFrames.length = 0;
-        void startScreencast(1);
+        () =>
+          Effect.promise(async () => {
+            await tab.control.disconnect(viewer.id, () => releaseViewerInput(viewer, session));
+            tab.viewers.delete(viewer);
+            broadcastControl(tab);
+            reportLiveTabs();
+          }),
+      );
+      if (input.canOperate && tab.control.agentId === null && tab.control.controller === null) {
+        yield* Effect.promise(() => tab.control.take(viewer.id));
       }
-      if (settleTimer !== null) clearTimeout(settleTimer);
-      settleTimer = setTimeout(() => {
-        settleTimer = null;
-        if (!motion && !mayHaveDropped) return;
-        mayHaveDropped = false;
-        if (motion) {
+      broadcastControl(tab);
+      pushFileChooser(tab);
+      const pushStill = async () => {
+        const data = await withCaptureLock(tab, async () => {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            return await Promise.race([
+              ServerBrowserPage.captureViewport(session, { format: "jpeg", quality }),
+              new Promise<null>((resolve) => {
+                timer = setTimeout(() => resolve(null), VIEWER_STILL_TIMEOUT_MS);
+              }),
+            ]);
+          } finally {
+            clearTimeout(timer);
+          }
+        }).catch(() => null);
+        if (data)
+          viewer.push({ _tag: "frame", data: Buffer.from(data, "base64"), ack: Effect.void });
+      };
+      let settleTimer: ReturnType<typeof setTimeout> | null = null;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          if (settleTimer !== null) clearTimeout(settleTimer);
+        }),
+      );
+      let screencastStarted = false;
+      session.on("Page.screencastFrame", (frame) => {
+        screencastStarted = true;
+        if (framesInFlight > 0) mayHaveDropped = true;
+        framesInFlight += 1;
+        const arrivedAt = Date.now();
+        recentFrames.push(arrivedAt);
+        while (recentFrames[0]! < arrivedAt - SCREENCAST_MOTION_WINDOW_MS) recentFrames.shift();
+        if (
+          !motion &&
+          recentFrames.length >= SCREENCAST_MOTION_FRAMES &&
+          arrivedAt - viewer.scrolledAt < SCREENCAST_MOTION_WINDOW_MS
+        ) {
+          motion = true;
+          void startScreencast(0.5);
+        } else if (motion && arrivedAt - viewer.scrolledAt > SCREENCAST_SETTLE_MS) {
           motion = false;
           recentFrames.length = 0;
           void startScreencast(1);
         }
-        void pushStill();
-      }, SCREENCAST_SETTLE_MS);
-      viewer.push({
-        _tag: "frame",
-        data: Buffer.from(frame.data, "base64"),
-        ack: Effect.promise(() =>
-          sleepUntil(arrivedAt + SCREENCAST_ACK_PACE_MS).then(() => {
-            framesInFlight -= 1;
-            return session
-              .send("Page.screencastFrameAck", { sessionId: frame.sessionId })
-              .catch(constVoid);
-          }),
-        ),
-      });
-    });
-    void broadcastViewport(tab).catch(constVoid);
-    yield* Effect.promise(() => startScreencast(1));
-    // An idle page does not repaint for a new screencast, so the viewer
-    // starts from a still unless a live frame beat it.
-    if (!screencastStarted) yield* Effect.forkScoped(Effect.promise(pushStill));
-    return {
-      output,
-      input: (raw: unknown) =>
-        Effect.promise(async () => {
-          if (!viewer.canOperate) return;
-          const message = asRecord(raw);
-          if (!message) return;
-          try {
-            if (message.type === "takeControl") {
-              const taking = tab.control.take(viewer.id);
-              broadcastControl(tab);
-              await taking;
-              pushFileChooser(tab);
-            } else if (message.type === "releaseControl") {
-              const releasing = tab.control.release(viewer.id, () =>
-                releaseViewerInput(viewer, session),
-              );
-              broadcastControl(tab);
-              await releasing;
-            } else if (
-              message.type === "dialog" &&
-              tab.control.controller === viewer.id &&
-              typeof message.accept === "boolean"
-            ) {
-              await resolveDialog(tab, {
-                accept: message.accept,
-                ...(typeof message.promptText === "string"
-                  ? { promptText: message.promptText }
-                  : {}),
-              });
-            } else {
-              const dispatch = async (input: Record<string, unknown>) => {
-                await dispatchViewerInput(tab, session, viewer, input);
-              };
-              if (
-                message.type === "mouse" &&
-                message.action === "move" &&
-                message.button === "none" &&
-                message.buttons === 0
-              ) {
-                await tab.control.humanLatest(
-                  viewer.id,
-                  `hover:${modifiersOf(message)}`,
-                  message,
-                  dispatch,
-                );
-              } else if (message.type === "wheel") {
-                // A reversal stays separate so scrolling clamped at an edge behaves as if unmerged.
-                await tab.control.humanLatest(
-                  viewer.id,
-                  `wheel:${num(message.x)}:${num(message.y)}:${modifiersOf(message)}:${Math.sign(num(message.deltaX))}:${Math.sign(num(message.deltaY))}`,
-                  message,
-                  dispatch,
-                  (waiting, next) => ({
-                    ...next,
-                    deltaX: num(waiting.deltaX) + num(next.deltaX),
-                    deltaY: num(waiting.deltaY) + num(next.deltaY),
-                  }),
-                );
-              } else {
-                const copyRead = await tab.control.human(viewer.id, () =>
-                  dispatchViewerInput(tab, session, viewer, message),
-                );
-                await copyRead?.();
-              }
-            }
-          } catch {
-            broadcastControl(tab);
+        if (settleTimer !== null) clearTimeout(settleTimer);
+        settleTimer = setTimeout(() => {
+          settleTimer = null;
+          if (!motion && !mayHaveDropped) return;
+          mayHaveDropped = false;
+          if (motion) {
+            motion = false;
+            recentFrames.length = 0;
+            void startScreencast(1);
           }
-        }),
-    } satisfies ServerBrowserViewer;
-  });
+          void pushStill();
+        }, SCREENCAST_SETTLE_MS);
+        viewer.push({
+          _tag: "frame",
+          data: Buffer.from(frame.data, "base64"),
+          ack: Effect.promise(() =>
+            sleepUntil(arrivedAt + SCREENCAST_ACK_PACE_MS).then(() => {
+              framesInFlight -= 1;
+              return session
+                .send("Page.screencastFrameAck", { sessionId: frame.sessionId })
+                .catch(constVoid);
+            }),
+          ),
+        });
+      });
+      void broadcastViewport(tab).catch(constVoid);
+      yield* Effect.promise(() => startScreencast(1));
+      // An idle page does not repaint for a new screencast, so the viewer
+      // starts from a still unless a live frame beat it.
+      if (!screencastStarted) yield* Effect.forkScoped(Effect.promise(pushStill));
+      return {
+        output,
+        input: (raw: unknown) =>
+          Effect.promise(async () => {
+            if (!viewer.canOperate) return;
+            const message = asRecord(raw);
+            if (!message) return;
+            try {
+              if (message.type === "takeControl") {
+                const taking = tab.control.take(viewer.id);
+                broadcastControl(tab);
+                await taking;
+                pushFileChooser(tab);
+              } else if (message.type === "releaseControl") {
+                const releasing = tab.control.release(viewer.id, () =>
+                  releaseViewerInput(viewer, session),
+                );
+                broadcastControl(tab);
+                await releasing;
+              } else if (
+                message.type === "dialog" &&
+                tab.control.controller === viewer.id &&
+                typeof message.accept === "boolean"
+              ) {
+                await resolveDialog(tab, {
+                  accept: message.accept,
+                  ...(typeof message.promptText === "string"
+                    ? { promptText: message.promptText }
+                    : {}),
+                });
+              } else {
+                const dispatch = async (input: Record<string, unknown>) => {
+                  await dispatchViewerInput(tab, session, viewer, input);
+                };
+                if (
+                  message.type === "mouse" &&
+                  message.action === "move" &&
+                  message.button === "none" &&
+                  message.buttons === 0
+                ) {
+                  await tab.control.humanLatest(
+                    viewer.id,
+                    `hover:${modifiersOf(message)}`,
+                    message,
+                    dispatch,
+                  );
+                } else if (message.type === "wheel") {
+                  // A reversal stays separate so scrolling clamped at an edge behaves as if unmerged.
+                  await tab.control.humanLatest(
+                    viewer.id,
+                    `wheel:${num(message.x)}:${num(message.y)}:${modifiersOf(message)}:${Math.sign(num(message.deltaX))}:${Math.sign(num(message.deltaY))}`,
+                    message,
+                    dispatch,
+                    (waiting, next) => ({
+                      ...next,
+                      deltaX: num(waiting.deltaX) + num(next.deltaX),
+                      deltaY: num(waiting.deltaY) + num(next.deltaY),
+                    }),
+                  );
+                } else {
+                  const copyRead = await tab.control.human(viewer.id, () =>
+                    dispatchViewerInput(tab, session, viewer, message),
+                  );
+                  await copyRead?.();
+                }
+              }
+            } catch {
+              broadcastControl(tab);
+            }
+          }),
+      } satisfies ServerBrowserViewer;
+    },
+    withAdmission("root"),
+    Effect.catchTags({ ServerMaintenanceBusy: (cause) => new ServerBrowserLaunchError({ cause }) }),
+  );
 
   // Subscribe before forking: a forked stream subscribes only once it runs, so a tab opened
   // right after startup would publish its `opened` event to no one and never load.
@@ -3524,7 +3558,10 @@ const make = Effect.gen(function* () {
         const snapshot = sessions.find(
           (session) => session.tabId === key.tabId && session.runtime === "server",
         );
-        if (snapshot) yield* Effect.promise(() => ensureTab(snapshot).catch(constVoid));
+        if (snapshot)
+          yield* afterAdmissionReopens(
+            Effect.promise(() => ensureTab(snapshot).catch(constVoid)).pipe(Effect.uninterruptible),
+          );
       }).pipe(Effect.ignore),
     ),
     Effect.forkScoped,
@@ -3576,7 +3613,13 @@ const make = Effect.gen(function* () {
     Effect.tryPromise({
       try: () => contexts.clearProfile(profileId),
       catch: (cause) => new PreviewClearProfileError({ profileId, cause }),
-    });
+    }).pipe(
+      Effect.uninterruptible,
+      withAdmission("root"),
+      Effect.catchTags({
+        ServerMaintenanceBusy: (cause) => new PreviewClearProfileError({ profileId, cause }),
+      }),
+    );
 
   return ServerBrowser.of({
     attachViewer,

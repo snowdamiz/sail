@@ -40,6 +40,9 @@ export interface CursorSdkWorkerLaunch {
   readonly args: ReadonlyArray<string>;
   readonly env?: NodeJS.ProcessEnv | undefined;
   readonly registerProcess?: ((pid: number) => () => void) | undefined;
+  readonly observeProcess?: (
+    child: Pick<ChildProcessSpawner.ChildProcessHandle, "exitCode" | "isRunning">,
+  ) => Effect.Effect<void>;
 }
 
 type RunQueueItem =
@@ -208,6 +211,8 @@ export const makeCursorAgentSdkProcessRunner = Effect.fn("makeCursorAgentSdkProc
           Effect.onError(() => teardownScope()),
           Effect.mapError((cause) => toRunnerError("worker.spawn", cause)),
         );
+
+        if (launch.observeProcess !== undefined) yield* launch.observeProcess(handle);
 
         if (launch.registerProcess !== undefined) {
           const unregister = yield* Effect.try({

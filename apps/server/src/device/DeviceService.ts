@@ -1,3 +1,4 @@
+import { afterAdmissionReopens, ServerAdmission, withAdmission } from "../serverAdmission.ts";
 import {
   type DeviceActionInput,
   type DeviceCloseInput,
@@ -445,6 +446,29 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
           }),
     );
 
+  let hostStarted = false;
+  const admission = yield* ServerAdmission;
+  yield* (
+    admission?.registerObserver(
+      Effect.sync(() => (hostStarted ? ["device-runtime-unqualified"] : [])),
+    ) ?? Effect.void
+  );
+  const admitDeviceStart = <A>(
+    work: Effect.Effect<A, DeviceError>,
+    hostId?: DeviceHostId,
+  ): Effect.Effect<A, DeviceError> =>
+    work.pipe(
+      withAdmission("root"),
+      Effect.catchTags({
+        ServerMaintenanceBusy: (cause) =>
+          new DeviceHostUnavailableError({
+            hostId: hostId ?? LOCAL_DEVICE_HOST_ID,
+            reason: cause.message,
+            cause,
+          }),
+      }),
+    );
+
   const readiness: DeviceService["Service"]["readiness"] = Effect.fn("DeviceService.readiness")(
     function* (hostId) {
       const host = yield* resolveHost(hostId);
@@ -456,6 +480,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
             "Device support is off. Enable it in the Device panel before installing or starting device tools.",
         });
       }
+      hostStarted = true;
       const ready = yield* host
         .ensureReady((status, detail) =>
           setHostStatus(host.id, { status, detail }).pipe(Effect.asVoid),
@@ -495,6 +520,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       return { hostId: host.id, ...ready };
     },
     lifecycleLock.withPermit,
+    admitDeviceStart,
   );
 
   const readinessIfSupported: DeviceService["Service"]["readinessIfSupported"] = Effect.fn(
@@ -747,6 +773,11 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       }
       return yield* list;
     },
+    withAdmission("root"),
+    Effect.catchTags({
+      ServerMaintenanceBusy: (cause) =>
+        new DeviceOperationError({ operation: "configure", reason: "settings_failed", cause }),
+    }),
   );
 
   const findDevice = (
@@ -880,6 +911,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       );
       return session;
     },
+    (work, input) => admitDeviceStart(work, input.hostId),
   );
 
   const refreshAfterShutdown = (ready: DeviceReadiness) =>
@@ -1041,6 +1073,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       yield* runDeviceAction(ready, device.platform, input);
       return yield* detail({ hostId: ready.hostId, deviceId: device.id });
     },
+    (work, input) => admitDeviceStart(work, input.hostId),
   );
 
   const sessionsForThread: DeviceService["Service"]["sessionsForThread"] = (threadId) =>
@@ -1586,7 +1619,7 @@ export const make = Effect.gen(function* () {
   };
   yield* reconcile(configuredHosts(yield* settings.getSettings));
   yield* changes.pipe(
-    Stream.runForEach((value) => reconcile(configuredHosts(value))),
+    Stream.runForEach((value) => afterAdmissionReopens(reconcile(configuredHosts(value)))),
     Effect.forkIn(scope),
   );
   yield* Effect.addFinalizer(() =>

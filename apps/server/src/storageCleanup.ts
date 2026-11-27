@@ -5,6 +5,7 @@ import {
   GitCommandError,
   OrchestrationV2AppThreadJson,
   OrchestrationV2ProviderSessionJson,
+  ServerSettingsError,
   StorageCleanupReportEntry,
 } from "@t3tools/contracts";
 import * as Base64Url from "effect/encoding/Base64Url";
@@ -14,7 +15,6 @@ import type {
   OrchestrationV2ThreadShell,
   ProjectId,
   ServerSettings,
-  ServerSettingsError,
   TerminalSummary,
   WorktreeCleanupRules,
   StorageCleanupReport,
@@ -54,6 +54,7 @@ import { checkpointRefForScopeOrdinal } from "./orchestration-v2/CheckpointServi
 import { threadHasQueuedTurnStart } from "./orchestration-v2/ThreadSettlementService.ts";
 import { MAX_OVERDUE_ARM_MS } from "./orchestration-v2/UsageLimitRecoveryWorker.ts";
 import * as WorktreeBranchSync from "./orchestration-v2/WorktreeBranchSync.ts";
+import { withAdmission } from "./serverAdmission.ts";
 import { forkParked } from "./serverActivation.ts";
 import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
@@ -2250,7 +2251,19 @@ const make = Effect.gen(function* () {
   const worker = yield* makeDrainableWorker(
     (completion: Deferred.Deferred<StorageCleanupReport, ServerSettingsError> | undefined) =>
       (completion === undefined ? Ref.set(automaticSweepQueued, false) : Effect.void).pipe(
-        Effect.andThen(sweep(completion === undefined ? "automatic" : "manual")),
+        Effect.andThen(
+          sweep(completion === undefined ? "automatic" : "manual").pipe(
+            withAdmission("root"),
+            Effect.catchTags({
+              ServerMaintenanceBusy: (cause) =>
+                new ServerSettingsError({
+                  settingsPath: config.settingsPath,
+                  operation: "write-file",
+                  cause,
+                }),
+            }),
+          ),
+        ),
         Effect.exit,
         Effect.flatMap((exit) =>
           completion === undefined

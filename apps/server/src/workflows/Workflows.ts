@@ -49,7 +49,7 @@ export class WorkflowRunNotFoundError extends Schema.TaggedError<WorkflowRunNotF
 
 export class WorkflowInputError extends Schema.TaggedError<WorkflowInputError>()(
   "WorkflowInputError",
-  { problem: Schema.String },
+  { problem: Schema.String, retryable: Schema.optional(Schema.Literal(true)) },
 ) {
   override get message(): string {
     return this.problem;

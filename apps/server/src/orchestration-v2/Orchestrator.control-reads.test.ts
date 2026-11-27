@@ -1,3 +1,4 @@
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 import * as NodeSqlite from "node:sqlite";
 
 import { assert, it } from "@effect/vitest";
@@ -1400,7 +1401,7 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
     const approval = requestEvent("event:approval", "request:approval", "message", "command");
     const eventSink = yield* EventSink.EventSinkV2;
     yield* eventSink.write({
-      events: [question, asyncQuestion, answered, approval],
+      events: [question, answered, approval],
     });
 
     yield* reactor.handle(question);
@@ -1409,7 +1410,16 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
         (message) => message.notification !== undefined,
       ),
     );
-    yield* reactor.handle(asyncQuestion);
+    const scanning = yield* Deferred.make<void>();
+    const admission = makeAdmission(
+      Deferred.succeed(scanning, undefined).pipe(Effect.as(["delegated-work"] as const)),
+    );
+    const token = Symbol();
+    yield* admission.drain(token, "1 minute").pipe(Effect.forkScoped);
+    yield* Deferred.await(scanning);
+    yield* admission.run("continuation", eventSink.write({ events: [asyncQuestion] }));
+    yield* reactor.handle(asyncQuestion).pipe(Effect.provideService(ServerAdmission, admission));
+    assert.isTrue(yield* admission.abort(token));
     assert.equal(
       (yield* projections.getThreadProjection(parentThreadId)).messages.filter(
         (message) => message.notification !== undefined,

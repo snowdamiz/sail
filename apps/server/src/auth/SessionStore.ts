@@ -1,3 +1,4 @@
+import { withAdmission } from "../serverAdmission.ts";
 import {
   AuthSessionId,
   AuthAdministrativeClientScopes,
@@ -662,6 +663,8 @@ const make = Effect.gen(function* () {
                   lastConnectedAt,
                 }),
               ),
+              withAdmission("root"),
+              Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
             )
           : Effect.void,
       ),

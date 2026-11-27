@@ -69,11 +69,26 @@ const ToolCallResponse = Schema.Struct({
 const decodeToolCallResponse = Schema.decodeUnknownEffect(Schema.fromJsonString(ToolCallResponse));
 const decodeFailure = Schema.decodeUnknownOption(
   Schema.fromJsonString(
-    Schema.Struct({ code: OrchestratorMcpFailure.fields.code, message: Schema.String }),
+    Schema.Struct({
+      code: OrchestratorMcpFailure.fields.code,
+      message: Schema.String,
+      retryable: OrchestratorMcpFailure.fields.retryable,
+    }),
   ),
 );
 
-/** A peer link problem, as the agent that asked hears it. */
+export type PeerMutationHook = (binding: {
+  readonly token: string;
+  readonly tool: string;
+  readonly arguments: Record<string, unknown>;
+}) => Effect.Effect<void, OrchestratorMcpFailure>;
+
+/** The local durable intent for this call, when it must survive a lost reply. */
+export class BeforePeerMutation extends Context.Reference<PeerMutationHook>(
+  "t3/peer/BeforePeerMutation",
+  { defaultValue: () => () => Effect.void },
+) {}
+
 const fromLinkError = (error: PeerLinkError) =>
   new OrchestratorMcpFailure({
     code:
@@ -83,6 +98,7 @@ const fromLinkError = (error: PeerLinkError) =>
           ? "capability_denied"
           : "orchestration_error",
     message: error.message,
+    ...(error.reason === "maintenance" ? { retryable: true } : {}),
   });
 
 /** Not final, so a task already running there resumes once the beta is on there again. */
@@ -235,6 +251,12 @@ const make = Effect.gen(function* () {
       if (existing === undefined) {
         yield* Ref.update(sessions, (current) => new Map(current).set(sessionKey, sessionId));
       }
+      const beforeMutation = yield* BeforePeerMutation;
+      yield* beforeMutation({
+        token: resolved.token,
+        tool: input.tool,
+        arguments: input.arguments,
+      });
       let response = yield* callOnce(sessionId);
       if (response.status === 404) {
         const renewed = yield* openSession(resolved, limitHeader);
@@ -287,6 +309,7 @@ const make = Effect.gen(function* () {
             ? new OrchestratorMcpFailure({
                 code: refused.value.code,
                 message: refused.value.message,
+                ...(refused.value.retryable === true ? { retryable: true } : {}),
               })
             : new OrchestratorMcpFailure({
                 code: "orchestration_error",

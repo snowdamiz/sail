@@ -1,3 +1,4 @@
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 import { deriveProviderInstanceConfigMap } from "../provider/ProviderInstanceRegistryHydration.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -589,6 +590,71 @@ it.layer(
   ),
   { excludeTestServices: true },
 )("TerminalManager", (it) => {
+  it.effect("keeps a detached PTY in the drain census until its exit callback", () =>
+    Effect.gen(function* () {
+      const scanned = yield* Deferred.make<void>();
+      const admission = makeAdmission(Deferred.succeed(scanned, undefined).pipe(Effect.as([])));
+      yield* Effect.gen(function* () {
+        const { manager, ptyAdapter, logsDir } = yield* createManager(5, {
+          processKillGraceMs: 5_000,
+        });
+        const input = openInput();
+        assert.equal((yield* manager.open(input)).status, "running");
+        const [process] = ptyAdapter.processes;
+        assert.isDefined(process);
+
+        const token = Symbol();
+        const draining = yield* admission.drain(token, "1 second").pipe(Effect.forkScoped);
+        yield* Deferred.await(scanned);
+        const write = yield* manager
+          .write({
+            threadId: input.threadId,
+            terminalId: input.terminalId,
+            data: "echo deferred",
+          })
+          .pipe(Effect.flip);
+        assert.equal(write._tag, "TerminalMaintenanceBusy");
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const unsubscribe = yield* manager.subscribe((event) =>
+          event.type === "output" && event.data === "first\n"
+            ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            : Effect.void,
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+        process.emitData("first\n");
+        yield* Deferred.await(entered);
+        process.emitData("accepted before close\n");
+        const closing = yield* manager
+          .close({ threadId: input.threadId, terminalId: input.terminalId })
+          .pipe(Effect.forkScoped({ startImmediately: true }));
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(closing);
+        const fs = yield* FileSystem.FileSystem;
+        expect(yield* fs.readFileString(yield* historyLogPath(logsDir))).toBe(
+          "first\naccepted before close\n",
+        );
+        assert.equal(
+          (yield* manager.open(input).pipe(Effect.flip))._tag,
+          "TerminalMaintenanceBusy",
+        );
+        assert.lengthOf(ptyAdapter.processes, 1);
+        yield* TestClock.adjust("1 second");
+        assert.deepEqual(yield* Fiber.join(draining), {
+          kind: "aborted",
+          reason: "deadline",
+          retryable: true,
+          blockers: ["terminal-process"],
+        });
+
+        process!.emitExit({ exitCode: 0, signal: null });
+        const nextToken = Symbol();
+        assert.deepEqual(yield* admission.drain(nextToken, "1 second"), { kind: "sealed" });
+        yield* admission.abort(nextToken);
+      }).pipe(Effect.provideService(ServerAdmission, admission));
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
   it.effect.each([
     { method: "open", location: "managed" },
     { method: "attach", location: "managed" },
@@ -2482,6 +2548,39 @@ it.layer(
         yield* fs.writeFileString(nonExecutable, "#!/bin/sh\nexit 0\n");
         yield* fs.chmod(nonExecutable, 0o644);
         const ptyAdapter = yield* PtyAdapter.PtyAdapter.pipe(Effect.provide(NodePtyAdapter.layer));
+        const admission = makeAdmission(Effect.succeed([]));
+        const nativeExit = yield* Deferred.make<void>();
+        yield* Effect.gen(function* () {
+          const manager = yield* TerminalManager.makeWithOptions({
+            logsDir: path.join(baseDir, "drain-logs"),
+            ptyAdapter: {
+              spawn: (input) =>
+                ptyAdapter.spawn(input).pipe(
+                  Effect.tap((child) =>
+                    Effect.sync(() =>
+                      child.onExit(() => {
+                        Deferred.doneUnsafe(nativeExit, Effect.void);
+                      }),
+                    ),
+                  ),
+                ),
+            },
+            shellResolver: () => "/bin/sh",
+          });
+          const input = openInput({ cwd: baseDir });
+          expect((yield* manager.open(input)).status).toBe("running");
+          const token = Symbol();
+          const draining = yield* admission
+            .drain(token, "10 seconds")
+            .pipe(Effect.forkScoped({ startImmediately: true }));
+          expect((yield* manager.open(input).pipe(Effect.flip))._tag).toBe(
+            "TerminalMaintenanceBusy",
+          );
+          yield* manager.close({ threadId: input.threadId });
+          yield* Deferred.await(nativeExit);
+          expect(yield* Fiber.join(draining)).toEqual({ kind: "sealed" });
+          yield* admission.abort(token);
+        }).pipe(Effect.provideService(ServerAdmission, admission));
         const toolsDir = path.join(baseDir, "tools");
         const customShell = path.join(toolsDir, "custom-shell");
         yield* fs.makeDirectory(toolsDir);

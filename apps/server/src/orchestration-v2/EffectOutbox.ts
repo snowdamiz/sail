@@ -1,3 +1,4 @@
+import { afterAdmissionReopens } from "../serverAdmission.ts";
 import {
   CheckpointId,
   CheckpointScopeId,
@@ -800,6 +801,7 @@ export const layerPruneWorker = Layer.effectDiscard(
     const outbox = yield* EffectOutboxV2;
     yield* forkParked(
       outbox.pruneSettled.pipe(
+        afterAdmissionReopens,
         Effect.catch((cause) => Effect.logWarning("Failed to prune settled effects", { cause })),
         Effect.repeat(Schedule.spaced(Duration.hours(1))),
       ),

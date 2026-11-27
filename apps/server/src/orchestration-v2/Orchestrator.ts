@@ -1,3 +1,10 @@
+import {
+  forkAccepted,
+  ServerAdmission,
+  ServerMaintenanceBusy,
+  withAdmission,
+} from "../serverAdmission.ts";
+import { admitCommand } from "./CommandAdmission.ts";
 import type {
   OrchestrationV2ThreadLinkMetadata,
   GuestShareId,
@@ -110,6 +117,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FiberSet from "effect/FiberSet";
+import * as Queue from "effect/Queue";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
@@ -401,6 +409,7 @@ export const OrchestratorV2Error = Schema.Union([
   OrchestratorThreadAboveModeLimitError,
   OrchestratorProviderSelectionBusyError,
   OrchestratorRuntimeModeAboveCeilingError,
+  ServerMaintenanceBusy,
 ]);
 export type OrchestratorV2Error = typeof OrchestratorV2Error.Type;
 
@@ -1657,6 +1666,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const commandPolicy = yield* CommandPolicyV2;
   const contextHandoffService = yield* ContextHandoffServiceV2;
   const eventSink = yield* EventSinkV2;
+  const admission = yield* ServerAdmission;
+  const scope = yield* Effect.scope;
   const commandReceipts = yield* CommandReceiptStoreV2;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
@@ -10733,7 +10744,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const remoteChild =
       command.stoppedThere === undefined
         ? task.remoteChild
-        : { ...task.remoteChild!, stoppedThere: true };
+        : {
+            ...task.remoteChild!,
+            stoppedThere: true,
+            ...(command.settlementVerified ? { settlementVerified: true as const } : {}),
+          };
     // The first result stands; a repeated follower report records nothing, which
     // the dispatcher refuses. A stop there after the result is still recorded, but
     // a run that ended by itself does not settle a stop the task here still owes.
@@ -10747,7 +10762,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         task.status === "interrupted" ||
         task.remoteChild?.stoppedThere === false;
       if (
-        task.remoteChild?.stoppedThere === true ||
+        (task.remoteChild?.stoppedThere === true &&
+          (task.remoteChild.settlementVerified === true || command.settlementVerified !== true)) ||
         (owesStop && command.stoppedThere !== "stopped")
       )
         return;
@@ -10887,6 +10903,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     remoteChild: OrchestrationV2RemoteTaskChild,
   ) {
     const now = yield* DateTime.now;
+    const { settlementVerified: _previousProof, ...child } = remoteChild;
     yield* emit(
       events,
       command,
@@ -10900,7 +10917,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       payload: {
         ...task,
         remoteChild: {
-          ...remoteChild,
+          ...child,
           stoppedThere: false,
           stopCount: (remoteChild.stopCount ?? 0) + 1,
         },
@@ -16820,69 +16837,72 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
-  const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
-    // The latest stable run is the one with a checkpoint. Wait for a just-completed run's capture,
-    // outside the locks its commit takes, so a fork right after a turn starts from that turn.
-    if (
-      (command.type === "thread.fork" || command.type === "thread.merge_back") &&
-      command.sourcePoint.type === "latest_stable"
-    ) {
-      yield* awaitLatestRunCapture(command.sourceThreadId);
-    }
-    const dispatch = threadDispatch.withLock(
-      commandThreadId(command),
-      dispatchWithReceiptEffect(command),
-    );
-    // A fork holds its source's lock, so a source deletion and its fork never interleave. A
-    // parent's lock comes before its side chats' locks. A side chat fork from a side chat or a
-    // fork onto an existing thread would invert that order; dispatch rejects both, so they skip it.
-    if (command.type === "thread.fork" && command.sourceThreadId !== command.targetThreadId) {
-      const source = yield* findThread(command.sourceThreadId);
-      const target = yield* findThread(command.targetThreadId);
-      const skipsSourceLock =
-        source === null ||
-        target !== null ||
-        (command.sideChat === true && source.lineage.sideChat === true);
-      return yield* skipsSourceLock
-        ? dispatch
-        : threadDispatch.withLock(command.sourceThreadId, dispatch);
-    }
-    if (
-      command.type === "thread.delete" ||
-      command.type === "thread.archive" ||
-      command.type === "thread.unarchive"
-    ) {
-      const cascade = threadDispatch.withLock(
-        command.threadId,
-        liveSideChatIds(command.threadId).pipe(
-          Effect.flatMap((sideChatIds) =>
-            sideChatIds.reduce(
-              (locked, sideChatId) => threadDispatch.withLock(sideChatId, locked),
-              dispatchWithReceiptEffect(command, sideChatIds),
+  const dispatchWithReceipt = Effect.fnUntraced(
+    function* (command: OrchestrationV2ServerCommand) {
+      // The latest stable run is the one with a checkpoint. Wait for a just-completed run's capture,
+      // outside the locks its commit takes, so a fork right after a turn starts from that turn.
+      if (
+        (command.type === "thread.fork" || command.type === "thread.merge_back") &&
+        command.sourcePoint.type === "latest_stable"
+      ) {
+        yield* awaitLatestRunCapture(command.sourceThreadId);
+      }
+      const dispatch = threadDispatch.withLock(
+        commandThreadId(command),
+        dispatchWithReceiptEffect(command),
+      );
+      // A fork holds its source's lock, so a source deletion and its fork never interleave. A
+      // parent's lock comes before its side chats' locks. A side chat fork from a side chat or a
+      // fork onto an existing thread would invert that order; dispatch rejects both, so they skip it.
+      if (command.type === "thread.fork" && command.sourceThreadId !== command.targetThreadId) {
+        const source = yield* findThread(command.sourceThreadId);
+        const target = yield* findThread(command.targetThreadId);
+        const skipsSourceLock =
+          source === null ||
+          target !== null ||
+          (command.sideChat === true && source.lineage.sideChat === true);
+        return yield* skipsSourceLock
+          ? dispatch
+          : threadDispatch.withLock(command.sourceThreadId, dispatch);
+      }
+      if (
+        command.type === "thread.delete" ||
+        command.type === "thread.archive" ||
+        command.type === "thread.unarchive"
+      ) {
+        const cascade = threadDispatch.withLock(
+          command.threadId,
+          liveSideChatIds(command.threadId).pipe(
+            Effect.flatMap((sideChatIds) =>
+              sideChatIds.reduce(
+                (locked, sideChatId) => threadDispatch.withLock(sideChatId, locked),
+                dispatchWithReceiptEffect(command, sideChatIds),
+              ),
             ),
           ),
-        ),
-      );
-      return yield* command.type === "thread.delete"
-        ? threadDispatch.withDeletionLock(cascade)
-        : cascade;
-    }
-    // Taken before the lineage read, so a message whose read yields keeps its
-    // place ahead of later messages to the same thread.
-    const message =
-      command.type === "thread.metadata.update" ? metadataUpdateContinuation(command) : command;
-    if (message?.type === "message.dispatch")
-      return yield* messageIntake.withLock(
-        message.threadId,
-        mayStartSubagentFollowup(message)
-          ? withSubagentParentLock(message.threadId, dispatch)
-          : dispatch,
-      );
-    // Answering a message-mode question can also start a follow-up.
-    return yield* command.type === "runtime-request.respond"
-      ? withSubagentParentLock(command.threadId, dispatch)
-      : dispatch;
-  });
+        );
+        return yield* command.type === "thread.delete"
+          ? threadDispatch.withDeletionLock(cascade)
+          : cascade;
+      }
+      // Taken before the lineage read, so a message whose read yields keeps its
+      // place ahead of later messages to the same thread.
+      const message =
+        command.type === "thread.metadata.update" ? metadataUpdateContinuation(command) : command;
+      if (message?.type === "message.dispatch")
+        return yield* messageIntake.withLock(
+          message.threadId,
+          mayStartSubagentFollowup(message)
+            ? withSubagentParentLock(message.threadId, dispatch)
+            : dispatch,
+        );
+      // Answering a message-mode question can also start a follow-up.
+      return yield* command.type === "runtime-request.respond"
+        ? withSubagentParentLock(command.threadId, dispatch)
+        : dispatch;
+    },
+    (effect, command) => admitCommand(command)(effect),
+  );
 
   const parentTaskSyncRetries = yield* FiberSet.make();
   const syncDelegatedParentTask = Effect.fn("Orchestrator.syncDelegatedParentTask")(function* (
@@ -16928,7 +16948,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   cause,
                 }),
               ),
-              FiberSet.run(parentTaskSyncRetries),
+              forkAccepted(scope),
+              Effect.tap((fiber) => FiberSet.add(parentTaskSyncRetries, fiber)),
+              Effect.ignoreCause({ log: true }),
             ),
           ),
         ),
@@ -17018,32 +17040,36 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   // Projections already contain historical terminals; replaying them delays startup queue promotion with database size.
   const terminalEventsAfterSequence = yield* eventSink.latestSequence().pipe(Effect.orDie);
-  // Filter run updates before buffering so blocked queue promotion does not retain unrelated tool bodies.
-  yield* eventSink
-    .stream({ afterSequence: terminalEventsAfterSequence, eventType: "run.updated" })
-    .pipe(
-      Stream.filter(
-        (stored) =>
-          stored.event.type === "run.updated" &&
-          (!String(stored.commandId).startsWith("command:runtime-reconcile:") ||
-            (stored.event.payload.delegatedTaskId !== undefined &&
-              stored.event.payload.status === "queued" &&
-              stored.event.payload.queueHeld === true)) &&
-          ((stored.event.payload.delegatedTaskId !== undefined &&
-            (stored.event.payload.status === "queued" ||
-              stored.event.payload.status === "starting" ||
-              stored.event.payload.status === "waiting")) ||
-            stored.event.payload.status === "completed" ||
-            stored.event.payload.status === "interrupted" ||
-            stored.event.payload.status === "failed" ||
-            stored.event.payload.status === "cancelled" ||
-            stored.event.payload.status === "rolled_back"),
+  const runUpdates = yield* Queue.unbounded<{
+    readonly stored: OrchestrationV2StoredEvent;
+    readonly release: (() => void) | undefined;
+  }>();
+  yield* eventSink.onCommittedRunUpdates((stored) => {
+    if (stored.event.type !== "run.updated") return;
+    const run = stored.event.payload;
+    const delegatedProgress =
+      run.delegatedTaskId !== undefined &&
+      (run.status === "queued" || run.status === "starting" || run.status === "waiting");
+    if (String(stored.commandId).startsWith("command:runtime-reconcile:")) {
+      if (!(delegatedProgress && run.status === "queued" && run.queueHeld === true)) return;
+    } else if (!delegatedProgress && delegatedTaskTerminalStatus(run.status) === null) return;
+    const release = admission?.trackLifetime("run-settlement");
+    Queue.offerUnsafe(runUpdates, { stored, release });
+  });
+  yield* Effect.forever(
+    Queue.take(runUpdates).pipe(
+      Effect.flatMap(({ stored, release }) =>
+        threadReactions.run(
+          stored.event.threadId,
+          handleRunUpdate(stored).pipe(
+            withAdmission("continuation"),
+            Effect.ignoreCause({ log: true }),
+            Effect.ensuring(Effect.sync(() => release?.())),
+          ),
+        ),
       ),
-      Stream.runForEach((stored) =>
-        threadReactions.run(stored.event.threadId, handleRunUpdate(stored)),
-      ),
-      Effect.forkScoped,
-    );
+    ),
+  ).pipe(Effect.forkScoped);
 
   yield* eventSink
     .stream({ afterSequence: terminalEventsAfterSequence, eventType: "provider-turn.updated" })
@@ -17133,7 +17159,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ).pipe(
     Stream.filter(settlesChildWork),
     Stream.runForEach((stored) =>
-      threadReactions.run(stored.event.threadId, updateDelegatedParentTask(stored.event.threadId)),
+      threadReactions.run(
+        stored.event.threadId,
+        updateDelegatedParentTask(stored.event.threadId).pipe(
+          withAdmission("continuation"),
+          Effect.ignoreCause({ log: true }),
+        ),
+      ),
     ),
     Effect.forkScoped,
   );
@@ -17454,7 +17486,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           );
         }),
       );
-    }),
+    }, withAdmission("root")),
     searchThreadStream: (input) =>
       projectionStore
         .searchThreadStream(input)

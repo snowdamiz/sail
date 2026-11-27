@@ -26,6 +26,8 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 
 /** Long enough for the client to reach the linked environment and redeem it, and no longer. */
+import { withAdmission } from "../serverAdmission.ts";
+
 const CLIENT_PAIRING_TTL = Duration.minutes(3);
 const CLIENT_LABEL_MAX_LENGTH = 80;
 
@@ -176,80 +178,90 @@ const make = Effect.gen(function* () {
     );
 
   /** Asks the linked environment for a pairing; `payload` says for whom. */
-  const ask = Effect.fn("PeerClientPairing.ask")(function* (
-    input: { readonly environmentId: PeerLinkClientPairingInput["environmentId"] },
-    sessionId: AuthSessionId,
-    payload: (clientLabel: string) => PeerLinkClientPairingRequest,
-  ) {
-    if (!(yield* links.enabled)) {
-      return yield* new PeerLinkError({
-        reason: "disabled",
-        message: PeerLinks.LINKED_ENVIRONMENTS_OFF,
-      });
-    }
-    const stored = yield* links.get(input.environmentId);
-    if (Option.isNone(stored)) {
-      return yield* new PeerLinkError({
-        reason: "unknown_link",
-        message: "This environment is no longer linked to that one.",
-      });
-    }
-    const { environmentId, label, urls, access, expiresAt } = stored.value;
-    if (DateTime.isLessThanOrEqualTo(expiresAt, yield* DateTime.now)) {
-      return yield* new PeerLinkError({
-        reason: "expired",
-        message: `The link to ${label} expired. Link it again with a new pairing code from ${label}.`,
-      });
-    }
-    const unsupported = (
-      reason: Extract<PeerLinkClientPairingResult, { type: "unsupported" }>["reason"],
-      name = label,
-    ): PeerLinkClientPairingResult => ({
-      type: "unsupported",
-      environmentId,
-      label: name,
-      urls,
-      reason,
-    });
-    // The linked environment refuses this too; asking would only spend a round trip.
-    if (access !== "full-access") return unsupported("link_access");
-    const resolved = yield* links.resolve(input.environmentId).pipe(Effect.option);
-    if (Option.isNone(resolved)) return unsupported("unreachable");
-    const peer = resolved.value;
-    const request = payload(yield* clientLabelOf(sessionId));
-    if (
-      peer.capabilities.linkClientPairing !== true ||
-      // One from before this would read the request as a client's and pair the client instead.
-      (request.link !== undefined && peer.capabilities.linkPairingForLink !== true)
+  const ask = Effect.fn("PeerClientPairing.ask")(
+    function* (
+      input: { readonly environmentId: PeerLinkClientPairingInput["environmentId"] },
+      sessionId: AuthSessionId,
+      payload: (clientLabel: string) => PeerLinkClientPairingRequest,
     ) {
-      return unsupported("version", peer.link.label);
-    }
-    const api = yield* HttpApiClient.make(ClientPairingApi, { baseUrl: peer.url }).pipe(
-      Effect.provideService(HttpClient.HttpClient, httpClient),
-    );
-    return yield* api.peerLink
-      .clientPairing({
-        headers: { authorization: `Bearer ${peer.token}` },
-        payload: request,
-      })
-      .pipe(
-        Effect.timeout(PeerLinks.probeTimeout(peer.url)),
-        Effect.map((issued): PeerLinkClientPairingResult => ({
-          type: "credential",
-          environmentId,
-          label: peer.link.label,
-          urls,
-          credential: issued.credential,
-          expiresAt: issued.expiresAt,
-        })),
-        // No cause is logged or returned: a response this version cannot read may hold the credential.
-        Effect.catchTags({
-          HttpClientError: () => Effect.succeed(unsupported("unreachable", peer.link.label)),
-          TimeoutError: () => Effect.succeed(unsupported("unreachable", peer.link.label)),
-        }),
-        Effect.orElseSucceed(() => unsupported("refused", peer.link.label)),
+      if (!(yield* links.enabled)) {
+        return yield* new PeerLinkError({
+          reason: "disabled",
+          message: PeerLinks.LINKED_ENVIRONMENTS_OFF,
+        });
+      }
+      const stored = yield* links.get(input.environmentId);
+      if (Option.isNone(stored)) {
+        return yield* new PeerLinkError({
+          reason: "unknown_link",
+          message: "This environment is no longer linked to that one.",
+        });
+      }
+      const { environmentId, label, urls, access, expiresAt } = stored.value;
+      if (DateTime.isLessThanOrEqualTo(expiresAt, yield* DateTime.now)) {
+        return yield* new PeerLinkError({
+          reason: "expired",
+          message: `The link to ${label} expired. Link it again with a new pairing code from ${label}.`,
+        });
+      }
+      const unsupported = (
+        reason: Extract<PeerLinkClientPairingResult, { type: "unsupported" }>["reason"],
+        name = label,
+      ): PeerLinkClientPairingResult => ({
+        type: "unsupported",
+        environmentId,
+        label: name,
+        urls,
+        reason,
+      });
+      // The linked environment refuses this too; asking would only spend a round trip.
+      if (access !== "full-access") return unsupported("link_access");
+      const resolved = yield* links.resolve(input.environmentId).pipe(Effect.option);
+      if (Option.isNone(resolved)) return unsupported("unreachable");
+      const peer = resolved.value;
+      const request = payload(yield* clientLabelOf(sessionId));
+      if (
+        peer.capabilities.linkClientPairing !== true ||
+        // One from before this would read the request as a client's and pair the client instead.
+        (request.link !== undefined && peer.capabilities.linkPairingForLink !== true)
+      ) {
+        return unsupported("version", peer.link.label);
+      }
+      const api = yield* HttpApiClient.make(ClientPairingApi, { baseUrl: peer.url }).pipe(
+        Effect.provideService(HttpClient.HttpClient, httpClient),
       );
-  });
+      return yield* api.peerLink
+        .clientPairing({
+          headers: { authorization: `Bearer ${peer.token}` },
+          payload: request,
+        })
+        .pipe(
+          Effect.timeout(PeerLinks.probeTimeout(peer.url)),
+          Effect.map((issued): PeerLinkClientPairingResult => ({
+            type: "credential",
+            environmentId,
+            label: peer.link.label,
+            urls,
+            credential: issued.credential,
+            expiresAt: issued.expiresAt,
+          })),
+          // No cause is logged or returned: a response this version cannot read may hold the credential.
+          Effect.catchTags({
+            HttpClientError: () => Effect.succeed(unsupported("unreachable", peer.link.label)),
+            TimeoutError: () => Effect.succeed(unsupported("unreachable", peer.link.label)),
+          }),
+          Effect.orElseSucceed(() => unsupported("refused", peer.link.label)),
+        );
+    },
+    (work) =>
+      work.pipe(
+        withAdmission("root"),
+        Effect.catchTags({
+          ServerMaintenanceBusy: (cause) =>
+            new PeerLinkError({ reason: "maintenance", message: cause.message, cause }),
+        }),
+      ),
+  );
 
   const request: PeerClientPairing["Service"]["request"] = (input, client) =>
     ask(input, client.sessionId, (clientLabel) => ({ scopes: client.scopes, clientLabel }));

@@ -5,11 +5,13 @@ import {
   ATTACHMENT_UPLOAD_URL_TTL_MS,
   type AttachmentCreateUploadUrlInput,
   AttachmentUploadSigningKeyError,
+  PersistChatAttachmentsError,
 } from "@t3tools/contracts";
 import { isSvgAttachment } from "@t3tools/shared/image";
 import * as Clock from "effect/Clock";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import { withAdmission } from "../serverAdmission.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -64,58 +66,62 @@ function decodeClaims(encodedPayload: string): AttachmentUploadClaims | null {
   }
 }
 
-export const issueAttachmentUploadUrl = Effect.fn("AttachmentUpload.issueUrl")(function* (
-  input: AttachmentCreateUploadUrlInput,
-) {
-  const config = yield* ServerConfig.ServerConfig;
-  const nowMs = yield* Clock.currentTimeMillis;
-  const previousSweep = lastPendingSweepByDirectory.get(config.attachmentsDir);
-  if (
-    previousSweep === undefined ||
-    nowMs - previousSweep >= PENDING_ATTACHMENT_SWEEP_INTERVAL_MS
-  ) {
-    lastPendingSweepByDirectory.set(config.attachmentsDir, nowMs);
-    const swept = sweepStalePendingAttachments({
-      attachmentsDir: config.attachmentsDir,
-      nowMs,
-    });
-    if (swept.deleted > 0) {
-      yield* Effect.logInfo("Removed expired attachment uploads.", { deleted: swept.deleted });
+export const issueAttachmentUploadUrl = Effect.fn("AttachmentUpload.issueUrl")(
+  function* (input: AttachmentCreateUploadUrlInput) {
+    const config = yield* ServerConfig.ServerConfig;
+    const nowMs = yield* Clock.currentTimeMillis;
+    const previousSweep = lastPendingSweepByDirectory.get(config.attachmentsDir);
+    if (
+      previousSweep === undefined ||
+      nowMs - previousSweep >= PENDING_ATTACHMENT_SWEEP_INTERVAL_MS
+    ) {
+      lastPendingSweepByDirectory.set(config.attachmentsDir, nowMs);
+      const swept = sweepStalePendingAttachments({
+        attachmentsDir: config.attachmentsDir,
+        nowMs,
+      });
+      if (swept.deleted > 0) {
+        yield* Effect.logInfo("Removed expired attachment uploads.", { deleted: swept.deleted });
+      }
     }
-  }
 
-  const attachmentType = input.type ?? "image";
-  const name =
-    attachmentType === "file" && isSvgAttachment(input) && !/\.svg$/i.test(input.name)
-      ? `${input.name}.svg`
-      : input.name;
-  const attachmentId = createPendingAttachmentId(
-    attachmentType === "file" ? attachmentFileExtension(name) : undefined,
-  );
-  const expiresAt = nowMs + ATTACHMENT_UPLOAD_URL_TTL_MS;
-  const encodedPayload = base64UrlEncode(
-    encodeAttachmentUploadClaims({
-      version: 1,
-      kind: "attachment-upload",
-      type: attachmentType,
+    const attachmentType = input.type ?? "image";
+    const name =
+      attachmentType === "file" && isSvgAttachment(input) && !/\.svg$/i.test(input.name)
+        ? `${input.name}.svg`
+        : input.name;
+    const attachmentId = createPendingAttachmentId(
+      attachmentType === "file" ? attachmentFileExtension(name) : undefined,
+    );
+    const expiresAt = nowMs + ATTACHMENT_UPLOAD_URL_TTL_MS;
+    const encodedPayload = base64UrlEncode(
+      encodeAttachmentUploadClaims({
+        version: 1,
+        kind: "attachment-upload",
+        type: attachmentType,
+        attachmentId,
+        name,
+        mimeType: input.mimeType,
+        sizeBytes: input.sizeBytes,
+        expiresAt,
+      }),
+    );
+
+    const signer = yield* AssetSigner.AssetSigner;
+    const signature = yield* signer
+      .sign(encodedPayload)
+      .pipe(Effect.mapError((cause) => new AttachmentUploadSigningKeyError({ cause })));
+    return {
       attachmentId,
-      name,
-      mimeType: input.mimeType,
-      sizeBytes: input.sizeBytes,
+      relativeUrl: `${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/${encodedPayload}.${signature}`,
       expiresAt,
-    }),
-  );
-
-  const signer = yield* AssetSigner.AssetSigner;
-  const signature = yield* signer
-    .sign(encodedPayload)
-    .pipe(Effect.mapError((cause) => new AttachmentUploadSigningKeyError({ cause })));
-  return {
-    attachmentId,
-    relativeUrl: `${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/${encodedPayload}.${signature}`,
-    expiresAt,
-  };
-});
+    };
+  },
+  withAdmission("root"),
+  Effect.catchTags({
+    ServerMaintenanceBusy: (cause) => new AttachmentUploadSigningKeyError({ cause }),
+  }),
+);
 
 export const validateAttachmentUploadToken = Effect.fn("AttachmentUpload.validateToken")(function* (
   token: string,
@@ -147,143 +153,159 @@ export type StoreAttachmentUploadResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly status: number; readonly detail: string };
 
-export const storeAttachmentUpload = Effect.fn("AttachmentUpload.store")(function* (
-  claims: AttachmentUploadClaims,
-  body: Uint8Array | HttpServerRequest.HttpServerRequest["stream"],
-) {
-  if (body instanceof Uint8Array && body.byteLength !== claims.sizeBytes) {
-    return {
-      ok: false,
-      status: 400,
-      detail: `Body was ${body.byteLength} bytes, expected ${claims.sizeBytes}.`,
-    } satisfies StoreAttachmentUploadResult;
-  }
-
-  const config = yield* ServerConfig.ServerConfig;
-  const extension =
-    claims.type === "file"
-      ? attachmentFileExtension(claims.name)
-      : inferImageExtension({ mimeType: claims.mimeType, fileName: claims.name });
-  const relativePath = `${claims.attachmentId}${extension}`;
-  const finalPath = resolveAttachmentRelativePath({
-    attachmentsDir: config.attachmentsDir,
-    relativePath,
-  });
-  const random = yield* SecureRandom.SecureRandom;
-  const partId = yield* random.uuidV4();
-  const partPath = resolveAttachmentRelativePath({
-    attachmentsDir: config.attachmentsDir,
-    relativePath: `${relativePath}.${partId}.part`,
-  });
-  if (!finalPath || !partPath) {
-    return { ok: false, status: 500, detail: "Failed to resolve attachment path." };
-  }
-
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  let receivedBytes = 0;
-  const bodyStream = body instanceof Uint8Array ? Stream.make(body) : body;
-  return yield* Effect.gen(function* () {
-    yield* fileSystem.makeDirectory(path.dirname(finalPath), { recursive: true });
-    yield* Stream.run(
-      bodyStream.pipe(
-        Stream.takeWhile((chunk) => {
-          receivedBytes += chunk.byteLength;
-          return receivedBytes <= claims.sizeBytes;
-        }),
-      ),
-      fileSystem.sink(partPath),
-    );
-    if (receivedBytes !== claims.sizeBytes) {
+export const storeAttachmentUpload = Effect.fn("AttachmentUpload.store")(
+  function* (
+    claims: AttachmentUploadClaims,
+    body: Uint8Array | HttpServerRequest.HttpServerRequest["stream"],
+  ) {
+    if (body instanceof Uint8Array && body.byteLength !== claims.sizeBytes) {
       return {
         ok: false,
         status: 400,
-        detail: `Body was ${receivedBytes} bytes, expected ${claims.sizeBytes}.`,
+        detail: `Body was ${body.byteLength} bytes, expected ${claims.sizeBytes}.`,
       } satisfies StoreAttachmentUploadResult;
     }
-    // Publishing without replacement keeps an upload and its cached text immutable.
-    const published = yield* fileSystem.link(partPath, finalPath).pipe(
-      Effect.as(true),
-      Effect.catch((error) => {
-        if (error.reason._tag === "AlreadyExists") return Effect.succeed(false);
-        return Effect.tryPromise({
-          try: () => NodeFSP.copyFile(partPath, finalPath, NodeFSP.constants.COPYFILE_EXCL),
-          catch: (cause) =>
-            PlatformError.systemError({
-              _tag:
-                cause instanceof Error && "code" in cause && cause.code === "EEXIST"
-                  ? "AlreadyExists"
-                  : "Unknown",
-              module: "FileSystem",
-              method: "copyFile",
-              pathOrDescriptor: finalPath,
-              cause,
-            }),
-        }).pipe(
-          Effect.as(true),
-          Effect.catchIf(
-            (error) => error.reason._tag === "AlreadyExists",
-            () => Effect.succeed(false),
+
+    const config = yield* ServerConfig.ServerConfig;
+    const extension =
+      claims.type === "file"
+        ? attachmentFileExtension(claims.name)
+        : inferImageExtension({ mimeType: claims.mimeType, fileName: claims.name });
+    const relativePath = `${claims.attachmentId}${extension}`;
+    const finalPath = resolveAttachmentRelativePath({
+      attachmentsDir: config.attachmentsDir,
+      relativePath,
+    });
+    const random = yield* SecureRandom.SecureRandom;
+    const partId = yield* random.uuidV4();
+    const partPath = resolveAttachmentRelativePath({
+      attachmentsDir: config.attachmentsDir,
+      relativePath: `${relativePath}.${partId}.part`,
+    });
+    if (!finalPath || !partPath) {
+      return { ok: false, status: 500, detail: "Failed to resolve attachment path." };
+    }
+
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    let receivedBytes = 0;
+    const bodyStream = body instanceof Uint8Array ? Stream.make(body) : body;
+    return yield* Effect.gen(function* () {
+      yield* fileSystem.makeDirectory(path.dirname(finalPath), { recursive: true });
+      yield* Stream.run(
+        bodyStream.pipe(
+          Stream.takeWhile((chunk) => {
+            receivedBytes += chunk.byteLength;
+            return receivedBytes <= claims.sizeBytes;
+          }),
+        ),
+        fileSystem.sink(partPath),
+      );
+      if (receivedBytes !== claims.sizeBytes) {
+        return {
+          ok: false,
+          status: 400,
+          detail: `Body was ${receivedBytes} bytes, expected ${claims.sizeBytes}.`,
+        } satisfies StoreAttachmentUploadResult;
+      }
+      // Publishing without replacement keeps an upload and its cached text immutable.
+      const published = yield* fileSystem.link(partPath, finalPath).pipe(
+        Effect.as(true),
+        Effect.catch((error) => {
+          if (error.reason._tag === "AlreadyExists") return Effect.succeed(false);
+          return Effect.tryPromise({
+            try: () => NodeFSP.copyFile(partPath, finalPath, NodeFSP.constants.COPYFILE_EXCL),
+            catch: (cause) =>
+              PlatformError.systemError({
+                _tag:
+                  cause instanceof Error && "code" in cause && cause.code === "EEXIST"
+                    ? "AlreadyExists"
+                    : "Unknown",
+                module: "FileSystem",
+                method: "copyFile",
+                pathOrDescriptor: finalPath,
+                cause,
+              }),
+          }).pipe(
+            Effect.as(true),
+            Effect.catchIf(
+              (error) => error.reason._tag === "AlreadyExists",
+              () => Effect.succeed(false),
+            ),
+          );
+        }),
+      );
+      if (!published) {
+        if (Number((yield* fileSystem.stat(finalPath)).size) !== receivedBytes) {
+          return { ok: false, status: 409, detail: "Attachment already uploaded." };
+        }
+        const hashes = yield* Effect.forEach([partPath, finalPath], (file) =>
+          fileSystem.stream(file).pipe(
+            Stream.runFold(
+              () => NodeCrypto.createHash("sha256"),
+              (hash, chunk) => hash.update(chunk),
+            ),
+            Effect.map((hash) => hash.digest("hex")),
           ),
         );
-      }),
-    );
-    if (!published) {
-      if (Number((yield* fileSystem.stat(finalPath)).size) !== receivedBytes) {
-        return { ok: false, status: 409, detail: "Attachment already uploaded." };
+        if (hashes[0] !== hashes[1]) {
+          return { ok: false, status: 409, detail: "Attachment already uploaded." };
+        }
       }
-      const hashes = yield* Effect.forEach([partPath, finalPath], (file) =>
-        fileSystem.stream(file).pipe(
-          Stream.runFold(
-            () => NodeCrypto.createHash("sha256"),
-            (hash, chunk) => hash.update(chunk),
-          ),
-          Effect.map((hash) => hash.digest("hex")),
+      const documents = yield* DocumentText.DocumentText;
+      yield* documents.ensure(finalPath);
+      return { ok: true } satisfies StoreAttachmentUploadResult;
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.logError("Failed to persist attachment upload.", {
+          attachmentId: claims.attachmentId,
+          cause,
+        }).pipe(
+          Effect.as({
+            ok: false,
+            status: 500,
+            detail: "Failed to persist upload.",
+          } satisfies StoreAttachmentUploadResult),
         ),
-      );
-      if (hashes[0] !== hashes[1]) {
-        return { ok: false, status: 409, detail: "Attachment already uploaded." };
-      }
-    }
-    const documents = yield* DocumentText.DocumentText;
-    yield* documents.ensure(finalPath);
-    return { ok: true } satisfies StoreAttachmentUploadResult;
-  }).pipe(
-    Effect.catch((cause) =>
-      Effect.logError("Failed to persist attachment upload.", {
-        attachmentId: claims.attachmentId,
-        cause,
-      }).pipe(
-        Effect.as({
-          ok: false,
-          status: 500,
-          detail: "Failed to persist upload.",
-        } satisfies StoreAttachmentUploadResult),
       ),
-    ),
-    Effect.ensuring(
-      fileSystem.remove(partPath, { force: true }).pipe(Effect.orElseSucceed(() => undefined)),
-    ),
-  );
-});
+      Effect.ensuring(
+        fileSystem.remove(partPath, { force: true }).pipe(Effect.orElseSucceed(() => undefined)),
+      ),
+    );
+  },
+  withAdmission("root"),
+  Effect.catchTags({
+    ServerMaintenanceBusy: (cause) =>
+      Effect.succeed({
+        ok: false,
+        status: 503,
+        detail: cause.message,
+      } satisfies StoreAttachmentUploadResult),
+  }),
+);
 
-export const deletePendingAttachment = Effect.fn("AttachmentUpload.deletePending")(function* (
-  attachmentId: string,
-) {
-  if (parseThreadSegmentFromAttachmentId(attachmentId) !== PENDING_ATTACHMENT_THREAD_SEGMENT) {
-    return;
-  }
+export const deletePendingAttachment = Effect.fn("AttachmentUpload.deletePending")(
+  function* (attachmentId: string) {
+    if (parseThreadSegmentFromAttachmentId(attachmentId) !== PENDING_ATTACHMENT_THREAD_SEGMENT) {
+      return;
+    }
 
-  const config = yield* ServerConfig.ServerConfig;
-  const attachmentPath = resolveAttachmentPathById({
-    attachmentsDir: config.attachmentsDir,
-    attachmentId,
-  });
-  if (!attachmentPath) {
-    return;
-  }
+    const config = yield* ServerConfig.ServerConfig;
+    const attachmentPath = resolveAttachmentPathById({
+      attachmentsDir: config.attachmentsDir,
+      attachmentId,
+    });
+    if (!attachmentPath) {
+      return;
+    }
 
-  const fileSystem = yield* FileSystem.FileSystem;
-  yield* fileSystem.remove(attachmentPath, { force: true }).pipe(Effect.orElseSucceed(() => {}));
-  yield* fileSystem.remove(`${attachmentPath}.txt`, { force: true }).pipe(Effect.ignore);
-});
+    const fileSystem = yield* FileSystem.FileSystem;
+    yield* fileSystem.remove(attachmentPath, { force: true }).pipe(Effect.orElseSucceed(() => {}));
+    yield* fileSystem.remove(`${attachmentPath}.txt`, { force: true }).pipe(Effect.ignore);
+  },
+  withAdmission("root"),
+  Effect.catchTags({
+    ServerMaintenanceBusy: (cause) =>
+      new PersistChatAttachmentsError({ message: cause.message, cause }),
+  }),
+);

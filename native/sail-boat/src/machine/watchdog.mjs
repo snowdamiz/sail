@@ -8,6 +8,15 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import {
+  acknowledgeResume,
+  enrolled,
+  finishSnapshot,
+  maintenanceEligible,
+  readyReceipt,
+  reservePower,
+  sandboxBoot,
+} from "./boat-lifecycle.mjs";
 
 const HOME = NodeOS.homedir();
 const CONFIG_PATH = NodePath.join(HOME, ".sail-boat", "config.json");
@@ -113,6 +122,7 @@ let drainStartedAt = 0;
  * stops it. Only hold() clears it.
  */
 let snapshotCovered = false;
+let stopFenced = false;
 /** A `boat snapshot` this watchdog started still runs, whether or not its sleep was called off. */
 let saveRunning = false;
 let lastTickAt = Date.now();
@@ -127,6 +137,7 @@ let sleepBroken = false;
 // A stop ends any hold: after a cold resume (new boot) the stored one is void. A warm resume
 // keeps the boot, so the resume check in tick() ends it there.
 const BOOT_ID = readFileSafe("/proc/sys/kernel/random/boot_id").trim();
+let currentSandbox = config.bootId === sandboxBoot;
 const [storedUntil, storedBoot] = readFileSafe(KEEP_AWAKE_PATH).split(" ");
 let keepAwakeUntil = storedBoot === BOOT_ID ? Number(storedUntil) || 0 : 0;
 const keptAwake = () => Date.now() < keepAwakeUntil;
@@ -215,7 +226,7 @@ function readT3State() {
     }
     const events = db
       .prepare(
-        `SELECT MAX(sequence) AS last, SUM(event_type IN (${PERSON_EVENTS.map(() => "?").NodePath.join(",")})) AS person
+        `SELECT MAX(sequence) AS last, SUM(event_type IN (${PERSON_EVENTS.map(() => "?").join(",")})) AS person
          FROM orchestration_events WHERE sequence > ?`,
       )
       .get(...PERSON_EVENTS, eventCursor);
@@ -269,7 +280,7 @@ function workingBesidePrompt(waiting, ownWork) {
                SELECT 1 FROM orchestration_v2_projection_runtime_requests AS request
                JOIN orchestration_v2_projection_nodes AS gate ON gate.node_id = request.node_id
                WHERE request.thread_id = waiting.thread_id AND request.status = 'pending'
-                 AND request.kind NOT IN (${SELF_SETTLED.map((k) => `'${k}'`).NodePath.join(", ")})
+                 AND request.kind NOT IN (${SELF_SETTLED.map((k) => `'${k}'`).join(", ")})
                  AND (gate.parent_node_id = item.node_id
                    OR request.provider_turn_id = item.provider_turn_id
                      AND json_extract(request.payload_json, '$.nativeRequestRef.nativeId')
@@ -321,7 +332,8 @@ async function checkWorking() {
     signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) throw new Error(`shell snapshot: HTTP ${res.status}`);
-  const threads = (await res.json()).threads ?? [];
+  const { threads } = await res.json();
+  if (!Array.isArray(threads)) throw new Error("shell snapshot: missing threads");
   // A subagent T3 runs as its own thread on this machine counts by its own state: waiting for it
   // holds nothing more, so a child waiting on a person doesn't keep its parent's machine up. A
   // provider's own background agent shows no runs of its own, and one elsewhere isn't seen here:
@@ -378,13 +390,28 @@ function readManifest() {
  * and covers nothing. The drain's manifest stays: events since it call the stop off too.
  */
 async function save() {
+  let fd;
+  try {
+    if (enrolled()) fd = reservePower("snapshot", config.sandbox);
+  } catch (error) {
+    log("deferring snapshot", error.message);
+    return;
+  }
   phase = "saving";
   saveRunning = true;
   log("saving snapshot", config.snapshot);
-  // A machine that cannot save still sleeps: it must not bill on, and Boat keeps its disk 14 days.
-  await boat(["snapshot", config.sandbox, config.snapshot], SNAPSHOT_TIMEOUT_MS).catch((e) =>
-    log("snapshot failed", e.message),
-  );
+  try {
+    await boat(["snapshot", config.sandbox, config.snapshot], SNAPSHOT_TIMEOUT_MS, fd);
+    if (fd !== undefined) {
+      const completed = fd;
+      fd = undefined;
+      finishSnapshot(completed);
+    }
+  } catch (error) {
+    log("snapshot outcome unavailable", error.message);
+  } finally {
+    if (fd !== undefined) NodeFS.closeSync(fd);
+  }
   saveRunning = false;
   // Called off: it covers nothing. Still saving, it is this sleep's own: none starts beside one.
   if (phase !== "saving") return;
@@ -418,21 +445,27 @@ function hold(reason) {
   lastActivityAt = Date.now();
   if (phase !== "active") log(`back to active: ${reason}`);
   phase = "active";
+  stopFenced = false;
   manifest = null;
   snapshotCovered = false;
   sleepBroken = false;
 }
 
 /** Runs the Boat CLI, in a login shell for its PATH. */
-function boat(args, timeout) {
+function boat(args, timeout, fd) {
   return new Promise((resolve, reject) => {
-    NodeChildProcess.execFile(
+    const child = NodeChildProcess.spawn(
       "bash",
-      ["-lc", 'boat "$@" --json', "boat", ...args],
-      { timeout },
-      (err, stdout, stderr) =>
-        err ? reject(new Error(stderr.trim() || stdout.trim() || err.message)) : resolve(stdout),
+      ["-lc", 'exec boat "$@" --json', "boat", ...args],
+      { stdio: ["ignore", "ignore", "ignore", ...(fd === undefined ? [] : [fd])] },
     );
+    const deadline = setTimeout(() => child.kill("SIGKILL"), timeout);
+    child.once("error", reject);
+    child.once("close", (code) => {
+      clearTimeout(deadline);
+      if (code === 0) resolve();
+      else reject(new Error(`Boat command exited with status ${code}.`));
+    });
   });
 }
 
@@ -445,14 +478,26 @@ function markStopping(how) {
 }
 
 function stopSelf() {
+  let fd;
+  try {
+    if (enrolled()) fd = reservePower("stop", config.sandbox);
+  } catch (error) {
+    log("deferring stop", error.message);
+    return;
+  }
+  stopFenced = fd !== undefined;
   markStopping("stopping sandbox");
   selfStopAt = stopRequestedAt;
   const started = stopRequestedAt;
-  boat(["stop", config.sandbox], STOP_SETTLE_MS).catch((e) => {
-    log("boat stop failed", e.message);
-    // An error from an older attempt (one a warm resume woke) says nothing about this machine.
-    if (phase === "stopping" && stopRequestedAt === started) stopFailedNow();
-  });
+  boat(["stop", config.sandbox], STOP_SETTLE_MS, fd)
+    .catch((e) => {
+      log("boat stop failed", e.message);
+      // An error from an older attempt (one a warm resume woke) says nothing about this machine.
+      if (phase === "stopping" && stopRequestedAt === started) stopFailedNow();
+    })
+    .finally(() => {
+      if (fd !== undefined) NodeFS.closeSync(fd);
+    });
 }
 
 /**
@@ -465,6 +510,7 @@ function stopFailedNow() {
 }
 
 async function tick() {
+  if (!currentSandbox) return;
   const now = Date.now();
   // A drain begun during this tick's checks (by "Sleep now") waits for the next tick's.
   const drainBefore = drainStartedAt;
@@ -523,7 +569,7 @@ function finishDrain() {
   if (newEvents()) return touch("new events");
   // Right after a failed stop the laptop app stops it. Later, or with no app to, it retries:
   // counted from its own stop, so the app's retries can't put that off.
-  sleepBroken = stopFailed && Date.now() - selfStopAt < config.sleepAfterSecs * 1000;
+  sleepBroken = !enrolled() && stopFailed && Date.now() - selfStopAt < config.sleepAfterSecs * 1000;
   if (sleepBroken) return;
   if (snapshotCovered) stopSelf();
   // Not awaited: ticks go on during a save, so an agent starting to work calls it off.
@@ -531,7 +577,19 @@ function finishDrain() {
 }
 
 function status() {
+  let receipt;
+  let eligible = false;
+  try {
+    if (currentSandbox) {
+      receipt = readyReceipt();
+      eligible = maintenanceEligible();
+    }
+  } catch {}
   return {
+    ...(receipt === undefined ? {} : { maintenanceReady: receipt }),
+    sandbox: config.sandbox,
+    maintenanceEligible: eligible,
+    stopFenced: phase === "stopping" && stopFenced,
     phase,
     busy: isBusy(),
     cpuBusy: !agentsBusy() && cpuBusy(),
@@ -587,17 +645,21 @@ const server = NodeHttp.createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/activity") {
       // { resumed }: the proxy just resumed the sandbox, so the stop asked for here is over. A
       // tick only notices a freeze of RESUMED_GAP_MS or more.
-      const { resumed } = JSON.parse((await readBody(req)) || "{}");
-      if (resumed) {
+      const { resumed, sandbox } = JSON.parse((await readBody(req)) || "{}");
+      if (resumed && sandbox === config.sandbox) {
+        if (enrolled()) acknowledgeResume(sandbox);
+        currentSandbox = true;
         setKeepAwake(0);
         touch("resumed");
         return reply(200, status());
       }
+      if (!currentSandbox) return reply(409, { error: "sandbox identity pending", ...status() });
       // Too late to call off a stop: the proxy waits for it and resumes the machine.
       if (phase === "stopping") return reply(409, { error: "stopping", ...status() });
       touch("user activity");
       return reply(200, status());
     }
+    if (!currentSandbox) return reply(409, { error: "sandbox identity pending", ...status() });
     if (req.method === "POST" && req.url === "/drain") {
       // "Sleep now". Never mid-turn; it does end a keep-awake. Drains on this fresh
       // check; the tick decides the stop as usual.
@@ -633,7 +695,7 @@ const server = NodeHttp.createServer(async (req, res) => {
       // The proxy captured this state and saves the snapshot once stopped: no need to wait out
       // the grace period. The next tick decides the stop, after its usual checks.
       const { sequence } = JSON.parse((await readBody(req)) || "{}");
-      if (phase === "draining" && manifest && sequence === manifest.sequence)
+      if (!enrolled() && phase === "draining" && manifest && sequence === manifest.sequence)
         snapshotCovered = true;
       return reply(200, status());
     }
@@ -649,7 +711,7 @@ const server = NodeHttp.createServer(async (req, res) => {
         return reply(200, status());
       }
       const notNow = () => reply(409, { error: "not now", ...status() });
-      if (!sleepBroken) return notNow();
+      if (enrolled() || !sleepBroken) return notNow();
       await refreshWorking();
       // A tick may have stopped or held it meanwhile.
       if (!sleepBroken) return notNow();
@@ -669,12 +731,12 @@ const server = NodeHttp.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "127.0.0.1", () =>
-  log(`watchdog on ${PORT}, sleep after ${config.sleepAfterSecs}s`),
-);
 // One tick at a time: a slow T3 check must never finish after a newer tick started a stop.
 async function loop() {
   await tick().catch((e) => log("tick failed", e.message));
   setTimeout(loop, TICK_MS);
 }
+server.listen(PORT, "127.0.0.1", () =>
+  log(`watchdog on ${PORT}, sleep after ${config.sleepAfterSecs}s`),
+);
 loop();

@@ -400,7 +400,13 @@ export class PreviewClearProfileError extends Schema.TaggedError<PreviewClearPro
   }
 }
 
+export class PreviewMaintenanceError extends Schema.TaggedError<PreviewMaintenanceError>()(
+  "PreviewMaintenanceError",
+  { message: Schema.String, retryable: Schema.Literal(true) },
+) {}
+
 export const PreviewError = Schema.Union([
+  PreviewMaintenanceError,
   PreviewSessionLookupError,
   PreviewInvalidUrlError,
   PreviewControlRequiredError,

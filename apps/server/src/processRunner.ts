@@ -16,6 +16,8 @@ import {
   type CollectedUint8StreamText,
 } from "@t3tools/provider-core/server/collectStreamText";
 
+import { trackNativeProcessGroup } from "./process/nativeChildAdmission.ts";
+
 export interface ProcessRunInput {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
@@ -292,6 +294,7 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
       cause,
     });
 
+  const trackGroup = yield* trackNativeProcessGroup();
   const spawn = spawner
     .spawn(
       ChildProcess.make(spawnCommand.command, spawnCommand.args, {
@@ -311,10 +314,15 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
       // Synchronous spawn throws arrive as defects; recover them too so callers see typed spawn failures.
       Effect.catchDefect((cause) => Effect.fail(toSpawnError(cause))),
     );
-  const child = yield* input.onSpawn === undefined
+  const child = yield* input.onSpawn === undefined && trackGroup === undefined
     ? spawn
     : spawn.pipe(
-        Effect.tap(() => Effect.sync(() => input.onSpawn?.())),
+        Effect.tap((child) =>
+          Effect.sync(() => {
+            trackGroup?.(child);
+            input.onSpawn?.();
+          }),
+        ),
         Effect.uninterruptible,
       );
 

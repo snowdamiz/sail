@@ -145,6 +145,7 @@ impl T3Desktop {
     pub async fn version(&self) -> Result<String> {
         let out = command(&self.cli)
             .arg("--version")
+            .kill_on_drop(true)
             .output()
             .await
             .context("running t3 --version")?;

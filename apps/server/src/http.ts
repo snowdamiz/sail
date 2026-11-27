@@ -59,7 +59,7 @@ import {
   annotateEnvironmentRequest,
   failEnvironmentScopeRequired,
   failEnvironmentAuthInvalid,
-  failEnvironmentInternal,
+  failEnvironmentAuthInternal,
 } from "./auth/http.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import {
@@ -390,7 +390,7 @@ const authenticateRawRouteWithScope =
         ),
       ),
       Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-        failEnvironmentInternal("internal_error", error),
+        failEnvironmentAuthInternal("internal_error", error),
       ),
     );
     if (!session.scopes.includes(scope)) {
@@ -490,6 +490,7 @@ export const layerOtlpTracesProxyRoute = HttpRouter.add(
     Effect.catchTags({
       EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
       EnvironmentInternalError: HttpServerRespondable.toResponse,
+      EnvironmentMaintenanceError: HttpServerRespondable.toResponse,
       EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
     }),
     Effect.withTracerEnabled(false),
@@ -617,7 +618,10 @@ export const layerAttachmentUploadRoute = HttpRouter.add(
     const stored = yield* storeAttachmentUpload(claims, Stream.fromPull(Effect.succeed(bodyPull)));
     return stored.ok
       ? HttpServerResponse.empty({ status: 204 })
-      : HttpServerResponse.text(stored.detail, { status: stored.status });
+      : HttpServerResponse.text(stored.detail, {
+          status: stored.status,
+          ...(stored.status === 503 ? { headers: { "retry-after": "1" } } : {}),
+        });
   }),
   SIGNED_URL_ROUTE_OPTIONS,
 );

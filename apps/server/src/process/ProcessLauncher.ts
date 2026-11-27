@@ -12,6 +12,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
@@ -28,6 +29,8 @@ const SPAWN_REPLY_TIMEOUT = "10 seconds";
  */
 export class ProcessLauncher extends Context.Reference<{
   readonly currentPid: Effect.Effect<number | undefined>;
+  readonly parkForMaintenance?: Effect.Effect<void>;
+  readonly resumeAfterMaintenance?: Effect.Effect<void>;
 }>("t3/process/ProcessLauncher", {
   defaultValue: () => ({ currentPid: Effect.undefined }),
 }) {}
@@ -120,6 +123,7 @@ interface Launcher {
   readonly children: Map<number, HostedChild>;
   readonly ready: Deferred.Deferred<boolean>;
   closed: boolean;
+  retiring: boolean;
   /** Counts messages from the launcher, so a slow server is not mistaken for a hung launcher. */
   heard: number;
 }
@@ -175,6 +179,8 @@ export const make = Effect.fn("ProcessLauncher.make")(function* (
   let unavailable = false;
   let warned = false;
   let shutDown = false;
+  let parked = false;
+  let starting = 0;
   let nextId = 0;
 
   const close = (launcher: Launcher, hung = false) => {
@@ -182,7 +188,7 @@ export const make = Effect.fn("ProcessLauncher.make")(function* (
     launcher.closed = true;
     if (current === launcher) current = undefined;
     const ready = Deferred.isDoneUnsafe(launcher.ready);
-    if (!ready) unavailable = true;
+    if (!ready && !launcher.retiring) unavailable = true;
     Deferred.doneUnsafe(launcher.ready, Exit.succeed(false));
     const error = new Error(
       hung ? "The process launcher did not respond." : "The process launcher exited.",
@@ -200,7 +206,7 @@ export const make = Effect.fn("ProcessLauncher.make")(function* (
     launcher.children.clear();
     if (launcher.worker.connected) launcher.worker.disconnect();
     // A started launcher kills its children and exits once disconnected; a hung one never reads that.
-    if (hung || !ready) launcher.worker.kill("SIGKILL");
+    if (hung || (!ready && !launcher.retiring)) launcher.worker.kill("SIGKILL");
   };
 
   const onEvent = (
@@ -260,7 +266,7 @@ export const make = Effect.fn("ProcessLauncher.make")(function* (
   };
 
   const launch = (): Launcher | undefined => {
-    if (unavailable || shutDown) return undefined;
+    if (unavailable || shutDown || parked) return undefined;
     if (current !== undefined) return current;
     const env: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
     delete env.NODE_OPTIONS;
@@ -283,6 +289,7 @@ export const make = Effect.fn("ProcessLauncher.make")(function* (
       children: new Map(),
       ready: Deferred.makeUnsafe(),
       closed: false,
+      retiring: false,
       heard: 0,
     };
     worker.unref();
@@ -360,6 +367,39 @@ export const make = Effect.fn("ProcessLauncher.make")(function* (
     return Effect.logWarning("The process launcher did not start; commands fork the server.");
   });
 
+  const maintenanceError = () =>
+    Object.assign(new Error("Server maintenance is in progress. Retry the same request."), {
+      code: "EBUSY",
+    });
+
+  const parkForMaintenance = Effect.callback<void>((resume) => {
+    const launcher = current;
+    if (starting !== 0 || (launcher?.children.size ?? 0) !== 0) {
+      resume(Effect.die(new Error("The process launcher still owns child processes.")));
+      return;
+    }
+    parked = true;
+    if (launcher === undefined) {
+      resume(Effect.void);
+      return;
+    }
+    launcher.retiring = true;
+    const worker = launcher.worker;
+    if (worker.pid === undefined || worker.exitCode !== null || worker.signalCode !== null) {
+      resume(Effect.void);
+      return;
+    }
+    const exited = () => resume(Effect.void);
+    worker.once("exit", exited);
+    worker.ref();
+    // Idle retirement closes IPC and lets the helper exit and be reaped without a signal.
+    if (worker.connected) worker.disconnect();
+    return Effect.sync(() => {
+      worker.off("exit", exited);
+      worker.unref();
+    });
+  });
+
   const isReady = Effect.suspend(() => {
     const launcher = launch();
     if (launcher === undefined) return Effect.as(warnUnavailable, false);
@@ -382,11 +422,38 @@ export const make = Effect.fn("ProcessLauncher.make")(function* (
   );
   // Start while the server is still small; the launcher's own fork is the last full-size one.
   launch();
+  const acquireSpawn = Effect.suspend(() => {
+    if (parked) {
+      return Effect.fail(
+        PlatformError.systemError({
+          _tag: "Busy",
+          module: "ChildProcess",
+          method: "spawn",
+          cause: maintenanceError(),
+        }),
+      );
+    }
+    starting++;
+    return Effect.void;
+  });
   const spawner = ChildProcessSpawner.make((command) =>
-    Effect.flatMap(isReady, (ready) => (ready ? hosted : fallback).spawn(command)),
+    Effect.acquireUseRelease(
+      acquireSpawn,
+      () => Effect.flatMap(isReady, (ready) => (ready ? hosted : fallback).spawn(command)),
+      () =>
+        Effect.sync(() => {
+          starting--;
+        }),
+    ),
   );
   return Context.make(ChildProcessSpawner.ChildProcessSpawner, spawner).pipe(
-    Context.add(ProcessLauncher, { currentPid: Effect.sync(() => current?.worker.pid) }),
+    Context.add(ProcessLauncher, {
+      currentPid: Effect.sync(() => current?.worker.pid),
+      parkForMaintenance,
+      resumeAfterMaintenance: Effect.sync(() => {
+        parked = false;
+      }),
+    }),
   );
 });
 

@@ -1,3 +1,4 @@
+import { forkAccepted, withAdmission } from "../serverAdmission.ts";
 import { linkOriginIsFenced, ProjectId, type ProjectScript, ThreadId } from "@t3tools/contracts";
 import { splitsSurrogatePair } from "@t3tools/shared/assistantCitations";
 import {
@@ -423,9 +424,9 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  const runForThread: ProjectSetupScriptRunner["Service"]["runForThread"] = Effect.fn(
-    "ProjectSetupScriptRunner.runForThread",
-  )(function* (input) {
+  const runForThread = Effect.fn("ProjectSetupScriptRunner.runForThread")(function* (
+    input: ProjectSetupScriptRunnerInput,
+  ) {
     const errorContext = {
       threadId: input.threadId,
       worktreePath: input.worktreePath,
@@ -633,7 +634,7 @@ export const make = Effect.gen(function* () {
         }).pipe(Effect.andThen(observed?.abandon ?? Effect.void)),
       ),
       Effect.ensuring(Effect.sync(() => readiness.unsubscribe())),
-      Effect.forkIn(serviceScope),
+      forkAccepted(serviceScope),
     );
 
     const completion = observed?.completion.pipe(
@@ -663,7 +664,24 @@ export const make = Effect.gen(function* () {
     } as const;
   });
 
-  return ProjectSetupScriptRunner.of({ runForThread });
+  return ProjectSetupScriptRunner.of({
+    runForThread: Effect.fnUntraced(function* (input) {
+      return yield* runForThread(input).pipe(
+        withAdmission("root"),
+        Effect.catchTags({
+          ServerMaintenanceBusy: (cause) =>
+            Effect.fail(
+              new ProjectSetupScriptOperationError({
+                threadId: input.threadId,
+                worktreePath: input.worktreePath,
+                operation: "openTerminal",
+                cause,
+              }),
+            ),
+        }),
+      );
+    }),
+  });
 });
 
 export const layer = Layer.effect(ProjectSetupScriptRunner, make);

@@ -56,6 +56,7 @@ import {
 } from "../orchestration-v2/WireProjection.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { withAdmission } from "../serverAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
 import { guestShareView, guestThreadModel } from "./guestView.ts";
@@ -90,6 +91,7 @@ const GUEST_ACCESS_MESSAGES = {
   too_large: "Attached files can total up to 10 MB per message.",
   unsupported_file: "This file cannot be attached. Images must be PNG, JPEG, GIF, or WebP.",
   files_busy: GUEST_FAILURE.filesBusy,
+  maintenance: "Server maintenance is in progress. Retry this request.",
 } as const;
 
 /** What a guest is told. The message comes from `reason`, never from a cause. */
@@ -109,6 +111,7 @@ export class GuestShareAccessError extends Schema.TaggedError<GuestShareAccessEr
       "too_large",
       "unsupported_file",
       "files_busy",
+      "maintenance",
     ]),
   },
 ) {
@@ -453,8 +456,8 @@ const make = Effect.gen(function* () {
           const path = resolveAttachmentPath({ attachmentsDir, attachment });
           if (path === null) return yield* uploadFailed;
           yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
-          yield* fileSystem.copyFile(uploads[index]!.path, path);
           stored.push(attachment);
+          yield* fileSystem.copyFile(uploads[index]!.path, path);
           yield* documents.ensure(path);
         }).pipe(Effect.mapError(() => uploadFailed)),
       { discard: true },
@@ -462,33 +465,36 @@ const make = Effect.gen(function* () {
     return stored;
   });
 
-  const submit = Effect.fn("GuestShareService.submit")(function* (
-    session: string,
-    request: GuestSubmitRequest,
-    uploads: ReadonlyArray<GuestUpload>,
-  ) {
-    const { thread, share } = yield* authorize(session, "session");
-    if (request.shareId !== share.id) {
-      return yield* new GuestShareAccessError({ reason: "stale_page" });
-    }
-    if (request.text === "" && uploads.length === 0) {
-      return yield* new GuestShareAccessError({ reason: "empty" });
-    }
-    const attachments = yield* storeUploads(thread.id, uploads);
-    yield* dispatchGuestCommand({
-      type: "thread.guest-message.submit",
-      commandId: yield* commandId("submit"),
-      threadId: thread.id,
-      shareId: share.id,
-      guestMessageId: GuestMessageId.make(yield* random.uuidV4()),
-      text: request.text,
-      ...(attachments.length === 0 ? {} : { attachments }),
-    }).pipe(Effect.onError(() => removeStored(attachments)));
-    yield* analytics.record("feature.used", {
-      feature: "guest_message.submit",
-      variant: attachments.length === 0 ? "text_only" : "with_files",
-    });
-  });
+  const submit = Effect.fn("GuestShareService.submit")(
+    function* (session: string, request: GuestSubmitRequest, uploads: ReadonlyArray<GuestUpload>) {
+      const { thread, share } = yield* authorize(session, "session");
+      if (request.shareId !== share.id) {
+        return yield* new GuestShareAccessError({ reason: "stale_page" });
+      }
+      if (request.text === "" && uploads.length === 0) {
+        return yield* new GuestShareAccessError({ reason: "empty" });
+      }
+      const attachments = yield* storeUploads(thread.id, uploads);
+      yield* dispatchGuestCommand({
+        type: "thread.guest-message.submit",
+        commandId: yield* commandId("submit"),
+        threadId: thread.id,
+        shareId: share.id,
+        guestMessageId: GuestMessageId.make(yield* random.uuidV4()),
+        text: request.text,
+        ...(attachments.length === 0 ? {} : { attachments }),
+      }).pipe(Effect.onError(() => removeStored(attachments)));
+      yield* analytics.record("feature.used", {
+        feature: "guest_message.submit",
+        variant: attachments.length === 0 ? "text_only" : "with_files",
+      });
+    },
+    Effect.uninterruptible,
+    withAdmission("root"),
+    Effect.catchTags({
+      ServerMaintenanceBusy: () => new GuestShareAccessError({ reason: "maintenance" }),
+    }),
+  );
 
   /** Completes once the session no longer opens its share, so open reads end with it. */
   const untilRevoked = (session: string) =>

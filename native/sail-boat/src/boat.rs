@@ -80,8 +80,11 @@ pub struct Starts {
 }
 
 impl Boat {
-    /// Finds the CLI the Boat installer puts in `~/.ascii/bin`, else on PATH.
+    /// Uses an explicit CLI override, then the Boat installer path, then PATH.
     pub fn locate() -> Option<Self> {
+        if let Some(bin) = std::env::var_os("SAIL_BOAT_BIN").filter(|bin| !bin.is_empty()) {
+            return which::which(bin).ok().map(|bin| Self { bin });
+        }
         let exe = if cfg!(windows) { "boat.exe" } else { "boat" };
         let installed = dirs::home_dir().map(|h| h.join(".ascii").join("bin").join(exe));
         installed

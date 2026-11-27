@@ -1,3 +1,4 @@
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -237,7 +238,10 @@ const layer = it.layer(layerTest);
 
 it.effect("takes a hub's reset for an unreset usage_limit, then refreshes the snapshot", () =>
   Effect.gen(function* () {
+    const refreshing = yield* Deferred.make<void>();
+    const finishRefresh = yield* Deferred.make<void>();
     const refreshed = yield* Deferred.make<void>();
+    const admission = makeAdmission(Effect.succeed([]));
     const adapter = yield* ProviderAdapter.ProviderAdapterV2.pipe(
       Effect.provide(
         Layer.mock(ProviderAdapter.ProviderAdapterV2)({
@@ -265,7 +269,11 @@ it.effect("takes a hub's reset for an unreset usage_limit, then refreshes the sn
         generateTranscriptionPostProcessing: () => Effect.die("unused"),
       },
       snapshot: {
-        refreshUsage: Deferred.succeed(refreshed, undefined).pipe(Effect.asVoid),
+        refreshUsage: Deferred.succeed(refreshing, undefined).pipe(
+          Effect.andThen(Deferred.await(finishRefresh)),
+          Effect.andThen(Deferred.succeed(refreshed, undefined)),
+          Effect.asVoid,
+        ),
         getSnapshot: Effect.succeed({
           auth: { status: "authenticated", endpoint: "http://hub.test:8317" },
         } as ServerProvider),
@@ -337,9 +345,21 @@ it.effect("takes a hub's reset for an unreset usage_limit, then refreshes the sn
       }
       assert.deepEqual(lookups, [instance.instanceId, instance.instanceId]);
       assert.deepEqual(hubLookups, [["cursor", "http://hub.test:8317", "gpt-5.4"]]);
+      yield* Deferred.await(refreshing);
+      const token = Symbol();
+      const draining = yield* admission
+        .drain(token, "1 second")
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      const refused = yield* admission.run("root", Effect.void).pipe(Effect.flip);
+      assert.equal(refused._tag, "ServerMaintenanceBusy");
+      assert.isUndefined(draining.pollUnsafe());
+      yield* Deferred.succeed(finishRefresh, undefined);
       yield* Deferred.await(refreshed);
+      assert.deepEqual(yield* Fiber.join(draining), { kind: "sealed" });
+      yield* admission.abort(token);
     }).pipe(
       Effect.provide(makeLayerTest(layerTestEventSink, instances)),
+      Effect.provideService(ServerAdmission, admission),
       Effect.provideService(UsageLimitResetFallback, {
         resetAt: (driver, endpoint, model) =>
           Effect.sync(() => {

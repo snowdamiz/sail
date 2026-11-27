@@ -1,3 +1,5 @@
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
+import { observeDurableObligations } from "../serverAdmissionObligations.ts";
 import { PullRequestProviderError } from "@t3tools/source-control-core/server/PullRequestProvider";
 import { PullRequestUnavailableError, SourceControlProviderKind } from "@t3tools/contracts";
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
@@ -365,7 +367,7 @@ const layerTest = Layer.mergeAll(
 ).pipe(
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(McpProviderSessions.layer),
-  Layer.provide(SqlitePersistence.layerMemory),
+  Layer.provideMerge(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStoreTest),
   Layer.provide(layerServerConfig),
   Layer.provide(ServerSettings.layerTest()),
@@ -1625,7 +1627,34 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
               },
             ],
           });
-          yield* worker.drain();
+          const sql = yield* SqlClient.SqlClient;
+          const scanned = yield* Deferred.make<void>();
+          const observe = observeDurableObligations().pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
+          assert.include(yield* observe, "orchestration");
+          const admission = makeAdmission(
+            outbox.listByCommandId(commandId).pipe(
+              Effect.map((rows) =>
+                rows.some(({ status }) => status !== "succeeded")
+                  ? (["orchestration"] as const)
+                  : [],
+              ),
+              Effect.tap(() => Deferred.succeed(scanned, undefined)),
+            ),
+          );
+          const token = Symbol();
+          const draining = yield* admission.drain(token, "2 seconds").pipe(Effect.forkScoped);
+          yield* Deferred.await(scanned);
+          assert.isUndefined(draining.pollUnsafe());
+          yield* worker.drain().pipe(Effect.provideService(ServerAdmission, admission));
+          assert.deepEqual(
+            (yield* outbox.listByCommandId(commandId)).map(({ status }) => status),
+            ["succeeded"],
+          );
+          yield* admission.run("continuation", Effect.void).pipe(Effect.ignore);
+          assert.deepEqual(yield* Fiber.join(draining), { kind: "sealed" });
+          yield* admission.abort(token);
           const captured = yield* orchestrator.getThreadProjection(threadId);
           assert.equal(
             captured.runs.find((candidate) => candidate.id === run.id)?.status,
@@ -2768,6 +2797,81 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         .pipe(Effect.result);
       assert.equal(duplicate._tag, "Failure");
       assert.equal((yield* orchestrator.getThreadProjection(threadId)).messages.length, 1);
+    }),
+  );
+
+  it.effect("admits an accepted question response while new commands defer without a receipt", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("runtime-drain-question");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("runtime-drain-question-create"),
+        createdBy: "user",
+        creationSource: "web",
+        threadId,
+        projectId: ProjectId.make("runtime-drain-question-project"),
+        title: "Question",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      const { requestId } = yield* seedPendingQuestion(threadId, null, { type: "message" });
+      const scanned = yield* Deferred.make<void>();
+      const observe = observeDurableObligations().pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      const admission = makeAdmission(
+        observe.pipe(Effect.tap(() => Deferred.succeed(scanned, undefined))),
+      );
+      const token = Symbol();
+      const draining = yield* admission.drain(token, "1 second").pipe(Effect.forkScoped);
+      yield* Deferred.await(scanned);
+      const newCommand = {
+        type: "thread.metadata.update" as const,
+        commandId: CommandId.make("runtime-drain-new-title"),
+        threadId,
+        title: "Changed title",
+      };
+      const before = yield* eventSink.latestSequence();
+      const refused = yield* orchestrator
+        .dispatch(newCommand)
+        .pipe(Effect.provideService(ServerAdmission, admission), Effect.flip);
+      assert.equal(refused._tag, "ServerMaintenanceBusy");
+      assert.equal(yield* eventSink.latestSequence(), before);
+      yield* orchestrator
+        .dispatch({
+          type: "runtime-request.respond",
+          commandId: CommandId.make("runtime-drain-question-answer"),
+          threadId,
+          requestId,
+          answers: { color: "Blue", sizes: [] },
+        })
+        .pipe(Effect.provideService(ServerAdmission, admission));
+      const answered = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(answered.runtimeRequests[0]?.status, "resolved");
+      assert.lengthOf(answered.runs, 1);
+      const blockers = yield* observe;
+      assert.include(blockers, "orchestration");
+      yield* TestClock.adjust("1 second");
+      assert.deepEqual(yield* Fiber.join(draining), {
+        kind: "aborted",
+        reason: "deadline",
+        retryable: true,
+        blockers,
+      });
+      const retried = yield* orchestrator
+        .dispatch(newCommand)
+        .pipe(Effect.provideService(ServerAdmission, admission));
+      assert.isUndefined(retried.replayed);
+      assert.equal(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.title,
+        "Changed title",
+      );
     }),
   );
 

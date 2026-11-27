@@ -1,3 +1,4 @@
+import { ServerAdmission, withAdmission } from "../serverAdmission.ts";
 import {
   AuthAccessWriteScope,
   type AuthMcpApprovalDecision,
@@ -274,6 +275,19 @@ const make = Effect.gen(function* () {
     yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32).pipe(Effect.orDie),
   );
   const codes = yield* Ref.make<ReadonlyMap<string, PendingCode>>(new Map());
+  const admission = yield* ServerAdmission;
+  if (admission !== undefined) {
+    yield* admission.registerObserver(
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        const pending = yield* Ref.get(codes);
+        for (const code of pending.values()) {
+          if (code.peerLink && code.expiresAtMs > now) return ["peer-authorization-pending"];
+        }
+        return [];
+      }),
+    );
+  }
 
   const sign = (domain: string, payload: string) => signer.sign(`${domain}.${payload}`);
 
@@ -604,9 +618,27 @@ const make = Effect.gen(function* () {
     register,
     validateAuthorization,
     approvingSession,
-    approve,
+    approve: Effect.fn("McpOAuth.admitApproval")((input) =>
+      approve(input).pipe(
+        withAdmission("root"),
+        Effect.catchTags({
+          ServerMaintenanceBusy: (cause) => new McpOAuthPageError({ description: cause.message }),
+        }),
+      ),
+    ),
     deny,
-    exchangeCode,
+    exchangeCode: Effect.fn("McpOAuth.admitCodeExchange")((input) =>
+      exchangeCode(input).pipe(
+        withAdmission("root"),
+        Effect.catchTags({
+          ServerMaintenanceBusy: (cause) =>
+            new AuthMcpTokenError({
+              error: "invalid_request",
+              error_description: cause.message,
+            }),
+        }),
+      ),
+    ),
   });
 });
 
