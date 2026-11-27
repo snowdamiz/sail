@@ -1,3 +1,11 @@
+import {
+  BearerConnectionProfile,
+  BearerConnectionTarget,
+  PrimaryConnectionTarget,
+  RelayConnectionTarget,
+  SshConnectionTarget,
+} from "@t3tools/client-runtime/connection";
+import * as Option from "effect/Option";
 import { type AdvertisedEndpoint, type DesktopWslState, EnvironmentId } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
@@ -6,7 +14,7 @@ import {
   parseManualDesktopSshTarget,
   resolveAccessEnvironmentId,
   resolveAdvertisedEndpointPairingUrl,
-  resolveCurrentOriginPairingUrl,
+  resolvePairingShareBaseUrl,
   resolveTailscaleServeBaseUrl,
   selectQrEndpointOption,
   togglePairingScopeSelection,
@@ -55,15 +63,88 @@ describe("parseManualDesktopSshTarget", () => {
   });
 });
 
-describe("resolveCurrentOriginPairingUrl", () => {
+describe("resolvePairingShareBaseUrl", () => {
+  const identity = { environmentId: EnvironmentId.make("test-server"), label: "Test server" };
+  const primary = new PrimaryConnectionTarget({
+    ...identity,
+    httpBaseUrl: "http://127.0.0.1:3773/",
+    wsBaseUrl: "ws://127.0.0.1:3773/",
+  });
+  const bearer = new BearerConnectionTarget({ ...identity, connectionId: "direct" });
+  const bearerProfile = new BearerConnectionProfile({
+    ...identity,
+    connectionId: bearer.connectionId,
+    httpBaseUrl: "https://saved.example.test/",
+    wsBaseUrl: "wss://saved.example.test/",
+  });
+  const relay = new RelayConnectionTarget(identity);
+  const ssh = new SshConnectionTarget({ ...identity, connectionId: "ssh" });
+
   it.each([
     ["t3code://app/settings/connections", null],
     ["http://127.0.0.1:3774/settings", null],
     ["http://localhost:5173/", null],
-    ["https://host.example.ts.net/settings", "https://host.example.ts.net/pair#token=abc"],
-    ["http://192.168.1.20:3773/", "http://192.168.1.20:3773/pair#token=abc"],
-  ])("from %s", (href, expected) => {
-    expect(resolveCurrentOriginPairingUrl("abc", href)).toBe(expected);
+    ["http://127.0.0.2:3774/", null],
+    ["http://0.0.0.0:3774/", null],
+    ["https://host.example.ts.net/settings", "https://host.example.ts.net"],
+    ["http://192.168.1.20:3773/", "http://192.168.1.20:3773"],
+  ])("shares the primary on its HTTP address %s", (httpBaseUrl, expected) => {
+    expect(
+      resolvePairingShareBaseUrl({
+        entry: {
+          target: new PrimaryConnectionTarget({ ...primary, httpBaseUrl }),
+          profile: Option.none(),
+          enabled: true,
+        },
+        prepared: null,
+      }),
+    ).toBe(expected);
+  });
+
+  it("shares the primary desktop server through its exposed address", () => {
+    expect(
+      resolvePairingShareBaseUrl({
+        entry: { target: primary, profile: Option.none(), enabled: true },
+        desktopEndpointUrl: "http://192.168.1.20:3773/",
+        prepared: null,
+      }),
+    ).toBe("http://192.168.1.20:3773");
+  });
+
+  it("uses the saved remote server address when desktop has its own exposed address", () => {
+    expect(
+      resolvePairingShareBaseUrl({
+        entry: { target: bearer, profile: Option.some(bearerProfile), enabled: true },
+        desktopEndpointUrl: "http://192.168.1.20:3773/",
+        prepared: null,
+      }),
+    ).toBe("https://saved.example.test");
+  });
+
+  it("uses the selected server's live relay address even when it has a saved direct route", () => {
+    expect(
+      resolvePairingShareBaseUrl({
+        entry: {
+          target: bearer,
+          profile: Option.some(bearerProfile),
+          alternateRoutes: [{ target: relay, profile: Option.none() }],
+          enabled: true,
+        },
+        prepared: { target: relay, httpBaseUrl: "https://relay.example.test/" },
+      }),
+    ).toBe("https://relay.example.test");
+  });
+
+  it.each([
+    { target: relay, prepared: null },
+    { target: ssh, prepared: { target: ssh, httpBaseUrl: "http://127.0.0.1:40882/" } },
+  ])("keeps a code when $target._tag has no shareable address", ({ target, prepared }) => {
+    expect(
+      resolvePairingShareBaseUrl({
+        entry: { target, profile: Option.none(), enabled: true },
+        prepared,
+      }),
+    ).toBeNull();
   });
 });
 

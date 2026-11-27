@@ -193,6 +193,7 @@ import {
   newProjectId,
 } from "../lib/utils";
 import { buildThreadRouteParams } from "../threadRoutes";
+import { useConnectSailDesktopAction } from "./settings/useConnectSailDesktopAction";
 import { useAvailableSettingsSearchItems } from "./settings/useAvailableSettingsSearchItems";
 import {
   applyWslEnvironmentConfiguration,
@@ -510,6 +511,16 @@ function OpenCommandPaletteDialog(props: {
   const availableSettingsSearchItems = useAvailableSettingsSearchItems();
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
+  const desktopPairingEnvironmentId = primaryEnvironmentId ?? activeThread?.environmentId;
+  const connectSailDesktop = useConnectSailDesktopAction(
+    desktopPairingEnvironmentId === undefined
+      ? environments.length === 1
+        ? environments[0]
+        : undefined
+      : environments.find(
+          (environment) => environment.environmentId === desktopPairingEnvironmentId,
+        ),
+  );
   const paletteRouteTarget = useThreadRouteTarget();
   const projects = useProjects();
   const referenceThreadRef =
@@ -1347,6 +1358,16 @@ function OpenCommandPaletteDialog(props: {
   };
 
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
+  if (connectSailDesktop) {
+    actionItems.push({
+      kind: "action",
+      value: "action:connect-sail-desktop",
+      searchTerms: ["connect", "sail", "desktop", "pair", "server"],
+      title: gt("Connect Sail desktop to this server"),
+      icon: <MonitorIcon className={ITEM_ICON_CLASS} />,
+      run: connectSailDesktop,
+    });
+  }
 
   if (projects.length > 0) {
     const activeProjectTitle =

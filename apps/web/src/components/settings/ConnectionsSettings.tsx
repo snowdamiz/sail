@@ -1,3 +1,4 @@
+import * as Option from "effect/Option";
 import { errorDisplayMessage, thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { m as resolveMessage } from "~/i18n/messages";
 import { managedCapabilityDenial } from "@t3tools/client-runtime/contract-labels";
@@ -101,6 +102,7 @@ import { environmentCatalog } from "~/connection/catalog";
 import {
   readEnvironmentScope,
   useEnvironmentScope,
+  usePreparedConnection,
   useEnvironmentSessionState,
 } from "~/state/session";
 import { useEnvironmentQuery } from "~/state/query";
@@ -134,6 +136,7 @@ import {
   toDesktopPairingLinkRecord,
   toDesktopClientSessionRecord,
   selectPairingEndpoint,
+  resolvePairingShareBaseUrl,
   isServerNetworkAccessible,
   isTailscaleHttpsEndpoint,
   endpointDefaultPreferenceKey,
@@ -281,6 +284,7 @@ function ConnectionsSettingsContent({
   });
   const primaryEnvironmentId = primaryEnvironment?.environmentId ?? null;
   const accessEnvironment = useEnvironment(accessEnvironmentId);
+  const accessPreparedConnection = usePreparedConnection(accessEnvironmentId);
   // Desktop network, Tailscale, and WSL controls change the backend this app spawned.
   const isPrimaryAccess =
     accessEnvironmentId !== null && accessEnvironmentId === primaryEnvironmentId;
@@ -1170,6 +1174,11 @@ function ConnectionsSettingsContent({
       managed={tailscaleHttpsEndpoint?.status === "available" ? undefined : remoteClientsDenial}
     />
   );
+  const pairingShareBaseUrl = resolvePairingShareBaseUrl({
+    entry: accessEnvironment?.entry,
+    desktopEndpointUrl: desktopServerExposureState?.endpointUrl ?? null,
+    prepared: Option.getOrNull(accessPreparedConnection),
+  });
   const newestPairingLink = visibleDesktopPairingLinks.find(
     (pairingLink) => pairingLink.id === newestPairingLinkId,
   );
@@ -1178,8 +1187,7 @@ function ConnectionsSettingsContent({
     clientSessions: typeof desktopClientSessions,
   ) => (
     <PairingClientsList
-      servedByEnvironment={isPrimaryAccess}
-      endpointUrl={desktopServerExposureState?.endpointUrl}
+      shareBaseUrl={pairingShareBaseUrl}
       endpoints={visibleDesktopAdvertisedEndpoints}
       defaultEndpointKey={defaultDesktopAdvertisedEndpointKey}
       isLoading={isLoadingDesktopAccessManagement}

@@ -12898,5 +12898,12 @@
   "f6a91589456cca50": "Approuvée",
   "c92657bb7f2293ff": "Approbation requise",
   "f1e5c1be1ac92361": "Approuver",
-  "fcb5f3c4d4753326": "Cette connexion ne peut pas approuver de commandes. Utilisez un client qui peut utiliser le terminal."
+  "fcb5f3c4d4753326": "Cette connexion ne peut pas approuver de commandes. Utilisez un client qui peut utiliser le terminal.",
+  "7a1b433918538dfc": "Connecter Sail pour ordinateur à ce serveur",
+  "6d8b403b976513f7": "Ouvrir dans Sail pour ordinateur",
+  "d80543147456cf1c": "Sail redémarrera avec l’environnement local désactivé. Les agents et terminaux locaux s’arrêteront. Vous pouvez réactiver l’environnement local dans Paramètres → Environnements.",
+  "dd6dd61c38ce5759": "Attendez que le serveur soit connecté avant de redémarrer.",
+  "6e07680055075423": "Garder l’environnement local",
+  "b5d5d4dfc90787f3": "Utiliser {host} comme serveur principal",
+  "85ec11530a2789b4": "Ouvrir dans Sail pour ordinateur"
 }

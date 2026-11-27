@@ -12898,5 +12898,12 @@
   "f6a91589456cca50": "Genehmigt",
   "c92657bb7f2293ff": "Genehmigung nötig",
   "f1e5c1be1ac92361": "Genehmigen",
-  "fcb5f3c4d4753326": "Über diese Verbindung lassen sich keine Befehle genehmigen. Verwende einen Client, der das Terminal verwenden darf."
+  "fcb5f3c4d4753326": "Über diese Verbindung lassen sich keine Befehle genehmigen. Verwende einen Client, der das Terminal verwenden darf.",
+  "7a1b433918538dfc": "Sail Desktop mit diesem Server verbinden",
+  "6d8b403b976513f7": "In Sail Desktop öffnen",
+  "d80543147456cf1c": "Sail startet mit deaktivierter lokaler Umgebung neu. Lokale Agenten und Terminals werden beendet. Du kannst die lokale Umgebung unter Einstellungen → Umgebungen wieder einschalten.",
+  "dd6dd61c38ce5759": "Warte vor dem Neustart, bis der Server verbunden ist.",
+  "6e07680055075423": "Lokale Umgebung beibehalten",
+  "b5d5d4dfc90787f3": "{host} als Hauptserver verwenden",
+  "85ec11530a2789b4": "In Sail Desktop öffnen"
 }

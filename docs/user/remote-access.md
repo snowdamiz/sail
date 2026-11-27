@@ -117,9 +117,14 @@ in the receiving app. Connection settings are under **Settings → Environments*
 on web and desktop and **Settings → Environments** on mobile. A loopback address
 such as `127.0.0.1` reaches only the device opening the link.
 
-On a computer with the desktop app, you can open the printed `sail://pair`
-app link instead. The desktop app asks you to confirm the server address, then
-adds it.
+To connect Sail desktop from a browser, open **Settings → Sharing & access** for
+the server. Create a pairing link and choose **Open in Sail desktop** next to the
+QR code. You can also run **Connect Sail desktop to this server** from the
+browser's command palette. If Sail desktop is unavailable, use the copyable
+pairing link in **Sharing & access**.
+
+You can also open the `sail://pair` link printed by `t3 pair`. Sail desktop
+asks you to confirm the server address before it adds the environment.
 
 If your HTTPS endpoint uses a certificate from your own certificate authority,
 install that CA on Android as a **CA certificate** in its security settings; the
@@ -716,11 +721,12 @@ error, where the problem is, and how to fix it.
 
 ## Using the Desktop App as a Remote Only
 
-If a computer should only drive work running elsewhere, turn off its local environment. In the
-desktop app, open **Settings → Environments** and switch off **Local
-environment**. T3 Code restarts without a local server: no local agents or terminals run, WSL
-backends stay off, and other devices can no longer connect to this computer. Your projects,
-history, and saved connections are kept, and you keep working through pairing, T3 Connect, or SSH.
+After pairing, choose **Use … as your main server** to turn off Sail desktop's
+local environment. You can also turn off **Local environment** in
+**Settings → Environments**. Sail restarts in remote-only mode. Local agents,
+terminals, and WSL backends stop, and other devices lose access to this computer
+through the desktop app's server. Sail keeps your projects, history, and saved
+connections. You can continue working through pairing, T3 Connect, or SSH.
 If a [background service](./background-service.md) on this computer uses the same T3 home, the
 app still treats it as this computer: **Open in** and file reveal for its projects run here,
 whichever connection you reach it through.

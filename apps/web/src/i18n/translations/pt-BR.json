@@ -12898,5 +12898,12 @@
   "f6a91589456cca50": "Aprovado",
   "c92657bb7f2293ff": "Precisa de aprovação",
   "f1e5c1be1ac92361": "Aprovar",
-  "fcb5f3c4d4753326": "Esta conexão não pode aprovar comandos. Use um cliente que possa usar o terminal."
+  "fcb5f3c4d4753326": "Esta conexão não pode aprovar comandos. Use um cliente que possa usar o terminal.",
+  "7a1b433918538dfc": "Conectar o Sail para desktop a este servidor",
+  "6d8b403b976513f7": "Abrir no Sail para desktop",
+  "d80543147456cf1c": "O Sail vai reiniciar com o ambiente local desativado. Os agentes e terminais locais serão encerrados. Você pode reativar o ambiente local em Configurações → Ambientes.",
+  "dd6dd61c38ce5759": "Aguarde a conexão com o servidor antes de reiniciar.",
+  "6e07680055075423": "Manter o ambiente local",
+  "b5d5d4dfc90787f3": "Usar {host} como servidor principal",
+  "85ec11530a2789b4": "Abrir no Sail para desktop"
 }
