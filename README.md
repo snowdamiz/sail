@@ -35,6 +35,10 @@ Then launch Sail from Terminal or Spotlight:
 sail
 ```
 
+## Run Sail on Fly.io
+
+Deploy your own always-on server and connect Sail from another device. See [Run a Sail server on Fly.io](docs/user/self-host-fly.md).
+
 ## Development
 
 ### Prerequisites

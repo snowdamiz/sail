@@ -8,6 +8,7 @@ import type {
 import * as DateTime from "effect/DateTime";
 
 import type { IssuedBearerSession, IssuedPairingLink } from "./auth/EnvironmentAuth.ts";
+import { renderTerminalQrCode } from "./startupAccess.ts";
 
 const newline = "\n";
 
@@ -34,6 +35,7 @@ export function formatIssuedPairingCredential(
   credential: IssuedPairingLink,
   options?: {
     readonly json?: boolean;
+    readonly qr?: boolean;
     readonly baseUrl?: string;
   },
 ): string {
@@ -46,6 +48,7 @@ export function formatIssuedPairingCredential(
           return url.toString();
         })()
       : undefined;
+  const qr = options?.qr && pairUrl ? renderTerminalQrCode(pairUrl) : undefined;
 
   if (options?.json) {
     return `${JSON.stringify(
@@ -56,6 +59,7 @@ export function formatIssuedPairingCredential(
         scopes: credential.scopes,
         expiresAt: toIsoString(credential.expiresAt),
         ...(pairUrl ? { pairUrl } : {}),
+        ...(qr ? { qr } : {}),
       },
       null,
       2,
@@ -68,6 +72,7 @@ export function formatIssuedPairingCredential(
       `Token: ${credential.credential}`,
       ...(pairUrl ? [`Pair URL: ${pairUrl}`] : []),
       `Expires at: ${toIsoString(credential.expiresAt)}`,
+      ...(qr ? ["", qr] : []),
     ].join(newline) + newline
   );
 }

@@ -310,7 +310,7 @@ it.live(
   () =>
     withOwnedServerHome((home, requests) =>
       Effect.gen(function* () {
-        const create = (ttl: string) =>
+        const create = (ttl: string, qr = false) =>
           runCli(
             [
               "auth",
@@ -322,18 +322,22 @@ it.live(
               "orchestration:read",
               "--ttl",
               ttl,
+              ...(qr ? ["--qr"] : []),
             ],
             { home },
           );
         const hour = yield* create("1h");
-        assert.strictEqual(hour.exitCode, 0, hour.stdout + hour.stderr);
+        assert.strictEqual(hour.exitCode, 0, hour.stderr);
         const minted = JSON.parse(hour.stdout);
-        assert.match(minted.pairUrl, /^https:\/\/demo\.fly\.dev\/pair#token=\S+$/);
+        assert.isTrue(/^https:\/\/demo\.fly\.dev\/pair#token=\S+$/.test(minted.pairUrl));
         assert.deepStrictEqual(minted.scopes, ["orchestration:read"]);
         yield* assertExpiresIn(minted.expiresAt, 60 * 60_000);
-        const year = yield* create("400d");
-        assert.strictEqual(year.exitCode, 0, year.stdout + year.stderr);
+        const year = yield* create("400d", true);
+        assert.strictEqual(year.exitCode, 0, year.stderr);
         const longLived = JSON.parse(year.stdout);
+        assert.isTrue(minted.credential !== longLived.credential);
+        assert.isTrue(typeof longLived.qr === "string" && longLived.qr.includes("█"));
+        assert.notProperty(minted, "qr");
         yield* assertExpiresIn(longLived.expiresAt, 400 * 24 * 60 * 60_000);
 
         assert.sameMembers(yield* listPairingLinkIds(home), [minted.id, longLived.id]);
