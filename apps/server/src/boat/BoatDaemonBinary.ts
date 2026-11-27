@@ -45,7 +45,11 @@ const make = Effect.gen(function* () {
   ].flatMap((crate) =>
     ["release", "debug"].map((profile) => path.join(crate, "target", profile, executableName)),
   );
-  const candidates = override ? [override, ...repoCandidates] : repoCandidates;
+  const candidates = [
+    ...(override ? [override] : []),
+    path.join(import.meta.dirname, executableName),
+    ...repoCandidates,
+  ];
 
   const resolve: BoatDaemonBinary["Service"]["resolve"] = Effect.gen(function* () {
     for (const candidate of candidates) {

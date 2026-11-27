@@ -10,6 +10,36 @@ import { buildDesktopInstallers } from "./build-desktop-installers.ts";
 
 const execute = NodeUtil.promisify(NodeChildProcess.execFile);
 
+it("renders a lane installer and checksums the Linux CLI release assets", async () => {
+  const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "sail-lane-assets-"));
+  const version = "0.1.4-lane.w6-smoke";
+  const assets = [
+    "install.sh",
+    `t3-${version}-linux-arm64.tar.gz`,
+    `t3-${version}-linux-x64.tar.gz`,
+  ];
+  try {
+    await Promise.all(assets.map((asset) => NodeFSP.writeFile(NodePath.join(dir, asset), asset)));
+    await buildDesktopInstallers({
+      version,
+      repository: "snowdamiz/sail",
+      outputDir: dir,
+      writeChecksums: true,
+    });
+    expect(await NodeFSP.readFile(NodePath.join(dir, "install-desktop.sh"), "utf8")).toContain(
+      version,
+    );
+    const checksums = await NodeFSP.readFile(NodePath.join(dir, "SHA256SUMS"), "utf8");
+    expect(checksums.trimEnd().split("\n")).toEqual(
+      assets.map(
+        (asset) => `${NodeCrypto.createHash("sha256").update(asset).digest("hex")}  ${asset}`,
+      ),
+    );
+  } finally {
+    await NodeFSP.rm(dir, { recursive: true, force: true });
+  }
+});
+
 async function fixture(
   platform: "Darwin" | "Linux",
   corrupt = false,
