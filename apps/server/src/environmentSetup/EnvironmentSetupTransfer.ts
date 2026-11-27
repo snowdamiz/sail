@@ -35,6 +35,7 @@ import {
 import {
   exportSkillFiles,
   inspectSkillFiles,
+  SkillWriteError,
   validateSkillFileList,
   writeSkillFiles,
 } from "./skillFiles.ts";
@@ -52,6 +53,7 @@ export class EnvironmentSetupTransfer extends Context.Service<
   }
 >()("t3/environmentSetup/EnvironmentSetupTransfer") {}
 
+const isSkillWriteError = Schema.is(SkillWriteError);
 const invalid = (message: string) => new EnvironmentSetupError({ message });
 const decodeBundle = Schema.decodeUnknownEffect(EnvironmentSetupBundle, {
   onExcessProperty: "error",
@@ -97,7 +99,7 @@ const validate = Effect.fn("EnvironmentSetupTransfer.validate")(function* (value
   return bundle;
 });
 
-const make = Effect.fn("EnvironmentSetupTransfer.make")(function* (home: () => string) {
+const make = Effect.fn("EnvironmentSetupTransfer.make")(function* (osHome: () => string) {
   const platform = yield* HostProcess.Platform;
   const settings = yield* ServerSettings.ServerSettingsService;
   const keybindings = yield* Keybindings.Keybindings;
@@ -105,7 +107,10 @@ const make = Effect.fn("EnvironmentSetupTransfer.make")(function* (home: () => s
   const semaphore = yield* Semaphore.make(1);
   const revisionNamespace = NodeCrypto.randomUUID();
   const resolveHome = Effect.tryPromise({
-    try: () => NodeFSP.realpath(home()),
+    try: async () => {
+      const configuredHome = osHome();
+      return { home: await NodeFSP.realpath(configuredHome), configuredHome };
+    },
     catch: () => invalid("The user skill directories are unavailable."),
   });
 
@@ -120,7 +125,7 @@ const make = Effect.fn("EnvironmentSetupTransfer.make")(function* (home: () => s
       Effect.mapError(() => invalid("The source shortcuts could not be read.")),
     );
     const published = yield* themes.current;
-    const home = yield* resolveHome;
+    const { home } = yield* resolveHome;
     const skills = yield* Effect.tryPromise({
       try: () => exportSkillFiles(home),
       catch: () =>
@@ -209,7 +214,7 @@ const make = Effect.fn("EnvironmentSetupTransfer.make")(function* (home: () => s
       const changedThemes = bundle.themes.filter(
         ({ id, file }) => !NodeUtil.isDeepStrictEqual(currentThemes.get(id), file),
       );
-      const home = yield* resolveHome;
+      const { home, configuredHome } = yield* resolveHome;
       const changedSkills = yield* Effect.tryPromise({
         try: () => inspectSkillFiles(home, bundle.skills, platform),
         catch: () =>
@@ -231,10 +236,11 @@ const make = Effect.fn("EnvironmentSetupTransfer.make")(function* (home: () => s
           currentProviders,
           currentRules,
           currentThemes: [...currentThemes],
-          changedSkills: changedSkills.map(({ file, existing }) => [
+          changedSkills: changedSkills.map(({ file, directories, existing }) => [
             file.root,
             file.path,
-            existing ?? null,
+            directories,
+            existing,
           ]),
         }).pipe(Effect.mapError(() => invalid("The copy preview could not be serialized."))),
       );
@@ -301,9 +307,13 @@ const make = Effect.fn("EnvironmentSetupTransfer.make")(function* (home: () => s
       }
       if (changedSkills.length > 0) {
         yield* Effect.tryPromise({
-          try: () => writeSkillFiles(home, changedSkills, platform),
-          catch: () =>
-            invalid("The target skill files could not all be saved. Preview the copy again."),
+          try: () => writeSkillFiles({ home, configuredHome, changes: changedSkills, platform }),
+          catch: (error) =>
+            invalid(
+              isSkillWriteError(error)
+                ? error.message
+                : "The target skill files could not all be saved. Preview the copy again.",
+            ),
         }).pipe(Effect.uninterruptible);
       }
       return preview;

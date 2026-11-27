@@ -311,3 +311,7 @@ Open **Settings > Environments > Copy setup**. Choose a source and target, then 
 The copy includes portable provider definitions, selected server preferences, keyboard shortcuts, theme palettes and styles, and user skill files in the standard provider skill folders. Existing providers keep their local paths and credentials. Set up any missing credentials on the target. Theme background images and project settings stay with their environment.
 
 The target keeps entries that the source does not provide, and shortcuts for other target commands keep precedence. Review the skill folders before exporting if you store private data in their files. Copied skills become available to agents on the target.
+
+Apply the copy while the target skill folders are idle. If the target changes or the copy stops, preview again to see the remaining changes. Earlier changes may already have been applied.
+
+When a copy replaces a skill file, it keeps the previous file under its original name in a hidden `.sail-setup-*` folder beside it. If the copy stops after moving a file, the error gives the recovery path relative to the target home. Review or restore the saved file before removing its recovery folder. Skill publication requires a target filesystem that supports hard links.

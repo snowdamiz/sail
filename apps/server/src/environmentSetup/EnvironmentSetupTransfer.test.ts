@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off - the publication test coordinates an editor save with the native link call.
+import * as NodeFSP from "node:fs/promises";
 import {
   AuthFilesystemReadScope,
   AuthProvidersManageScope,
@@ -20,12 +22,15 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import { vi } from "vite-plus/test";
 import * as ServerConfig from "../config.ts";
 import * as EnvironmentTheme from "../environmentTheme.ts";
 import * as Keybindings from "../keybindings.ts";
 import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 import * as ServerSettingsService from "../serverSettings.ts";
 import * as Transfer from "./EnvironmentSetupTransfer.ts";
+
+vi.mock("node:fs/promises", { spy: true });
 
 const providerId = ProviderInstanceId.make("example");
 const registryId = ProviderInstanceId.make("sampleRegistry");
@@ -295,6 +300,159 @@ it.layer(NodeServices.layer)("portable environment setup", (it) => {
           expect(yield* fs.readFileString(skill)).toBe("# Sample");
         }),
       ).pipe(Effect.provideService(ServerAdmission, admission));
+    }),
+  );
+
+  it.effect("requires a fresh preview when a destination ancestor changes", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      yield* withEnvironment(
+        home,
+        {},
+        Effect.gen(function* () {
+          const transfer = yield* Transfer.EnvironmentSetupTransfer;
+          const bundle = {
+            ...(yield* transfer.export()),
+            skills: [
+              { root: "agents", path: "sample/SKILL.md", encoding: "utf8", content: "# Sample" },
+            ],
+          } satisfies EnvironmentSetupBundle;
+          const provider = path.join(home, ".agents");
+          const root = path.join(provider, "skills");
+          const leaf = path.join(root, "sample", "SKILL.md");
+          yield* fs.makeDirectory(provider);
+          const missingRoot = yield* transfer.import({ action: "preview", bundle });
+          yield* fs.makeDirectory(root);
+          const emptyRoot = yield* transfer.import({ action: "preview", bundle });
+          expect(emptyRoot.revision).not.toBe(missingRoot.revision);
+
+          yield* fs.rename(provider, path.join(home, ".agents-original"));
+          yield* fs.makeDirectory(root, { recursive: true });
+          const error = yield* Effect.flip(
+            transfer.import({ action: "apply", bundle, revision: emptyRoot.revision }),
+          );
+          expect(error.message).toContain("Preview the copy again");
+          expect(yield* fs.exists(leaf)).toBe(false);
+
+          const fresh = yield* transfer.import({ action: "preview", bundle });
+          yield* fs.writeFileString(path.join(root, "local-note"), "Keep this");
+          yield* transfer.import({ action: "apply", bundle, revision: fresh.revision });
+          expect(yield* fs.readFileString(leaf)).toBe("# Sample");
+          expect(yield* fs.readFileString(path.join(root, "local-note"))).toBe("Keep this");
+        }),
+      );
+    }),
+  );
+
+  it.effect("preserves an editor save after apply has checked the preview", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      yield* withEnvironment(
+        home,
+        {},
+        Effect.gen(function* () {
+          const transfer = yield* Transfer.EnvironmentSetupTransfer;
+          const bundle = {
+            ...(yield* transfer.export()),
+            skills: [
+              { root: "agents", path: "sample/SKILL.md", encoding: "utf8", content: "# Imported" },
+            ],
+          } satisfies EnvironmentSetupBundle;
+          const directory = path.join(home, ".agents", "skills", "sample");
+          yield* fs.makeDirectory(directory, { recursive: true });
+          const leaf = path.join(directory, "SKILL.md");
+          for (const previous of [undefined, "# Existing"]) {
+            if (previous !== undefined) yield* fs.writeFileString(leaf, previous);
+            const preview = yield* transfer.import({ action: "preview", bundle });
+            let checks = 0;
+            const editorSave = Effect.gen(function* () {
+              if (++checks === 2) yield* fs.writeFileString(leaf, "# Editor save");
+            });
+            const error = yield* Effect.flip(
+              transfer.import({ action: "apply", bundle, revision: preview.revision }, editorSave),
+            );
+            expect(error.message).toContain("Preview the copy again");
+            expect(yield* fs.readFileString(leaf)).toBe("# Editor save");
+          }
+
+          const fresh = yield* transfer.import({ action: "preview", bundle });
+          yield* transfer.import({ action: "apply", bundle, revision: fresh.revision });
+          expect(yield* fs.readFileString(leaf)).toBe("# Imported");
+          expect((yield* transfer.export()).skills).toEqual(bundle.skills);
+          const recovery = (yield* fs.readDirectory(directory)).filter((name) =>
+            name.startsWith(".sail-setup-"),
+          );
+          expect(recovery).toHaveLength(1);
+          for (const name of recovery) {
+            expect(yield* fs.readFileString(path.join(directory, name, "SKILL.md"))).toBe(
+              "# Editor save",
+            );
+          }
+        }),
+      );
+    }),
+  );
+
+  it.effect("keeps a new editor file when it arrives during publication", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const native = yield* Effect.promise(() =>
+        vi.importActual<typeof NodeFSP>("node:fs/promises"),
+      );
+      yield* withEnvironment(
+        home,
+        {},
+        Effect.gen(function* () {
+          const transfer = yield* Transfer.EnvironmentSetupTransfer;
+          const bundle = {
+            ...(yield* transfer.export()),
+            skills: [
+              { root: "agents", path: "sample/SKILL.md", encoding: "utf8", content: "# Imported" },
+            ],
+          } satisfies EnvironmentSetupBundle;
+          const directory = path.join(home, ".agents", "skills", "sample");
+          yield* fs.makeDirectory(directory, { recursive: true });
+          const leaf = path.join(directory, "SKILL.md");
+          const editorSave = "# Saved during import";
+          using _link = vi
+            .spyOn(NodeFSP, "link")
+            .mockImplementation(async (source, destination) => {
+              if (typeof destination === "string" && path.basename(destination) === "SKILL.md") {
+                await native.writeFile(leaf, editorSave, { flag: "wx" });
+              }
+              await native.link(source, destination);
+            });
+
+          for (const previous of [undefined, "# Existing"]) {
+            if (previous !== undefined) yield* fs.writeFileString(leaf, previous);
+            const preview = yield* transfer.import({ action: "preview", bundle });
+            const error = yield* Effect.flip(
+              transfer.import({ action: "apply", bundle, revision: preview.revision }),
+            );
+            expect(error.message).toContain("Preview the copy again");
+            expect(yield* fs.readFileString(leaf)).toBe(editorSave);
+            const recovery = (yield* fs.readDirectory(directory)).filter((name) =>
+              name.startsWith(".sail-setup-"),
+            );
+            if (previous === undefined) {
+              expect(recovery).toHaveLength(0);
+            } else {
+              expect(recovery).toHaveLength(1);
+              for (const name of recovery) {
+                const saved = path.join(directory, name, "SKILL.md");
+                expect(error.message).toContain(path.relative(home, saved));
+                expect(yield* fs.readFileString(saved)).toBe(previous);
+              }
+            }
+          }
+        }),
+      );
     }),
   );
 
