@@ -120,19 +120,83 @@ export interface PendingServiceUpdate {
 
 export type ServiceUpdateRecord = PendingServiceUpdate | ServerSelfUpdateOutcome;
 
+export interface MaintenanceInstallation {
+  readonly baseDir: string;
+  readonly installationId: string;
+  readonly environmentId: string;
+}
+
+export interface MaintenancePeer extends MaintenanceInstallation {
+  readonly instanceId: string;
+}
+
+export interface StagedSailRelease {
+  readonly version: string;
+  readonly archiveSha256: string;
+  readonly treeSha256: string;
+}
+
+export interface MaintenanceFence {
+  readonly incumbent: MaintenancePeer;
+  readonly updateId: string;
+  readonly release: StagedSailRelease;
+}
+
+export interface ServiceMaintenance {
+  readonly phase: "draining" | "aborting" | "cutover" | "committed";
+  readonly fence: MaintenanceFence;
+}
+
+export const SERVICE_MAINTENANCE_STATE_FORMAT = 5;
+
+export const sameMaintenanceInstallation = (
+  left: MaintenanceInstallation,
+  right: MaintenanceInstallation,
+) =>
+  left.baseDir === right.baseDir &&
+  left.installationId === right.installationId &&
+  left.environmentId === right.environmentId;
+
+export const sameMaintenancePeer = (left: MaintenancePeer, right: MaintenancePeer) =>
+  sameMaintenanceInstallation(left, right) && left.instanceId === right.instanceId;
+
+export const sameMaintenanceFence = (left: MaintenanceFence, right: MaintenanceFence) =>
+  sameMaintenancePeer(left.incumbent, right.incumbent) &&
+  left.updateId === right.updateId &&
+  left.release.version === right.release.version &&
+  left.release.archiveSha256 === right.release.archiveSha256 &&
+  left.release.treeSha256 === right.release.treeSha256;
+
 export interface ServiceState {
   readonly protocol: typeof SERVICE_LAUNCHER_PROTOCOL;
   readonly activeVersion: string;
   readonly update?: ServiceUpdateRecord;
+  readonly maintenance?: ServiceMaintenance;
 }
 
 export interface ServiceLauncherContext {
   readonly protocol: SupportedLauncherProtocol;
   readonly childVersion: string;
   readonly update?: ServiceUpdateRecord;
+  readonly maintenancePeer?: MaintenancePeer;
+  readonly maintenanceFence?: MaintenanceFence;
 }
 
 export type ServiceLauncherChildMessage =
+  | {
+      readonly type: "maintenance-ready";
+      readonly peer: MaintenancePeer;
+      readonly fence?: MaintenanceFence;
+    }
+  | {
+      readonly type: "maintenance-prepared";
+      readonly peer: MaintenancePeer;
+      readonly fence: MaintenanceFence;
+    }
+  | {
+      readonly type: "maintenance-sealed" | "maintenance-aborted" | "maintenance-deferred";
+      readonly fence: MaintenanceFence;
+    }
   | {
       readonly type: "request-update";
       readonly targetVersion: string;
@@ -144,6 +208,17 @@ export type ServiceLauncherChildMessage =
     };
 
 export type ServiceLauncherParentMessage =
+  | {
+      readonly type: "maintenance-drain";
+      readonly fence: MaintenanceFence;
+      readonly budgetMs: number;
+    }
+  | { readonly type: "maintenance-abort"; readonly fence: MaintenanceFence }
+  | {
+      readonly type: "maintenance-committed";
+      readonly peer: MaintenancePeer;
+      readonly fence: MaintenanceFence;
+    }
   | {
       readonly type: "update-accepted";
       readonly updateId: string;
@@ -172,6 +247,42 @@ export const isExactServiceVersion = (version: string): boolean =>
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+const nonempty = (value: unknown): value is string =>
+  typeof value === "string" && value.trim() !== "";
+const sha256 = (value: unknown): value is string =>
+  typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+const uuid = (value: unknown): value is string =>
+  typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(value);
+
+function decodeMaintenancePeer(value: unknown): MaintenancePeer | undefined {
+  if (!isRecord(value)) return undefined;
+  const { baseDir, installationId, environmentId, instanceId } = value;
+  if (
+    !nonempty(baseDir) ||
+    !nonempty(installationId) ||
+    !nonempty(environmentId) ||
+    !uuid(instanceId)
+  ) {
+    return undefined;
+  }
+  return { baseDir, installationId, environmentId, instanceId };
+}
+
+function decodeMaintenanceFence(value: unknown): MaintenanceFence | undefined {
+  if (!isRecord(value) || !uuid(value.updateId) || !isRecord(value.release)) return undefined;
+  const incumbent = decodeMaintenancePeer(value.incumbent);
+  const { version, archiveSha256, treeSha256 } = value.release;
+  if (
+    incumbent === undefined ||
+    typeof version !== "string" ||
+    !isExactServiceVersion(version) ||
+    !sha256(archiveSha256) ||
+    !sha256(treeSha256)
+  )
+    return undefined;
+  return { incumbent, updateId: value.updateId, release: { version, archiveSha256, treeSha256 } };
+}
 
 function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
   if (!isRecord(value)) return undefined;
@@ -246,9 +357,31 @@ export function compareExactServiceVersions(left: string, right: string): number
 export function decodeServiceState(value: unknown): ServiceState | undefined {
   if (!isRecord(value)) return undefined;
   const update = value.update === undefined ? undefined : decodeServiceUpdate(value.update);
+  const rawMaintenance = value.maintenance;
+  let maintenance: ServiceMaintenance | undefined;
+  if (value.protocol === SERVICE_MAINTENANCE_STATE_FORMAT) {
+    if (!isRecord(rawMaintenance)) return undefined;
+    const { phase } = rawMaintenance;
+    const fence = decodeMaintenanceFence(rawMaintenance.fence);
+    if (
+      (phase !== "draining" &&
+        phase !== "aborting" &&
+        phase !== "cutover" &&
+        phase !== "committed") ||
+      fence === undefined ||
+      update === undefined ||
+      update.id !== fence.updateId ||
+      update.targetVersion !== fence.release.version ||
+      update.status !== (phase === "committed" ? "committed" : "pending")
+    )
+      return undefined;
+    maintenance = { phase, fence };
+  } else if (rawMaintenance !== undefined) {
+    return undefined;
+  }
   if (
     // A protocol-3 installer can select a protocol-4 runtime.
-    !isSupportedLauncherProtocol(value.protocol) ||
+    (maintenance === undefined && !isSupportedLauncherProtocol(value.protocol)) ||
     typeof value.activeVersion !== "string" ||
     !isExactServiceVersion(value.activeVersion) ||
     (value.update !== undefined && update === undefined) ||
@@ -264,6 +397,7 @@ export function decodeServiceState(value: unknown): ServiceState | undefined {
   return {
     protocol: SERVICE_LAUNCHER_PROTOCOL,
     activeVersion: value.activeVersion,
+    ...(maintenance === undefined ? {} : { maintenance }),
     ...(update === undefined ? {} : { update }),
   };
 }
@@ -342,9 +476,25 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
   if (parsed.childVersion !== selectedVersion) {
     return undefined;
   }
+  const peer = decodeMaintenancePeer(parsed.maintenancePeer);
+  const fence = decodeMaintenanceFence(parsed.maintenanceFence);
+  if (parsed.maintenancePeer !== undefined && peer === undefined) return undefined;
+  if (
+    parsed.maintenanceFence !== undefined &&
+    (fence === undefined ||
+      peer === undefined ||
+      !sameMaintenanceInstallation(peer, fence.incumbent) ||
+      peer.instanceId === fence.incumbent.instanceId ||
+      update?.id !== fence.updateId ||
+      parsed.childVersion !== fence.release.version ||
+      (update.status !== "pending" && update.status !== "committed"))
+  )
+    return undefined;
   return {
     protocol: parsed.protocol,
     childVersion: parsed.childVersion,
+    ...(peer === undefined ? {} : { maintenancePeer: peer }),
+    ...(fence === undefined ? {} : { maintenanceFence: fence }),
     ...(update === undefined ? {} : { update }),
   };
 }
@@ -359,6 +509,26 @@ export function decodeServiceLauncherChildMessage(
     typeof value.dbPath === "string"
   ) {
     return { type: value.type, targetVersion: value.targetVersion, dbPath: value.dbPath };
+  }
+  const peer = decodeMaintenancePeer(value.peer);
+  const fence = decodeMaintenanceFence(value.fence);
+  if (
+    value.type === "maintenance-ready" &&
+    peer !== undefined &&
+    (value.fence === undefined || fence !== undefined)
+  ) {
+    return { type: value.type, peer, ...(fence === undefined ? {} : { fence }) };
+  }
+  if (value.type === "maintenance-prepared" && peer !== undefined && fence !== undefined) {
+    return { type: value.type, peer, fence };
+  }
+  if (
+    (value.type === "maintenance-sealed" ||
+      value.type === "maintenance-aborted" ||
+      value.type === "maintenance-deferred") &&
+    fence !== undefined
+  ) {
+    return { type: value.type, fence };
   }
   return value.type === "prepared" && typeof value.updateId === "string"
     ? { type: value.type, updateId: value.updateId }
@@ -376,6 +546,23 @@ export function decodeServiceLauncherParentMessage(
     return { type: value.type, updateId: value.updateId };
   }
   if (value.type === "stop") return { type: value.type };
+  const fence = decodeMaintenanceFence(value.fence);
+  if (fence !== undefined) {
+    if (value.type === "maintenance-abort") return { type: value.type, fence };
+    if (
+      value.type === "maintenance-drain" &&
+      typeof value.budgetMs === "number" &&
+      Number.isSafeInteger(value.budgetMs) &&
+      value.budgetMs > 0 &&
+      value.budgetMs <= 120_000
+    ) {
+      return { type: value.type, fence, budgetMs: value.budgetMs };
+    }
+    const peer = decodeMaintenancePeer(value.peer);
+    if (value.type === "maintenance-committed" && peer !== undefined) {
+      return { type: value.type, peer, fence };
+    }
+  }
   return value.type === "committed" && typeof value.updateId === "string"
     ? { type: value.type, updateId: value.updateId }
     : undefined;

@@ -666,7 +666,15 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
     yield* runStartupPhase("http.wait", Deferred.await(httpListening));
     yield* runStartupPhase("auxiliary-roots.parked", options?.awaitAuxiliaryParked ?? Effect.void);
 
-    const updateOutcome = yield* launcher.prepareTrial({ baseDir: serverConfig.baseDir });
+    const maintenanceIdentity = {
+      baseDir: serverConfig.baseDir,
+      dbPath: serverConfig.dbPath,
+      environmentId: environment.environmentId,
+    };
+    const updateOutcome = yield* launcher.prepareTrial({
+      baseDir: serverConfig.baseDir,
+      maintenanceIdentity,
+    });
 
     yield* Effect.logDebug("startup phase: publishing welcome event", {
       environmentId: environment.environmentId,
@@ -704,6 +712,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
         },
       }),
     );
+    yield* launcher.maintenanceReady?.(maintenanceIdentity) ?? Effect.void;
     yield* Effect.logDebug("startup phase: complete");
     yield* flushCompileCache;
   }).pipe(

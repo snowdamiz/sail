@@ -7,6 +7,9 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
+import type * as Scope from "effect/Scope";
+import { ServerAdmission } from "../serverAdmission.ts";
 import * as Schema from "effect/Schema";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
@@ -21,6 +24,9 @@ import {
 import {
   decodeServiceLauncherContext,
   decodeServiceLauncherParentMessage,
+  sameMaintenanceFence,
+  sameMaintenancePeer,
+  type MaintenanceFence,
   SERVICE_LAUNCHER_CONTEXT_ENV,
   type ServiceLauncherChildMessage,
   type ServiceLauncherParentMessage,
@@ -33,6 +39,7 @@ export class ServiceLauncherClientError extends Schema.TaggedError<ServiceLaunch
   {
     operation: Schema.Literals([
       "decode-context",
+      "maintenance-identity",
       "version-mismatch",
       "unmanaged",
       "send",
@@ -46,6 +53,8 @@ export class ServiceLauncherClientError extends Schema.TaggedError<ServiceLaunch
     switch (this.operation) {
       case "decode-context":
         return "The service launcher supplied invalid startup context.";
+      case "maintenance-identity":
+        return "The server does not match the launcher's maintenance installation.";
       case "version-mismatch":
         return "The service launcher started a different t3 version.";
       case "unmanaged":
@@ -74,6 +83,7 @@ export class ServiceLauncherRejectedError extends Schema.TaggedError<ServiceLaun
 
 interface ServiceLauncherProcess {
   readonly connected: boolean;
+  readonly hasLauncherIpc?: boolean;
   readonly send: (
     message: ServiceLauncherChildMessage,
     callback?: (error: Error | null) => void,
@@ -88,11 +98,16 @@ interface ServiceLauncherProcess {
   ) => void;
 }
 
+const launchedWithIpc = process.send !== undefined;
+
 export const ServiceLauncherHostProcess = Context.Reference<ServiceLauncherProcess>(
   "t3/cloud/serviceLauncherHostProcess",
   {
     defaultValue: () => ({
-      connected: process.connected && process.send !== undefined,
+      hasLauncherIpc: launchedWithIpc,
+      get connected() {
+        return process.connected && process.send !== undefined;
+      },
       send: (message, callback) => {
         if (process.send === undefined) return false;
         return callback === undefined ? process.send(message) : process.send(message, callback);
@@ -106,6 +121,12 @@ export const ServiceLauncherHostProcess = Context.Reference<ServiceLauncherProce
     }),
   },
 );
+
+interface MaintenanceIdentity {
+  readonly baseDir: string;
+  readonly dbPath: string;
+  readonly environmentId: string;
+}
 
 export class ServiceLauncherClient extends Context.Service<
   ServiceLauncherClient,
@@ -121,7 +142,11 @@ export class ServiceLauncherClient extends Context.Service<
     /** Owned `t3` launchers move to the new runtime only when this start commits the trial. */
     readonly prepareTrial: (input: {
       readonly baseDir: string;
+      readonly maintenanceIdentity?: MaintenanceIdentity;
     }) => Effect.Effect<ServerSelfUpdateOutcome | undefined, ServiceLauncherClientError>;
+    readonly maintenanceReady?: (
+      identity: MaintenanceIdentity,
+    ) => Effect.Effect<void, ServiceLauncherClientError, Scope.Scope>;
   }
 >()("t3/cloud/serviceLauncherClient") {}
 
@@ -131,8 +156,13 @@ const resolveStartup = Effect.fn("cloud.service_launcher_client.resolve_startup"
     const environment = yield* HostProcess.Environment;
     const currentVersion = options?.currentVersion ?? packageJson.version;
     // IPC channels are not inherited; without one, launcher context belongs to an ancestor.
-    const rawContext = host.connected ? environment[SERVICE_LAUNCHER_CONTEXT_ENV] : undefined;
-    const context = rawContext === undefined ? undefined : decodeServiceLauncherContext(rawContext);
+    const inherited = environment[SERVICE_LAUNCHER_CONTEXT_ENV];
+    const decoded = inherited === undefined ? undefined : decodeServiceLauncherContext(inherited);
+    if (!host.connected && host.hasLauncherIpc === true && decoded?.maintenancePeer !== undefined) {
+      return yield* new ServiceLauncherClientError({ operation: "disconnect" });
+    }
+    const rawContext = host.connected ? inherited : undefined;
+    const context = host.connected ? decoded : undefined;
 
     if (rawContext !== undefined && context === undefined) {
       return yield* new ServiceLauncherClientError({ operation: "decode-context" });
@@ -144,6 +174,36 @@ const resolveStartup = Effect.fn("cloud.service_launcher_client.resolve_startup"
     const managed = context !== undefined;
 
     return { host, context, managed };
+  },
+);
+
+export const verifyServiceMaintenanceHome = Effect.fn("cloud.service_launcher_client.verify_home")(
+  function* (config: {
+    readonly baseDir: string;
+    readonly dbPath: string;
+    readonly environmentIdPath: string;
+  }) {
+    const { context } = yield* resolveStartup();
+    const peer = context?.maintenancePeer;
+    if (peer === undefined) return;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const stateDir = path.join(peer.baseDir, "userdata");
+    const realPath = (file: string) =>
+      fs.realPath(file).pipe(Effect.orElseSucceed(() => undefined));
+    if (
+      config.baseDir !== peer.baseDir ||
+      (yield* realPath(config.baseDir)) !== peer.baseDir ||
+      config.dbPath !== path.join(stateDir, "statev2.sqlite") ||
+      (yield* realPath(config.dbPath)) !== config.dbPath ||
+      config.environmentIdPath !== path.join(stateDir, "environment-id") ||
+      (yield* realPath(config.environmentIdPath)) !== config.environmentIdPath ||
+      (yield* fs
+        .readFileString(config.environmentIdPath)
+        .pipe(Effect.orElseSucceed(() => ""))).trim() !== peer.environmentId
+    ) {
+      return yield* new ServiceLauncherClientError({ operation: "maintenance-identity" });
+    }
   },
 );
 
@@ -245,15 +305,25 @@ export const repointLaunchers = Effect.fn("cloud.service_launcher_client.repoint
 /** Completes when the launcher asks this server to stop, which Windows cannot signal. */
 export const awaitServiceLauncherStop = Effect.fn("cloud.service_launcher_client.await_stop")(
   function* (options?: { readonly currentVersion?: string }) {
-    const startup = yield* resolveStartup(options).pipe(Effect.option);
-    if (Option.isNone(startup) || !startup.value.managed) return yield* Effect.never;
-    const { host } = startup.value;
+    const startup = yield* resolveStartup(options).pipe(
+      Effect.catch((error) => (error.operation === "disconnect" ? Effect.interrupt : Effect.never)),
+    );
+    if (!startup.managed) return yield* Effect.never;
+    const { host, context } = startup;
     return yield* Effect.callback<void>((resume) => {
       const onMessage = (...args: ReadonlyArray<unknown>) => {
         if (decodeServiceLauncherParentMessage(args[0])?.type === "stop") resume(Effect.void);
       };
+      const onDisconnect = () => resume(Effect.void);
       host.on("message", onMessage);
-      return Effect.sync(() => host.off("message", onMessage));
+      if (context?.maintenancePeer !== undefined) {
+        host.on("disconnect", onDisconnect);
+        if (!host.connected) onDisconnect();
+      }
+      return Effect.sync(() => {
+        host.off("message", onMessage);
+        host.off("disconnect", onDisconnect);
+      });
     });
   },
 );
@@ -360,42 +430,145 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     context?.update === undefined || context.update.status === "pending"
       ? undefined
       : context.update;
-  const prepareTrial = (input: { readonly baseDir: string }) =>
-    pending !== undefined
-      ? Effect.andThen(
-          keepOomdWatch,
-          exchange(
-            { type: "prepared", updateId: pending.id },
-            (reply) => reply.type === "committed" && reply.updateId === pending.id,
-          ).pipe(
-            Effect.flatMap((reply) =>
-              reply.type !== "committed"
-                ? Effect.die("service launcher returned an impossible prepared response")
-                : repointLaunchers({
-                    baseDir: input.baseDir,
-                    targetVersion: pending.targetVersion,
-                  }).pipe(
-                    Effect.provideService(FileSystem.FileSystem, fs),
-                    Effect.provideService(Path.Path, path),
-                    Effect.provideService(HostProcess.Environment, environment),
-                    Effect.provideService(HostProcess.Platform, platform),
-                    Effect.as({
-                      id: pending.id,
-                      fromVersion: pending.fromVersion,
-                      targetVersion: pending.targetVersion,
-                      status: "committed" as const,
-                    }),
-                  ),
-            ),
+  const peer = context?.maintenancePeer;
+  const fence = context?.maintenanceFence;
+  const verifyIdentity = Effect.fn("cloud.service_launcher_client.verify_identity")(function* (
+    identity: MaintenanceIdentity | undefined,
+  ) {
+    if (peer === undefined) return;
+    const realPath = (file: string) =>
+      fs.realPath(file).pipe(Effect.orElseSucceed(() => undefined));
+    if (
+      identity?.environmentId !== peer.environmentId ||
+      identity.dbPath !== path.join(identity.baseDir, "userdata", "statev2.sqlite") ||
+      (yield* realPath(identity.baseDir)) !== peer.baseDir ||
+      (yield* realPath(identity.dbPath)) !== path.join(peer.baseDir, "userdata", "statev2.sqlite")
+    ) {
+      return yield* new ServiceLauncherClientError({ operation: "maintenance-identity" });
+    }
+  });
+
+  const reconcileShellLaunchers = (baseDir: string, targetVersion: string) =>
+    repointLaunchers({ baseDir, targetVersion }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
+      Effect.provideService(HostProcess.Environment, environment),
+      Effect.provideService(HostProcess.Platform, platform),
+    );
+
+  const prepareTrial = Effect.fn("cloud.service_launcher_client.prepare_trial")(function* (input: {
+    readonly baseDir: string;
+    readonly maintenanceIdentity?: MaintenanceIdentity;
+  }) {
+    yield* verifyIdentity(input.maintenanceIdentity);
+    if (pending === undefined) return outcome;
+    yield* keepOomdWatch;
+    if (fence !== undefined && peer !== undefined) {
+      yield* exchange(
+        { type: "maintenance-prepared", fence, peer },
+        (reply) =>
+          reply.type === "maintenance-committed" &&
+          sameMaintenancePeer(reply.peer, peer) &&
+          sameMaintenanceFence(reply.fence, fence),
+      );
+    } else {
+      yield* exchange(
+        { type: "prepared", updateId: pending.id },
+        (reply) => reply.type === "committed" && reply.updateId === pending.id,
+      );
+    }
+    if (fence === undefined) yield* reconcileShellLaunchers(input.baseDir, pending.targetVersion);
+    return {
+      id: pending.id,
+      fromVersion: pending.fromVersion,
+      targetVersion: pending.targetVersion,
+      status: "committed" as const,
+    };
+  });
+
+  const send = (message: ServiceLauncherChildMessage) =>
+    Effect.callback<void, ServiceLauncherClientError>((resume) => {
+      try {
+        host.send(message, (error) =>
+          resume(
+            error === null
+              ? Effect.void
+              : Effect.fail(new ServiceLauncherClientError({ operation: "send", cause: error })),
           ),
-        )
-      : Effect.succeed(outcome);
+        );
+      } catch (cause) {
+        resume(Effect.fail(new ServiceLauncherClientError({ operation: "send", cause })));
+      }
+    });
+
+  const maintenanceReady = Effect.fn("cloud.service_launcher_client.maintenance_ready")(function* (
+    identity: MaintenanceIdentity,
+  ) {
+    if (peer === undefined) return;
+    const admission = yield* ServerAdmission;
+    if (admission === undefined) return;
+    yield* verifyIdentity(identity);
+    const commands = yield* Queue.unbounded<
+      Extract<
+        ServiceLauncherParentMessage,
+        {
+          readonly type: "maintenance-drain" | "maintenance-abort";
+        }
+      >
+    >();
+    const onMessage = (value: unknown) => {
+      const command = decodeServiceLauncherParentMessage(value);
+      if (
+        (command?.type === "maintenance-drain" || command?.type === "maintenance-abort") &&
+        sameMaintenancePeer(command.fence.incumbent, peer)
+      )
+        Queue.offerUnsafe(commands, command);
+    };
+    yield* Effect.acquireRelease(
+      Effect.sync(() => host.on("message", onMessage)),
+      () => Effect.sync(() => host.off("message", onMessage)),
+    );
+
+    let current: { readonly fence: MaintenanceFence; readonly token: symbol } | undefined;
+    const retired = new Set<string>();
+    yield* Effect.forever(
+      Effect.gen(function* () {
+        const command = yield* Queue.take(commands);
+        if (command.type === "maintenance-abort") {
+          if (current !== undefined && !sameMaintenanceFence(current.fence, command.fence)) return;
+          if (current !== undefined) yield* admission.abort(current.token);
+          current = undefined;
+          retired.add(command.fence.updateId);
+          yield* send({ type: "maintenance-aborted", fence: command.fence }).pipe(
+            Effect.timeoutOption("1 second"),
+            Effect.ignore,
+          );
+          return;
+        }
+        if (current !== undefined || retired.has(command.fence.updateId)) return;
+        const attempt = { fence: command.fence, token: Symbol() };
+        current = attempt;
+        yield* Effect.gen(function* () {
+          const result = yield* admission.drain(attempt.token, command.budgetMs);
+          if (current !== attempt) return;
+          yield* send({
+            type: result.kind === "sealed" ? "maintenance-sealed" : "maintenance-deferred",
+            fence: attempt.fence,
+          }).pipe(Effect.timeoutOption("1 second"), Effect.ignore);
+        }).pipe(Effect.forkScoped({ startImmediately: true }));
+      }),
+    ).pipe(Effect.forkScoped);
+    if (fence !== undefined)
+      yield* reconcileShellLaunchers(identity.baseDir, fence.release.version);
+    yield* send({ type: "maintenance-ready", peer, ...(fence === undefined ? {} : { fence }) });
+  });
 
   return ServiceLauncherClient.of({
     managed,
     protocol: context?.protocol,
     requestUpdate,
     prepareTrial,
+    maintenanceReady,
   });
 });
 
