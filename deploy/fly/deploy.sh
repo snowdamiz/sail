@@ -125,21 +125,40 @@ json_fields() {
   LC_ALL=C awk -v fields="$1" -v rows="${2:-0}" -f "$deployment_dir/read-json.awk"
 }
 
+resolve_app_origin() {
+  local status=$1 app_url hostname candidate
+  app_url=$(json_fields AppURL <<< "$status") || return 2
+  hostname=$(json_fields Hostname <<< "$status") || return 2
+  hostname=${hostname%/}
+  for candidate in "${app_url%/}" "${hostname:+https://$hostname}"; do
+    [ -n "$candidate" ] || continue
+    case "$candidate" in
+      "https://$app.fly.dev"|"https://$app.localtest.me")
+        printf '%s' "$candidate"
+        return 0 ;;
+      *)
+        if [[ $candidate = "https://$app.localtest.me:"* && ${candidate##*:} =~ ^[0-9]{1,5}$ ]]; then
+          printf '%s' "$candidate"
+          return 0
+        fi ;;
+    esac
+  done
+  return 1
+}
+
 has_initial_password_secret() {
   local secrets rows
   secrets=$("$fly" secrets list --app "$app" --json) || fail 'Could not list Fly secrets.'
   [ -n "$secrets" ] && [ "$secrets" != null ] || return 1
   rows=$(json_fields 'name Name' 1 <<< "$secrets") || fail 'Invalid Fly secrets response.'
   [ -n "$rows" ] || return 1
-  grep -Eq '(^|	)SAIL_INITIAL_OWNER_PASSWORD(	|$)' <<< "$rows"
+  LC_ALL=C awk -F'\t' '$1 == "SAIL_INITIAL_OWNER_PASSWORD" || $2 == "SAIL_INITIAL_OWNER_PASSWORD" { found = 1 } END { exit(found ? 0 : 1) }' <<< "$rows"
 }
 
 server_has_owner_password() {
   local pre_status pre_origin session
   pre_status=$("$fly" status --app "$app" --json 2>/dev/null) || return 1
-  pre_origin=$(json_fields AppURL <<< "$pre_status" 2>/dev/null) || return 1
-  pre_origin=${pre_origin%/}
-  [ -n "$pre_origin" ] || return 1
+  pre_origin=$(resolve_app_origin "$pre_status" 2>/dev/null) || return 1
   session=$(curl -q -fsS --max-time 10 "$pre_origin/api/auth/session" 2>/dev/null) || return 1
   grep -Eq '"ownerPassword"[[:space:]]*:[[:space:]]*"configured"' <<< "$session"
 }
@@ -201,7 +220,7 @@ if [ "$mode" = deploy ]; then
 
   apps=$("$fly" apps list --quiet) || fail 'Could not list Fly apps.'
   app_existed=true
-  if ! grep -Fxq -- "$app" <<< "$apps"; then
+  if ! LC_ALL=C awk -v app="$app" '{ gsub(/^[[:space:]]+|[[:space:]]+$/, ""); if ($0 == app) found = 1 } END { exit(found ? 0 : 1) }' <<< "$apps"; then
     app_existed=false
     "$fly" apps create "$app" >&2
   fi
@@ -232,20 +251,21 @@ if [ "$mode" = deploy ]; then
 fi
 
 status=$("$fly" status --app "$app" --json) || fail 'Could not read the deployed app URL.'
-origin=$(json_fields AppURL <<< "$status") || fail 'Invalid Fly app status response.'
-origin=${origin%/}
-case "$origin" in
-  "https://$app.fly.dev"|"https://$app.localtest.me") ;;
-  *)
-    [[ $origin = "https://$app.localtest.me:"* && ${origin##*:} =~ ^[0-9]{1,5}$ ]] ||
-      fail 'Fly did not return the expected HTTPS origin for this app.' ;;
-esac
+origin_rc=0
+origin=$(resolve_app_origin "$status") || origin_rc=$?
+if [ "$origin_rc" -eq 2 ]; then
+  fail 'Invalid Fly app status response.'
+elif [ "$origin_rc" -ne 0 ]; then
+  fail 'Fly did not return the expected HTTPS origin for this app.'
+fi
 
-machine=$("$fly" machine list --app "$app" --quiet) || fail 'Could not list Fly Machines.'
+machine_output=$("$fly" machine list --app "$app" --quiet) || fail 'Could not list Fly Machines.'
+machine=$(LC_ALL=C awk '{ gsub(/^[[:space:]]+|[[:space:]]+$/, ""); if ($0 != "") print }' <<< "$machine_output")
 [[ $machine =~ ^[a-f0-9]+$ ]] || fail 'Expected exactly one Sail Machine.'
 ssh=("$fly" ssh console --app "$app" --machine "$machine" --user sail --quiet)
 expected=$("${ssh[@]}" -C 'cat /data/sail/userdata/environment-id' </dev/null) ||
   fail 'Could not read the environment ID from the Sail Machine.'
+expected=${expected%$'\r'}
 [[ $expected =~ ^[a-zA-Z0-9._-]+$ ]] || fail 'The Sail Machine returned an invalid environment ID.'
 manifest=$(curl -q -fsS --max-time 60 --retry 4 --retry-connrefused \
   "$origin/.well-known/t3/environment") || fail 'Could not read the public Sail environment.'

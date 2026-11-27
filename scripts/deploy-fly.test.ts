@@ -21,17 +21,18 @@ appendFileSync("calls", JSON.stringify([tool, ...args]) + "\\n");
 const output = (value) => console.log(JSON.stringify(value));
 const option = (name) => args[args.indexOf(name) + 1];
 const environmentId = "sail-test-environment";
+const expectedOrigin = process.env.TEST_PUBLIC_ORIGIN ?? "${origin}";
 const readSecrets = () => (existsSync("secrets") ? JSON.parse(readFileSync("secrets", "utf8")) : {});
 
 if (tool === "curl") {
   if (args.at(-1) === "https://api.github.com/repos/snowdamiz/sail/releases/latest") {
     output({ previous: { tag_name: "v0.0.1" }, tag_name: "v1.2.3" });
-  } else if (args.at(-1) === "${origin}/.well-known/t3/environment") {
+  } else if (args.at(-1) === expectedOrigin + "/.well-known/t3/environment") {
     output({
       nested: { environmentId },
       environmentId: process.env.TEST_ENVIRONMENT_ID ?? environmentId,
     });
-  } else if (args.at(-1) === "${origin}/api/auth/session") {
+  } else if (args.at(-1) === expectedOrigin + "/api/auth/session") {
     output({
       authenticated: false,
       auth: {
@@ -51,7 +52,9 @@ if (tool === "curl") {
       process.exitCode = process.env.TEST_SIGNED_OUT === "yes" ? 1 : 0;
       break;
     case "apps list":
-      if (existsSync("app")) console.log("example-sail");
+      if (existsSync("app")) {
+        console.log(process.env.TEST_PADDED_QUIET === "yes" ? " example-sail \\n" : "example-sail");
+      }
       break;
     case "apps create":
       writeFileSync("app", "", { flag: "wx" });
@@ -93,10 +96,26 @@ if (tool === "curl") {
       break;
     }
     case "status --app":
-      output({ AppURL: "${origin}" });
+      if (process.env.TEST_STATUS_IPV6_APP_URL === "yes") {
+        output({
+          AppURL: "https://2a09:8280:1::229:8fa3:0",
+          Hostname: "example-sail.fly.dev",
+        });
+      } else if (process.env.TEST_STATUS_UNEXPECTED_ORIGIN === "yes") {
+        output({
+          AppURL: "https://2a09:8280:1::229:8fa3:0",
+          Hostname: "other-app.fly.dev",
+        });
+      } else {
+        output({ AppURL: expectedOrigin, Hostname: "example-sail.localtest.me" });
+      }
       break;
     case "machine list":
-      console.log("${machineId}");
+      if (process.env.TEST_TWO_MACHINES === "yes") {
+        console.log(" ${machineId} \\n deadbeef1234 \\n");
+      } else {
+        console.log(process.env.TEST_PADDED_QUIET === "yes" ? " ${machineId} \\n" : "${machineId}");
+      }
       break;
     case "ssh console": {
       const command = option("-C");
@@ -109,7 +128,7 @@ if (tool === "curl") {
           ? "repeated_fixture_credential"
           : randomBytes(24).toString("base64url");
         output({
-          pairUrl: "${origin}/pair#token=" + token,
+          pairUrl: expectedOrigin + "/pair#token=" + token,
           ...(command.endsWith(" --qr") ? { qr: " ▀█\\n ▄█" } : {}),
         });
       } else {
@@ -174,14 +193,14 @@ const secretImports = () =>
   );
 const mints = () => calls().filter((call) => call.at(-1)?.startsWith("t3 auth pairing create"));
 
-function readTokens(output: string) {
+function readTokens(output: string, expectedOrigin = origin) {
   const url = output.match(/^Sail URL: (https:\/\/\S+)$/m)?.[1];
-  expect(url).toBe(origin);
+  expect(url).toBe(expectedOrigin);
   const desktop = output.match(/^Desktop link: (sail:\/\/\S+)$/m)?.[1];
   const browser = output.match(/^Browser or phone link: (https:\/\/\S+)$/m)?.[1];
   const desktopUrl = desktop && new URL(desktop).searchParams.get("pairingUrl");
   const urls = [desktopUrl, browser];
-  expect(urls.every((item) => item?.startsWith(`${origin}/pair#token=`))).toBe(true);
+  expect(urls.every((item) => item?.startsWith(`${expectedOrigin}/pair#token=`))).toBe(true);
   expect(output.includes(" ▀█\n ▄█")).toBe(true);
   return urls.map((item) => item?.split("#token=")[1]);
 }
@@ -214,6 +233,42 @@ describe("deploy/fly/deploy.sh", () => {
       expect.arrayContaining(["deploy", "--primary-region", "ord", "--ha=false", "--local-only"]),
     ]);
     expect(mints()).toHaveLength(4);
+  });
+
+  it("handles Fly CLI v0.5+ padded --quiet output and IPv6 AppURL with Hostname fallback", () => {
+    NodeFS.writeFileSync(NodePath.join(directory, "app"), "");
+    NodeFS.writeFileSync(
+      NodePath.join(directory, "volume"),
+      JSON.stringify({ id: volumeId, name: "sail_data", state: "created", region: "iad" }),
+    );
+    const flyOrigin = "https://example-sail.fly.dev";
+
+    const upgrade = run(["--image", "sail-server:test"], {
+      TEST_PADDED_QUIET: "yes",
+      TEST_STATUS_IPV6_APP_URL: "yes",
+      TEST_PUBLIC_ORIGIN: flyOrigin,
+      TEST_OWNER_PASSWORD_STATE: "configured",
+    });
+    expect(upgrade.status, upgrade.stderr).toBe(0);
+    expect(new Set(readTokens(upgrade.stdout, flyOrigin)).size).toBe(2);
+    expect(upgrade.stdout).not.toContain("Initial password:");
+    expect(secretImports()).toHaveLength(0);
+    expect(mutations().map((call) => call.slice(1, 3))).toEqual([["deploy", expect.any(String)]]);
+
+    const unexpectedOrigin = run(["--pair"], {
+      TEST_PADDED_QUIET: "yes",
+      TEST_STATUS_UNEXPECTED_ORIGIN: "yes",
+    });
+    expect(unexpectedOrigin.status).toBe(1);
+    expect(unexpectedOrigin.stderr).toContain("expected HTTPS origin");
+
+    const twoMachines = run(["--pair"], {
+      TEST_STATUS_IPV6_APP_URL: "yes",
+      TEST_PUBLIC_ORIGIN: flyOrigin,
+      TEST_TWO_MACHINES: "yes",
+    });
+    expect(twoMachines.status).toBe(1);
+    expect(twoMachines.stderr).toContain("Expected exactly one Sail Machine");
   });
 
   it("stages a custom password from --password-file without printing it", () => {
