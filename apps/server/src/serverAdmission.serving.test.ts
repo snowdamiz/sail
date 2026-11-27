@@ -6,6 +6,7 @@ import * as NodeFS from "node:fs";
 import * as NodeSqlite from "node:sqlite";
 import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeWS from "@effect/platform-node/NodeWS";
 import { expect, it } from "@effect/vitest";
 import {
@@ -45,6 +46,7 @@ import { RpcClient, RpcSerialization } from "effect/rpc";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
+import * as Ref from "effect/Ref";
 import * as Redacted from "effect/Redacted";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
@@ -65,10 +67,14 @@ import {
   type ServiceLauncherParentMessage,
 } from "./cloud/serviceProtocol.ts";
 import * as ServerConfig from "./config.ts";
+import { ProjectToolkit } from "./mcp/toolkits/project/tools.ts";
 import { ServerEnvironment } from "./environment/ServerEnvironment.ts";
 import { OrchestratorV2 } from "./orchestration-v2/Orchestrator.ts";
 import { ProviderInstanceRegistry } from "./provider/ProviderInstanceRegistry.ts";
 import { BUILT_IN_DRIVERS } from "./provider/builtInDrivers.ts";
+import * as PeerLinks from "./peer/PeerLinks.ts";
+import * as PeerMcpClient from "./peer/PeerMcpClient.ts";
+import { descriptorOf, layerLinkingEnvironment, servePeer } from "./peer/PeerLinks.testkit.ts";
 import { layerServer } from "./server.ts";
 import * as Admission from "./serverAdmission.ts";
 import serverPackage from "../package.json" with { type: "json" };
@@ -87,6 +93,7 @@ const liveServices = Layer.mergeAll(
 const fixture = Effect.fn("ServingDrain.fixture")(function* (
   launcher: "production" | "fixture-positive" | "none" = "none",
   mode: "replay" | "standalone-management" = "replay",
+  linkedEnvironmentsEnabled = false,
 ) {
   const controlled = launcher !== "none";
   const fs = yield* FileSystem.FileSystem;
@@ -169,6 +176,7 @@ const fixture = Effect.fn("ServingDrain.fixture")(function* (
   yield* fs.writeFileString(
     config.settingsPath,
     JSON.stringify({
+      linkedEnvironmentsEnabled,
       providerInstances: {
         ...Object.fromEntries(
           BUILT_IN_DRIVERS.map(({ driverKind }) => [
@@ -229,6 +237,7 @@ const fixture = Effect.fn("ServingDrain.fixture")(function* (
         startupPairing: "off",
       }),
     ),
+    Layer.provide(Layer.succeed(PeerLinks.LoopbackHost, (host) => host === "localhost")),
   );
   if (controlled) {
     yield* fs.writeFileString(config.environmentIdPath, peer.environmentId + "\n");
@@ -760,5 +769,97 @@ it.live(
         reason: "deadline",
         blockers: ["producer-inventory-incomplete"],
       });
+    }).pipe(Effect.scoped, Effect.provide(liveServices)),
+);
+
+it.live.each(["fixture-positive", "production"] as const)(
+  "reports the idle owned and incoming peer links under %s admission",
+  (launcher) =>
+    Effect.gen(function* () {
+      const { admission, origin, rpc, server } = yield* fixture(launcher, "replay", true);
+      const upstreamServer = yield* Layer.build(NodeHttpServer.layerTest);
+      const upstream = yield* servePeer(
+        descriptorOf("linked-home-fixture", "Home"),
+        Layer.empty,
+      ).pipe(Effect.provideContext(upstreamServer));
+      const home = yield* Layer.build(
+        layerLinkingEnvironment(descriptorOf("incoming-home-fixture", "Incoming home")),
+      );
+      const auth = Context.get(server, EnvironmentAuth);
+      const sql = Context.get(server, SqlClient.SqlClient);
+      const upstreamPairing = yield* upstream.auth.issuePairingCredential();
+      const owned = yield* rpc[WS_METHODS.peerLinksLink]({
+        url: upstream.url,
+        pairingCode: upstreamPairing.credential,
+        access: "auto",
+      });
+      const pairing = yield* auth.issuePairingCredential().pipe(Effect.provideContext(server));
+      const homeLink = yield* Context.get(home, PeerLinks.PeerLinks).link({
+        url: origin,
+        pairingCode: pairing.credential,
+        access: "auto",
+      });
+      const rows = sql`SELECT * FROM peer_environment_links`;
+      const before = yield* rows;
+      const incoming = yield* auth
+        .listSessions()
+        .pipe(
+          Effect.map((sessions) =>
+            sessions.filter((session) => session.client.label?.startsWith("T3 Code · ")),
+          ),
+        );
+      expect(before).toHaveLength(1);
+      expect(incoming).toHaveLength(1);
+
+      const seal = Symbol();
+      const outcome = yield* admission.drain(seal, "2 seconds");
+      if (launcher === "production") {
+        expect(outcome).toMatchObject({
+          kind: "aborted",
+          reason: "deadline",
+          blockers: ["producer-inventory-incomplete"],
+        });
+        expect(yield* rows).toEqual(before);
+        expect(yield* auth.listSessions()).toEqual(expect.arrayContaining(incoming));
+        return;
+      }
+      expect(outcome).toEqual({ kind: "sealed" });
+      yield* Ref.set(upstream.descriptor, descriptorOf("linked-home-fixture", "New label"));
+      const listed = yield* rpc[WS_METHODS.peerLinksList]({});
+      expect(listed.links[0]).toMatchObject({ label: owned.label, status: "reachable" });
+      const refused = yield* rpc[WS_METHODS.peerLinksUnlink]({
+        environmentId: owned.environmentId,
+      }).pipe(Effect.result);
+      expect(refused).toMatchObject({ _tag: "Failure", failure: { reason: "maintenance" } });
+      const launch = ProjectToolkit.tools.t3_thread_launch;
+      const incomingLaunch = yield* Context.get(home, PeerMcpClient.PeerMcpClient)
+        .call({
+          environmentId: homeLink.environmentId,
+          tool: launch.name,
+          arguments: {
+            projectId,
+            title: "Sealed peer launch",
+            clientRequestId: "seal:incoming-launch",
+          },
+          limits: { runtimeMode: "approval-required", interactionMode: "default" },
+          success: launch.successSchema,
+        })
+        .pipe(Effect.result);
+      expect(incomingLaunch).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          retryable: true,
+          message: "Server maintenance is in progress. Retry the same request.",
+        },
+      });
+      expect(yield* admission.confirmSeal(seal, Effect.void)).toBe(true);
+      expect(yield* rows).toEqual(before);
+      expect(
+        (yield* auth.listSessions()).filter((session) =>
+          session.client.label?.startsWith("T3 Code · "),
+        ),
+      ).toEqual(incoming);
+      yield* admission.abort(seal);
+      expect((yield* rpc[WS_METHODS.peerLinksList]({})).links[0]?.label).toBe("New label");
     }).pipe(Effect.scoped, Effect.provide(liveServices)),
 );

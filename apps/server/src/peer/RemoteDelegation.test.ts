@@ -30,6 +30,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -369,13 +370,17 @@ const boxToolkitLayer = (thread: BoxThread) => {
         }
         // Unpinned, a wait reports the latest run: a later one once there is one.
         const later = input.runId === undefined && (yield* Ref.get(thread.laterReply)) !== null;
+        const run = {
+          id: later ? boxLaterRunId : runId,
+          status: later ? "completed" : yield* Ref.get(thread.status),
+        } as OrchestrationV2Run;
         return {
           threadId: input.threadId,
-          run: {
-            id: later ? boxLaterRunId : runId,
-            status: later ? "completed" : yield* Ref.get(thread.status),
-          } as OrchestrationV2Run,
+          run,
           timedOut: Option.isNone(done),
+          ...(Option.isSome(done) && input.untilDelegatedWorkSettled === true
+            ? { resultRun: run }
+            : {}),
         };
       }),
     getTimelinePage: (threadId, options) =>
@@ -717,7 +722,7 @@ const makeLaptop = (
               }),
             ),
           ),
-          Layer.provideMerge(PeerForwarding.layer),
+          Layer.provideMerge(PeerForwarding.layer.pipe(Layer.provide(layerDatabase))),
           Layer.provide(
             Layer.mock(ProjectService.ProjectService)({
               // A cold enrichment cache: the project itself reports no identity yet.
@@ -994,6 +999,7 @@ it.effect("keeps a launched remote task counted across the local recording gap",
       );
       yield* Deferred.await(launched);
       expect(yield* observe).not.toContain("remote-delegation");
+      expect(yield* observe).toContain("peer-mutation-unresolved");
       const token = Symbol();
       const draining = yield* admission
         .drain(token, "10 seconds")
@@ -1024,12 +1030,71 @@ it.effect("keeps a launched remote task counted across the local recording gap",
       yield* Deferred.succeed(thread.finished, undefined);
       expect((yield* taskResult(a, event.payload.id))?.result).toBe("Remote result");
       const after = yield* observe;
+      expect(after).not.toContain("peer-mutation-unresolved");
       expect(after).not.toContain("remote-delegation");
       expect(after).toContain("delegated-work");
       yield* admission.abort(token);
       expect((yield* Fiber.join(draining)).kind).toBe("aborted");
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("retains a delegated launch with a lost reply until the same request records it", () =>
+  Effect.gen(function* () {
+    const nativeFetch = yield* FetchHttpClient.Fetch;
+    let dropped = false;
+    const dropLaunchReply: typeof nativeFetch = async (input, init) => {
+      const body = init?.body instanceof Uint8Array ? new TextDecoder().decode(init.body) : "";
+      const response = await nativeFetch(input, init);
+      if (!dropped && body.includes('"name":"t3_thread_launch"')) {
+        await response.body?.cancel();
+        dropped = true;
+        throw new Error("Synthetic connection interruption after launch");
+      }
+      return response;
+    };
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+
+        const params = {
+          task: "Run the synthetic job.",
+          target: {
+            environmentId: box.environmentId,
+            providerInstanceId: instanceId,
+            model: "gpt-5.4",
+          },
+          clientRequestId: "lost-reply",
+        };
+        const lost = yield* a.call("delegate_task", params);
+        expect(dropped, JSON.stringify(lost.content)).toBe(true);
+        expect(lost.isError).toBe(true);
+        expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(
+          0,
+        );
+        const observe = observeDurableObligations().pipe(Effect.provide(database));
+        expect(yield* observe).toContain("peer-mutation-unresolved");
+
+        const retry = yield* a.call("delegate_task", params);
+        expect(retry.isError).toBe(false);
+        expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(
+          1,
+        );
+        expect(yield* observe).not.toContain("peer-mutation-unresolved");
+      }),
+    ).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.provideService(FetchHttpClient.Fetch, dropLaunchReply),
+    );
+  }),
 );
 
 it.effect("a task delegated to the box wakes the laptop's parent when it ends there", () =>
@@ -2065,7 +2130,7 @@ it.effect("a parent stopped while the task's result is read still stops its thre
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect("a stop the box refuses because the parent was lowered ends instead of retrying", () =>
+it.effect("keeps a peer-refused stop unresolved after the parent is lowered", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const thread = yield* makeBoxThread;
@@ -2077,7 +2142,22 @@ it.effect("a stop the box refuses because the parent was lowered ends instead of
       const a = yield* makeLaptop(database, offers);
       yield* linkTo(a.links, b, "full-access");
       yield* seedParent(a);
-      const delegated = yield* delegateToBox(a);
+      const refused = yield* Deferred.make<void>();
+      const delegated = yield* delegateToBox(a).pipe(
+        Effect.provide(
+          Logger.layer([
+            Logger.make(({ message }) => {
+              if (
+                JSON.stringify(message).includes(
+                  "A linked environment refused to stop a delegated task",
+                )
+              ) {
+                Deferred.doneUnsafe(refused, Effect.void);
+              }
+            }),
+          ]),
+        ),
+      );
 
       // The parent is lowered below the full-access thread there, then stopped.
       yield* a.orchestrator.dispatch({
@@ -2091,26 +2171,17 @@ it.effect("a stop the box refuses because the parent was lowered ends instead of
         commandId: CommandId.make("command:stop:laptop-parent-lowered"),
       });
 
-      // The box refuses that stop; the follower records it as settled and
-      // stops, so nothing retries it, now or after a restart.
-      const settled = yield* a.orchestrator
-        .streamStoredEventsFrom({
-          threadId: parentThreadId,
-          afterSequence: 0,
-          eventType: "subagent.updated",
-        })
-        .pipe(
-          Stream.filter(
-            (stored) =>
-              stored.event.type === "subagent.updated" &&
-              stored.event.payload.id === delegated.taskId &&
-              stored.event.payload.remoteChild?.stoppedThere === true,
-          ),
-          Stream.runHead,
-        );
-      expect(Option.isSome(settled)).toBe(true);
+      yield* Deferred.await(refused);
+      expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
+        status: "interrupted",
+      });
+      expect((yield* taskResult(a, delegated.taskId))?.remoteChild?.stoppedThere).not.toBe(true);
       expect(yield* Ref.get(thread.stops)).toEqual([]);
-      expect(yield* a.projections.getOpenRemoteDelegatedTasks).toEqual([]);
+      expect(yield* a.projections.getOpenRemoteDelegatedTasks).toEqual([
+        { parentThreadId, taskId: delegated.taskId },
+      ]);
+      const observe = observeDurableObligations().pipe(Effect.provide(database));
+      expect(yield* observe).toContain("remote-delegation");
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
@@ -2822,6 +2893,8 @@ it.effect("a task cancelled while the box is unreachable is stopped there after 
         }),
       );
       expect(yield* Ref.get(thread.interrupted)).toBe(0);
+      const observe = observeDurableObligations().pipe(Effect.provide(database));
+      expect(yield* observe).toContain("remote-delegation");
 
       yield* Ref.set(b.descriptor, box);
       const after = yield* makeLaptop(database, offers, linking);
@@ -2830,6 +2903,7 @@ it.effect("a task cancelled while the box is unreachable is stopped there after 
       // Once the stop is recorded, nothing is owed there any more.
       yield* stoppedThere(after, delegated.taskId, null);
       expect(yield* after.projections.getOpenRemoteDelegatedTasks).toEqual([]);
+      expect(yield* observe).not.toContain("remote-delegation");
       expect(yield* Ref.get(thread.stops)).toEqual(["thread.stop", "delegated-tasks"]);
       // The result here is still the cancel's.
       expect(yield* taskResult(after, delegated.taskId)).toMatchObject({ status: "cancelled" });
@@ -2860,6 +2934,9 @@ it.effect("a task whose thread there has no run ends with its last reply", () =>
       });
       // One look, not a loop.
       expect(yield* Ref.get(thread.waitedFor)).toEqual([undefined]);
+      expect(yield* observeDurableObligations().pipe(Effect.provide(database))).toContain(
+        "remote-delegation",
+      );
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

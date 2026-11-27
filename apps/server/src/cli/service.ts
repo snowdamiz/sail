@@ -1,3 +1,4 @@
+import { holdBoatCliMutation } from "../cloud/boatCliMutation.ts";
 import * as NodeUtil from "node:util";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -101,12 +102,13 @@ export const writeServiceEnv = Effect.fn("cli.service.write_env")(function* (
   entries: Readonly<Record<string, string | undefined>>,
 ) {
   const fs = yield* FileSystem.FileSystem;
+  yield* holdBoatCliMutation(baseDir);
   const current = yield* readServiceEnv(baseDir);
   const next = upsertServiceEnv(current.contents, entries);
   if (next === current.contents) return;
   yield* fs.makeDirectory(baseDir, { recursive: true });
   yield* fs.writeFileString(current.path, next);
-});
+}, Effect.scoped);
 
 export const reconcileService = Effect.fn("cli.service.reconcile")(function* (options?: {
   readonly allowDowngrade?: boolean;

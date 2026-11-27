@@ -16,6 +16,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 import { vi } from "vite-plus/test";
 
+import { acquireBoatLifecycle, BoatLifecycleBusy } from "../cloud/boatLifecycle.ts";
+import { SERVICE_LAUNCHER_PROTOCOL, SERVICE_STATE_FILE } from "../cloud/serviceProtocol.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerOwnership from "../serverOwnership.ts";
@@ -240,5 +242,46 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("layerCliConfig",
 
       yield* Effect.void.pipe(Effect.provide(SqlitePersistence.layerCliConfig));
     }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
+  );
+
+  it.effect.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
+    "protects a pinned Boat database until the CLI connection closes",
+    () =>
+      Effect.gen(function* () {
+        const { baseDir, dbPath } = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const runtime = NodePath.join(baseDir, "runtime");
+        yield* fs.makeDirectory(runtime);
+        yield* fs.writeFileString(NodePath.join(runtime, "boat-installation-id"), "fixture\n");
+        const journal = NodePath.join(runtime, SERVICE_STATE_FILE);
+        const opening = Effect.void.pipe(Effect.provide(SqlitePersistence.layerCliConfig));
+        assert.equal((yield* opening.pipe(Effect.flip))._tag, "BoatCliMutationError");
+        assert.isFalse(yield* fs.exists(dbPath));
+
+        yield* fs.writeFileString(
+          journal,
+          JSON.stringify({ protocol: SERVICE_LAUNCHER_PROTOCOL, activeVersion: "1.0.0" }),
+        );
+        yield* Effect.acquireUseRelease(
+          Effect.sync(() => acquireBoatLifecycle(runtime, "recover")),
+          () =>
+            Effect.gen(function* () {
+              assert.equal((yield* opening.pipe(Effect.flip))._tag, "BoatCliMutationError");
+              assert.isFalse(yield* fs.exists(dbPath));
+            }),
+          (release) => Effect.sync(release),
+        );
+
+        yield* migrateTo();
+        yield* ownT3Home();
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* Layer.build(SqlitePersistence.layerCliConfig);
+            assert.throws(() => acquireBoatLifecycle(runtime, "recover"), BoatLifecycleBusy);
+          }),
+        );
+        const release = yield* Effect.sync(() => acquireBoatLifecycle(runtime, "recover"));
+        yield* Effect.sync(release);
+      }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
   );
 });

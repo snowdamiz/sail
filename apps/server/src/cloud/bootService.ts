@@ -1537,13 +1537,14 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   const withStopped = Effect.fn("cloud.boot_service.with_stopped")(function* <A, E, R>(
     operation: Effect.Effect<A, E, R>,
   ): Effect.fn.Return<A, E | BootServiceError, R> {
-    if (detectedManager === undefined) return yield* operation;
+    const withoutService = acquireBoatMutationScoped.pipe(Effect.andThen(operation), Effect.scoped);
+    if (detectedManager === undefined) return yield* withoutService;
     const manager = detectedManager;
     const unit = yield* readUnit().pipe(Effect.option);
-    if (Option.isNone(unit)) return yield* operation;
+    if (Option.isNone(unit)) return yield* withoutService;
     const installedBaseDir = bootServiceBaseDirOf(unit.value);
     if (installedBaseDir === undefined || !(yield* isThisHome(installedBaseDir))) {
-      return yield* operation;
+      return yield* withoutService;
     }
     return yield* Effect.acquireUseRelease(
       acquireBoatMutationEffect,

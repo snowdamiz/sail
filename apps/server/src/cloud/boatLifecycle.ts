@@ -34,7 +34,9 @@ export function boatRuntime(baseDir: string) {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher.
   if (process.platform !== "linux") return undefined;
   const marker = NodePath.join(baseDir, "runtime", INSTALLATION_ID);
-  if (!NodeFS.lstatSync(marker, { throwIfNoEntry: false })) return undefined;
+  const installation = NodeFS.lstatSync(marker, { throwIfNoEntry: false });
+  if (installation === undefined) return undefined;
+  if (!installation.isFile()) throw new Error("Boat installation marker must be a regular file.");
   const home = NodeFS.realpathSync(baseDir);
   const runtime = NodePath.join(home, "runtime");
   if (NodeFS.realpathSync(runtime) !== runtime) throw new Error("Boat runtime must be canonical.");
@@ -48,7 +50,10 @@ export class BoatLifecycleBusy extends Error {
   }
 }
 
-export function acquireBoatLifecycle(runtime: string, mode: "recover" | "mutate"): () => void {
+export function acquireBoatLifecycle(
+  runtime: string,
+  mode: "recover" | "mutate" | "cli",
+): () => void {
   const fd = NodeFS.openSync(
     NodePath.join(runtime, LIFECYCLE_LOCK),
     NodeFS.constants.O_CREAT | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_RDONLY,
@@ -56,17 +61,24 @@ export function acquireBoatLifecycle(runtime: string, mode: "recover" | "mutate"
   );
   try {
     // flock locks the open file description. The parent retains it after flock exits.
-    const result = NodeChildProcess.spawnSync("flock", ["-n", "-E", "75", "3"], {
-      stdio: ["ignore", "ignore", "ignore", fd],
-      timeout: 2_000,
-    });
+    const result = NodeChildProcess.spawnSync(
+      "flock",
+      [...(mode === "cli" ? ["-s"] : []), "-n", "-E", "75", "3"],
+      {
+        stdio: ["ignore", "ignore", "ignore", fd],
+        timeout: 2_000,
+      },
+    );
     if (result.status === 75) throw new BoatLifecycleBusy();
     if (result.status !== 0) throw result.error ?? new Error("Boat lifecycle flock failed.");
     if (readOptional(NodePath.join(runtime, BOAT_BOOT_OPERATION)) !== undefined) {
       throw new BoatLifecycleBusy();
     }
-    if (mode === "mutate") {
+    if (mode !== "recover") {
       const raw = readOptional(NodePath.join(runtime, SERVICE_STATE_FILE));
+      if (raw === undefined && mode === "cli") {
+        throw new Error("The pinned Boat service journal is missing.");
+      }
       if (raw !== undefined) {
         const state = parseServiceState(raw);
         if (
@@ -88,6 +100,11 @@ export function acquireBoatLifecycle(runtime: string, mode: "recover" | "mutate"
 export function acquireBoatMutation(baseDir: string): () => void {
   const runtime = boatRuntime(baseDir);
   return runtime === undefined ? () => {} : acquireBoatLifecycle(runtime, "mutate");
+}
+
+export function acquireBoatCliMutation(baseDir: string): () => void {
+  const runtime = boatRuntime(baseDir);
+  return runtime === undefined ? () => {} : acquireBoatLifecycle(runtime, "cli");
 }
 
 const SERVICE = "t3code.service";

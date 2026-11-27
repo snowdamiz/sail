@@ -13,24 +13,21 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Console from "effect/Console";
-import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import { Command, Flag, GlobalFlag, Prompt } from "effect/cli";
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
+import { holdBoatCliMutation } from "../cloud/boatCliMutation.ts";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ManagedLimits from "../policy/managedLimits.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
-import * as BootService from "../cloud/bootService.ts";
 import * as CliState from "../cloud/CliState.ts";
 import * as CliTokenManager from "../cloud/CliTokenManager.ts";
 import { formatReachabilityFailure } from "../cloud/ConnectReachability.ts";
@@ -114,6 +111,7 @@ export const signsInWithDeviceCode = Effect.fn("cloud.cli.signs_in_with_device_c
 const authorizeCli = Effect.fn("cloud.cli.authorize")(function* (options: {
   readonly headless: boolean;
 }) {
+  yield* holdBoatCliMutation((yield* ServerConfig.ServerConfig).baseDir);
   const tokens = yield* CliTokenManager.CloudCliTokenManager;
   const useOutOfBandOAuth = yield* signsInWithDeviceCode({
     headless: options.headless,
@@ -145,7 +143,7 @@ const authorizeCli = Effect.fn("cloud.cli.authorize")(function* (options: {
   );
   yield* tokens.store(token);
   return identity;
-});
+}, Effect.scoped);
 
 function bytesToString(value: Uint8Array): string {
   return new TextDecoder().decode(value);
@@ -331,6 +329,7 @@ const runLiveCloudUnlink = Effect.fn("cloud.cli.run_live_unlink")(function* () {
       Effect.flatMap((client) => client.connect.unlink({ headers: {} })),
       Effect.timeout(CLOUD_CLI_LIVE_SERVER_TIMEOUT),
       Effect.scoped,
+      Effect.provide(EnvironmentAuth.layerRuntime),
     ),
   );
   return Exit.isSuccess(result)
@@ -352,6 +351,7 @@ const checkLiveReachability = Effect.fn("cloud.cli.check_live_reachability")(fun
     Effect.flatMap((client) => client.connect.checkReachability({ headers: {} })),
     Effect.timeout(CLOUD_CLI_REACHABILITY_TIMEOUT),
     Effect.scoped,
+    Effect.provide(EnvironmentAuth.layerRuntime),
     Effect.orElseSucceed(() => null),
   );
 });
@@ -499,9 +499,12 @@ const reportCloudDisconnectResults = Effect.fn("cloud.cli.report_disconnect_resu
 export const disconnectCloud = Effect.fn("cloud.cli.disconnect")(function* (options: {
   readonly clearAuthorization: boolean;
 }) {
+  yield* holdBoatCliMutation((yield* ServerConfig.ServerConfig).baseDir);
   yield* CliState.setCliDesiredCloudLink(false);
   const liveResult = yield* runLiveCloudUnlink();
-  const relayResult = yield* Effect.exit(unlinkRelayEnvironment());
+  const relayResult = yield* Effect.exit(
+    unlinkRelayEnvironment().pipe(Effect.provide(ServerEnvironment.layerIdentity)),
+  );
   yield* CliState.clearPersistedCloudLink;
 
   if (options.clearAuthorization) {
@@ -521,27 +524,11 @@ export const disconnectCloud = Effect.fn("cloud.cli.disconnect")(function* (opti
     );
   }
   return liveResult;
-});
+}, Effect.scoped);
 
-export const runCloudCommand = Effect.fn("cloud.cli.run_cloud_command")(function* <A, E>(
+export const runCloudCommand = Effect.fn("cloud.cli.run_cloud_command")(function* <A, E, R>(
   flags: { readonly baseDir: Option.Option<string> },
-  run: Effect.Effect<
-    A,
-    E,
-    | ServerSecretStore.ServerSecretStore
-    | CliTokenManager.CloudCliTokenManager
-    | RelayClient.RelayClient
-    | EnvironmentAuth.EnvironmentAuth
-    | BootService.BootService
-    | SecureRandom.SecureRandom
-    | FileSystem.FileSystem
-    | Path.Path
-    | HttpClient.HttpClient
-    | Prompt.Environment
-    | ServerConfig.ServerConfig
-    | ServerEnvironment.ServerEnvironmentIdentity
-    | ManagedPolicy.ManagedPolicy
-  >,
+  run: Effect.Effect<A, E, R>,
   options?: {
     readonly quietLogs?: boolean;
   },
@@ -551,12 +538,12 @@ export const runCloudCommand = Effect.fn("cloud.cli.run_cloud_command")(function
   const minimumLogLevel = options?.quietLogs ? "Error" : config.logLevel;
   const layerRuntime = Layer.mergeAll(
     ServerSecretStore.layer,
+    ManagedPolicy.layer,
     CliTokenManager.layer.pipe(
       Layer.provide(ServerSecretStore.layer),
       Layer.provide(ExternalLauncher.layer),
     ),
     RelayClient.layerCloudflared({ baseDir: config.baseDir }),
-    EnvironmentAuth.layerRuntime,
     CliService.layer(config),
     RelayTracing.layerHeadlessRelayClient.pipe(Layer.provide(ManagedPolicy.layer)),
   ).pipe(
@@ -587,6 +574,7 @@ const linkEnvironmentForConnect = Effect.fn("cloud.cli.link_environment")(functi
   /** For `t3 up`, where the user already chose T3 Connect: install it quietly, without asking. */
   readonly installRelayClient?: boolean;
 }) {
+  yield* holdBoatCliMutation((yield* ServerConfig.ServerConfig).baseDir);
   const publishOnly = options.publishOnly ?? false;
   if (!publishOnly) {
     const relayClient = yield* RelayClient.RelayClient;
@@ -619,7 +607,7 @@ const linkEnvironmentForConnect = Effect.fn("cloud.cli.link_environment")(functi
     yield* secrets.set(PUBLISH_AGENT_ACTIVITY_SECRET, stringToBytes("true"));
   }
   return { identity } as const;
-});
+}, Effect.scoped);
 export { linkEnvironmentForConnect };
 
 const connectLoginCommand = Command.make("login", {
@@ -761,6 +749,7 @@ const connectPublishCommand = Command.make("publish", {
       Effect.gen(function* () {
         const secrets = yield* ServerSecretStore.ServerSecretStore;
         const tokens = yield* CliTokenManager.CloudCliTokenManager;
+        yield* holdBoatCliMutation((yield* ServerConfig.ServerConfig).baseDir);
         const enabled = !flags.disable;
         if (enabled) yield* requireConnectAllowed;
         yield* secrets.set(
@@ -803,7 +792,7 @@ const connectPublishCommand = Command.make("publish", {
         yield* Console.log(
           "Restart T3 to finish authorizing this environment to publish (no managed tunnel is created).",
         );
-      }),
+      }).pipe(Effect.scoped),
     ),
   ),
 );

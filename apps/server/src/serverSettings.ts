@@ -1004,9 +1004,6 @@ const make = Effect.gen(function* () {
           return [
             ...(effective.guestSharingEnabled ? (["guest-sharing-configured"] as const) : []),
             ...(effective.workflowsEnabled ? (["workflow-configured"] as const) : []),
-            ...(effective.linkedEnvironmentsEnabled
-              ? (["linked-environments-configured"] as const)
-              : []),
             ...(effective.enableDeviceSupport ||
             effective.deviceHosts.length > 0 ||
             effective.easDeviceHosts.length > 0 ||

@@ -10744,7 +10744,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const remoteChild =
       command.stoppedThere === undefined
         ? task.remoteChild
-        : { ...task.remoteChild!, stoppedThere: true };
+        : {
+            ...task.remoteChild!,
+            stoppedThere: true,
+            ...(command.settlementVerified ? { settlementVerified: true as const } : {}),
+          };
     // The first result stands; a repeated follower report records nothing, which
     // the dispatcher refuses. A stop there after the result is still recorded, but
     // a run that ended by itself does not settle a stop the task here still owes.
@@ -10758,7 +10762,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         task.status === "interrupted" ||
         task.remoteChild?.stoppedThere === false;
       if (
-        task.remoteChild?.stoppedThere === true ||
+        (task.remoteChild?.stoppedThere === true &&
+          (task.remoteChild.settlementVerified === true || command.settlementVerified !== true)) ||
         (owesStop && command.stoppedThere !== "stopped")
       )
         return;
@@ -10898,6 +10903,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     remoteChild: OrchestrationV2RemoteTaskChild,
   ) {
     const now = yield* DateTime.now;
+    const { settlementVerified: _previousProof, ...child } = remoteChild;
     yield* emit(
       events,
       command,
@@ -10911,7 +10917,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       payload: {
         ...task,
         remoteChild: {
-          ...remoteChild,
+          ...child,
           stoppedThere: false,
           stopCount: (remoteChild.stopCount ?? 0) + 1,
         },
@@ -17055,7 +17061,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       Effect.flatMap(({ stored, release }) =>
         threadReactions.run(
           stored.event.threadId,
-          handleRunUpdate(stored).pipe(Effect.ensuring(Effect.sync(() => release?.()))),
+          handleRunUpdate(stored).pipe(
+            withAdmission("continuation"),
+            Effect.ignoreCause({ log: true }),
+            Effect.ensuring(Effect.sync(() => release?.())),
+          ),
         ),
       ),
     ),
@@ -17149,7 +17159,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ).pipe(
     Stream.filter(settlesChildWork),
     Stream.runForEach((stored) =>
-      threadReactions.run(stored.event.threadId, updateDelegatedParentTask(stored.event.threadId)),
+      threadReactions.run(
+        stored.event.threadId,
+        updateDelegatedParentTask(stored.event.threadId).pipe(
+          withAdmission("continuation"),
+          Effect.ignoreCause({ log: true }),
+        ),
+      ),
     ),
     Effect.forkScoped,
   );

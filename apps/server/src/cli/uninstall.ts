@@ -1,3 +1,4 @@
+import { boatRuntime } from "../cloud/boatLifecycle.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 // Windows cleanup must outlive this executable to delete its directory; scoped ChildProcess kills children on exit.
 import * as NodeChildProcess from "node:child_process";
@@ -222,6 +223,16 @@ const runUninstall = Effect.fn("cli.uninstall.run")(function* (input: {
   const platform = yield* HostProcess.Platform;
   const environment = yield* HostProcess.Environment;
   const service = yield* BootService.BootService;
+  const pinned = yield* Effect.try({
+    try: () => boatRuntime(input.baseDir),
+    catch: () =>
+      new CliUninstallError({ reason: "Could not determine ownership of this T3 home." }),
+  });
+  if (pinned !== undefined) {
+    return yield* new CliUninstallError({
+      reason: "This T3 installation is managed by Sail Boats.",
+    });
+  }
   const plan = yield* planUninstall({ baseDir: input.baseDir });
 
   if (!plan.service && plan.launchers.length === 0 && plan.runtimeDir === undefined) {

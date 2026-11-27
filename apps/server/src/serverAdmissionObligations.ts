@@ -13,7 +13,8 @@ export const observeDurableObligations = Effect.fn("ServerAdmission.observeDurab
       native_work: number;
       workflow: number;
       workflow_settlement: number;
-      peer_link: number;
+      peer_link_request: number;
+      peer_mutation: number;
     }>`
       SELECT (
         EXISTS (SELECT 1 FROM orchestration_v2_projection_runs
@@ -35,22 +36,31 @@ export const observeDurableObligations = Effect.fn("ServerAdmission.observeDurab
       EXISTS (
         SELECT 1 FROM orchestration_v2_projection_subagents
         WHERE origin = 'app_owned' AND child_thread_id IS NULL
-          AND json_type(payload_json, '$.remoteChild') = 'object'
-          AND (
-            json_extract(payload_json, '$.result') IS NULL
-            OR (status IN ('cancelled', 'interrupted')
-                AND json_type(payload_json, '$.remoteChild.stoppedThere') IS NOT 'true')
-            OR json_type(payload_json, '$.remoteChild.stoppedThere') = 'false'
+          AND NOT (
+            json_type(payload_json, '$.remoteChild') IS 'object'
+            AND json_type(payload_json, '$.result') IS 'text'
+            AND status IN ('completed', 'failed', 'cancelled', 'interrupted')
+            AND json_type(payload_json, '$.remoteChild.stoppedThere') IS 'true'
+            AND json_type(payload_json, '$.remoteChild.settlementVerified') IS 'true'
           )
       ) AS remote_delegation,
-      EXISTS (
-        SELECT 1 FROM orchestration_v2_projection_subagents task
-        LEFT JOIN orchestration_v2_projection_runs owner ON owner.run_id = task.run_id
-        WHERE task.origin = 'app_owned'
-          AND ((task.child_thread_id IS NOT NULL AND json_extract(task.payload_json, '$.result') IS NULL)
-            OR (task.completion_delivery_state = 'claimed'
-                AND json_extract(owner.payload_json, '$.delegatedCompletion.disposition') = 'open'
-                AND json_type(owner.payload_json, '$.delegatedCompletion.delivery') = 'object'))
+      (
+        EXISTS (
+          SELECT 1 FROM orchestration_v2_projection_subagents
+          WHERE origin = 'app_owned' AND (
+            (child_thread_id IS NOT NULL AND (
+              json_type(payload_json, '$.result') IS NOT 'text'
+              OR status NOT IN ('completed', 'failed', 'cancelled', 'interrupted')
+            ))
+            OR completion_delivery_state IN ('pending', 'claimed')
+          )
+        )
+        OR EXISTS (
+          SELECT 1 FROM orchestration_v2_projection_runs
+          WHERE CASE WHEN json_valid(payload_json)
+            THEN json_type(payload_json, '$.delegatedCompletion.delivery') = 'object'
+            ELSE 0 END
+        )
       ) AS delegated_work,
       (
         EXISTS (SELECT 1 FROM orchestration_v2_projection_subagents
@@ -86,7 +96,13 @@ export const observeDurableObligations = Effect.fn("ServerAdmission.observeDurab
           WHERE wait.signalled_at IS NULL AND child.ended_at IS NOT NULL
         )
       ) AS workflow_settlement,
-      EXISTS (SELECT 1 FROM peer_environment_links) AS peer_link
+      EXISTS (
+        SELECT 1 FROM orchestration_v2_projection_turn_items
+        WHERE type = 'link_request' AND (
+          status = 'waiting' OR json_extract(payload_json, '$.linkStatus') = 'pending'
+        )
+      ) AS peer_link_request,
+      EXISTS (SELECT 1 FROM peer_mutation_intents) AS peer_mutation
     `;
     if (row === undefined) return ["quiescence-unknown"] as const;
     return [
@@ -97,7 +113,8 @@ export const observeDurableObligations = Effect.fn("ServerAdmission.observeDurab
       ...(row.scheduled_delivery ? ["scheduled-delivery" as const] : []),
       ...(row.workflow ? ["workflow" as const] : []),
       ...(row.workflow_settlement ? ["workflow-settlement" as const] : []),
-      ...(row.peer_link ? ["peer-link-retained" as const] : []),
+      ...(row.peer_link_request ? ["peer-link-request" as const] : []),
+      ...(row.peer_mutation ? ["peer-mutation-unresolved" as const] : []),
     ];
   },
 );

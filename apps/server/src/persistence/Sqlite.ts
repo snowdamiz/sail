@@ -10,6 +10,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { hasPendingMigrations, runMigrations } from "./Migrations.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
+import { holdBoatCliMutation } from "../cloud/boatCliMutation.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerOwnership from "../serverOwnership.ts";
 
@@ -139,12 +140,14 @@ export const layerMemory = Layer.provideMerge(
   NodeSqliteClient.layer({ filename: ":memory:" }),
 );
 
-const makeLayerConfig = <E, R>(
+const makeLayerConfig = <E, R, E2 = never, R2 = never>(
   fromPath: (dbPath: string) => Layer.Layer<SqlClient.SqlClient, E, R>,
+  beforeOpen?: (baseDir: string) => Effect.Effect<void, E2, R2>,
 ) =>
   Layer.unwrap(
     Effect.gen(function* () {
-      const { dbPath } = yield* ServerConfig.ServerConfig;
+      const { baseDir, dbPath } = yield* ServerConfig.ServerConfig;
+      if (beforeOpen !== undefined) yield* beforeOpen(baseDir);
       yield* initializeV2Database(dbPath);
       return fromPath(dbPath);
     }),
@@ -155,4 +158,5 @@ export const layerConfig = makeLayerConfig(layerFromPath);
 /** For CLI commands: pending migrations run only while no server owns the T3 home. */
 export const layerCliConfig = makeLayerConfig(
   makeLayerFromPath(() => makeLayerSetup(runMigrationsAsOwner())),
+  holdBoatCliMutation,
 );

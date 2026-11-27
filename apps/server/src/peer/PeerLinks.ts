@@ -631,7 +631,16 @@ const make = Effect.gen(function* () {
       : sql`
           UPDATE peer_environment_links SET label = ${label}
           WHERE environment_id = ${link.environmentId}
-        `.pipe(Effect.ignoreCause({ log: true }), Effect.as({ ...link, label }));
+        `.pipe(
+          Effect.as({ ...link, label }),
+          withAdmission("root"),
+          Effect.catchTags({ ServerMaintenanceBusy: () => Effect.succeed(link) }),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not refresh the peer link label", { cause }).pipe(
+              Effect.as({ ...link, label }),
+            ),
+          ),
+        );
 
   const statusOf = Effect.fn("PeerLinks.statusOf")(function* (
     link: PeerLink,

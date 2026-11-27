@@ -1896,6 +1896,6 @@ const layerStorage = Layer.mergeAll(ServerSecretStore.layer, SqlitePersistence.l
 
 export const layerRuntime = layer.pipe(
   Layer.provideMerge(ManagedPolicy.layer),
-  Layer.provideMerge(layerStorage),
   Layer.provideMerge(ServerEnvironment.layerIdentity),
+  Layer.provideMerge(layerStorage),
 );

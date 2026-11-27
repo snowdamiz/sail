@@ -1,4 +1,4 @@
-import { acquireBoatMutation } from "./boatLifecycle.ts";
+import { acquireBoatCliMutation } from "./boatLifecycle.ts";
 import type { ServerSelfUpdateOutcome } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
@@ -187,7 +187,7 @@ export const claimUnmanagedBoatStart = Effect.fn("cloud.service_launcher_client.
     return managed
       ? () => {}
       : yield* Effect.try({
-          try: () => acquireBoatMutation(baseDir),
+          try: () => acquireBoatCliMutation(baseDir),
           catch: (cause) =>
             new ServiceLauncherClientError({ operation: "maintenance-identity", cause }),
         });

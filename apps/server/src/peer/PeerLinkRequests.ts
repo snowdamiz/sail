@@ -1,3 +1,4 @@
+import { admitMcp } from "../mcp/maintenanceAdmission.ts";
 import { withAdmission } from "../serverAdmission.ts";
 /**
  * Links an agent asks the user to make. The user picks the machine and access in a card, and
@@ -295,7 +296,7 @@ const make = Effect.gen(function* () {
       );
       return pendingResult(turnItemId);
     },
-    Effect.withSpan("PeerLinkRequests.request"),
+    admitMcp("root"),
   );
 
   /** Links the machine the user picked, or finds the link they chose to keep. */

@@ -50,7 +50,11 @@ it.effect(
       );
       const doctor = (dryRun: boolean) =>
         runDoctor(
-          { dbPath: path.join(stateDir, "statev2.sqlite"), serverRuntimeStatePath },
+          {
+            baseDir: stateDir,
+            dbPath: path.join(stateDir, "statev2.sqlite"),
+            serverRuntimeStatePath,
+          },
           { fix: true, dryRun, interactive: false },
         ).pipe(
           Effect.provide(
@@ -122,7 +126,11 @@ it.effect(
 it.effect("reports sizes just under the next unit in that unit", () =>
   Effect.gen(function* () {
     yield* runDoctor(
-      { dbPath: "/test/statev2.sqlite", serverRuntimeStatePath: "/test/server-runtime.json" },
+      {
+        baseDir: "/test",
+        dbPath: "/test/statev2.sqlite",
+        serverRuntimeStatePath: "/test/server-runtime.json",
+      },
       { fix: false, dryRun: true },
     ).pipe(
       Effect.provide(
@@ -159,6 +167,7 @@ it.effect("warns how long reclaiming can take and reports each step with its ela
     const path = yield* Path.Path;
     yield* runDoctor(
       {
+        baseDir: stateDir,
         dbPath: path.join(stateDir, "statev2.sqlite"),
         serverRuntimeStatePath: path.join(stateDir, "server-runtime.json"),
       },

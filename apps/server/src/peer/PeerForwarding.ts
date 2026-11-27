@@ -19,9 +19,13 @@ import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import type * as Tool from "effect/ai/Tool";
 
 import { runtimeModeRank } from "../mcp/delegatedTaskModes.ts";
+import { admitMcp } from "../mcp/maintenanceAdmission.ts";
 import { assertNotLinked } from "../mcp/linkOrigin.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { readCaller, unavailable } from "../mcp/threadAccess.ts";
@@ -54,6 +58,13 @@ export class PeerForwarding extends Context.Service<
       environmentId: EnvironmentId,
       params: Tool.Parameters<T>,
     ) => Effect.Effect<Tool.Success<T>, OrchestratorMcpFailure>;
+    readonly trackMutation: <A, E>(
+      scope: Scope,
+      environmentId: EnvironmentId,
+      operation: "delegate_task" | "t3_thread_launch" | "t3_thread_send",
+      clientRequestId: string | undefined,
+      send: (clientRequestId: string) => Effect.Effect<A, E>,
+    ) => Effect.Effect<A, E | OrchestratorMcpFailure>;
     /** `t3_thread_read` there. */
     readonly readThread: (
       scope: Scope,
@@ -86,7 +97,15 @@ export const linkedEnvironmentsOff = new OrchestratorMcpFailure({
     "Linked environments is off on this machine, so no tool can act on another machine. Leave out environmentId to work here; the user can turn it on in Settings → Labs.",
 });
 
+const mutationStorageFailure = () =>
+  new OrchestratorMcpFailure({
+    code: "orchestration_error",
+    message: "Could not record the linked operation. Retry with the same clientRequestId.",
+    retryable: true,
+  });
+
 const isRuntimeMode = Schema.is(RuntimeMode);
+const encodeMutationBinding = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const linkStorageFailure = (error: PeerLinkError) =>
   new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message });
@@ -114,6 +133,9 @@ export const readNewestOrRetry = Effect.fn("PeerForwarding.readNewestOrRetry")(f
 
 const make = Effect.gen(function* () {
   const peers = yield* PeerMcpClient.PeerMcpClient;
+  const sql = yield* SqlClient.SqlClient;
+  const random = yield* SecureRandom.SecureRandom;
+  const mutations = yield* KeyedLock.make<string>();
   const links = yield* PeerLinks.PeerLinks;
   const crypto = yield* Digest.Digest;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -141,6 +163,44 @@ const make = Effect.gen(function* () {
       Effect.map((digest) => `fwd:${Hex.encode(digest)}`),
       Effect.orDie,
     );
+
+  const trackMutation: PeerForwarding["Service"]["trackMutation"] = Effect.fn(
+    "PeerForwarding.trackMutation",
+  )(function* (scope, environmentId, operation, clientRequestId, send) {
+    const requestId = clientRequestId ?? (yield* random.uuidV4());
+    const key = yield* scopedRequestId(scope.requestNamespace, requestId);
+    return yield* mutations.withLock(
+      `${encodeURIComponent(environmentId)}:${operation}:${key}`,
+      Effect.gen(function* () {
+        let sentKey: string | undefined;
+        const beforeSend: PeerMcpClient.PeerMutationHook = Effect.fnUntraced(function* (binding) {
+          if (sentKey !== undefined) return;
+          const encoded = yield* encodeMutationBinding(binding).pipe(
+            Effect.mapError(mutationStorageFailure),
+          );
+          const requestKey = yield* scopedRequestId(key, encoded);
+          yield* sql`
+              INSERT INTO peer_mutation_intents (environment_id, operation, request_key)
+              VALUES (${environmentId}, ${operation}, ${requestKey})
+              ON CONFLICT DO NOTHING
+            `.pipe(Effect.mapError(mutationStorageFailure));
+          sentKey = requestKey;
+        });
+        // A lost reply can follow a commit. Clear only the same credential and request,
+        // after the remote result and any local task record have both succeeded.
+        const result = yield* send(requestId).pipe(
+          Effect.provideService(PeerMcpClient.BeforePeerMutation, beforeSend),
+        );
+        if (sentKey !== undefined) {
+          yield* sql`
+            DELETE FROM peer_mutation_intents
+            WHERE environment_id = ${environmentId} AND operation = ${operation} AND request_key = ${sentKey}
+          `.pipe(Effect.mapError(mutationStorageFailure));
+        }
+        return result;
+      }),
+    );
+  }, admitMcp("root"));
 
   /**
    * The linked environment refuses a mode above the link's access too, but as
@@ -230,7 +290,7 @@ const make = Effect.gen(function* () {
       OrchestratorMcpThreadInterruptResult,
       environmentId,
       input,
-    );
+    ).pipe(admitMcp("continuation"));
 
   const waitForThread: PeerForwarding["Service"]["waitForThread"] = (scope, environmentId, input) =>
     forward<OrchestratorMcpThreadWaitResult>(
@@ -313,6 +373,7 @@ const make = Effect.gen(function* () {
 
   return PeerForwarding.of({
     call,
+    trackMutation,
     readThread,
     interruptThread,
     waitForThread,
