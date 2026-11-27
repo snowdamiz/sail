@@ -50,7 +50,20 @@ describe("Sail Boats helpers", () => {
     expect(primaryAction(unpaired, false)?.label).toBe("Add to Sail");
     expect(ACTIONS.open.label).toBe("Open last thread in Sail");
 
-    const paired = makeMachine({ state: "asleep", paired: true });
+    const paired = makeMachine({
+      state: "asleep",
+      paired: true,
+      projects: [
+        {
+          id: "remote-1",
+          originProjectId: "local-1",
+          title: "Cloned",
+          repoKey: null,
+          status: null,
+        },
+        { id: "remote-2", title: "Existing", repoKey: null, status: null },
+      ],
+    });
     expect(primaryAction(paired, true)).toBeNull();
     const menu = menuActions(paired, SIZES, true);
     expect(menu.some((item) => "cmd" in item && item.cmd === "wake_machine")).toBe(true);

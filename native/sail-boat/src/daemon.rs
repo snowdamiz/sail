@@ -1121,6 +1121,7 @@ mod tests {
             next_due_at: None,
             connect: false,
             saved_stop: None,
+            project_origins: Default::default(),
         };
         let state = crate::store::State { machines: vec![machine], ..Default::default() };
         crate::store::Store::new(dir).save(&state).unwrap();

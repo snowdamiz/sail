@@ -1076,6 +1076,7 @@ esac
                 next_due_at: None,
                 connect: false,
                 saved_stop: None,
+                project_origins: Default::default(),
             };
             let machine = Arc::new(MachineRuntime::new(shared, record, dir.clone()));
             let command = |id: &str| json!({"type":"message.dispatch","commandId":id,"threadId":"fixture-thread"});

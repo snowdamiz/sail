@@ -225,6 +225,7 @@ pub async fn create(
         next_due_at: None,
         connect: false,
         saved_stop: None,
+        project_origins: Default::default(),
     })
 }
 
