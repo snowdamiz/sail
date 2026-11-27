@@ -9891,14 +9891,6 @@
   "02f531b974fc3dd5": "1Password プロバイダーを追加",
   "acbf0b4710755dc1": "個人",
   "bc714daca44e1826": "変更を保存",
-  "787b3fff435313e4": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " のプロバイダー変数は、名前を指定してここから値を読み取れます。値はプロバイダーの起動時に、そのサーバー上の op CLI で読み取られます。"
-  ],
   "daf8daec701f0863": "アカウント",
   "c3d6c8494c7d4b8f": "op account list に表示されるアカウントの短縮名、https:// を除いたサインインアドレス、または ID。",
   "afa8b4a2e025dd36": "値",
@@ -12913,5 +12905,42 @@
   "09450761a5fd88a3": "シークレット参照",
   "f16ea4e42e6ea489": "このプロジェクト用に既存の保管庫項目への参照を保存します。値はパスワードマネージャーに残ります。非公開の認証情報リクエストに回答する際、保存済みの参照を使用するかどうかを選択できます。",
   "99903ecb8421c8d9": "参照を保存",
-  "0ccc25d652c2f6fc": "まずこの環境にシークレットプロバイダーを追加してください。"
+  "0ccc25d652c2f6fc": "まずこの環境にシークレットプロバイダーを追加してください。",
+  "cc52d675ac7875ef": "{field} の環境変数（任意）",
+  "f12f126c455167f2": "{field} の環境変数（任意）",
+  "894a0dfe8f4c2a1b": "環境変数（任意）",
+  "5165bbb2ced80702": "環境変数（任意、例: AWS_ACCESS_KEY_ID）",
+  "7381c61943de8201": "シークレットを隠す",
+  "0e33e77f3189e43c": "シークレットを表示",
+  "8845873cfcd3e038": "1Password に保存してこのプロジェクトを認可し、今後のセッションや Boat で自動的に利用できるようにします。",
+  "4316d991713a92c2": "プロジェクト認証情報",
+  "ff168760dba9900e": "認証情報を自動使用",
+  "8773434be57a59db": "この Boat で自動使用が認可されています",
+  "e0a9572ff0af7817": "管理ホストから同期済み",
+  "54e240a32342d074": "シークレット値",
+  "b36a2f2e2c877718": "このプロジェクト用に 1Password 認証情報を認可します。自動使用が有効な認証情報は、再度 1Password にサインインすることなく、エージェント・ターミナル・このプロジェクト用の新しい Boat に提供されます。",
+  "9665a10dd23fa9ab": "自動使用",
+  "d458ff01a546e0b5": "管理ホストから同期済み",
+  "764f4349f74af0d7": "既存の参照をリンク",
+  "430bb9d743621c62": "1Password に新規保存",
+  "1cd88cb84e003ee5": "このプロジェクトのエージェント、ターミナル、Boat に自動提供する",
+  "22382ecaffe51400": "1Password に保存",
+  "8c1fa9d49d44f6de": "認証情報を保存",
+  "129ce1e41eefa279": "Enter a 1Password Service Account token.",
+  "a8e63cc847b1a8bd": "Saved (leave blank to keep)",
+  "752d571b2fcf0fc9": [
+    "Connect with a Service Account token to share 1Password across Desktop, Web, and Boats. Local CLI accounts stay on ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "752419dfcabfdebf": "Connection",
+  "57d57bdb07789c6e": "Service account",
+  "bbeab9004d15619d": "Local CLI account",
+  "df2d1feea6bdcc51": "Service account token",
+  "b1cfac730d035027": "Create a Service Account in 1Password and grant it access to the vaults Sail should read and save to. Syncs automatically between Desktop and Web.",
+  "9d128425cb2f13fa": "Service account"
 }

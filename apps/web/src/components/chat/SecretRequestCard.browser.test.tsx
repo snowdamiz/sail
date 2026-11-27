@@ -157,3 +157,90 @@ it("offers the project's saved reference but waits for explicit approval", async
     },
   });
 });
+
+it("supports multi-field save-to-vault with auto-suggested AWS environment variables", async () => {
+  state.send.mockReset().mockResolvedValue(AsyncResult.success(undefined));
+  state.settings = decodeSettings({
+    secretProviders: {
+      fixture: {
+        kind: "one_password",
+        label: "Fixture vault",
+        config: { account: "fixture.example" },
+      },
+    },
+    projectCredentialBookmarks: {},
+  });
+  state.config = Atom.make({
+    featureFlags: { secretProviders: true },
+    secretRequestReferences: true,
+    projectCredentialBookmarks: true,
+    projectCredentialsSync: true,
+    settings: state.settings,
+  });
+  const item = decodeItem({
+    id: "item-aws",
+    threadId: "thread",
+    runId: "run",
+    nodeId: "node",
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: 0,
+    status: "running",
+    title: null,
+    startedAt: null,
+    completedAt: null,
+    updatedAt: DateTime.makeUnsafe("2026-11-27T00:00:00.000Z"),
+    type: "secret_request",
+    label: "AWS Credentials",
+    reason: "Deploy to AWS",
+    fields: [
+      { name: "AWS_ACCESS_KEY_ID", label: "Access Key ID", secret: false },
+      { name: "AWS_SECRET_ACCESS_KEY", label: "Secret Access Key", secret: true },
+    ],
+    secretStatus: "pending",
+  });
+  if (item.type !== "secret_request") throw new Error("Expected a secret request");
+  await using screen = await render(
+    <SecretRequestCard
+      environmentId={EnvironmentId.make("fixture-env")}
+      item={item}
+      visibility="local"
+    />,
+  );
+  await userEvent.type(screen.getByRole("textbox", { name: "Access Key ID" }), "AKIA_TEST");
+  const secretInput = screen.container.querySelector('input[type="password"]');
+  if (!secretInput) throw new Error("Expected password input");
+  await userEvent.type(secretInput, "SECRET_TEST");
+
+  const vaultToggle = screen.container.querySelector<HTMLElement>('[role="checkbox"]');
+  if (!vaultToggle) throw new Error("Expected vault checkbox");
+  vaultToggle.focus();
+  await userEvent.keyboard(" ");
+
+  await userEvent.type(screen.getByRole("textbox", { name: "Vault name or ID" }), "Engineering");
+  await expect.element(screen.getByRole("button", { name: "Save to vault and use" })).toBeEnabled();
+  await userEvent.click(screen.getByRole("button", { name: "Save to vault and use" }));
+  expect(state.send).toHaveBeenCalledExactlyOnceWith({
+    environmentId: "fixture-env",
+    input: {
+      threadId: "thread",
+      turnItemId: "item-aws",
+      answer: {
+        type: "save-to-vault",
+        provider: "fixture",
+        vault: "Engineering",
+        label: "AWS Credentials",
+        values: {
+          AWS_ACCESS_KEY_ID: "AKIA_TEST",
+          AWS_SECRET_ACCESS_KEY: "SECRET_TEST",
+        },
+        envVars: {
+          AWS_ACCESS_KEY_ID: "AWS_ACCESS_KEY_ID",
+          AWS_SECRET_ACCESS_KEY: "AWS_SECRET_ACCESS_KEY",
+        },
+      },
+    },
+  });
+});

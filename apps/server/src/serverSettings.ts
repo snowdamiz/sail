@@ -263,7 +263,10 @@ function ensureSecretProviderWritesAllowed(
       );
     }
   }
-  for (const entries of Object.values(patch.projectCredentialBookmarks ?? {})) {
+  for (const entries of [
+    ...Object.values(patch.projectCredentialBookmarks ?? {}),
+    ...Object.values(patch.repoCredentialBookmarks ?? {}),
+  ]) {
     for (const bookmark of Object.values(entries)) {
       if (bookmark === null) continue;
       const provider = Object.hasOwn(patch.secretProviders ?? {}, bookmark.reference.provider)

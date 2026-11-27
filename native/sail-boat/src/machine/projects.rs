@@ -18,6 +18,8 @@ const CLONE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 pub struct MachineProject {
     /// T3's project id on the machine; while Sail Boat adds it, the local project's id.
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_project_id: Option<String>,
     pub title: String,
     pub repo_key: Option<String>,
     /// Set while Sail Boat adds it: how far that is, as Sail words clone progress.
@@ -36,6 +38,10 @@ impl MachineRuntime {
             .filter(|p| !adding.iter().any(|a| a.repo_key.is_some() && a.repo_key == p.repo_key))
             .cloned()
             .collect();
+        let record = self.record.read().unwrap();
+        for project in &mut out {
+            project.origin_project_id = record.project_origins.get(&project.id).cloned();
+        }
         out.extend(adding);
         out
     }
@@ -47,6 +53,7 @@ impl MachineRuntime {
             .filter(|p| scratch.is_none() || p["workspaceRoot"].as_str() != scratch.as_deref())
             .map(|p| MachineProject {
                 id: p["id"].as_str().unwrap_or_default().to_owned(),
+                origin_project_id: None,
                 title: p["title"].as_str().unwrap_or_default().to_owned(),
                 repo_key: projects::repo_key(p),
                 status: None,
@@ -81,6 +88,7 @@ impl MachineRuntime {
             }
             adding.push(MachineProject {
                 id: project.id.clone(),
+                origin_project_id: None,
                 title: project.title.clone(),
                 repo_key: Some(project.repo_key.clone()),
                 status: Some("Waking the machine".into()),
@@ -139,6 +147,7 @@ impl MachineRuntime {
             Some(Err(e)) => return Err(explain_clone_failure(anyhow::anyhow!(e), &self.record().name)),
             None => bail!("Sail stopped reporting the clone"),
         }
+        self.record_project_origin(project_id, project.id.clone());
 
         let mut failed = Vec::new();
         for (path, contents) in files {
@@ -156,6 +165,40 @@ impl MachineRuntime {
             }
         }
         Ok(failed)
+    }
+
+    pub(crate) fn record_project_origin(&self, destination_id: String, source_id: String) {
+        self.update_record(|record| {
+            record.project_origins.insert(destination_id, source_id);
+        });
+    }
+
+    /// Pushes scoped, authorized credentials for one project to a running machine over its
+    /// authenticated upstream channel. Returns `Ok(false)` without waking a stopped machine.
+    pub async fn sync_project_credentials(
+        &self,
+        project_id: &str,
+        credentials: Vec<Value>,
+    ) -> Result<bool> {
+        if self.power() != Power::Running {
+            return Ok(false);
+        }
+        let (url, token) = (self.upstream_url(), self.upstream_token());
+        if url.is_empty() || token.is_empty() {
+            return Ok(false);
+        }
+        upstream::call(
+            &url,
+            &token,
+            "secrets.syncProjectCredentials",
+            json!({
+                "projectId": project_id,
+                "credentials": credentials,
+            }),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("syncing project credentials to {}", self.record().name))?;
+        Ok(true)
     }
 
     fn set_adding_status(&self, repo_key: &str, status: &str) {
@@ -219,6 +262,97 @@ fn uuid() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::boat::Boat;
+    use crate::machine::{Event, Shared};
+    use crate::store::{Machine, Settings};
+    use crate::t3desktop::T3Desktop;
+    use std::sync::{Arc, Mutex, RwLock};
+
+    fn old_machine_record() -> Machine {
+        serde_json::from_value(json!({
+            "id": "machine",
+            "sandboxId": "sandbox",
+            "name": "Boat",
+            "size": "small",
+            "upstreamUrl": "",
+            "upstreamToken": "",
+            "watchdogUrl": "",
+            "watchdogSecret": "",
+            "localPort": 0,
+            "t3Version": "",
+            "provisionRevision": "",
+            "environmentId": "environment",
+            "clientTokens": [],
+            "linkTokens": [],
+            "createdAt": 0
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn project_origins_round_trip_and_default_empty() {
+        let mut record = old_machine_record();
+        assert!(record.project_origins.is_empty());
+        record
+            .project_origins
+            .insert("destination".into(), "source".into());
+        let encoded = serde_json::to_value(&record).unwrap();
+        assert_eq!(encoded["projectOrigins"], json!({"destination": "source"}));
+        assert_eq!(serde_json::from_value::<Machine>(encoded).unwrap(), record);
+    }
+
+    #[test]
+    fn project_origins_use_destination_ids_on_the_owning_machine() {
+        let dir = tempfile::tempdir().unwrap();
+        let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let shared = Arc::new(Shared {
+            boat: Boat::at(dir.path().join("boat")),
+            t3: T3Desktop::at(dir.path().join("t3")),
+            settings: RwLock::new(Settings::default()),
+            events,
+            http: reqwest::Client::new(),
+            saving: Mutex::new(Default::default()),
+        });
+        let mut record = old_machine_record();
+        record
+            .project_origins
+            .insert("previous".into(), "older-source".into());
+        let machine = MachineRuntime::new(shared.clone(), record, dir.path().join("first"));
+        let mut other_record = old_machine_record();
+        other_record.id = "another-machine".into();
+        let other = MachineRuntime::new(shared.clone(), other_record, dir.path().join("second"));
+        let shell = json!({"projects": [
+            {"id": "returned-id", "title": "Renamed", "repositoryIdentity": {"canonicalKey": "same-repo"}},
+            {"id": "existing", "title": "Renamed", "repositoryIdentity": {"canonicalKey": "same-repo"}},
+            {"id": "previous", "title": "Previous"}
+        ]});
+        machine.set_projects_from(&shell);
+        other.set_projects_from(&shell);
+        machine.record_project_origin("returned-id".into(), "source-id".into());
+        machine.record_project_origin("returned-id".into(), "source-id".into());
+        assert!(
+            std::iter::from_fn(|| receiver.try_recv().ok())
+                .any(|event| matches!(event, Event::Persist))
+        );
+
+        let reloaded =
+            serde_json::from_value(serde_json::to_value(machine.record()).unwrap()).unwrap();
+        let restored = MachineRuntime::new(shared, reloaded, dir.path().join("restored"));
+        restored.set_projects_from(&shell);
+        for view in [machine.projects(), restored.projects()] {
+            let encoded = serde_json::to_value(view).unwrap();
+            assert_eq!(encoded[0]["originProjectId"], "source-id");
+            assert_eq!(encoded[0]["id"], "returned-id");
+            assert!(encoded[1].get("originProjectId").is_none());
+            assert_eq!(encoded[2]["originProjectId"], "older-source");
+        }
+        assert!(
+            other
+                .projects()
+                .iter()
+                .all(|p| p.origin_project_id.is_none())
+        );
+    }
 
     #[test]
     fn uuids_are_v4() {
@@ -228,6 +362,26 @@ mod tests {
         assert_eq!(parts.iter().map(|p| p.len()).collect::<Vec<_>>(), [8, 4, 4, 4, 12]);
         assert!(parts[2].starts_with('4'));
         assert!(matches!(parts[3].chars().next(), Some('8' | '9' | 'a' | 'b')));
+    }
+
+    #[tokio::test]
+    async fn sync_project_credentials_skips_non_running_machine() {
+        let dir = tempfile::tempdir().unwrap();
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let shared = Arc::new(Shared {
+            boat: Boat::at(dir.path().join("boat")),
+            t3: T3Desktop::at(dir.path().join("t3")),
+            settings: RwLock::new(Settings::default()),
+            events,
+            http: reqwest::Client::new(),
+            saving: Mutex::new(Default::default()),
+        });
+        let machine = MachineRuntime::new(shared, old_machine_record(), dir.path().join("m"));
+        let synced = machine
+            .sync_project_credentials("proj-1", vec![json!({"id": "c1", "label": "AWS", "value": "secret"})])
+            .await
+            .unwrap();
+        assert!(!synced);
     }
 
     #[test]

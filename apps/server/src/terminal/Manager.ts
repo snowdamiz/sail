@@ -75,6 +75,9 @@ import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome.ts";
 import type { deriveProviderInstanceConfigMap } from "../provider/ProviderInstanceRegistryHydration.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectCredentials from "../secrets/ProjectCredentials.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { increment, terminalSessionsTotal } from "../observability/Metrics.ts";
 import { expandHomeVariable } from "@t3tools/provider-core/server/pathExpansion";
@@ -1744,6 +1747,10 @@ interface TerminalManagerOptions {
     Record<string, string>,
     TerminalProviderInstanceNotFoundError | TerminalProviderEnvironmentError
   >;
+  resolveProjectEnvironment?: (input: {
+    readonly threadId: string;
+    readonly cwd: string;
+  }) => Effect.Effect<Readonly<Record<string, string>>>;
 }
 
 export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
@@ -1798,6 +1805,56 @@ export const make = Effect.fn("TerminalManager.make")(function* (
   const nativeTelemetry = yield* NativeTelemetryClient.NativeTelemetryClient;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const path = yield* Path.Path;
+  const projectCredentialsOption = yield* Effect.serviceOption(
+    ProjectCredentials.ProjectCredentials,
+  );
+  const projectStoreOption = yield* Effect.serviceOption(ProjectStore.ProjectStoreV2);
+  const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
+
+  const resolveProjectEnvironment = Effect.fn("terminal.resolveProjectEnvironment")(
+    function* (input: {
+      readonly threadId: string;
+      readonly cwd: string;
+    }): Effect.fn.Return<Readonly<Record<string, string>>> {
+      if (Option.isNone(projectCredentialsOption)) {
+        return {};
+      }
+      let projectId: string | undefined;
+      if (Option.isSome(sqlOption)) {
+        const rows = yield* sqlOption.value<{ readonly projectId: string }>`
+        SELECT project_id AS "projectId"
+        FROM orchestration_v2_projection_threads
+        WHERE thread_id = ${input.threadId}
+        LIMIT 1
+      `.pipe(Effect.orElseSucceed(() => []));
+        projectId = rows[0]?.projectId;
+      }
+      if (projectId === undefined && Option.isSome(projectStoreOption)) {
+        const normalizedCwd = path.resolve(input.cwd);
+        const projects = yield* projectStoreOption.value
+          .list()
+          .pipe(Effect.orElseSucceed(() => []));
+        let bestLength = -1;
+        for (const project of projects) {
+          const root = path.resolve(project.workspaceRoot);
+          const matches =
+            normalizedCwd === root ||
+            normalizedCwd.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`);
+          if (matches && root.length > bestLength) {
+            bestLength = root.length;
+            projectId = project.projectId;
+          }
+        }
+      }
+      if (projectId === undefined) {
+        return {};
+      }
+      return yield* projectCredentialsOption.value.resolveEnvForProject(
+        projectId as ProjectStore.ProjectRow["projectId"],
+      );
+    },
+  );
+
   const resolveProviderInstanceEnvironment = Effect.fn(
     "terminal.resolveProviderInstanceEnvironment",
   )((rawProviderInstanceId: string, env: Record<string, string> | undefined) =>
@@ -1822,6 +1879,7 @@ export const make = Effect.fn("TerminalManager.make")(function* (
     registerTerminalProcesses: portDiscovery.registerTerminalProcesses,
     unregisterTerminal: portDiscovery.unregisterTerminal,
     resolveProviderInstanceEnvironment,
+    resolveProjectEnvironment,
   });
 });
 
@@ -2955,9 +3013,20 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
               baseEnv,
               session.runtimeEnv?.T3CODE_TERMINAL_SHELL ?? baseEnv.T3CODE_TERMINAL_SHELL,
             ).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+            const projectEnv =
+              options.resolveProjectEnvironment === undefined
+                ? {}
+                : yield* options.resolveProjectEnvironment({
+                    threadId: session.threadId,
+                    cwd: session.cwd,
+                  });
+            const mergedRuntimeEnv =
+              Object.keys(projectEnv).length === 0
+                ? session.runtimeEnv
+                : { ...projectEnv, ...session.runtimeEnv };
             const terminalEnv = createTerminalSpawnEnv(
               baseEnv,
-              session.runtimeEnv,
+              mergedRuntimeEnv,
               platform,
               yield* HostProcess.HomeDirectory,
               session.threadId,

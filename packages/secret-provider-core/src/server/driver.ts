@@ -19,6 +19,18 @@ export interface SecretProviderItemInput {
   readonly value: string;
 }
 
+export interface SecretProviderFieldInput {
+  readonly id: string;
+  readonly label: string;
+  readonly value: string;
+}
+
+export interface SecretProviderFieldsItemInput {
+  readonly vault: string;
+  readonly label: string;
+  readonly fields: ReadonlyArray<SecretProviderFieldInput>;
+}
+
 export interface SecretProviderDriver {
   readonly kind: SecretProviderKind;
   readonly definition: SecretProviderDefinition;
@@ -26,6 +38,14 @@ export interface SecretProviderDriver {
     config: unknown,
     input: SecretProviderItemInput,
   ) => Effect.Effect<string | undefined, never, SecretProviderDriverServices>;
+  readonly saveFields?: (
+    config: unknown,
+    input: SecretProviderFieldsItemInput,
+  ) => Effect.Effect<
+    Readonly<Record<string, string>> | undefined,
+    never,
+    SecretProviderDriverServices
+  >;
   /**
    * Values in input order; `undefined` marks a reference that could not be read. `config` has
    * decoded with the definition's `configSchema` and every reference passed its `isReference`.
@@ -43,6 +63,14 @@ export const defineSecretProviderDriver = <Config>(driver: {
     config: Config,
     input: SecretProviderItemInput,
   ) => Effect.Effect<string | undefined, never, SecretProviderDriverServices>;
+  readonly saveFields?: (
+    config: Config,
+    input: SecretProviderFieldsItemInput,
+  ) => Effect.Effect<
+    Readonly<Record<string, string>> | undefined,
+    never,
+    SecretProviderDriverServices
+  >;
   readonly read: (
     config: Config,
     references: ReadonlyArray<string>,
@@ -50,6 +78,7 @@ export const defineSecretProviderDriver = <Config>(driver: {
 }): SecretProviderDriver => {
   const isConfig = Schema.is(driver.definition.configSchema);
   const saveItem = driver.saveItem;
+  const saveFields = driver.saveFields;
   return {
     kind: driver.kind,
     definition: driver.definition,
@@ -58,6 +87,12 @@ export const defineSecretProviderDriver = <Config>(driver: {
       : {
           saveItem: (config: unknown, input: SecretProviderItemInput) =>
             isConfig(config) ? saveItem(config, input) : Effect.undefined,
+        }),
+    ...(saveFields === undefined
+      ? {}
+      : {
+          saveFields: (config: unknown, input: SecretProviderFieldsItemInput) =>
+            isConfig(config) ? saveFields(config, input) : Effect.undefined,
         }),
     read: (config, references) =>
       isConfig(config)

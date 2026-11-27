@@ -97,6 +97,8 @@ import * as SourceControlSignIn from "./sourceControl/SourceControlSignIn.ts";
 import { BUILT_IN_SOURCE_CONTROL_DRIVER_LIST } from "./sourceControl/sourceControlDefinitions.ts";
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as SecretCheck from "./secrets/SecretCheck.ts";
+import * as BoatCredentialSync from "./boat/BoatCredentialSync.ts";
+import * as ProjectCredentials from "./secrets/ProjectCredentials.ts";
 import * as SecretResolver from "./secrets/SecretResolver.ts";
 import * as ProviderInstanceRegistryHydration from "./provider/ProviderInstanceRegistryHydration.ts";
 import * as ProviderHostPathWatcher from "./provider/ProviderHostPathWatcher.ts";
@@ -829,18 +831,29 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(MilestoneHub.layer),
   Layer.provideMerge(Layer.merge(layerTaskFolders, LayoutCommandApprovalWrites.layer)),
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
-  Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
+  Layer.provideMerge(ThreadSearch.layer),
   Layer.provideMerge(SecretCheck.layer),
-  Layer.provideMerge(SecretResolver.layer),
   // Above the settings it writes when a theme is applied.
   Layer.provideMerge(
     EnvironmentSetupTransfer.layer.pipe(Layer.provideMerge(EnvironmentTheme.layer)),
   ),
-  Layer.provideMerge(layerServerSettings),
   Layer.provideMerge(layerSourceControlProviderRegistry),
   Layer.provideMerge(layerGit),
   Layer.provideMerge(layerVcs),
-  Layer.provideMerge(Layer.mergeAll(layerTerminal, layerPreview, layerDevice, layerBoat)),
+  Layer.provideMerge(
+    BoatCredentialSync.layer.pipe(
+      Layer.provideMerge(Layer.mergeAll(layerTerminal, layerPreview, layerDevice, layerBoat)),
+    ),
+  ),
+  Layer.provideMerge(
+    Layer.merge(
+      ProjectStore.layer,
+      ProjectCredentials.layer.pipe(
+        Layer.provideMerge(SecretResolver.layer),
+        Layer.provideMerge(layerServerSettings),
+      ),
+    ),
+  ),
   Layer.provideMerge(layerPersistence),
   Layer.provideMerge(Layer.mergeAll(Keybindings.layer, UsageLimitSources.layer)),
   Layer.provideMerge(ProviderRegistry.layer),

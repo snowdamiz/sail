@@ -38,6 +38,7 @@ export interface MachineView {
 
 export interface MachineProject {
   id: string; // T3's project id on the machine; while t3boat adds it, the local project's id
+  originProjectId?: string; // local project id recorded by Sail Boat after cloning
   title: string;
   repoKey: string | null; // T3's repository key: the same repo has it on every machine
   status: string | null; // set while t3boat adds it: clone progress as T3 Code words it

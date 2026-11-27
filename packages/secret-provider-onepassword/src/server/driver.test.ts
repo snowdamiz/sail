@@ -29,18 +29,31 @@ type OpResult = {
   readonly delay?: Duration.Input;
 };
 
-function fakeOp(answer: (args: ReadonlyArray<string>) => OpResult) {
+function fakeOp(
+  answer: (
+    args: ReadonlyArray<string>,
+    options: { readonly env?: Readonly<Record<string, string>>; readonly extendEnv?: boolean },
+  ) => OpResult,
+) {
   const invocations: Array<ReadonlyArray<string>> = [];
+  const envs: Array<Readonly<Record<string, string>> | undefined> = [];
   const spawned = Deferred.makeUnsafe<void>();
   const layer = Layer.mergeAll(
     Layer.succeed(
       ChildProcessSpawner.ChildProcessSpawner,
       ChildProcessSpawner.make((command) =>
         Effect.sync(() => {
-          const { args } = command as unknown as { readonly args: ReadonlyArray<string> };
+          const { args, options } = command as unknown as {
+            readonly args: ReadonlyArray<string>;
+            readonly options?: {
+              readonly env?: Readonly<Record<string, string>>;
+              readonly extendEnv?: boolean;
+            };
+          };
           invocations.push(args);
+          envs.push(options?.env);
           Deferred.doneUnsafe(spawned, Effect.void);
-          const result = answer(args);
+          const result = answer(args, options ?? {});
           return ChildProcessSpawner.makeHandle({
             pid: ChildProcessSpawner.ProcessId(1),
             exitCode: result.hang
@@ -64,7 +77,7 @@ function fakeOp(answer: (args: ReadonlyArray<string>) => OpResult) {
     NodeFileSystem.layer,
     NodeCrypto.layer,
   );
-  return { layer, invocations, spawned };
+  return { layer, invocations, envs, spawned };
 }
 
 // Answers `op inject` by substituting each `{{ reference }}` in the template file it was handed.
@@ -213,5 +226,71 @@ describe("1Password driver", () => {
 
       assert.isAtMost(yield* Fiber.join(reading), 45_000);
     }).pipe(Effect.provide(Layer.merge(op.layer, templateFile)));
+  });
+
+  it.effect("creates a multi-field API_CREDENTIAL item and returns per-field references", () => {
+    let path: string | undefined;
+    const fixture = fakeOp((args) => {
+      path = args.find((arg) => arg.startsWith("--template="))?.slice("--template=".length);
+      if (path === undefined) throw new Error("Expected template");
+      assert.equal(NodeFS.statSync(path).mode & 0o777, 0o600);
+      const parsed = JSON.parse(NodeFS.readFileSync(path, "utf8"));
+      assert.equal(parsed.category, "API_CREDENTIAL");
+      assert.equal(parsed.title, "AWS Prod");
+      assert.equal(parsed.fields.length, 2);
+      assert.equal(parsed.fields[0].value, "AKIA123");
+      assert.equal(parsed.fields[1].value, "SECRET456");
+      assert.isFalse(args.some((arg) => arg.includes("AKIA123") || arg.includes("SECRET456")));
+      return {
+        stdout: JSON.stringify({
+          id: "aws-item-id",
+          vault: { id: "eng-vault-id" },
+          fields: [
+            { id: "f1", label: "AWS_ACCESS_KEY_ID", value: "AKIA123" },
+            { id: "f2", label: "AWS_SECRET_ACCESS_KEY", value: "SECRET456" },
+          ],
+        }),
+      };
+    });
+    return Effect.gen(function* () {
+      if (!driver.saveFields) throw new Error("Expected saveFields");
+      const refs = yield* driver.saveFields(
+        { account },
+        {
+          vault: "Engineering",
+          label: "AWS Prod",
+          fields: [
+            { id: "AWS_ACCESS_KEY_ID", label: "AWS_ACCESS_KEY_ID", value: "AKIA123" },
+            { id: "AWS_SECRET_ACCESS_KEY", label: "AWS_SECRET_ACCESS_KEY", value: "SECRET456" },
+          ],
+        },
+      );
+      assert.deepStrictEqual(refs, {
+        AWS_ACCESS_KEY_ID: "op://eng-vault-id/aws-item-id/AWS_ACCESS_KEY_ID",
+        AWS_SECRET_ACCESS_KEY: "op://eng-vault-id/aws-item-id/AWS_SECRET_ACCESS_KEY",
+      });
+      assert.isDefined(path);
+      assert.isFalse(path !== undefined && NodeFS.existsSync(path));
+    }).pipe(Effect.provide(fixture.layer));
+  });
+  it.effect("authenticates with OP_SERVICE_ACCOUNT_TOKEN without --account", () => {
+    const op = fakeOp((args, options) => {
+      assert.isFalse(args.some((arg) => arg.startsWith("--account=")));
+      assert.equal(options.extendEnv, true);
+      assert.equal(options.env?.OP_SERVICE_ACCOUNT_TOKEN, "ops_test_token_123");
+      return { stdout: "sk-service-account" };
+    });
+    return Effect.gen(function* () {
+      assert.deepStrictEqual(
+        yield* driver.read({ serviceAccountToken: "ops_test_token_123" }, [
+          "op://Private/OpenAI/credential",
+        ]),
+        ["sk-service-account"],
+      );
+      assert.deepStrictEqual(op.invocations, [
+        ["--cache=false", "read", "--no-newline", "op://Private/OpenAI/credential"],
+      ]);
+      assert.deepStrictEqual(op.envs, [{ OP_SERVICE_ACCOUNT_TOKEN: "ops_test_token_123" }]);
+    }).pipe(Effect.provide(op.layer));
   });
 });

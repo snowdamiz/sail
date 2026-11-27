@@ -406,6 +406,7 @@ export function applyServerSettingsPatch(
     textGenerators: textGeneratorsPatch,
     secretProviders: secretProvidersPatch,
     projectCredentialBookmarks: projectCredentialBookmarksPatch,
+    repoCredentialBookmarks: repoCredentialBookmarksPatch,
     sourceControlHosts: sourceControlHostsPatch,
     usagePriceOverrides: usagePriceOverridesPatch,
     usageModelAliases: usageModelAliasesPatch,
@@ -433,6 +434,27 @@ export function applyServerSettingsPatch(
       ([projectId, entries]) =>
         [
           projectId,
+          Object.fromEntries(
+            Object.entries(entries).filter(([, bookmark]) =>
+              Object.hasOwn(nextSecretProviders, bookmark.reference.provider),
+            ),
+          ),
+        ] as const,
+    ).filter(([, entries]) => Object.keys(entries).length > 0),
+  );
+  const repoCredentialBookmarks = new Map(Object.entries(current.repoCredentialBookmarks));
+  for (const [repoKey, entries] of Object.entries(repoCredentialBookmarksPatch ?? {})) {
+    repoCredentialBookmarks.set(
+      repoKey,
+      mergeSettingsEntries(repoCredentialBookmarks.get(repoKey) ?? {}, entries),
+    );
+  }
+  const retainedRepoCredentialBookmarks = Object.fromEntries(
+    Array.from(
+      repoCredentialBookmarks,
+      ([repoKey, entries]) =>
+        [
+          repoKey,
           Object.fromEntries(
             Object.entries(entries).filter(([, bookmark]) =>
               Object.hasOwn(nextSecretProviders, bookmark.reference.provider),
@@ -675,6 +697,7 @@ export function applyServerSettingsPatch(
       : {}),
     secretProviders: nextSecretProviders,
     projectCredentialBookmarks: retainedCredentialBookmarks,
+    repoCredentialBookmarks: retainedRepoCredentialBookmarks,
     ...(usagePriceOverridesPatch !== undefined
       ? {
           usagePriceOverrides: mergeSettingsEntries(

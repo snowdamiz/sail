@@ -9,19 +9,21 @@ work everywhere.
 
 ## Secret providers
 
-1Password is the supported provider. T3 Code reads secrets with the
-[1Password CLI](https://developer.1password.com/docs/cli/) (`op`), so `op` must be installed and
-signed in on the machine that runs the T3 Code server. When you use T3 Code on another machine or
-from your phone, that is the remote machine, not the device in front of you.
+1Password is the supported provider. You can connect it in two ways:
 
-A desktop sign-in asks for approval on that machine, which a remote user cannot answer. On a remote
-or headless server, sign `op` in with a [service account](./secrets-1password-service-account.md) or a
-[Connect server](./secrets-1password-connect.md) instead.
+- **Service account (recommended, works across Desktop, Web, and Boats)**: Open
+  **Settings → Secrets**, select **Add provider**, keep **Service account** selected, and paste a
+  [1Password Service Account](./secrets-1password-service-account.md) token (`ops_...`). Sail stores
+  the token in the server's private secret store (never in plain text in `settings.json`) and syncs
+  it automatically between Sail Desktop and your paired personal Sail Web server. Connect once on
+  either Desktop or Web and both work from then on.
+- **Local CLI account (single machine only)**: Switch **Connection** to **Local CLI account** and
+  enter the shorthand, sign-in address (without `https://`), or ID that `op account list` shows.
+  This uses the locally signed-in [1Password CLI](https://developer.1password.com/docs/cli/) (`op`)
+  on that machine and does not sync to remote servers.
 
-To add one, open **Settings → Secrets**, select **Add provider**, and enter a name and the
-1Password account: the shorthand, sign-in address (without `https://`), or ID that
-`op account list` shows. Secret providers belong to the environment you are connected to. Each
-environment keeps its own list.
+Personal Sail Web servers deployed from the Sail Docker image bundle the `op` CLI automatically, so
+no extra CLI setup is needed on the server.
 
 ## Use a secret reference
 
@@ -56,18 +58,39 @@ you to paste it into the chat. Type or paste the value and select **Save securel
 
 If the environment has a secret provider, the card also lets you pick it and enter a reference
 instead of the value. Answering with a reference needs permission to manage providers, as saving a
-reference in Settings does; a session without it sees only the value field. T3 Code reads the secret once, when you answer. If 1Password is locked, the
-card says so and the request stays open: unlock it and try again, or enter the value.
+reference in Settings does; a session without it sees only the value field. T3 Code reads the
+secret once, when you answer. If 1Password is locked, the card says so and the request stays open:
+unlock it and try again, or enter the value.
 
 The value never appears in the conversation. Most requests keep it from the agent too: T3 Code
 passes it to the tool that needs it. When an agent has to run a command with the value, the card
 says so instead: the value goes into a private file that the agent's commands can read for about 24
 hours.
 
-## Reuse a project credential
+## Project credentials and Boats
 
-Select a project checkout in **Settings → Secrets**. Under **Project credential references**, save a name and a reference to an existing vault item. The password manager still holds the value. When an agent requests one value for that project, choose a saved reference and approve the request. Remove a reference in Settings to stop offering it on future cards; this does not delete the vault item.
+Connect 1Password once with a Service Account token on either Sail Desktop or Sail Web, then
+authorize credentials for a project in **Settings → Secrets** under **Project credentials** (either
+by linking an existing `op://vault/item/field` reference or by saving a new credential directly to
+1Password). Authorized credentials also match by git repository remote so the same project works
+seamlessly on both Desktop and Web.
 
-For a single-value private request, you can also choose **Also save in 1Password for this project**. Select a configured account, enter the vault name or ID and an item name, then select **Save to vault and use**. The account needs write access to that vault. Sail creates a new vault item, saves its reference for this project checkout, and answers the request. Ordinary answers do not create vault items. If a save cannot be confirmed, check your vault, add the reference in Settings if the item exists, and answer without saving to the vault.
+Each project credential can specify an optional environment variable name (such as
+`AWS_ACCESS_KEY_ID` or `AWS_SECRET_ACCESS_KEY`) and an **Auto-use** toggle (enabled by default):
 
-References belong to the project checkout on this environment. A fresh Boat still needs its own authorized connection to 1Password. Sail does not copy the account's authentication token to other machines or automatically answer credential requests.
+- **Automatic session & terminal environment**: Auto-use credentials with an environment variable
+  are injected directly into agent sessions and integrated terminals for that project.
+- **Automatic secret requests**: When an agent calls `request_secret` (single-value or
+  multi-field) matching authorized project credentials, Sail fulfills the request automatically
+  without blocking on a prompt card.
+- **Automatic sync to Boats**: When a project is cloned onto a Sail Boat (or when a Boat wakes,
+  or when you add/edit/revoke a project credential), Sail pushes **only that project's authorized
+  credentials** over the Boat's authenticated control channel into the Boat's private server secret
+  store. Your 1Password Service Account token and other projects' credentials are never copied to
+  the Boat. Revoking or turning off **Auto-use** for a credential immediately removes it from
+  running Boats (and from sleeping Boats on next wake).
+
+You can also authorize credentials directly from any single-value or multi-field secret request
+card (including on a Boat) by checking **Also save in 1Password for this project**. Sail creates a
+single 1Password item on your managing Sail host, authorizes the project, fulfills the active
+request, and syncs the scoped credentials to the Boat for future sessions.

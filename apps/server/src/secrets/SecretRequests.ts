@@ -4,6 +4,7 @@
 // A secret the user pasted in chat goes straight to such a file, with no card.
 import {
   CommandId,
+  type ProjectCredentialBookmark,
   SecretRef,
   SecretRequestError,
   type OrchestrationV2TurnItem,
@@ -100,6 +101,19 @@ export class SecretRequests extends Context.Service<
       readonly requestKey: string;
       readonly value: string;
     }) => Effect.Effect<string, SecretRequestError>;
+    /** Stores auto-granted project credential value(s) without showing a blocking prompt card. */
+    readonly storeAutoGranted?: (input: {
+      readonly threadId: ThreadId;
+      readonly projectId: ProjectId;
+      readonly turnItemId: string;
+      readonly delivery: "secretRef" | "file" | undefined;
+      readonly values: ReadonlyArray<readonly [string | undefined, string]>;
+    }) => Effect.Effect<
+      | { readonly secretRef: SecretRef }
+      | { readonly file: string }
+      | { readonly files: { readonly [name: string]: string } },
+      SecretRequestError
+    >;
   }
 >()("t3/secrets/SecretRequests") {}
 
@@ -192,43 +206,143 @@ const make = Effect.gen(function* () {
           : (answerValues(item, input.answer) ??
             (yield* new SecretRequestError({ reason: "fields_mismatch" })));
     if (input.answer.type === "save-to-vault") {
-      if (item.fields !== undefined || resolver.saveItem === undefined) {
-        return yield* new SecretRequestError({ reason: "fields_mismatch" });
-      }
-      const existing = yield* store
-        .get(storeName(yield* refFor(input.threadId, item.id)))
-        .pipe(Effect.mapError(() => new SecretRequestError({ reason: "store_failed" })));
-      if (Option.isSome(existing))
-        return yield* new SecretRequestError({ reason: "vault_save_pending_answer" });
+      const vaultAnswer = input.answer;
       const attempt = yield* refFor(input.threadId, item.id, "vault-save-attempt");
-      const savedAt = yield* Clock.currentTimeMillis;
-      const marker = yield* encodeStored({
-        projectId: records.thread.projectId,
-        value: "vault-save-attempt",
-        savedAt,
-      }).pipe(Effect.orDie);
-      // Do not repeat the external write after an interrupted or ambiguous save. The regular one-time answer remains usable.
-      yield* store
-        .create(storeName(attempt), new TextEncoder().encode(marker))
-        .pipe(Effect.mapError(() => new SecretRequestError({ reason: "vault_save_unconfirmed" })));
-      const reference = yield* resolver.saveItem(input.answer.provider, {
-        vault: input.answer.vault,
-        label: input.answer.label,
-        value: input.answer.secret,
-      });
-      if (reference === undefined)
-        return yield* new SecretRequestError({ reason: "vault_save_unconfirmed" });
-      yield* settings
-        .updateSettings({
-          projectCredentialBookmarks: {
-            [records.thread.projectId]: {
-              [attempt.slice(SECRET_REF_PREFIX.length)]: { label: input.answer.label, reference },
+      const attemptSlug = attempt.slice(SECRET_REF_PREFIX.length);
+      if ("secret" in vaultAnswer) {
+        if (item.fields !== undefined || resolver.saveItem === undefined) {
+          return yield* new SecretRequestError({ reason: "fields_mismatch" });
+        }
+        const existing = yield* store
+          .get(storeName(yield* refFor(input.threadId, item.id)))
+          .pipe(Effect.mapError(() => new SecretRequestError({ reason: "store_failed" })));
+        if (Option.isSome(existing))
+          return yield* new SecretRequestError({ reason: "vault_save_pending_answer" });
+        const savedAt = yield* Clock.currentTimeMillis;
+        const marker = yield* encodeStored({
+          projectId: records.thread.projectId,
+          value: "vault-save-attempt",
+          savedAt,
+        }).pipe(Effect.orDie);
+        // Do not repeat the external write after an interrupted or ambiguous save. The regular one-time answer remains usable.
+        yield* store
+          .create(storeName(attempt), new TextEncoder().encode(marker))
+          .pipe(
+            Effect.mapError(() => new SecretRequestError({ reason: "vault_save_unconfirmed" })),
+          );
+        const reference = yield* resolver.saveItem(vaultAnswer.provider, {
+          vault: vaultAnswer.vault,
+          label: vaultAnswer.label,
+          value: vaultAnswer.secret,
+        });
+        if (reference === undefined)
+          return yield* new SecretRequestError({ reason: "vault_save_unconfirmed" });
+        const bookmark: ProjectCredentialBookmark = {
+          label: vaultAnswer.label,
+          reference,
+          ...(vaultAnswer.envVar === undefined ? {} : { envVar: vaultAnswer.envVar }),
+          ...(vaultAnswer.autoGrant === undefined ? {} : { autoGrant: vaultAnswer.autoGrant }),
+        };
+        yield* settings
+          .updateSettings({
+            projectCredentialBookmarks: {
+              [records.thread.projectId]: {
+                [attemptSlug]: bookmark,
+              },
             },
-          },
-        })
-        .pipe(
-          Effect.mapError(() => new SecretRequestError({ reason: "vault_saved_reference_failed" })),
-        );
+          })
+          .pipe(
+            Effect.mapError(
+              () => new SecretRequestError({ reason: "vault_saved_reference_failed" }),
+            ),
+          );
+      } else {
+        if (
+          item.fields === undefined ||
+          values === undefined ||
+          (resolver.saveFields === undefined && resolver.saveItem === undefined)
+        ) {
+          return yield* new SecretRequestError({ reason: "fields_mismatch" });
+        }
+        for (const field of item.fields) {
+          const existing = yield* store
+            .get(storeName(yield* refFor(input.threadId, item.id, field.name)))
+            .pipe(Effect.mapError(() => new SecretRequestError({ reason: "store_failed" })));
+          if (Option.isSome(existing))
+            return yield* new SecretRequestError({ reason: "vault_save_pending_answer" });
+        }
+        const savedAt = yield* Clock.currentTimeMillis;
+        const marker = yield* encodeStored({
+          projectId: records.thread.projectId,
+          value: "vault-save-attempt",
+          savedAt,
+        }).pipe(Effect.orDie);
+        yield* store
+          .create(storeName(attempt), new TextEncoder().encode(marker))
+          .pipe(
+            Effect.mapError(() => new SecretRequestError({ reason: "vault_save_unconfirmed" })),
+          );
+        const fieldInputs = item.fields.map((field) => ({
+          id: field.name,
+          label: field.label,
+          value: vaultAnswer.values[field.name] ?? "",
+        }));
+        let references: Readonly<Record<string, SecretReference>> | undefined;
+        if (resolver.saveFields !== undefined) {
+          references = yield* resolver.saveFields(vaultAnswer.provider, {
+            vault: vaultAnswer.vault,
+            label: vaultAnswer.label,
+            fields: fieldInputs,
+          });
+        } else if (resolver.saveItem !== undefined) {
+          const built: Record<string, SecretReference> = {};
+          for (const field of fieldInputs) {
+            const ref = yield* resolver.saveItem(vaultAnswer.provider, {
+              vault: vaultAnswer.vault,
+              label: (vaultAnswer.label + " (" + field.label + ")").slice(0, 100),
+              value: field.value,
+            });
+            if (ref === undefined) {
+              return yield* new SecretRequestError({ reason: "vault_save_unconfirmed" });
+            }
+            built[field.id] = ref;
+          }
+          references = built;
+        }
+        if (references === undefined) {
+          return yield* new SecretRequestError({ reason: "vault_save_unconfirmed" });
+        }
+        const bookmarksPatch: Record<string, ProjectCredentialBookmark> = {};
+        for (const field of item.fields) {
+          const reference = references[field.name];
+          if (reference === undefined) {
+            return yield* new SecretRequestError({ reason: "vault_save_unconfirmed" });
+          }
+          const fieldRef = yield* refFor(input.threadId, item.id, "vault-bookmark:" + field.name);
+          const fieldSlug = fieldRef.slice(SECRET_REF_PREFIX.length);
+          const envVar =
+            vaultAnswer.envVars !== undefined && Object.hasOwn(vaultAnswer.envVars, field.name)
+              ? vaultAnswer.envVars[field.name]
+              : undefined;
+          bookmarksPatch[fieldSlug] = {
+            label: (field.label.trim() || field.name.trim()).slice(0, 100),
+            reference,
+            ...(envVar === undefined ? {} : { envVar }),
+            ...(vaultAnswer.autoGrant === undefined ? {} : { autoGrant: vaultAnswer.autoGrant }),
+          };
+        }
+        yield* settings
+          .updateSettings({
+            projectCredentialBookmarks: {
+              [records.thread.projectId]: bookmarksPatch,
+            },
+          })
+          .pipe(
+            Effect.mapError(
+              () => new SecretRequestError({ reason: "vault_saved_reference_failed" }),
+            ),
+          );
+      }
     }
     if (values !== undefined) {
       const savedAt = yield* Clock.currentTimeMillis;
@@ -488,7 +602,62 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  return SecretRequests.of({ answer, savedRef, consume, saveToFile, savePasted });
+  const storeAutoGranted: NonNullable<SecretRequests["Service"]["storeAutoGranted"]> = Effect.fn(
+    "SecretRequests.storeAutoGranted",
+  )(function* (input) {
+    if (input.delivery === "file") {
+      if (filesDir === undefined) {
+        return yield* new SecretRequestError({ reason: "store_failed" });
+      }
+      return yield* Effect.gen(function* () {
+        const singleEntry = input.values.length === 1 ? input.values[0] : undefined;
+        if (singleEntry !== undefined && singleEntry[0] === undefined) {
+          const ref = yield* refFor(input.threadId, input.turnItemId);
+          const file = path.join(filesDir, ref.slice(SECRET_REF_PREFIX.length));
+          if (!(yield* fileSystem.exists(file).pipe(Effect.orElseSucceed(() => false)))) {
+            yield* writeSecretFile(filesDir, file, singleEntry[1]);
+          }
+          return { file };
+        }
+        const files: Record<string, string> = {};
+        for (const [field, value] of input.values) {
+          if (field === undefined) continue;
+          const ref = yield* refFor(input.threadId, input.turnItemId, field);
+          const file = path.join(filesDir, ref.slice(SECRET_REF_PREFIX.length));
+          if (!(yield* fileSystem.exists(file).pipe(Effect.orElseSucceed(() => false)))) {
+            yield* writeSecretFile(filesDir, file, value);
+          }
+          files[field] = file;
+        }
+        return { files };
+      }).pipe(consumeLock.withPermits(1));
+    }
+    const single = input.values[0];
+    if (single === undefined || single[0] !== undefined) {
+      return yield* new SecretRequestError({ reason: "fields_mismatch" });
+    }
+    const ref = yield* refFor(input.threadId, input.turnItemId);
+    const savedAt = yield* Clock.currentTimeMillis;
+    const encoded = yield* encodeStored({
+      projectId: input.projectId,
+      value: single[1],
+      savedAt,
+    }).pipe(Effect.orDie);
+    yield* store.create(storeName(ref), new TextEncoder().encode(encoded)).pipe(
+      Effect.catchIf(ServerSecretStore.isSecretAlreadyExistsError, () => Effect.void),
+      Effect.mapError((cause) => new SecretRequestError({ reason: "store_failed", cause })),
+    );
+    return { secretRef: ref };
+  });
+
+  return SecretRequests.of({
+    answer,
+    savedRef,
+    consume,
+    saveToFile,
+    savePasted,
+    storeAutoGranted,
+  });
 });
 
 export const layer = Layer.effect(SecretRequests, make);

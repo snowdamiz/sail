@@ -1,3 +1,4 @@
+import { ProjectId, type EnvironmentId } from "@t3tools/contracts";
 import { useGT } from "gt-react";
 import type { MachineState, MachineView, Size } from "./types";
 
@@ -14,6 +15,18 @@ const TAGS: Record<MachineState, string> = {
 };
 
 export const stateTag = (s: MachineState) => TAGS[s];
+
+export function managedBoatOriginProject(
+  machines: readonly MachineView[],
+  environmentId: EnvironmentId,
+  projectId: ProjectId,
+): ProjectId | undefined {
+  const matches = machines.filter((machine) => machine.environmentId === environmentId);
+  if (matches.length !== 1) return undefined;
+  const projects = matches[0]!.projects.filter((project) => project.id === projectId);
+  const origin = projects.length === 1 ? projects[0]?.originProjectId : undefined;
+  return typeof origin === "string" && origin.trim() !== "" ? ProjectId.make(origin) : undefined;
+}
 
 /** Stable key: creating rows have no id yet. */
 export const machineKey = (m: MachineView) => m.id || `new:${m.name}`;

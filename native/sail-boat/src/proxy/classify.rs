@@ -266,6 +266,8 @@ pub fn is_user_action(tag: &str, payload: &Value) -> bool {
         "guestShare.create",
         "cloud.installRelayClient",
         "secrets.answerRequest",
+        "secrets.saveProjectCredential",
+        "secrets.syncProjectCredentials",
     ];
     let passive = matches!(tag, "terminal.observe" | "provider.install.subscribe" | "device.detail")
         || tag.starts_with("scheduledTasks.subscribe")

@@ -161,16 +161,22 @@ function EnvironmentSecretProviders({
                 }
                 description={
                   classified.kind === "one_password" && kind ? (
-                    <span className="flex min-w-0 items-center gap-1">
-                      <span className="shrink-0">{kind.name} ·</span>
-                      <RedactedSensitiveText
-                        value={classified.account}
-                        ariaLabel={gt("Toggle account visibility")}
-                        revealTooltip={gt("Click to reveal account")}
-                        hideTooltip={gt("Click to hide account")}
-                        className="max-w-full truncate"
-                      />
-                    </span>
+                    classified.mode === "service_account" ? (
+                      <span>
+                        {kind.name} · {gt("Service account")}
+                      </span>
+                    ) : (
+                      <span className="flex min-w-0 items-center gap-1">
+                        <span className="shrink-0">{kind.name} ·</span>
+                        <RedactedSensitiveText
+                          value={classified.account}
+                          ariaLabel={gt("Toggle account visibility")}
+                          revealTooltip={gt("Click to reveal account")}
+                          hideTooltip={gt("Click to hide account")}
+                          className="max-w-full truncate"
+                        />
+                      </span>
+                    )
                   ) : (
                     gt("Unsupported provider ({kind})", { kind: config.kind })
                   )

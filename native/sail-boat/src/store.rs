@@ -50,6 +50,9 @@ pub struct Machine {
     /// The stop its saved snapshot holds, as this app saved it from the stopped sandbox.
     #[serde(default)]
     pub saved_stop: Option<chrono::DateTime<chrono::Utc>>,
+    /// Project id on this machine to the local project id it was cloned from.
+    #[serde(default)]
+    pub project_origins: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

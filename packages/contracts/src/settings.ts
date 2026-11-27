@@ -24,7 +24,12 @@ import {
 } from "./baseSchemas.ts";
 import { UsageLimitSourceId } from "./usageLimitSourceId.ts";
 import { UsageModelFilter } from "./usage.ts";
-import { SecretProviderId, SecretProviderSlug, SecretReference } from "./secretReference.ts";
+import {
+  ProjectCredentialEnvVar,
+  SecretProviderId,
+  SecretProviderSlug,
+  SecretReference,
+} from "./secretReference.ts";
 import { containsSecretReference, SettingsSecretValue } from "./settingsSecretValue.ts";
 import { EnvironmentMachineKind, ThreadEnvMode, WorktreeSubmodules } from "./environment.ts";
 import { KeybindingShortcut } from "./keybindings.ts";
@@ -881,6 +886,9 @@ declare module "effect/Schema" {
   }
 }
 
+/** Placeholder sent to clients and written to settings.json for stored secret settings. */
+export const SECRET_REDACTED = "\u2022\u2022\u2022\u2022\u2022\u2022";
+
 export function secretSetting<S extends Schema.Top>(schema: S): S["Rebuild"] {
   return schema.annotateKey({ settingsSecret: true });
 }
@@ -1237,6 +1245,10 @@ export type SecretProviderConfig = typeof SecretProviderConfig.Type;
 export const ProjectCredentialBookmark = Schema.Struct({
   label: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
   reference: SecretReference,
+  /** Optional environment variable name injected into agent sessions and terminals for this project. */
+  envVar: Schema.optionalKey(ProjectCredentialEnvVar),
+  /** Whether agents working on this project (and Boats cloned from it) may use this credential automatically. Omitted means true. */
+  autoGrant: Schema.optionalKey(Schema.Boolean),
 });
 export type ProjectCredentialBookmark = typeof ProjectCredentialBookmark.Type;
 const ProjectCredentialBookmarks = Schema.Record(SecretProviderSlug, ProjectCredentialBookmark);
@@ -1833,6 +1845,10 @@ export const ServerSettings = Schema.Struct({
   projectCredentialBookmarks: Schema.Record(ProjectId, ProjectCredentialBookmarks).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  repoCredentialBookmarks: Schema.Record(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+    ProjectCredentialBookmarks,
+  ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
 
   usageHistoryRetentionDays: UsageHistoryRetentionDays.pipe(
     Schema.withDecodingDefault(Effect.succeed(92)),
@@ -2241,6 +2257,12 @@ export const ServerSettingsPatch = Schema.Struct({
       Schema.Record(SecretProviderSlug, Schema.NullOr(ProjectCredentialBookmark)),
     ),
   ),
+  repoCredentialBookmarks: Schema.optionalKey(
+    Schema.Record(
+      TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+      Schema.Record(SecretProviderSlug, Schema.NullOr(ProjectCredentialBookmark)),
+    ),
+  ),
 
   usageHistoryRetentionDays: Schema.optionalKey(UsageHistoryRetentionDays),
 
@@ -2286,7 +2308,8 @@ export function requiredScopesForServerSettingsPatch(
       key === "usageLimitSources" ||
       key === "textGenerators" ||
       key === "secretProviders" ||
-      key === "projectCredentialBookmarks"
+      key === "projectCredentialBookmarks" ||
+      key === "repoCredentialBookmarks"
     ) {
       changesProviders = true;
     } else {

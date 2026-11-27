@@ -594,6 +594,22 @@ impl Daemon {
                 self.refresh_mcp().await;
                 result.map(|_| Reply::default())
             }
+            "sync_project_credentials" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Args {
+                    machine_id: String,
+                    project_id: String,
+                    credentials: Vec<Value>,
+                }
+                let args: Args = parse_args(name, &body)?;
+                let machine = self.app()?.machine(&args.machine_id).map_err(err)?;
+                let synced = machine
+                    .sync_project_credentials(&args.project_id, args.credentials)
+                    .await
+                    .map_err(err)?;
+                Reply::data(json!({ "synced": synced }))
+            }
             "shutdown" | "quit_app" => {
                 self.request_shutdown();
                 Ok(Reply::default())
@@ -1121,6 +1137,7 @@ mod tests {
             next_due_at: None,
             connect: false,
             saved_stop: None,
+            project_origins: Default::default(),
         };
         let state = crate::store::State { machines: vec![machine], ..Default::default() };
         crate::store::Store::new(dir).save(&state).unwrap();
