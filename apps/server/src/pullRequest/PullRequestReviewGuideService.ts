@@ -1,3 +1,4 @@
+import { forkAccepted, withAdmission } from "../serverAdmission.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -438,99 +439,111 @@ const make = Effect.gen(function* () {
 
   const generate: PullRequestReviewGuideService["Service"]["generate"] = Effect.fn(
     "PullRequestReviewGuideService.generate",
-  )(function* (input) {
-    const settings = yield* serverSettings.getSettings.pipe(
-      Effect.mapError(
-        (cause) =>
-          new PullRequestOperationError({
-            operation: "generateReviewGuide",
-            detail: "Could not read the server settings.",
-            cause,
-          }),
-      ),
-    );
-    if (!settings.reviewGuidesEnabled) {
-      return yield* new PullRequestOperationError({
-        operation: "generateReviewGuide",
-        detail: "Review guides are off. Turn them on in Settings → Source control & issues.",
-      });
-    }
-    const { key, workspaceRoot, identity } = yield* keyFor(input);
-    const locator = yield* requireOwnRepository(key, identity);
-    const runKey = keyString(key);
-    yield* pullRequests.invalidate({ reference: input });
-    const [detail, stored] = yield* Effect.all([pullRequests.detail(input), readStored(key)], {
-      concurrency: "unbounded",
-    });
-    const currentHeadSha = detail.headSha ?? null;
-    if (currentHeadSha === null) {
-      return yield* new PullRequestOperationError({
-        operation: "generateReviewGuide",
-        detail: "This host did not report the pull request's head commit.",
-      });
-    }
-    const running: PullRequestReviewGuideRun = {
-      _tag: "Running",
-      headSha: currentHeadSha,
-      startedAt: yield* nowIso,
-    };
-    // Claim atomically and re-read the head so stale clicks cannot replace a newer head's run.
-    const claimed = yield* ownership.withPermits(1)(
-      pullRequests.detail(input).pipe(
-        Effect.flatMap((latest) =>
-          (latest.headSha ?? null) !== currentHeadSha
-            ? Effect.fail(
-                new PullRequestOperationError({
-                  operation: "generateReviewGuide",
-                  detail: "The pull request changed while the guide was starting. Try again.",
-                }),
-              )
-            : Ref.modify(runs, (current) => {
-                const existing = current.get(runKey);
-                if (existing?._tag === "Running" && existing.headSha === currentHeadSha) {
-                  return [existing, current] as const;
-                }
-                return [running, new Map(current).set(runKey, running)] as const;
-              }),
+  )(
+    function* (input) {
+      const settings = yield* serverSettings.getSettings.pipe(
+        Effect.mapError(
+          (cause) =>
+            new PullRequestOperationError({
+              operation: "generateReviewGuide",
+              detail: "Could not read the server settings.",
+              cause,
+            }),
         ),
-      ),
-    );
-    if (claimed !== running) return { guide: stored, run: claimed, currentHeadSha, started: false };
-
-    const owns = Ref.get(runs).pipe(Effect.map((current) => current.get(runKey) === running));
-    const finish = (next: PullRequestReviewGuideRun | null) =>
-      Ref.update(runs, (current) => {
-        if (current.get(runKey) !== running) return current;
-        const updated = new Map(current);
-        if (next === null) updated.delete(runKey);
-        else updated.set(runKey, next);
-        return updated;
+      );
+      if (!settings.reviewGuidesEnabled) {
+        return yield* new PullRequestOperationError({
+          operation: "generateReviewGuide",
+          detail: "Review guides are off. Turn them on in Settings → Source control & issues.",
+        });
+      }
+      const { key, workspaceRoot, identity } = yield* keyFor(input);
+      const locator = yield* requireOwnRepository(key, identity);
+      const runKey = keyString(key);
+      yield* pullRequests.invalidate({ reference: input });
+      const [detail, stored] = yield* Effect.all([pullRequests.detail(input), readStored(key)], {
+        concurrency: "unbounded",
       });
-    const runId = `${runCounter++}`;
-    yield* write(input, key, workspaceRoot, locator, detail, currentHeadSha, runId, owns).pipe(
-      Effect.andThen(finish(null)),
-      Effect.catchCause((cause) =>
-        Cause.hasInterruptsOnly(cause)
-          ? finish(null)
-          : Effect.logWarning("Review guide generation failed", {
-              key: runKey,
-              cause: Cause.pretty(cause),
-            }).pipe(
-              Effect.andThen(nowIso),
-              Effect.flatMap((failedAt) =>
-                finish({
-                  _tag: "Failed",
-                  headSha: currentHeadSha,
-                  failedAt,
-                  detail: failureDetail(cause),
+      const currentHeadSha = detail.headSha ?? null;
+      if (currentHeadSha === null) {
+        return yield* new PullRequestOperationError({
+          operation: "generateReviewGuide",
+          detail: "This host did not report the pull request's head commit.",
+        });
+      }
+      const running: PullRequestReviewGuideRun = {
+        _tag: "Running",
+        headSha: currentHeadSha,
+        startedAt: yield* nowIso,
+      };
+      // Claim atomically and re-read the head so stale clicks cannot replace a newer head's run.
+      const claimed = yield* ownership.withPermits(1)(
+        pullRequests.detail(input).pipe(
+          Effect.flatMap((latest) =>
+            (latest.headSha ?? null) !== currentHeadSha
+              ? Effect.fail(
+                  new PullRequestOperationError({
+                    operation: "generateReviewGuide",
+                    detail: "The pull request changed while the guide was starting. Try again.",
+                  }),
+                )
+              : Ref.modify(runs, (current) => {
+                  const existing = current.get(runKey);
+                  if (existing?._tag === "Running" && existing.headSha === currentHeadSha) {
+                    return [existing, current] as const;
+                  }
+                  return [running, new Map(current).set(runKey, running)] as const;
                 }),
+          ),
+        ),
+      );
+      if (claimed !== running)
+        return { guide: stored, run: claimed, currentHeadSha, started: false };
+
+      const owns = Ref.get(runs).pipe(Effect.map((current) => current.get(runKey) === running));
+      const finish = (next: PullRequestReviewGuideRun | null) =>
+        Ref.update(runs, (current) => {
+          if (current.get(runKey) !== running) return current;
+          const updated = new Map(current);
+          if (next === null) updated.delete(runKey);
+          else updated.set(runKey, next);
+          return updated;
+        });
+      const runId = `${runCounter++}`;
+      yield* write(input, key, workspaceRoot, locator, detail, currentHeadSha, runId, owns).pipe(
+        Effect.andThen(finish(null)),
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? finish(null)
+            : Effect.logWarning("Review guide generation failed", {
+                key: runKey,
+                cause: Cause.pretty(cause),
+              }).pipe(
+                Effect.andThen(nowIso),
+                Effect.flatMap((failedAt) =>
+                  finish({
+                    _tag: "Failed",
+                    headSha: currentHeadSha,
+                    failedAt,
+                    detail: failureDetail(cause),
+                  }),
+                ),
               ),
-            ),
-      ),
-      Effect.forkIn(serviceScope),
-    );
-    return { guide: stored, run: running, currentHeadSha, started: true };
-  });
+        ),
+        forkAccepted(serviceScope),
+      );
+      return { guide: stored, run: running, currentHeadSha, started: true };
+    },
+    withAdmission("root"),
+    Effect.catchTags({
+      ServerMaintenanceBusy: (cause) =>
+        new PullRequestOperationError({
+          operation: "generateReviewGuide",
+          detail: cause.message,
+          cause,
+        }),
+    }),
+  );
 
   return PullRequestReviewGuideService.of({ get, generate });
 });
