@@ -226,7 +226,7 @@ function readT3State() {
     }
     const events = db
       .prepare(
-        `SELECT MAX(sequence) AS last, SUM(event_type IN (${PERSON_EVENTS.map(() => "?").NodePath.join(",")})) AS person
+        `SELECT MAX(sequence) AS last, SUM(event_type IN (${PERSON_EVENTS.map(() => "?").join(",")})) AS person
          FROM orchestration_events WHERE sequence > ?`,
       )
       .get(...PERSON_EVENTS, eventCursor);
@@ -280,7 +280,7 @@ function workingBesidePrompt(waiting, ownWork) {
                SELECT 1 FROM orchestration_v2_projection_runtime_requests AS request
                JOIN orchestration_v2_projection_nodes AS gate ON gate.node_id = request.node_id
                WHERE request.thread_id = waiting.thread_id AND request.status = 'pending'
-                 AND request.kind NOT IN (${SELF_SETTLED.map((k) => `'${k}'`).NodePath.join(", ")})
+                 AND request.kind NOT IN (${SELF_SETTLED.map((k) => `'${k}'`).join(", ")})
                  AND (gate.parent_node_id = item.node_id
                    OR request.provider_turn_id = item.provider_turn_id
                      AND json_extract(request.payload_json, '$.nativeRequestRef.nativeId')
