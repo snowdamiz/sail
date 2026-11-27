@@ -1,6 +1,6 @@
 import { useGT } from "gt-react";
 import { memo, useRef } from "react";
-import { CheckIcon, CopyIcon, type LucideIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, LinkIcon, type LucideIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import {
@@ -8,6 +8,8 @@ import {
   showAnchoredCopyErrorToast,
 } from "../ui/anchoredCopyToast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { promptLinkFor } from "../promptLinks/copyPromptLink";
+import { usePrimaryEnvironmentId } from "~/state/environments";
 
 export const MessageCopyButton = memo(function MessageCopyButton({
   text,
@@ -18,7 +20,7 @@ export const MessageCopyButton = memo(function MessageCopyButton({
   variant = "outline",
   className,
 }: {
-  text: string;
+  text: string | (() => string | null);
   label?: string;
   icon?: LucideIcon;
   extraFlavors?: Readonly<Record<string, string>>;
@@ -42,7 +44,10 @@ export const MessageCopyButton = memo(function MessageCopyButton({
           <Button
             aria-label={label}
             disabled={isCopied}
-            onClick={() => copyToClipboard(text)}
+            onClick={() => {
+              const value = typeof text === "string" ? text : text();
+              if (value !== null) copyToClipboard(value);
+            }}
             ref={ref}
             type="button"
             size={size}
@@ -57,5 +62,24 @@ export const MessageCopyButton = memo(function MessageCopyButton({
         <p>{label}</p>
       </TooltipPopup>
     </Tooltip>
+  );
+});
+
+export const PromptLinkCopyButton = memo(function PromptLinkCopyButton({
+  prompt,
+}: {
+  prompt: string;
+}) {
+  const gt = useGT();
+  // A desktop has no link origin until its local server registers as the primary environment.
+  usePrimaryEnvironmentId();
+  if (promptLinkFor(prompt) === null) return null;
+  return (
+    <MessageCopyButton
+      text={() => promptLinkFor(prompt)}
+      label={gt("Copy prompt link")}
+      icon={LinkIcon}
+      variant="ghost"
+    />
   );
 });

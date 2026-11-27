@@ -9,7 +9,17 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
-import { codexAuthDeliveryUrl, readCodexAuthHandoff } from "@t3tools/shared/codexAuthHandoff";
+import type { EnvironmentId } from "@t3tools/contracts";
+import {
+  ConnectionCatalogDocument,
+  EMPTY_CONNECTION_CATALOG_DOCUMENT,
+} from "@t3tools/client-runtime/platform";
+import {
+  codexAuthDeliveryUrl,
+  codexAuthReturnUrl,
+  isCodexAuthHandoffLink,
+  readCodexAuthHandoff,
+} from "@t3tools/shared/codexAuthHandoff";
 import { receiveCodexAuthCallback, CodexAuthCallbackError } from "./CodexAuthCallback.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
 import { providerAuthReturnUrl } from "@t3tools/shared/providerAuthReturnUrl";
@@ -20,11 +30,49 @@ import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/rela
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
+import * as DesktopConnectionCatalogStore from "./DesktopConnectionCatalogStore.ts";
 import * as DesktopUserData from "./DesktopUserData.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopWebLinks from "./DesktopWebLinks.ts";
 
 declare const __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: string | undefined;
+declare const __T3CODE_BUILD_HOSTED_APP_URL__: string | undefined;
+
+const decodeConnectionCatalog = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(ConnectionCatalogDocument),
+);
+
+/**
+ * Any page can open a handoff link, so trust comes only from what this desktop knows now. A saved
+ * server's own page speaks only for that server; the hosted app and this computer's pages serve many.
+ */
+function acceptCodexAuthHandoff(
+  value: string,
+  development: boolean,
+  { targets, profiles, disabledEnvironmentIds }: ConnectionCatalogDocument,
+) {
+  const hostedAppUrl =
+    typeof __T3CODE_BUILD_HOSTED_APP_URL__ === "undefined"
+      ? undefined
+      : __T3CODE_BUILD_HOSTED_APP_URL__.trim() || undefined;
+  const serverPages = (environmentId?: EnvironmentId) =>
+    profiles.flatMap((profile) => {
+      const chosenByUser = profile._tag === "BearerConnectionProfile" && profile.learned !== true;
+      return chosenByUser &&
+        (environmentId === undefined || profile.environmentId === environmentId)
+        ? [profile.httpBaseUrl]
+        : [];
+    });
+  const request = readCodexAuthHandoff(value, development, [hostedAppUrl, ...serverPages()]);
+  if (!request) return undefined;
+  const enabled =
+    targets.some(({ environmentId }) => environmentId === request.environmentId) &&
+    !disabledEnvironmentIds.includes(request.environmentId);
+  const trustedOrigins = [hostedAppUrl, ...serverPages(request.environmentId)];
+  return enabled && codexAuthReturnUrl(request.returnUrl, trustedOrigins)
+    ? { request, trustedOrigins }
+    : undefined;
+}
 
 export class DesktopClerkBridgeInitializationError extends Schema.TaggedError<DesktopClerkBridgeInitializationError>()(
   "DesktopClerkBridgeInitializationError",
@@ -61,6 +109,7 @@ export class DesktopClerk extends Context.Service<
       | ElectronApp.ElectronApp
       | ElectronWindow.ElectronWindow
       | DesktopWebLinks.DesktopWebLinks
+      | DesktopConnectionCatalogStore.DesktopConnectionCatalogStore
       | Scope.Scope
     >;
   }
@@ -167,22 +216,62 @@ export const make = Effect.gen(function* () {
       const electronApp = yield* ElectronApp.ElectronApp;
       const electronWindow = yield* ElectronWindow.ElectronWindow;
       const webLinks = yield* DesktopWebLinks.DesktopWebLinks;
+      const connectionCatalog = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
       const context = yield* Effect.context<ElectronWindow.ElectronWindow>();
       const runPromise = Effect.runPromiseWith(context);
 
+      const acceptHandoff = (value: string) =>
+        connectionCatalog.get.pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () => Effect.succeed(EMPTY_CONNECTION_CATALOG_DOCUMENT),
+              onSome: decodeConnectionCatalog,
+            }),
+          ),
+          Effect.catch((cause) =>
+            Effect.logWarning("Could not read saved servers for a ChatGPT desktop handoff.", {
+              cause,
+            }).pipe(Effect.as(EMPTY_CONNECTION_CATALOG_DOCUMENT)),
+          ),
+          Effect.map((catalog) =>
+            acceptCodexAuthHandoff(value, environment.isDevelopment, catalog),
+          ),
+        );
+      const revealMainWindow = Effect.gen(function* () {
+        const mainWindow = yield* electronWindow.currentMainOrFirst;
+        if (Option.isSome(mainWindow)) yield* electronWindow.reveal(mainWindow.value);
+      });
+
       const startProviderAuthHandoff = (value: string | undefined) => {
-        if (!value) return false;
-        const request = readCodexAuthHandoff(value, environment.isDevelopment);
-        if (!request) return false;
+        if (!value || !isCodexAuthHandoffLink(value, environment.isDevelopment)) return false;
         void runPromise(
           Effect.gen(function* () {
             yield* electronApp.whenReady;
+            const accepted = yield* acceptHandoff(value);
+            if (!accepted) {
+              yield* Effect.logWarning(
+                "Ignored a ChatGPT desktop handoff that is malformed or not for a page and environment this desktop trusts.",
+              );
+              return yield* revealMainWindow;
+            }
+            const deliveryUrlIfStillTrusted = async (callbackUrl: string) => {
+              const current = await runPromise(acceptHandoff(value));
+              if (!current) {
+                await runPromise(
+                  Effect.logWarning(
+                    "Refused a ChatGPT desktop handoff that this desktop no longer trusts now that its code arrived.",
+                  ),
+                );
+                throw new Error("This sign-in's environment is no longer trusted.");
+              }
+              return codexAuthDeliveryUrl(current.request, callbackUrl, current.trustedOrigins);
+            };
             yield* Effect.tryPromise({
               try: (signal) =>
                 receiveCodexAuthCallback(
-                  request.authorizationUrl,
+                  accepted.request.authorizationUrl,
                   (url) => runPromise(shell.openExternal(url)),
-                  (callbackUrl) => codexAuthDeliveryUrl(request, callbackUrl),
+                  deliveryUrlIfStillTrusted,
                   signal,
                 ),
               catch: () =>
@@ -247,12 +336,7 @@ export const make = Effect.gen(function* () {
           )
         )
           return;
-        void runPromise(
-          Effect.gen(function* () {
-            const mainWindow = yield* electronWindow.currentMainOrFirst;
-            if (Option.isSome(mainWindow)) yield* electronWindow.reveal(mainWindow.value);
-          }),
-        );
+        void runPromise(revealMainWindow);
       };
       for (const argv of pendingSecondInstances.splice(0)) handleSecondInstance(argv);
     }).pipe(Effect.withSpan("desktop.clerk.configure")),

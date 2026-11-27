@@ -9,6 +9,10 @@ import { act, render } from "../../../test/render";
 import { isMacPlatform } from "../../lib/utils";
 import { linkedThreadSurface } from "../../linkedThreadSurface";
 import { selectThreadRightPanelState, useRightPanelStore } from "../../rightPanelStore";
+import {
+  chatMarkdownClipboardPayload,
+  serializeTableElementToMarkdown,
+} from "../../markdown-clipboard";
 import { MarkdownThreadLink } from "./MarkdownThreadLink";
 
 const HERE = scopeThreadRef(EnvironmentId.make("environment"), ThreadId.make("here"));
@@ -20,6 +24,11 @@ const state = vi.hoisted(() => ({
   cached: null as unknown,
   linked: new Map<string, string>(),
   connected: [] as Array<string>,
+  origin: "https://before.example.test",
+}));
+vi.mock(import("../../hostedPairing"), async (original) => ({
+  ...(await original()),
+  linkOrigin: () => state.origin,
 }));
 vi.mock(import("../../state/entities"), () => ({
   useThreadShell: ((ref: { environmentId: string } | null) =>
@@ -265,4 +274,74 @@ it("opens a linked machine's thread directly once this client is connected to it
   );
   await expect.element(screen.getByText("Fix the build")).toBeVisible();
   await expect.element(screen.getByRole("button")).not.toBeInTheDocument();
+});
+
+const selectAll = (container: HTMLElement) => {
+  window.getSelection()!.selectAllChildren(container);
+  return chatMarkdownClipboardPayload(window.getSelection()!)?.text;
+};
+it.each([
+  {
+    copy: "a selection",
+    threadId: "older-thread",
+    inTable: false,
+    serialize: selectAll,
+    expected: "[Remote thread](https://after.example.test/threads/remote/older-thread)",
+  },
+  {
+    copy: "a selection, for a thread id with a space",
+    threadId: "work item",
+    inTable: false,
+    serialize: selectAll,
+    expected: "[Remote thread](https://after.example.test/threads/remote/work%20item)",
+  },
+  {
+    copy: "a table copied as Markdown",
+    threadId: "older-thread",
+    inTable: true,
+    serialize: (container: HTMLElement) =>
+      serializeTableElementToMarkdown(container.querySelector("table")!),
+    expected:
+      "| Thread |\n| --- |\n| [Remote thread](https://after.example.test/threads/remote/older-thread) |",
+  },
+])("copies a thread chip in $copy as a link at the origin in use when copying", async (input) => {
+  const { registry } = setup();
+  using _registry = { [Symbol.dispose]: () => registry.dispose() };
+  state.origin = "https://before.example.test";
+  const chip = (
+    <MarkdownThreadLink
+      environmentId={EnvironmentId.make("environment")}
+      link={{
+        environmentId: EnvironmentId.make("remote"),
+        threadId: ThreadId.make(input.threadId),
+      }}
+      label={null}
+    />
+  );
+  await using screen = await render(
+    <RegistryContext value={registry}>
+      {input.inTable ? (
+        <table>
+          <thead>
+            <tr>
+              <th>Thread</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>{chip}</td>
+            </tr>
+          </tbody>
+        </table>
+      ) : (
+        chip
+      )}
+    </RegistryContext>,
+  );
+  await expect
+    .element(screen.getByRole("link", { name: "Thread, Remote thread", exact: true }))
+    .toBeVisible();
+  state.origin = "https://after.example.test";
+
+  expect(input.serialize(screen.container)).toBe(input.expected);
 });

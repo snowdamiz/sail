@@ -1,10 +1,12 @@
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 
 import {
   hostedAppUrlConfig,
+  optionalHostedAppUrlConfig,
   makeCloudCliOAuthConfig,
   makeRelayUrlConfig,
   resolveRelayClientTracingConfig,
@@ -34,6 +36,27 @@ it.effect("rejects malformed or insecure hosted app URLs", () =>
       );
       assert.isTrue(Result.isFailure(result), value);
     }
+  }),
+);
+
+it.effect("has no hosted app unless T3CODE_HOSTED_APP_URL names one", () =>
+  Effect.gen(function* () {
+    for (const env of [{}, { T3CODE_HOSTED_APP_URL: "" }, { T3CODE_HOSTED_APP_URL: "  " }]) {
+      assert.isTrue(Option.isNone(yield* optionalHostedAppUrlConfig.pipe(provideEnv(env))));
+      const required = yield* hostedAppUrlConfig.pipe(provideEnv(env), Effect.result);
+      assert.isTrue(Result.isFailure(required));
+    }
+    assert.deepEqual(
+      yield* optionalHostedAppUrlConfig.pipe(
+        provideEnv({ T3CODE_HOSTED_APP_URL: " https://hosted.example.test/ " }),
+      ),
+      Option.some("https://hosted.example.test"),
+    );
+    const invalid = yield* optionalHostedAppUrlConfig.pipe(
+      provideEnv({ T3CODE_HOSTED_APP_URL: "http://hosted.example.test" }),
+      Effect.result,
+    );
+    assert.isTrue(Result.isFailure(invalid));
   }),
 );
 

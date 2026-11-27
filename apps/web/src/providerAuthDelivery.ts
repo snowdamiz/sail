@@ -1,39 +1,137 @@
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
+import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 import { readCodexAuthDelivery } from "@t3tools/shared/codexAuthHandoff";
+import * as Schema from "effect/Schema";
 import { msg } from "gt-react";
+import { useSyncExternalStore } from "react";
 
 import { toastManager } from "./components/ui/toast";
+import {
+  readLocalStorageValue,
+  subscribeLocalStorageKey,
+  writeLocalStorageValue,
+} from "./hooks/useLocalStorage";
+import { ensureClientSettingsHydrated } from "./hooks/useSettings";
 import { m } from "./i18n/messages";
+import { whenLocaleReady } from "./i18n/runtime";
 import { appAtomRegistry } from "./rpc/atomRegistry";
 import { environmentPresentations } from "./state/presentation";
 import { serverEnvironment } from "./state/server";
 
 type ProviderAuthDelivery = NonNullable<ReturnType<typeof readCodexAuthDelivery>>;
 
+const SIGN_INS_KEY = "t3code:codex-sign-ins:v1";
+const SIGN_IN_LIFETIME_MS = 10 * 60_000;
+const CodexSignIn = Schema.Struct({
+  environmentId: EnvironmentId,
+  instanceId: ProviderInstanceId,
+  flowId: Schema.String,
+  expiresAt: Schema.Number,
+});
+type CodexSignIn = typeof CodexSignIn.Type;
+const CodexSignIns = Schema.Array(CodexSignIn);
+
+type SignInFlow = Omit<CodexSignIn, "expiresAt">;
+const sameFlow = (a: SignInFlow, b: SignInFlow) =>
+  a.environmentId === b.environmentId && a.instanceId === b.instanceId && a.flowId === b.flowId;
+
+const liveSignIns = () => {
+  const now = Date.now();
+  return readLocalStorageValue(SIGN_INS_KEY, [], CodexSignIns).filter(
+    (signIn) => signIn.expiresAt > now,
+  );
+};
+const writeSignIns = (signIns: ReadonlyArray<CodexSignIn>) =>
+  writeLocalStorageValue(SIGN_INS_KEY, signIns, [], CodexSignIns);
+
+export function rememberProviderAuthSignIn(signIn: SignInFlow): void {
+  writeSignIns([
+    ...liveSignIns().filter((other) => !sameFlow(other, signIn)),
+    { ...signIn, expiresAt: Date.now() + SIGN_IN_LIFETIME_MS },
+  ]);
+}
+
+export function forgetProviderAuthSignIn(signIn: SignInFlow): void {
+  const live = liveSignIns();
+  const kept = live.filter((other) => !sameFlow(other, signIn));
+  if (kept.length !== live.length) writeSignIns(kept);
+}
+
+const findSignIn = (flow: SignInFlow) => liveSignIns().find((other) => sameFlow(other, flow));
+const subscribeSignIns = (onChange: () => void) => subscribeLocalStorageKey(SIGN_INS_KEY, onChange);
+
+/** Whether a delivery for this sign-in would land here, so a handoff is worth offering. */
+export function useHasProviderAuthSignIn(flow: SignInFlow | null): boolean {
+  return useSyncExternalStore(subscribeSignIns, () => flow !== null && !!findSignIn(flow));
+}
+
+// A delivery runs before startup loads saved settings and starts i18n, so its toast waits for the
+// user's language.
+function showSignInError(description: string) {
+  void ensureClientSettingsHydrated()
+    .catch(() => undefined)
+    .then(whenLocaleReady)
+    .then(() =>
+      toastManager.add({
+        type: "error",
+        title: m(msg("ChatGPT sign-in couldn't finish")),
+        description: m(description),
+      }),
+    );
+}
+
+const refuseDelivery = () =>
+  showSignInError(
+    msg(
+      "This browser didn't start that sign-in. Sign in again in the browser that did, and paste the URL from the final localhost page.",
+    ),
+  );
+
+// Taken just before sending, so a Cancel or another tab's send while this one waits wins.
+function sendIfStillStarted(delivery: ProviderAuthDelivery) {
+  const signIn = findSignIn(delivery);
+  if (!signIn) {
+    refuseDelivery();
+    return;
+  }
+  forgetProviderAuthSignIn(signIn);
+  void completeProviderAuth(delivery);
+}
+
 /**
- * Remove the code before the router, tracing, or welcome screen sees the incoming address,
- * then hand it to its environment once that environment connects. Hosted web receives only
- * the one-time code; the selected environment verifies and stores tokens.
+ * Run before the router, tracing, or welcome screen sees the incoming address, which may carry a
+ * one-time sign-in code.
  */
 export function startProviderAuthDelivery(): void {
   if (!window.location.hash.startsWith("#codex-auth=")) return;
-  const delivery = readCodexAuthDelivery(window.location.href);
+  const delivery = readCodexAuthDelivery(window.location.href, [window.location.origin]);
   window.history.replaceState(
     window.history.state,
     "",
     delivery?.returnUrl ?? `${window.location.pathname}${window.location.search}`,
   );
   if (!delivery) return;
+  const signIn = findSignIn(delivery);
+  if (!signIn) {
+    refuseDelivery();
+    return;
+  }
 
   const presentationAtom = environmentPresentations.presentationAtom(delivery.environmentId);
   if (appAtomRegistry.get(presentationAtom)?.connection.phase === "connected") {
-    void completeProviderAuth(delivery);
+    sendIfStillStarted(delivery);
     return;
   }
-  const unsubscribe = appAtomRegistry.subscribe(presentationAtom, (presentation) => {
-    if (presentation?.connection.phase !== "connected") return;
+  const stopWaiting = (connected: boolean) => {
+    clearTimeout(expiry);
     unsubscribe();
-    void completeProviderAuth(delivery);
+    if (!connected) showSignInError(msg("Reconnect to the environment and try again."));
+    else if (Date.now() < signIn.expiresAt) sendIfStillStarted(delivery);
+    else showSignInError(msg("Return to the provider and try again."));
+  };
+  const expiry = setTimeout(() => stopWaiting(false), signIn.expiresAt - Date.now());
+  const unsubscribe = appAtomRegistry.subscribe(presentationAtom, (presentation) => {
+    if (presentation?.connection.phase === "connected") stopWaiting(true);
   });
 }
 
@@ -52,18 +150,8 @@ async function completeProviderAuth(delivery: ProviderAuthDelivery): Promise<voi
       },
       { reportFailure: false },
     );
-    if (result._tag === "Failure") {
-      toastManager.add({
-        type: "error",
-        title: m(msg("ChatGPT sign-in couldn't finish")),
-        description: m(msg("Return to the provider and try again.")),
-      });
-    }
+    if (result._tag === "Failure") showSignInError(msg("Return to the provider and try again."));
   } catch {
-    toastManager.add({
-      type: "error",
-      title: m(msg("ChatGPT sign-in couldn't finish")),
-      description: m(msg("Reconnect to the environment and try again.")),
-    });
+    showSignInError(msg("Reconnect to the environment and try again."));
   }
 }

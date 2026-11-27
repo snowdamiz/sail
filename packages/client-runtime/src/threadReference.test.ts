@@ -11,6 +11,7 @@ import { resolveThreadReferenceCopyTarget } from "./threadReference.ts";
 const thread = {
   threadRef: { environmentId: EnvironmentId.make("env-1"), threadId: ThreadId.make("thread-1") },
   title: "Fix the login flow",
+  linkOrigin: "https://sail.example.test",
 };
 
 const crossRepositoryPullRequest: ThreadPullRequestLink = {
@@ -98,18 +99,57 @@ describe("resolveThreadReferenceCopyTarget", () => {
         }),
       ],
     });
-    // The plain text opens the thread anywhere and pastes back as the copied record's chip.
-    expect(target!.value).toBe("https://app.t3.codes/threads/env-1/thread-1");
-    expect(threadLinkContextReferences(target!.value, pasted!.records, () => undefined)).toEqual({
+    expect(target!.value).toBe("https://sail.example.test/threads/env-1/thread-1");
+    expect(
+      threadLinkContextReferences(
+        target!.value,
+        pasted!.records,
+        () => undefined,
+        undefined,
+        thread.linkOrigin,
+      ),
+    ).toEqual({
       text: `[Fix the login flow](t3-context://v1/thread/${pasted!.records[0]!.contextId})`,
       records: pasted!.records,
     });
   });
 
-  it("links through the build's hosted app", () => {
+  it("copies a t3-thread link when there is no web app to link into", () => {
+    for (const linkOrigin of [undefined, "", "sail://app"]) {
+      expect(resolveThreadReferenceCopyTarget({ ...thread, linkOrigin })?.value).toBe(
+        "[Fix the login flow](t3-thread://v2/env-1/thread-1)",
+      );
+    }
+  });
+
+  it.each(["work item", "a>b`c"])(
+    "copies a t3-thread link that pastes back as thread %j without its chip data",
+    (threadId) => {
+      const threadRef = {
+        environmentId: EnvironmentId.make("remote"),
+        threadId: ThreadId.make(threadId),
+      };
+      const target = resolveThreadReferenceCopyTarget({
+        threadRef,
+        title: "Work item",
+        linkOrigin: undefined,
+      });
+      for (const title of [
+        (ref: { threadId: string }) => (ref.threadId === threadId ? "Work item" : undefined),
+        () => undefined,
+      ]) {
+        const pasted = threadLinkContextReferences(target!.value, [], title);
+        expect(pasted.records).toEqual([
+          expect.objectContaining({ kind: "thread", ...threadRef, title: "Work item" }),
+        ]);
+      }
+    },
+  );
+
+  it("links through the web app it is given", () => {
     expect(
-      resolveThreadReferenceCopyTarget({ ...thread, hostedAppUrl: "https://preview.t3.codes" })
+      resolveThreadReferenceCopyTarget({ ...thread, linkOrigin: "https://hosted.example.test" })
         ?.value,
-    ).toBe("https://preview.t3.codes/threads/env-1/thread-1");
+    ).toBe("https://hosted.example.test/threads/env-1/thread-1");
   });
 });

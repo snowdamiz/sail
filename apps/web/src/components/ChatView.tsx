@@ -10,7 +10,7 @@ import { queuedRunEditBlockedReason } from "@t3tools/client-runtime/queued-run-e
 import { ScrollToEndButton, WorkspaceFileDropOverlay } from "./chat/TimelineOverlays";
 import { usePasteToFocusComposer } from "./chat/usePasteToFocusComposer";
 import { useFocusComposerOnThreadOpen } from "./chat/useFocusComposerOnThreadOpen";
-import { configuredHostedAppUrl } from "../hostedPairing";
+import { linkOrigin } from "../hostedPairing";
 import {
   announcedRun,
   isDetailBehindShell,
@@ -2505,7 +2505,8 @@ export default function ChatView(props: ChatViewProps) {
     showScrollToBottom,
   ]);
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(activeThreadRef);
-  const activeThreadReferenceCopyTarget =
+  // The link origin is read when copying: the desktop's local server can come up after render.
+  const resolveActiveThreadReferenceCopyTarget = () =>
     activeThreadRef === null || !isServerThread
       ? null
       : resolveThreadReferenceCopyTarget(
@@ -2515,13 +2516,14 @@ export default function ChatView(props: ChatViewProps) {
             openPanelPullRequestUrl,
             pullRequests: activeThread?.pullRequests,
             linkedPullRequestUrl: linkedThreadPullRequest?.url ?? null,
-            hostedAppUrl: configuredHostedAppUrl(),
+            linkOrigin: linkOrigin(),
           },
           messages,
         );
   const copyActiveThreadReference = () => {
-    if (activeThreadReferenceCopyTarget === null) return;
-    void copyThreadReference(activeThreadReferenceCopyTarget);
+    const target = resolveActiveThreadReferenceCopyTarget();
+    if (target === null) return;
+    void copyThreadReference(target);
   };
   const pullRequestPanelTarget = activeThread
     ? threadPullRequestPanelTarget({

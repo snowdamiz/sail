@@ -1,6 +1,7 @@
-import { DEFAULT_HOSTED_APP_URL } from "@t3tools/shared/connectAuth";
-
 import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "@t3tools/shared/remote";
+import { webOrigin } from "@t3tools/shared/url";
+
+import { readPrimaryEnvironmentTarget } from "./environments/primary/target";
 
 export interface HostedPairingRequest {
   readonly host: string;
@@ -10,8 +11,46 @@ export interface HostedPairingRequest {
 
 export type HostedAppChannel = "latest" | "nightly";
 
-export function configuredHostedAppUrl(): string {
-  return import.meta.env.VITE_HOSTED_APP_URL?.trim() || DEFAULT_HOSTED_APP_URL;
+function configuredHostedAppUrl(): string | undefined {
+  return import.meta.env.VITE_HOSTED_APP_URL?.trim() || undefined;
+}
+
+// The desktop window's own origin is an app scheme, so it links to its local server instead. That
+// read is synchronous IPC, and a restarted backend can move, so one read serves a few seconds. A
+// server that is not ready yet is read again by the next task, not by every link in this one.
+const DESKTOP_SERVER_READ_MS = 2_000;
+let desktopServer: { readonly origin: string | undefined; readonly readAt: number } | undefined;
+
+/** Without one, as on a desktop with no local server, links stay `t3-thread://` links. */
+export function linkOrigin(): string | undefined {
+  return (
+    webOrigin(configuredHostedAppUrl()) ??
+    webOrigin(typeof window === "undefined" ? undefined : window.location?.origin) ??
+    desktopServerOrigin()
+  );
+}
+
+function desktopServerOrigin(): string | undefined {
+  const now = performance.now();
+  if (desktopServer !== undefined && now - desktopServer.readAt <= DESKTOP_SERVER_READ_MS) {
+    return desktopServer.origin;
+  }
+  const read = { origin: readDesktopServerOrigin(), readAt: now };
+  desktopServer = read;
+  if (read.origin === undefined) {
+    queueMicrotask(() => {
+      if (desktopServer === read) desktopServer = undefined;
+    });
+  }
+  return read.origin;
+}
+
+function readDesktopServerOrigin(): string | undefined {
+  try {
+    return webOrigin(readPrimaryEnvironmentTarget()?.target.httpBaseUrl);
+  } catch {
+    return undefined;
+  }
 }
 
 function configuredBackendUrl(): string {
@@ -21,14 +60,6 @@ function configuredBackendUrl(): string {
 function configuredHostedAppChannel(): HostedAppChannel | null {
   const channel = import.meta.env.VITE_HOSTED_APP_CHANNEL?.trim().toLowerCase();
   return channel === "latest" || channel === "nightly" ? channel : null;
-}
-
-function originFromUrl(value: string): string | null {
-  try {
-    return new URL(value).origin;
-  } catch {
-    return null;
-  }
 }
 
 export function isHostedStaticApp(url?: URL): boolean {
@@ -44,8 +75,10 @@ export function isHostedStaticApp(url?: URL): boolean {
     return false;
   }
 
-  const hostedOrigin = originFromUrl(configuredHostedAppUrl());
-  return hostedOrigin !== null && (url ?? new URL(window.location.href)).origin === hostedOrigin;
+  const hostedOrigin = webOrigin(configuredHostedAppUrl());
+  return (
+    hostedOrigin !== undefined && (url ?? new URL(window.location.href)).origin === hostedOrigin
+  );
 }
 
 export function readHostedPairingRequest(url: URL = new URL(window.location.href)) {
@@ -72,8 +105,10 @@ export function buildHostedPairingUrl(input: {
   readonly host: string;
   readonly token: string;
   readonly label?: string | null;
-}): string {
-  const url = new URL("/pair", configuredHostedAppUrl());
+}): string | null {
+  const hostedOrigin = webOrigin(configuredHostedAppUrl());
+  if (hostedOrigin === undefined) return null;
+  const url = new URL("/pair", hostedOrigin);
   url.searchParams.set("host", input.host);
 
   const label = input.label?.trim();
@@ -87,7 +122,10 @@ export function buildHostedPairingUrl(input: {
 export function buildHostedChannelSelectionUrl(input: {
   readonly channel: HostedAppChannel;
 }): string {
-  const url = new URL("/__t3code/channel", configuredHostedAppUrl());
+  const url = new URL(
+    "/__t3code/channel",
+    webOrigin(configuredHostedAppUrl()) ?? window.location.origin,
+  );
   url.searchParams.set("channel", input.channel);
   return url.toString();
 }

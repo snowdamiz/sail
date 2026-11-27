@@ -16,6 +16,7 @@ import {
   threadLinkContextReferences,
 } from "@t3tools/shared/composerContextReferences";
 
+import { linkOrigin } from "~/hostedPairing";
 import { readThreadShell } from "~/state/entities";
 
 const threadTitle = (ref: ScopedThreadRef) => readThreadShell(ref)?.title;
@@ -37,6 +38,8 @@ export function readPastedComposerContext(
     pastedText,
     decodedFragment?.records ?? [],
     threadTitle,
+    undefined,
+    linkOrigin(),
   );
   const source =
     decodedFragment?.source ??
@@ -90,7 +93,11 @@ export function importPastedComposerText(
       : occurrence.source;
   });
   // A thread the import refused, on a machine this agent cannot read, stays the link it was.
-  return threadLinkContextReferences(text, fragment?.records ?? [], threadTitle, (record) =>
-    nextId(record.contextId),
+  return threadLinkContextReferences(
+    text,
+    fragment?.records ?? [],
+    threadTitle,
+    (record) => nextId(record.contextId),
+    linkOrigin(),
   ).text;
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
 import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
 import {
@@ -40,6 +40,22 @@ describe("deriveTimelineMinimapItems", () => {
 });
 
 describe("resolveTimelineMinimapPreview", () => {
+  it("previews a link into this server's threads as prose, and an app.t3.codes one as written", () => {
+    vi.stubGlobal("window", { location: new URL("https://sail.example.test/env-1/thread-1") });
+    try {
+      const preview = resolveTimelineMinimapPreview({
+        id: "turn-1",
+        rowIndex: 0,
+        userText: null,
+        assistantText:
+          "Started https://sail.example.test/threads/env-1/thread-1 and https://app.t3.codes/threads/a/b",
+      });
+      expect(preview?.assistantText).toBe("Started a thread and https://app.t3.codes/threads/a/b");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("previews a thread autolink as prose, not its URL", () => {
     const preview = resolveTimelineMinimapPreview({
       id: "turn-1",

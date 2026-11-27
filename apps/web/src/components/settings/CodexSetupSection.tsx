@@ -15,8 +15,7 @@ import type {
   ProviderInstanceId,
   ServerProvider,
 } from "@t3tools/contracts";
-import { codexAuthHandoffUrl } from "@t3tools/shared/codexAuthHandoff";
-import { providerAuthReturnUrl } from "@t3tools/shared/providerAuthReturnUrl";
+import { codexAuthHandoffUrl, codexAuthReturnUrl } from "@t3tools/shared/codexAuthHandoff";
 import { isLoopbackHost } from "@t3tools/shared/preview";
 import { CheckIcon, ChevronRightIcon, ExternalLinkIcon } from "lucide-react";
 import {
@@ -31,6 +30,11 @@ import {
 import { T, useGT, useMessages } from "gt-react";
 
 import { ensureLocalApi } from "../../localApi";
+import {
+  forgetProviderAuthSignIn,
+  rememberProviderAuthSignIn,
+  useHasProviderAuthSignIn,
+} from "../../providerAuthDelivery";
 import { managedInstanceLocks, useManagedPolicy } from "../../state/managedPolicy";
 import { ManagedControl } from "../ManagedPolicy";
 import { useEnvironmentHttpBaseUrl } from "../../state/environments";
@@ -332,6 +336,9 @@ function ManagedCodexSetup({
   if (returnUrl.pathname === "/settings/providers")
     returnUrl.searchParams.set("instanceId", instanceId);
   const needsManualCallback = remoteWeb;
+  const startedHere = useHasProviderAuthSignIn(
+    auth?.flowId ? { environmentId, instanceId, flowId: auth.flowId } : null,
+  );
   const callbackHelpId = useId();
   const [callbackHelpOpen, setCallbackHelpOpen] = useState(false);
   const [callbackDraft, setCallbackDraft] = useState({ flowId: "", value: "" });
@@ -475,6 +482,7 @@ function ManagedCodexSetup({
       setHandoff(null);
       return Promise.resolve();
     }
+    forgetProviderAuthSignIn({ environmentId, instanceId, flowId: auth!.flowId! });
     return run(() => cancelAuth({ environmentId, input: { instanceId, flowId: auth!.flowId! } }));
   };
 
@@ -558,6 +566,9 @@ function ManagedCodexSetup({
       (started) => {
         setAwaitingProvider("sign-in");
         const startedFlowId = started.flowId;
+        if (startedFlowId !== null) {
+          rememberProviderAuthSignIn({ environmentId, instanceId, flowId: startedFlowId });
+        }
         // A remote browser cannot receive the callback, so the user opens the page from the card.
         if (remoteWeb || startedFlowId === null) return;
         const startedPage = settleAuthorizationPage(started, startedFlowId);
@@ -685,7 +696,11 @@ function ManagedCodexSetup({
   );
 
   const handoffUrl =
-    needsManualCallback && url && auth?.flowId && providerAuthReturnUrl(returnUrl.toString())
+    needsManualCallback &&
+    url &&
+    auth?.flowId &&
+    startedHere &&
+    codexAuthReturnUrl(returnUrl.toString(), [window.location.origin])
       ? codexAuthHandoffUrl(
           {
             authorizationUrl: url,

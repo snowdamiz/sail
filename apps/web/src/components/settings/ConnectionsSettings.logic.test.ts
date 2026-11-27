@@ -1,10 +1,11 @@
-import { type DesktopWslState, EnvironmentId } from "@t3tools/contracts";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { type AdvertisedEndpoint, type DesktopWslState, EnvironmentId } from "@t3tools/contracts";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   applyWslEnableSelection,
   isServerNetworkAccessible,
   parseManualDesktopSshTarget,
   resolveAccessEnvironmentId,
+  resolveAdvertisedEndpointPairingUrl,
   resolveCurrentOriginPairingUrl,
   resolveTailscaleServeBaseUrl,
   selectQrEndpointOption,
@@ -63,6 +64,56 @@ describe("resolveCurrentOriginPairingUrl", () => {
     ["http://192.168.1.20:3773/", "http://192.168.1.20:3773/pair#token=abc"],
   ])("from %s", (href, expected) => {
     expect(resolveCurrentOriginPairingUrl("abc", href)).toBe(expected);
+  });
+});
+
+describe("resolveAdvertisedEndpointPairingUrl", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const tailnet: AdvertisedEndpoint = {
+    id: "tailscale-magicdns:https://desktop.tailnet.ts.net",
+    label: "Tailscale HTTPS",
+    provider: { id: "tailscale", label: "Tailscale", kind: "private-network", isAddon: true },
+    httpBaseUrl: "https://desktop.tailnet.ts.net/",
+    wsBaseUrl: "wss://desktop.tailnet.ts.net/",
+    reachability: "private-network",
+    compatibility: { hostedHttpsApp: "compatible", desktopApp: "compatible" },
+    source: "desktop-addon",
+    status: "available",
+  };
+
+  it.each([
+    ["absent", undefined],
+    ["empty", ""],
+  ])("shares the server's own pairing link with an %s hosted app", (_, hostedAppUrl) => {
+    if (hostedAppUrl !== undefined) vi.stubEnv("VITE_HOSTED_APP_URL", hostedAppUrl);
+    expect(resolveAdvertisedEndpointPairingUrl(tailnet, "PAIRCODE")).toBe(
+      "https://desktop.tailnet.ts.net/pair#token=PAIRCODE",
+    );
+  });
+
+  it("shares a hosted pairing link when the build names a hosted app", () => {
+    vi.stubEnv("VITE_HOSTED_APP_URL", "https://hosted.example.test");
+    expect(resolveAdvertisedEndpointPairingUrl(tailnet, "PAIRCODE")).toBe(
+      "https://hosted.example.test/pair?host=https%3A%2F%2Fdesktop.tailnet.ts.net%2F#token=PAIRCODE",
+    );
+  });
+
+  it("shares the server's own link for a plain HTTP endpoint either way", () => {
+    vi.stubEnv("VITE_HOSTED_APP_URL", "https://hosted.example.test");
+    expect(
+      resolveAdvertisedEndpointPairingUrl(
+        {
+          ...tailnet,
+          id: "desktop-lan:http://192.168.1.42:4780",
+          httpBaseUrl: "http://192.168.1.42:4780/",
+          compatibility: { hostedHttpsApp: "mixed-content-blocked", desktopApp: "compatible" },
+        },
+        "PAIRCODE",
+      ),
+    ).toBe("http://192.168.1.42:4780/pair#token=PAIRCODE");
   });
 });
 

@@ -72,12 +72,13 @@ describe("desktop Codex callback helper", () => {
     await responseChecked;
     expect(received).toBe(expected);
   });
-  it("returns hosted web to the exact instance and environment without putting the code in its query", async () => {
+  it("returns web to the exact instance and environment without putting the code in its query", async () => {
     const authorizationUrl = request(await freePort());
     const expected = callback(authorizationUrl);
     const input = {
       authorizationUrl,
-      returnUrl: "https://app.t3.codes/settings/providers?environmentId=remote-one&instanceId=work",
+      returnUrl:
+        "http://127.0.0.1:3773/settings/providers?environmentId=remote-one&instanceId=work",
       environmentId: EnvironmentId.make("remote-one"),
       instanceId: ProviderInstanceId.make("work"),
       flowId: "flow-one",
@@ -98,6 +99,37 @@ describe("desktop Codex callback helper", () => {
       (url) => codexAuthDeliveryUrl(input, url),
     );
     await opening;
+  });
+  it("asks for the return address when the code arrives, and a refusal sends it nowhere and ends the sign-in", async () => {
+    const authorizationUrl = request(await freePort());
+    let asked = 0;
+    let responding!: Promise<Response>;
+    await expect(
+      receiveCodexAuthCallback(
+        authorizationUrl,
+        async () => {
+          expect(asked).toBe(0);
+          responding = fetch(callback(authorizationUrl), { redirect: "manual" });
+          await responding;
+          return true;
+        },
+        async () => {
+          asked += 1;
+          throw new Error("no longer trusted");
+        },
+      ),
+    ).rejects.toThrow("no longer trusted");
+    expect(asked).toBe(1);
+    const response = await responding;
+    expect(response.status).toBe(403);
+    expect(response.headers.get("location")).toBeNull();
+    expect(await response.text()).not.toContain("test-code");
+    expect(
+      await receiveCodexAuthCallback(authorizationUrl, async () => {
+        await fetch(callback(authorizationUrl));
+        return true;
+      }),
+    ).toBe(callback(authorizationUrl));
   });
   it("cancels and releases its listener so exact-port reauthorization can run again", async ({
     onTestFinished,

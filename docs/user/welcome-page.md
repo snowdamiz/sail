@@ -8,7 +8,7 @@ and the phone app. Only an agent is needed to start chatting.
 To see the page again, go to **Settings → About → Welcome page** and select
 **Open**. Direct links, such as Settings, open normally before setup is done.
 
-The hosted app at app.t3.codes does not open the page. With no computer connected,
+A hosted web app does not open the page. With no computer connected,
 it asks you to sign in to T3 Connect, then to install T3 Code and run
 `t3 connect` on your computer. From home, it adds compatible computers linked to your account and
 opens the app. To add more computers later, use **Settings → Environments**.

@@ -27,7 +27,7 @@ import {
   makePersistedServerRuntimeState,
   persistServerRuntimeState,
 } from "../serverRuntimeState.ts";
-import { acquireRelayClientForLink } from "./connect.ts";
+import { acquireRelayClientForLink, signsInWithDeviceCode } from "./connect.ts";
 import { resolveHostCliCommand } from "./invocation.ts";
 
 const managedExecutable = {
@@ -63,6 +63,42 @@ it.effect("does not install the relay client when the user declines the managed 
 
     assert.isTrue(Option.isNone(result));
     assert.equal(installCalls, 0);
+  }),
+);
+
+it.effect.each([
+  { case: "a terminal and no hosted app", env: {}, interactive: true, device: true },
+  {
+    case: "a terminal and a blank hosted app",
+    env: { T3CODE_HOSTED_APP_URL: " " },
+    interactive: true,
+    device: true,
+  },
+  {
+    case: "a terminal and a hosted app",
+    env: { T3CODE_HOSTED_APP_URL: "https://hosted.example.test" },
+    interactive: true,
+    device: false,
+  },
+  {
+    case: "an SSH session and a hosted app",
+    env: { T3CODE_HOSTED_APP_URL: "https://hosted.example.test", SSH_TTY: "/dev/ttys001" },
+    interactive: true,
+    device: true,
+  },
+  {
+    case: "no terminal and a hosted app",
+    env: { T3CODE_HOSTED_APP_URL: "https://hosted.example.test" },
+    interactive: false,
+    device: true,
+  },
+])("t3 connect login with $case signs in with a device code: $device", (input) =>
+  Effect.gen(function* () {
+    const device = yield* signsInWithDeviceCode({
+      headless: false,
+      interactive: input.interactive,
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: input.env }))));
+    assert.equal(device, input.device);
   }),
 );
 

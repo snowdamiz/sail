@@ -9,6 +9,7 @@ import {
 } from "@t3tools/shared/composerContextReferences";
 import type { Nodes } from "hast";
 
+import { linkOrigin } from "~/hostedPairing";
 import { markdownTree } from "~/markdown/wordsHast";
 
 import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
@@ -89,7 +90,9 @@ function markdownNodeText(node: Nodes): string {
   const separator = node.type === "element" && INLINE_PARENTS.has(node.tagName) ? "" : " ";
   const text = node.children.map(markdownNodeText).join(separator);
   // A thread autolink's only text is its URL.
-  return node.type === "element" && node.tagName === "a" && parseThreadLinkHref(text) !== null
+  return node.type === "element" &&
+    node.tagName === "a" &&
+    parseThreadLinkHref(text, linkOrigin()) !== null
     ? "a thread"
     : text;
 }

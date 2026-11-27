@@ -22,6 +22,23 @@ reconnect later.
 If remote sign-in cannot return automatically, paste the full URL from the final
 localhost page into the sign-in panel, even if that page could not load.
 
+In a browser on a computer with the desktop app, **Other ways to connect → Use T3
+desktop for automatic return** lets the desktop app catch the sign-in. It works
+only for an environment you added and kept enabled in the desktop app, and returns
+only to that environment's own HTTPS address, your build's hosted web app, or a
+page on this computer at `localhost`, `127.0.0.1`, or `[::1]`, on any port,
+whichever app serves it, an SSH environment's tunnel included. Otherwise it sends
+nothing and brings an open desktop window forward, so paste the URL instead. If
+you disable or remove the environment before sign-in finishes, the final page
+says the sign-in was not returned.
+
+The option appears only in the browser that started the sign-in. The returning
+page finishes only a sign-in that a tab of the same browser, at the same address,
+started in the last 10 minutes and did not cancel, and waits that long for the
+environment to connect. The desktop app opens OpenAI's page in your default
+browser. If you started in another browser, sign in again there without the
+automatic return, and paste the URL from the final localhost page.
+
 ## Use an existing Codex login
 
 T3 Code can use your installed Codex and its existing login. Run `codex login`

@@ -5,6 +5,7 @@ import { MessagesSquareIcon } from "lucide-react";
 import { useGT } from "gt-react";
 
 import { resolveThreadOpenRoute } from "~/lib/sideChatPane";
+import { threadLinkCopyData } from "~/markdown-clipboard";
 import { buildThreadRouteParams } from "~/threadRoutes";
 import { useProject, useThreadShell } from "~/state/entities";
 import { orchestrationEnvironment } from "~/state/orchestration";
@@ -65,6 +66,7 @@ export function ThreadContextChip(props: {
             }
             aria-label={gt("Thread, {title}", { title })}
             data-markdown-copy={props.copyMarkdown}
+            data-markdown-thread-link={threadLinkCopyData({ environmentId, threadId }, title)}
             className="no-underline"
           >
             {project ? (

@@ -44,7 +44,7 @@ import {
   RELAY_ENVIRONMENT_CREDENTIAL_SECRET,
   RELAY_URL_SECRET,
 } from "../cloud/config.ts";
-import { relayUrlConfig } from "../cloud/publicConfig.ts";
+import { optionalHostedAppUrlConfig, relayUrlConfig } from "../cloud/publicConfig.ts";
 import * as RelayTracing from "../cloud/relayTracing.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -100,15 +100,25 @@ function formatDeviceAuthorizationPrompt(
   ].join("\n");
 }
 
+export const signsInWithDeviceCode = Effect.fn("cloud.cli.signs_in_with_device_code")(
+  function* (options: { readonly headless: boolean; readonly interactive: boolean }) {
+    return (
+      options.headless ||
+      (yield* headlessSessionConfig) ||
+      !options.interactive ||
+      Option.isNone(yield* optionalHostedAppUrlConfig)
+    );
+  },
+);
+
 const authorizeCli = Effect.fn("cloud.cli.authorize")(function* (options: {
   readonly headless: boolean;
 }) {
   const tokens = yield* CliTokenManager.CloudCliTokenManager;
-  // Without a terminal, no key press can open a browser, so sign in with a code.
-  const useOutOfBandOAuth =
-    options.headless ||
-    (yield* headlessSessionConfig) ||
-    !(process.stdin.isTTY && process.stdout.isTTY);
+  const useOutOfBandOAuth = yield* signsInWithDeviceCode({
+    headless: options.headless,
+    interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+  });
   if (!useOutOfBandOAuth) {
     const authorization = yield* tokens.get;
     if (authorization._tag === "Authorized") {

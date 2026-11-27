@@ -1,4 +1,10 @@
+import { EnvironmentId, type ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { UNFINISHED_DRIVE_PATH } from "@t3tools/shared/markdownLinks";
+import { formatHostedThreadLink } from "@t3tools/shared/threadLinks";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+
+import { linkOrigin } from "./hostedPairing";
 
 const SKIPPED_TAGS = new Set(["BUTTON", "INPUT", "SCRIPT", "STYLE", "TEMPLATE"]);
 const SKIPPED_CLASS_NAMES = ["select-none", "sr-only"];
@@ -19,6 +25,29 @@ const LIST_ITEM_CHECKBOX = ':scope > input[type="checkbox"], :scope > p > input[
 export interface MarkdownClipboardPayload {
   text: string;
   html: string;
+}
+
+const ThreadLinkCopy = Schema.fromJsonString(
+  Schema.Tuple([EnvironmentId, ThreadId, Schema.String]),
+);
+const encodeThreadLinkCopy = Schema.encodeSync(ThreadLinkCopy);
+const decodeThreadLinkCopy = Schema.decodeUnknownOption(ThreadLinkCopy);
+
+export function threadLinkCopyData(ref: ScopedThreadRef, title: string): string {
+  return encodeThreadLinkCopy([ref.environmentId, ref.threadId, title]);
+}
+
+/** A thread chip without its own Markdown copies as a link at the origin in use now. */
+function markdownCopyOf(element: Element): string | null {
+  const markdown = element.getAttribute("data-markdown-copy");
+  if (markdown !== null) return markdown;
+  const threadLink = element.getAttribute("data-markdown-thread-link");
+  if (threadLink === null) return null;
+  return Option.match(decodeThreadLinkCopy(threadLink), {
+    onNone: () => null,
+    onSome: ([environmentId, threadId, title]) =>
+      formatHostedThreadLink({ environmentId, threadId }, title, linkOrigin()),
+  });
 }
 
 function isSkippedElement(element: Element): boolean {
@@ -282,7 +311,7 @@ function serializeNode(node: Node, inTableCell = false): string {
   if (element.hasAttribute("data-markdown-details")) {
     return escapeTablePipes(serializeDetails(element), inTableCell);
   }
-  const markdownCopy = element.getAttribute("data-markdown-copy");
+  const markdownCopy = markdownCopyOf(element);
   if (markdownCopy !== null) {
     // A diagram copies as its fenced source, which is code too.
     if (element.hasAttribute("data-markdown-mermaid")) {
@@ -369,7 +398,7 @@ function scanForSoleCodeBlock(node: Node, scan: SoleCodeBlockScan): void {
       scan.other = true;
       continue;
     }
-    const markdownCopy = element.getAttribute("data-markdown-copy");
+    const markdownCopy = markdownCopyOf(element);
     if (markdownCopy !== null) {
       if (markdownCopy.trim().length > 0) scan.other = true;
       continue;

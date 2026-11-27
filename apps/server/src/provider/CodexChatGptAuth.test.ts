@@ -10,6 +10,7 @@ import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -708,6 +709,52 @@ it.effect(
         assert.notInclude(response.body, "hidden@example.test");
       }),
     ),
+);
+it.effect.each([
+  {
+    case: "the hosted app the server names",
+    page: "https://hosted.example.test/settings/providers?instanceId=codex_work",
+    hosted: "https://hosted.example.test",
+    returns: true,
+  },
+  {
+    case: "a look-alike of the hosted app",
+    page: "https://hosted.example.test.attacker.example/settings/providers",
+    hosted: "https://hosted.example.test",
+    returns: false,
+  },
+  {
+    case: "a plain HTTP page off this machine, even when named as the hosted app",
+    page: "http://192.168.1.42:3773/settings/providers",
+    hosted: "http://192.168.1.42:3773",
+    returns: false,
+  },
+  {
+    case: "an HTTPS page with no hosted app",
+    page: "https://hosted.example.test/settings/providers",
+    hosted: undefined,
+    returns: false,
+  },
+])("returns from the callback page to $case: $returns", ({ page, hosted, returns }) =>
+  provision(
+    Effect.gen(function* () {
+      const h = yield* makeHarness;
+      h.setReturnUrl(page);
+      yield* h.signIn;
+      yield* h.phase("succeeded");
+      const body = h.callbackResponses[0]!.body;
+      assert.strictEqual(body.includes(`content="1;url=${page}"`), returns);
+      assert.strictEqual(body.includes(new URL(page).host), returns);
+    }),
+  ).pipe(
+    Effect.provide(
+      ConfigProvider.layer(
+        ConfigProvider.fromEnv({
+          env: hosted === undefined ? {} : { T3CODE_HOSTED_APP_URL: hosted },
+        }),
+      ),
+    ),
+  ),
 );
 it.effect(
   "does not redirect to an arbitrary return URL or claim success after verification fails",

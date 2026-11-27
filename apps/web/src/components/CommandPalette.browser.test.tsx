@@ -1,13 +1,16 @@
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
 import { act, render } from "../../test/render";
+import { useComposerDraftStore } from "../composerDraftStore";
 import { openCommandPalette } from "../commandPaletteBus";
 import { dispatchCommandPalette, useCommandPaletteStore } from "../commandPaletteStore";
 import { LAST_USED_PROJECT_STORAGE_KEY } from "../hooks/useHandleNewThread";
 import { removeLocalStorageItem } from "../hooks/useLocalStorage";
+import type { ThreadRouteTarget } from "../threadRoutes";
 import { makeThreadFixture } from "../test-fixtures";
 import type { Project, Thread } from "../types";
 import { CommandPalette } from "./CommandPalette";
@@ -18,6 +21,18 @@ const entities = vi.hoisted(() => ({
   activeThread: undefined as Thread | undefined,
   delegatedUnderParent: new Set<string>() as ReadonlySet<string>,
   handleNewThread: vi.fn(async () => undefined),
+}));
+const links = vi.hoisted(() => ({
+  origin: undefined as string | undefined,
+  routeTarget: null as ThreadRouteTarget | null,
+}));
+vi.mock("../hostedPairing", async (original) => {
+  const actual = await original<typeof import("../hostedPairing")>();
+  return { ...actual, linkOrigin: () => links.origin ?? actual.linkOrigin() };
+});
+vi.mock("../hooks/useThreadRouteTarget", async (original) => ({
+  ...(await original<typeof import("../hooks/useThreadRouteTarget")>()),
+  useThreadRouteTarget: () => links.routeTarget,
 }));
 vi.mock("../state/server", async (original) => {
   const actual = await original<typeof import("../state/server")>();
@@ -61,6 +76,8 @@ function setup(state: Partial<typeof entities> = {}) {
   entities.activeThread = state.activeThread;
   entities.delegatedUnderParent = state.delegatedUnderParent ?? new Set();
   entities.handleNewThread.mockClear();
+  links.origin = undefined;
+  links.routeTarget = null;
 }
 
 function makeProject(title: string): Project {
@@ -384,4 +401,44 @@ describe("CommandPalette open intents", () => {
     await userEvent.keyboard("{Escape}");
     await expect.element(palette).not.toBeInTheDocument();
   });
+});
+
+describe("CommandPalette prompt links", () => {
+  it.each(["Copy prompt link", "Copy prompt link with repo and model"])(
+    "%s copies a link at the origin in use when it is chosen",
+    async (title) => {
+      const project = {
+        ...makeProject("widgets"),
+        repositoryIdentity: {
+          canonicalKey: "github.com/acme/widgets",
+        } as Project["repositoryIdentity"],
+      };
+      const activeThread = makeThreadFixture({
+        environmentId: project.environmentId,
+        id: ThreadId.make("drafting"),
+        projectId: project.id,
+      });
+      const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+      setup({ projects: [project], activeThread });
+      links.routeTarget = { kind: "server", threadRef };
+      links.origin = "https://before.example.test";
+      useComposerDraftStore.getState().setPrompt(threadRef, "Fix the flaky test");
+      using _draft = {
+        [Symbol.dispose]: () => useComposerDraftStore.getState().setPrompt(threadRef, ""),
+      };
+      using write = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+      await using _screen = await render(<CommandPalette>{null}</CommandPalette>);
+
+      openCommandPalette({ query: title });
+      const action = page.getByRole("option", { name: title, exact: true });
+      await expect.element(action).toBeVisible();
+      await action.hover();
+      links.origin = "https://after.example.test";
+      await action.click();
+
+      await expect
+        .poll(() => write.mock.calls[0]?.[0])
+        .toMatch(/^https:\/\/after\.example\.test\/new\?prompt=Fix/);
+    },
+  );
 });

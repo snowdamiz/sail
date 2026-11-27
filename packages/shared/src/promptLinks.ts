@@ -1,5 +1,4 @@
-import { DEFAULT_HOSTED_APP_URL } from "./connectAuth.ts";
-import { parseUrl } from "./url.ts";
+import { parseUrl, webOrigin } from "./url.ts";
 
 export const PROMPT_LINK_MAX_PROMPT_LENGTH = 8_000;
 
@@ -189,14 +188,17 @@ export function withoutPromptLinkParams(search: string): string {
   return rest ? `?${rest}` : "";
 }
 
+/** A link into the web app at `origin`, or null without one: an app scheme has no web route. */
 export function buildNewThreadLink(input: {
   readonly prompt: string;
   readonly repository?: PromptLinkRepository | null;
   readonly provider?: string | null;
   readonly model?: string | null;
-  readonly origin?: string;
-}): string {
-  const url = new URL("/new", input.origin ?? DEFAULT_HOSTED_APP_URL);
+  readonly origin: string | undefined;
+}): string | null {
+  const origin = webOrigin(input.origin);
+  if (origin === undefined) return null;
+  const url = new URL("/new", origin);
   url.searchParams.set("prompt", input.prompt);
   if (input.repository) {
     url.searchParams.set("repo", `${input.repository.owner}/${input.repository.name}`);
@@ -209,10 +211,7 @@ export function buildNewThreadLink(input: {
 const APP_SCHEME = /^(?:sail|t3code)(?:-[a-z]+)?:$/;
 const THREAD_PATH = /^\/([^/]+)\/([^/]+)\/?$/;
 
-export function promptLinkAppPath(
-  value: string,
-  hostedAppUrl: string = DEFAULT_HOSTED_APP_URL,
-): string | null {
+export function promptLinkAppPath(value: string, webAppUrl?: string): string | null {
   const url = parseUrl(value);
   if (!url) return null;
   if (APP_SCHEME.test(url.protocol)) {
@@ -222,7 +221,8 @@ export function promptLinkAppPath(
     const thread = url.host === "threads" ? THREAD_PATH.exec(url.pathname) : null;
     return thread ? `/${thread[1]}/${thread[2]}${url.search}` : null;
   }
-  if (url.origin !== parseUrl(hostedAppUrl)?.origin) return null;
+  const webAppOrigin = webOrigin(webAppUrl);
+  if (webAppOrigin === undefined || url.origin !== webAppOrigin) return null;
   if (url.pathname === "/new") return `/new${url.search}`;
   // The web app's own thread route is a link only with a prompt, so reloading a tab never asks.
   const thread = url.pathname.startsWith("/threads/")

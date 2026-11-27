@@ -1,7 +1,5 @@
 import { providerAuthReturnUrl } from "@t3tools/shared/providerAuthReturnUrl";
 
-export const codexAuthReturnUrl = providerAuthReturnUrl;
-
 const escapeHtml = (value: string) =>
   value.replace(
     /[&<>"']/gu,
@@ -13,8 +11,9 @@ export function codexAuthCallbackPage(
   success: boolean,
   returnUrl: string | undefined,
   nonce: string,
+  trustedOrigins: ReadonlyArray<string | undefined>,
 ) {
-  const destination = codexAuthReturnUrl(returnUrl);
+  const destination = providerAuthReturnUrl(returnUrl, trustedOrigins);
   const title = success ? "You're signed in" : "Sign-in couldn't finish";
   const description = success
     ? destination

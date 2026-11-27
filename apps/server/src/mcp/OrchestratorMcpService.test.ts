@@ -38,6 +38,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -5358,23 +5359,83 @@ describe("OrchestratorMcpService thread lookup", () => {
     Effect.gen(function* () {
       const delegated = liveThreadShell(ThreadId.make("thread:delegated-task:command%3Amcp%3Aabc"));
       const ref = { environmentId: client.environmentId, threadId: delegated.id };
+      const reached = { ...client, origin: "https://sail.example.test" };
+      const inThread = { ...client, client: undefined, origin: "http://127.0.0.1:3773" };
       const sent = yield* Ref.make(0);
       yield* Effect.gen(function* () {
         const mcp = yield* OrchestratorMcpService.OrchestratorMcpService;
-        for (const link of [
-          `t3-thread://v2/${ref.environmentId}/${ref.threadId}`,
-          formatThreadLink(ref, "Delegated task"),
-          hostedThreadLink(ref),
-        ]) {
+        for (const [caller, link] of [
+          [client, `t3-thread://v2/${ref.environmentId}/${ref.threadId}`],
+          [client, formatThreadLink(ref, "Delegated task")],
+          [reached, `See ${hostedThreadLink(ref, "https://sail.example.test")}.`],
+          [inThread, `[Task](${hostedThreadLink(ref, "http://127.0.0.1:3773")})`],
+        ] as const) {
           const read = yield* mcp
-            .readThread(client, { threadId: ThreadId.make(link) })
+            .readThread(caller, { threadId: ThreadId.make(link) })
             .pipe(Effect.flip);
           assert.equal(read.code, "thread_not_found");
           assert.include(read.message, `\`${delegated.id}\``);
           assert.include(read.message, "is a thread link");
           assert.notInclude(read.message, "no longer available");
         }
+        for (const [caller, link] of [
+          [client, hostedThreadLink(ref, "https://sail.example.test")],
+          [reached, hostedThreadLink(ref, "https://app.t3.codes")],
+          [inThread, `See ${hostedThreadLink(ref, "https://elsewhere.example.test")}.`],
+        ] as const) {
+          const read = yield* mcp
+            .readThread(caller, { threadId: ThreadId.make(link) })
+            .pipe(Effect.flip);
+          assert.equal(read.code, "thread_not_found");
+          assert.notInclude(read.message, "is a thread link");
+        }
       }).pipe(Effect.provide(service([delegated], sent)));
+    }),
+  );
+
+  it.effect("reads a pasted link at the origin the caller reached and at the hosted app", () =>
+    Effect.gen(function* () {
+      const delegated = liveThreadShell(ThreadId.make("thread:delegated-task:command%3Amcp%3Aabc"));
+      const ref = { environmentId: client.environmentId, threadId: delegated.id };
+      const hosted = "https://hosted.example.test";
+      const reachedOrigin = "https://sail.example.test";
+      const inThread = { ...client, client: undefined, origin: undefined };
+      const outside = {
+        ...client,
+        client: { ...client.client!, hostedAppUrl: hosted },
+        origin: reachedOrigin,
+      };
+      const outsideWithoutHosted = { ...client, origin: reachedOrigin };
+      const withHostedApp = (env: Record<string, string>) =>
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env })));
+      const sent = yield* Ref.make(0);
+      const isLinkHint = (caller: McpInvocationScope, link: string) =>
+        Effect.gen(function* () {
+          const mcp = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const read = yield* mcp
+            .readThread(caller, { threadId: ThreadId.make(link) })
+            .pipe(Effect.flip);
+          assert.equal(read.code, "thread_not_found");
+          return read.message.includes("is a thread link");
+        }).pipe(Effect.provide(service([delegated], sent)));
+
+      const configured = withHostedApp({ T3CODE_HOSTED_APP_URL: hosted });
+      assert.isTrue(yield* isLinkHint(inThread, hostedThreadLink(ref, hosted)).pipe(configured));
+      assert.isTrue(yield* isLinkHint(outside, hostedThreadLink(ref, hosted)).pipe(configured));
+      assert.isTrue(
+        yield* isLinkHint(outside, hostedThreadLink(ref, reachedOrigin)).pipe(configured),
+      );
+
+      const unconfigured = withHostedApp({});
+      assert.isTrue(
+        yield* isLinkHint(outsideWithoutHosted, hostedThreadLink(ref, reachedOrigin)).pipe(
+          unconfigured,
+        ),
+      );
+      assert.isFalse(
+        yield* isLinkHint(outsideWithoutHosted, hostedThreadLink(ref, hosted)).pipe(unconfigured),
+      );
+      assert.isFalse(yield* isLinkHint(inThread, hostedThreadLink(ref, hosted)).pipe(unconfigured));
     }),
   );
 

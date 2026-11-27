@@ -1,14 +1,18 @@
+import { PRIMARY_LOCAL_ENVIRONMENT_ID } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  buildHostedChannelSelectionUrl,
   buildHostedPairingUrl,
   hasHostedPairingRequest,
+  linkOrigin,
   readHostedPairingRequest,
 } from "./hostedPairing";
 
 describe("hostedPairing", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
   it("reads hosted pairing host and query token parameters", () => {
@@ -30,7 +34,7 @@ describe("hostedPairing", () => {
         host: "https://backend.example.com:3773",
         token: "pairing-token",
         label: "Workstation",
-      }),
+      })!,
     );
 
     expect(url.origin).toBe("https://preview.t3.codes");
@@ -39,5 +43,140 @@ describe("hostedPairing", () => {
     expect(url.searchParams.get("label")).toBe("Workstation");
     expect(url.searchParams.has("token")).toBe(false);
     expect(url.hash).toBe("#token=pairing-token");
+  });
+
+  it.each([
+    ["absent", undefined],
+    ["empty", ""],
+  ])("builds no hosted pairing link and links to this server with an %s hosted app", (_, url) => {
+    if (url !== undefined) vi.stubEnv("VITE_HOSTED_APP_URL", url);
+    vi.stubGlobal("window", { location: new URL("https://sail.example.test/settings/access") });
+
+    expect(buildHostedPairingUrl({ host: "https://backend.example.com", token: "t" })).toBeNull();
+    expect(linkOrigin()).toBe("https://sail.example.test");
+  });
+
+  it.each(["not a url", "sail://app"])(
+    "builds no hosted pairing link and selects channels here with a hosted app of %s",
+    (hostedAppUrl) => {
+      vi.stubEnv("VITE_HOSTED_APP_URL", hostedAppUrl);
+      vi.stubGlobal("window", { location: new URL("https://sail.example.test/settings") });
+
+      expect(buildHostedPairingUrl({ host: "https://backend.example.com", token: "t" })).toBeNull();
+      expect(buildHostedChannelSelectionUrl({ channel: "nightly" })).toBe(
+        "https://sail.example.test/__t3code/channel?channel=nightly",
+      );
+    },
+  );
+
+  it("links to the hosted app the build names", () => {
+    vi.stubEnv("VITE_HOSTED_APP_URL", "https://hosted.example.test");
+    vi.stubGlobal("window", { location: new URL("https://sail.example.test/") });
+
+    expect(linkOrigin()).toBe("https://hosted.example.test");
+  });
+
+  it("links to the desktop's local server from the desktop window, read once", async () => {
+    vi.resetModules();
+    const getLocalEnvironmentBootstraps = vi.fn(() => [
+      {
+        id: PRIMARY_LOCAL_ENVIRONMENT_ID,
+        httpBaseUrl: "http://127.0.0.1:3773/",
+        wsBaseUrl: "ws://127.0.0.1:3773/",
+      },
+    ]);
+    vi.stubGlobal("window", {
+      // Electron gives the registered app scheme a real origin; Node's URL reports "null".
+      location: { origin: "sail://app", href: "sail://app/settings" },
+      desktopBridge: { getLocalEnvironmentEnabled: () => true, getLocalEnvironmentBootstraps },
+    });
+    const { linkOrigin: freshLinkOrigin } = await import("./hostedPairing");
+
+    expect(freshLinkOrigin()).toBe("http://127.0.0.1:3773");
+    expect(freshLinkOrigin()).toBe("http://127.0.0.1:3773");
+    expect(getLocalEnvironmentBootstraps).toHaveBeenCalledTimes(1);
+  });
+
+  it("follows a desktop server that moved", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    try {
+      let host = "172.20.0.2";
+      vi.stubGlobal("window", {
+        location: { origin: "sail://app", href: "sail://app/settings" },
+        desktopBridge: {
+          getLocalEnvironmentEnabled: () => true,
+          getLocalEnvironmentBootstraps: () => [
+            {
+              id: PRIMARY_LOCAL_ENVIRONMENT_ID,
+              httpBaseUrl: `http://${host}:3773/`,
+              wsBaseUrl: `ws://${host}:3773/`,
+            },
+          ],
+        },
+      });
+      const { linkOrigin: freshLinkOrigin } = await import("./hostedPairing");
+      expect(freshLinkOrigin()).toBe("http://172.20.0.2:3773");
+
+      host = "172.20.0.9";
+      vi.advanceTimersByTime(60_000);
+      expect(freshLinkOrigin()).toBe("http://172.20.0.9:3773");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reads a desktop server again when it was not ready yet", async () => {
+    vi.resetModules();
+    let bootstraps: Array<{ id: string; httpBaseUrl: string; wsBaseUrl: string }> = [];
+    vi.stubGlobal("window", {
+      location: { origin: "sail://app", href: "sail://app/settings" },
+      desktopBridge: {
+        getLocalEnvironmentEnabled: () => true,
+        getLocalEnvironmentBootstraps: () => bootstraps,
+      },
+    });
+    const { linkOrigin: freshLinkOrigin } = await import("./hostedPairing");
+    expect(freshLinkOrigin()).toBeUndefined();
+    await Promise.resolve();
+
+    bootstraps = [
+      {
+        id: PRIMARY_LOCAL_ENVIRONMENT_ID,
+        httpBaseUrl: "http://127.0.0.1:3773/",
+        wsBaseUrl: "ws://127.0.0.1:3773/",
+      },
+    ];
+    expect(freshLinkOrigin()).toBe("http://127.0.0.1:3773");
+  });
+
+  it("asks the desktop for a missing server once per task, not once per link", async () => {
+    vi.resetModules();
+    const getLocalEnvironmentEnabled = vi.fn(() => false);
+    vi.stubGlobal("window", {
+      location: { origin: "sail://app", href: "sail://app/settings" },
+      desktopBridge: { getLocalEnvironmentEnabled, getLocalEnvironmentBootstraps: () => [] },
+    });
+    const { linkOrigin: freshLinkOrigin } = await import("./hostedPairing");
+
+    for (let link = 0; link < 20; link++) expect(freshLinkOrigin()).toBeUndefined();
+    expect(getLocalEnvironmentEnabled).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+    freshLinkOrigin();
+    expect(getLocalEnvironmentEnabled).toHaveBeenCalledTimes(2);
+  });
+
+  it("has no link origin on a desktop with no local server", async () => {
+    vi.resetModules();
+    vi.stubGlobal("window", {
+      location: { origin: "sail://app", href: "sail://app/settings" },
+      desktopBridge: {
+        getLocalEnvironmentEnabled: () => false,
+        getLocalEnvironmentBootstraps: () => [],
+      },
+    });
+    const { linkOrigin: freshLinkOrigin } = await import("./hostedPairing");
+
+    expect(freshLinkOrigin()).toBeUndefined();
   });
 });

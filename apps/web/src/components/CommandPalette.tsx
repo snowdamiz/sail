@@ -118,7 +118,7 @@ import {
 import { useClientSettings } from "../hooks/useSettings";
 import { useStableCallback } from "../hooks/useStableCallback";
 import { readLocalApi } from "../localApi";
-import { configuredHostedAppUrl } from "../hostedPairing";
+import { linkOrigin } from "../hostedPairing";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
 import { filesystemEnvironment, useFilesystemReadAccess } from "../state/filesystem";
 import { projectEnvironment } from "../state/projects";
@@ -527,7 +527,8 @@ function OpenCommandPaletteDialog(props: {
   const canShareActiveThreadWithGuest = useAtomValue(
     canShareWithGuestAtom(activeThread?.environmentId ?? ("" as EnvironmentId)),
   );
-  const activeThreadReferenceCopyTarget =
+  // The link origin is read when copying: the desktop's local server can come up after render.
+  const resolveActiveThreadReferenceCopyTarget = () =>
     referenceThreadRef === null || (pathname === "/pull-requests" && !openPanelPullRequestUrl)
       ? null
       : resolveThreadReferenceCopyTarget(
@@ -538,13 +539,15 @@ function OpenCommandPaletteDialog(props: {
             pullRequests: activeThread?.pullRequests,
             linkedPullRequestUrl:
               activeThread?.linkedPullRequest?.url ?? activeThread?.branchPullRequest?.url ?? null,
-            hostedAppUrl: configuredHostedAppUrl(),
+            linkOrigin: linkOrigin(),
           },
           messages,
         );
+  const activeThreadReferenceCopyTarget = resolveActiveThreadReferenceCopyTarget();
   const copyActiveThreadReference = async () => {
-    if (activeThreadReferenceCopyTarget === null) return;
-    await copyThreadReference(activeThreadReferenceCopyTarget);
+    const target = resolveActiveThreadReferenceCopyTarget();
+    if (target === null) return;
+    await copyThreadReference(target);
   };
   // Threads the sidebar shows under their parent open there, so opening a project never lands on one.
   const delegatedUnderParent = useDelegatedUnderParent();
@@ -1465,30 +1468,32 @@ function OpenCommandPaletteDialog(props: {
           threadModelSelection: activeThread?.modelSelection ?? null,
           threadStarted: threadHasStarted(activeThread),
         };
-  const plainPromptLink = promptLinkInput
-    ? composerPromptLink({ ...promptLinkInput, withContext: false })
-    : null;
-  if (promptLinkInput !== null && plainPromptLink !== null) {
+  if (
+    promptLinkInput !== null &&
+    composerPromptLink({ ...promptLinkInput, withContext: false }) !== null
+  ) {
     actionItems.push({
       kind: "action",
       value: "action:copy-prompt-link",
       searchTerms: ["copy", "share", "prompt", "link"],
       title: gt("Copy prompt link"),
       icon: <LinkIcon className={ITEM_ICON_CLASS} />,
-      run: () => copyPromptLink(plainPromptLink),
+      run: () =>
+        copyPromptLink(() => composerPromptLink({ ...promptLinkInput, withContext: false })),
     });
-    if (promptLinkRepositoryOf(promptLinkInput.project) !== null) {
-      const contextLink = composerPromptLink({ ...promptLinkInput, withContext: true });
-      if (contextLink !== null) {
-        actionItems.push({
-          kind: "action",
-          value: "action:copy-prompt-link-with-context",
-          searchTerms: ["copy", "share", "prompt", "link", "repository", "model"],
-          title: gt("Copy prompt link with repo and model"),
-          icon: <LinkIcon className={ITEM_ICON_CLASS} />,
-          run: () => copyPromptLink(contextLink),
-        });
-      }
+    if (
+      promptLinkRepositoryOf(promptLinkInput.project) !== null &&
+      composerPromptLink({ ...promptLinkInput, withContext: true }) !== null
+    ) {
+      actionItems.push({
+        kind: "action",
+        value: "action:copy-prompt-link-with-context",
+        searchTerms: ["copy", "share", "prompt", "link", "repository", "model"],
+        title: gt("Copy prompt link with repo and model"),
+        icon: <LinkIcon className={ITEM_ICON_CLASS} />,
+        run: () =>
+          copyPromptLink(() => composerPromptLink({ ...promptLinkInput, withContext: true })),
+      });
     }
   }
 

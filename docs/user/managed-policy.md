@@ -220,7 +220,7 @@ The limit decides which modes T3 Code asks the provider for. It is not a sandbox
 
 - `desktop`: as the desktop app's own server.
 - `local-browser`: as a server only browsers on this machine reach, such as `npx t3`.
-- `remote`: reachable from phones, other computers, and app.t3.codes over the network.
+- `remote`: reachable from phones and other computers over the network.
 
 `remote` is the line that matters. A server reachable from the network also accepts browsers on
 this machine, and the two local kinds differ only in how T3 Code was started. On machines with the
@@ -264,7 +264,7 @@ so restart T3 Code after that.
   project's `remove` command.
 - `telemetry: false`: the server and desktop app send no [product usage data](./telemetry.md) or
   relay connection traces, and neither does a browser opened from the server. A policy cannot turn
-  them on. The hosted web app at app.t3.codes and the mobile app still send their own relay traces.
+  them on. A separately hosted web app and the mobile app still send their own relay traces.
 
 ### Providers
 
