@@ -1,3 +1,4 @@
+import { forkAccepted, isServerMaintenanceBusy, withAdmission } from "../serverAdmission.ts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -1685,11 +1686,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
               if (statusFetches.get(key)?.state === state) statusFetches.delete(key);
             }),
           ),
-          Effect.forkIn(serviceScope, { startImmediately: false, uninterruptible: false }),
+          forkAccepted(serviceScope),
         );
         statusFetches.set(key, { state, fiber: started });
         return started;
-      }),
+      }).pipe(withAdmission("root")),
     );
     yield* Effect.annotateCurrentSpan("statusFetch.joining", true);
     const result = yield* Fiber.join(fiber).pipe(
@@ -1990,12 +1991,19 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const statusRemoteRefreshCache = yield* Cache.makeWith(refreshStatusRemoteCacheEntry, {
     capacity: STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY,
     // Cache/back off failed fetches while status uses old refs; repeated mounts must not cause subprocess storms.
-    timeToLive: (exit, cacheKey) =>
-      Exit.isSuccess(exit)
-        ? STATUS_UPSTREAM_REFRESH_INTERVAL
-        : statusUpstreamRefreshFailureCooldown(
-            statusRemoteRefreshFailures.get(statusRemoteRefreshFailureKey(cacheKey))?.count ?? 1,
-          ),
+    timeToLive: (exit, cacheKey) => {
+      if (Exit.isSuccess(exit)) return STATUS_UPSTREAM_REFRESH_INTERVAL;
+      if (
+        exit.cause.reasons.some(
+          (reason) => Cause.isFailReason(reason) && isServerMaintenanceBusy(reason.error),
+        )
+      ) {
+        return Duration.zero;
+      }
+      return statusUpstreamRefreshFailureCooldown(
+        statusRemoteRefreshFailures.get(statusRemoteRefreshFailureKey(cacheKey))?.count ?? 1,
+      );
+    },
   });
 
   const readLocalStatusRefSnapshot = Effect.fn("GitVcsDriver.readLocalStatusRefSnapshot")(

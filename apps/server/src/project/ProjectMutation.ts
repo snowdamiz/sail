@@ -1,8 +1,9 @@
 import { type ProjectMutation } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
+import { withAdmission } from "../serverAdmission.ts";
 import { type ProjectCloneTracker } from "./ProjectCloneTracker.ts";
-import { type ProjectService } from "./ProjectService.ts";
+import { ProjectOperationError, type ProjectService } from "./ProjectService.ts";
 
 type ProjectMutations = Pick<ProjectService["Service"], "create" | "delete" | "update">;
 
@@ -75,6 +76,15 @@ export const mutateProjectWithClone = Effect.fn("mutateProjectWithClone")(functi
     return yield* projectMutationOperation(projects, mutation);
   return yield* projectMutationOperation(projects, mutation).pipe(
     Effect.tap(() => clones.discard(mutation.projectId)),
+    withAdmission("root"),
+    Effect.catchTags({
+      ServerMaintenanceBusy: (cause) =>
+        new ProjectOperationError({
+          projectId: mutation.projectId,
+          operation: "dispatch-project-command",
+          cause,
+        }),
+    }),
     Effect.uninterruptible,
   );
 });

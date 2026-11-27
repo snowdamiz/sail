@@ -45,6 +45,7 @@ import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import { forkParked, forkParkedFiber } from "./serverActivation.ts";
+import { afterAdmissionReopens } from "./serverAdmission.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { getServerOwners } from "./telemetry/Identify.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
@@ -241,6 +242,7 @@ export const autoPullProjects = Effect.fn("autoPullProjects")(function* (
           refName: result.refName,
         });
       }).pipe(
+        afterAdmissionReopens,
         Effect.catch((cause) =>
           Effect.logWarning("Automatic project pull failed", {
             cwd,

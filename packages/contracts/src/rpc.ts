@@ -1611,7 +1611,7 @@ const WsProjectCloneStartRpc = Rpc.make(WS_METHODS.projectCloneStart, {
 const WsProjectCloneCancelRpc = Rpc.make(WS_METHODS.projectCloneCancel, {
   payload: ProjectCloneActionInput,
   success: ProjectCloneActionResult,
-  error: EnvironmentAuthorizationError,
+  error: Schema.Union([SourceControlRepositoryError, EnvironmentAuthorizationError]),
 });
 
 const WsProjectCloneRetryRpc = Rpc.make(WS_METHODS.projectCloneRetry, {

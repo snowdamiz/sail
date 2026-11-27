@@ -1464,7 +1464,7 @@ const layerMakeServer = Layer.unwrap(
         ),
       ),
       Layer.provide(layerActivation),
-      Layer.provide(layerAdmission),
+      Layer.provideMerge(layerAdmission),
       Layer.provideMerge(
         RelayTracing.layerServerRelayBroker.pipe(Layer.provide(ManagedPolicy.layer)),
       ),
@@ -1481,9 +1481,10 @@ const layerMakeServer = Layer.unwrap(
   }),
 ).pipe(Layer.provide(ProcessRunner.layer));
 
-export const runServer = Layer.launch(
+export const layerServer =
   // For the layers above whose spawner requirement is not met by one of them.
   layerMakeServer.pipe(
     Layer.provide(ProcessLauncher.layerServer.pipe(Layer.provide(layerSpawner))),
-  ),
-);
+  );
+
+export const runServer = Layer.launch(layerServer);

@@ -543,12 +543,12 @@ const make = Effect.gen(function* () {
         secrets.get(CLOUD_LINKED_USER_ID),
         secrets.get(CLOUD_ENDPOINT_RUNTIME_CONFIG),
         secrets.get(RELAY_URL_SECRET),
-        readCliDesiredLinkMode.pipe(
+        readCliDesiredCloudLink.pipe(
           Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
         ),
       ]).pipe(
         Effect.map(([account, endpoint, relay, desired]) => [
-          ...(Option.isSome(account) || Option.isSome(endpoint) || desired !== null
+          ...(Option.isSome(account) || Option.isSome(endpoint) || desired
             ? (["connect-configured"] as const)
             : []),
           ...(Option.isSome(relay) ? (["relay-webhook-configured"] as const) : []),

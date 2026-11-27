@@ -53,6 +53,7 @@ import {
   windowsLongPathConfigEnv,
 } from "./GitVcsDriverCore.ts";
 import { autoPullProjects } from "../serverRuntimeStartup.ts";
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import { VcsAutomaticFetchInterval } from "./VcsAutomaticFetchInterval.ts";
 import { gitConfigEnv } from "./VcsProcess.ts";
@@ -1606,6 +1607,75 @@ describe("pullCurrentBranch", () => {
           assert.equal(refreshed.behindCount, 0);
           assert.equal(targetFetches, 0);
         }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
+      }),
+    ).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect(
+    "reads old upstream refs while closed and fetches on the first refresh after reopen",
+    () =>
+      Effect.gen(function* () {
+        const { cwd } = yield* cloneBehindRemote;
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const admission = makeAdmission(Effect.succeed(["orchestration"]));
+        const token = Symbol();
+        const attempt = yield* admission
+          .drain(token, "30 seconds")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        const refresh = driver
+          .statusDetailsRemote(cwd)
+          .pipe(Effect.provideService(ServerAdmission, admission));
+
+        assert.equal((yield* refresh).behindCount, 0);
+        assert.isTrue(yield* admission.abort(token));
+        assert.equal((yield* Fiber.join(attempt)).kind, "aborted");
+        assert.equal((yield* refresh).behindCount, 1);
+      }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("counts a status fetch after its caller returns old refs", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { cwd } = yield* cloneBehindRemote;
+        const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const fetchStarted = yield* Deferred.make<void>();
+        const releaseFetch = yield* Deferred.make<void>();
+        const spawner = ChildProcessSpawner.make((command) =>
+          Effect.gen(function* () {
+            if (ChildProcess.isStandardCommand(command) && command.args.includes("--dry-run")) {
+              yield* Deferred.succeed(fetchStarted, undefined);
+              yield* Deferred.await(releaseFetch);
+            }
+            return yield* delegate.spawn(command);
+          }),
+        );
+        const driver = yield* makeGitVcsDriverCore().pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        );
+        const admission = makeAdmission(Effect.succeed([]));
+        const refresh = driver
+          .statusDetailsRemote(cwd)
+          .pipe(Effect.provideService(ServerAdmission, admission));
+        const status = yield* refresh.pipe(Effect.forkChild);
+        yield* Deferred.await(fetchStarted);
+        yield* TestClock.adjust("6 seconds");
+        assert.equal((yield* Fiber.join(status)).behindCount, 0);
+
+        const attempt = yield* admission
+          .drain(Symbol(), "1 second")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* TestClock.adjust("1 second");
+        assert.deepEqual(yield* Fiber.join(attempt), {
+          kind: "aborted",
+          retryable: true,
+          reason: "deadline",
+          blockers: ["in-flight"],
+        });
+        yield* Deferred.succeed(releaseFetch, undefined);
+        const settled = yield* admission
+          .drain(Symbol(), "1 minute")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        assert.deepEqual(yield* Fiber.join(settled), { kind: "sealed" });
       }),
     ).pipe(Effect.provide(layerTest)),
   );

@@ -46,7 +46,7 @@ export class ProjectCloneTracker extends Context.Service<
       SourceControlRepositoryError | OrchestrationDispatchCommandError
     >;
     /** Interrupts a running clone and deletes the partial checkout. */
-    readonly cancel: (projectId: ProjectId) => Effect.Effect<boolean>;
+    readonly cancel: (projectId: ProjectId) => Effect.Effect<boolean, SourceControlRepositoryError>;
     readonly retry: (projectId: ProjectId) => Effect.Effect<boolean, SourceControlRepositoryError>;
     /** Stops tracking, interrupts any running clone and removes unfinished checkouts. */
     readonly discard: (projectId: ProjectId) => Effect.Effect<void>;
@@ -259,10 +259,16 @@ export const make = Effect.gen(function* () {
     );
 
   const cloneBusy =
-    (operation: "clone" | "retryClone", provider: SourceControlProviderKind) =>
+    (operation: "clone" | "retryClone" | "cancelClone", provider: SourceControlProviderKind) =>
     (cause: ServerMaintenanceBusy) =>
       Effect.fail(
-        new SourceControlRepositoryError({ operation, provider, detail: cause.message, cause }),
+        new SourceControlRepositoryError({
+          operation,
+          provider,
+          detail: cause.message,
+          retryable: true,
+          cause,
+        }),
       );
 
   const launch = Effect.fn("ProjectCloneTracker.launch")(function* (projectId: ProjectId) {
@@ -402,7 +408,15 @@ export const make = Effect.gen(function* () {
           if (after?.phase === "done") return;
           if (after?.phase === "running") yield* finish(projectId, "cancelled", null);
           yield* repositories.discardClone(tracked.input.destinationPath).pipe(Effect.ignore);
-        }),
+        }).pipe(
+          withAdmission("continuation"),
+          Effect.catchTags({
+            ServerMaintenanceBusy: cloneBusy(
+              "cancelClone",
+              tracked.input.repository?.provider ?? SourceControlProviderKind.make("unknown"),
+            ),
+          }),
+        ),
       );
       return true;
     },

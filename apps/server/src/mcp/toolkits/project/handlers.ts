@@ -640,6 +640,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               new OrchestratorMcpFailure({
                 code: "orchestration_error",
                 message: error.detail,
+                ...(error.retryable ? { retryable: true } : {}),
               }),
           ),
         );

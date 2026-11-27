@@ -13,6 +13,8 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
+import { forkParked, ServerActivation } from "../serverActivation.ts";
+import { afterAdmissionReopens } from "../serverAdmission.ts";
 
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -436,12 +438,13 @@ const make = Effect.gen(function* () {
     Effect.catchCause((cause) => Effect.logWarning("Could not sweep expired secret files", cause)),
     Effect.withSpan("SecretRequests.sweepExpiredFiles"),
   );
-  const sweep = Effect.andThen(sweepExpired, sweepExpiredFiles);
-  yield* sweep;
-  yield* sweep.pipe(
-    Effect.delay("1 hour"),
-    Effect.repeat(Schedule.spaced("1 hour")),
-    Effect.forkScoped,
+  const sweep = sweepExpired.pipe(Effect.andThen(sweepExpiredFiles), afterAdmissionReopens);
+  const activation = yield* ServerActivation;
+  if (activation === undefined) yield* sweep;
+  yield* forkParked(
+    (activation === undefined ? sweep.pipe(Effect.delay("1 hour")) : sweep).pipe(
+      Effect.repeat(Schedule.spaced("1 hour")),
+    ),
   );
 
   return SecretRequests.of({ answer, savedRef, consume, saveToFile, savePasted });

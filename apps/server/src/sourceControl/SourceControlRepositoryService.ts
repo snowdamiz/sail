@@ -1,3 +1,4 @@
+import { isServerMaintenanceBusy, withAdmission } from "../serverAdmission.ts";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -95,10 +96,12 @@ function mapRepositoryError(operation: string, provider: SourceControlProviderKi
       : new SourceControlRepositoryError({
           operation,
           provider,
-          detail:
-            (isSourceControlProviderError(cause)
-              ? SourceControlProvider.userFacingSourceControlDetail(cause.cause)
-              : undefined) ?? "The source control operation could not be completed.",
+          ...(isServerMaintenanceBusy(cause) ? { retryable: true } : {}),
+          detail: isServerMaintenanceBusy(cause)
+            ? cause.message
+            : ((isSourceControlProviderError(cause)
+                ? SourceControlProvider.userFacingSourceControlDetail(cause.cause)
+                : undefined) ?? "The source control operation could not be completed."),
           cause,
         }),
   );
@@ -634,6 +637,7 @@ export const make = Effect.gen(function* () {
     }),
     cloneRepository: Effect.fnUntraced(function* (input, options) {
       return yield* cloneRepository(input, options).pipe(
+        withAdmission("root"),
         mapRepositoryError(
           "cloneRepository",
           input.provider ?? SourceControlProviderKind.make("unknown"),
@@ -647,6 +651,7 @@ export const make = Effect.gen(function* () {
     }),
     publishRepository: Effect.fnUntraced(function* (input) {
       return yield* publishRepository(input).pipe(
+        withAdmission("root"),
         mapRepositoryError("publishRepository", input.provider),
       );
     }),
