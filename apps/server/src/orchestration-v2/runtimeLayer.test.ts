@@ -1627,7 +1627,34 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
               },
             ],
           });
-          yield* worker.drain();
+          const sql = yield* SqlClient.SqlClient;
+          const scanned = yield* Deferred.make<void>();
+          const observe = observeDurableObligations().pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
+          assert.include(yield* observe, "orchestration");
+          const admission = makeAdmission(
+            outbox.listByCommandId(commandId).pipe(
+              Effect.map((rows) =>
+                rows.some(({ status }) => status !== "succeeded")
+                  ? (["orchestration"] as const)
+                  : [],
+              ),
+              Effect.tap(() => Deferred.succeed(scanned, undefined)),
+            ),
+          );
+          const token = Symbol();
+          const draining = yield* admission.drain(token, "2 seconds").pipe(Effect.forkScoped);
+          yield* Deferred.await(scanned);
+          assert.isUndefined(draining.pollUnsafe());
+          yield* worker.drain().pipe(Effect.provideService(ServerAdmission, admission));
+          assert.deepEqual(
+            (yield* outbox.listByCommandId(commandId)).map(({ status }) => status),
+            ["succeeded"],
+          );
+          yield* admission.run("continuation", Effect.void).pipe(Effect.ignore);
+          assert.deepEqual(yield* Fiber.join(draining), { kind: "sealed" });
+          yield* admission.abort(token);
           const captured = yield* orchestrator.getThreadProjection(threadId);
           assert.equal(
             captured.runs.find((candidate) => candidate.id === run.id)?.status,
@@ -2828,13 +2855,14 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       const answered = yield* orchestrator.getThreadProjection(threadId);
       assert.equal(answered.runtimeRequests[0]?.status, "resolved");
       assert.lengthOf(answered.runs, 1);
-      assert.deepEqual(yield* observe, ["orchestration"]);
+      const blockers = yield* observe;
+      assert.include(blockers, "orchestration");
       yield* TestClock.adjust("1 second");
       assert.deepEqual(yield* Fiber.join(draining), {
         kind: "aborted",
         reason: "deadline",
         retryable: true,
-        blockers: ["orchestration"],
+        blockers,
       });
       const retried = yield* orchestrator
         .dispatch(newCommand)

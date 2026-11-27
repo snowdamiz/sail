@@ -1,3 +1,5 @@
+import { withAdmission } from "../serverAdmission.ts";
+import * as Schedule from "effect/Schedule";
 import {
   CommandId,
   type MessageId,
@@ -296,6 +298,11 @@ export const layer = Layer.effectDiscard(
     yield* requests.take.pipe(
       Effect.flatMap((request) =>
         dispatchContinuation(request).pipe(
+          withAdmission("continuation"),
+          Effect.retry({
+            while: (error) => error._tag === "ServerMaintenanceBusy",
+            schedule: Schedule.spaced("100 millis"),
+          }),
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
               yield* Effect.logWarning("orchestration-v2.provider-continuation.dispatch-failed", {
@@ -339,6 +346,7 @@ export const layer = Layer.effectDiscard(
               }
             }),
           ),
+          Effect.ensuring(Effect.sync(() => requests.settled?.(request))),
           // A dispatch can wait on its parent's lock, so only its own thread's later requests queue behind it.
           (handled) => continuations.run(request.threadId, handled),
         ),

@@ -1,3 +1,4 @@
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 import * as NetAddress from "effect/net/NetAddress";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -494,6 +495,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly archive?: Effect.Effect<void, ProviderAdapter.ProviderAdapterProtocolError>;
     readonly spawnBeforeOpen?: boolean;
     readonly scopeCloseReached?: Deferred.Deferred<void>;
+    readonly scopeCloseRelease?: Deferred.Deferred<void>;
     readonly eventStreamsEnded?: Queue.Queue<ProviderSessionId>;
   } = {},
 ) {
@@ -513,7 +515,13 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     (options.scopeCloseReached === undefined
       ? Effect.void
       : Deferred.succeed(options.scopeCloseReached, undefined)
-    ).pipe(Effect.andThen(Effect.never)),
+    ).pipe(
+      Effect.andThen(
+        options.scopeCloseRelease === undefined
+          ? Effect.never
+          : Deferred.await(options.scopeCloseRelease),
+      ),
+    ),
   );
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: ProviderInstanceId.make("codex"),
@@ -684,6 +692,7 @@ function layerTest(input: {
   readonly archive?: Effect.Effect<void, ProviderAdapter.ProviderAdapterProtocolError>;
   readonly spawnBeforeOpen?: boolean;
   readonly scopeCloseReached?: Deferred.Deferred<void>;
+  readonly scopeCloseRelease?: Deferred.Deferred<void>;
   readonly eventStreamsEnded?: Queue.Queue<ProviderSessionId>;
   readonly releaseRecorded?: Deferred.Deferred<void>;
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
@@ -738,6 +747,9 @@ function layerTest(input: {
       ...(input.scopeCloseReached === undefined
         ? {}
         : { scopeCloseReached: input.scopeCloseReached }),
+      ...(input.scopeCloseRelease === undefined
+        ? {}
+        : { scopeCloseRelease: input.scopeCloseRelease }),
       ...(input.eventStreamsEnded === undefined
         ? {}
         : { eventStreamsEnded: input.eventStreamsEnded }),
@@ -1197,6 +1209,67 @@ it.effect("ProviderSessionManagerV2 closes every live session for a provider ins
           eventStreamsEnded,
         }),
       ),
+    );
+  }),
+);
+
+it.effect("keeps provider teardown counted after its live entry is removed", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const scopeCloseReached = yield* Deferred.make<void>();
+    const scopeCloseRelease = yield* Deferred.make<void>();
+    let scans = 0;
+    const admission = makeAdmission(
+      Effect.sync(() => {
+        scans++;
+        return [];
+      }),
+    );
+    yield* Effect.gen(function* () {
+      const events = yield* EventSink.EventSinkV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const threadId = ThreadId.make("thread-hold-provider-teardown");
+      const providerSessionId = yield* ids.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      const input = { threadId, providerSessionId, modelSelection, runtimePolicy };
+      yield* events.write({
+        events: [
+          yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now: yield* DateTime.now }),
+        ],
+      });
+      yield* manager.open(input);
+      const closing = yield* manager.close(providerSessionId).pipe(Effect.forkScoped);
+      yield* Deferred.await(scopeCloseReached);
+      assert.isFalse(yield* manager.isLive(providerSessionId));
+      const token = Symbol();
+      const draining = yield* admission
+        .drain(token, "1 second")
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      const refused = yield* manager.open(input).pipe(Effect.flip);
+      assert.equal(refused._tag, "ProviderSessionOpenError");
+      assert.isUndefined(draining.pollUnsafe());
+      assert.equal(scans, 0);
+      assert.isTrue(yield* admission.abort(token));
+      assert.equal((yield* Fiber.join(draining)).kind, "aborted");
+      yield* Deferred.succeed(scopeCloseRelease, undefined);
+      yield* Fiber.join(closing);
+      const next = Symbol();
+      assert.deepEqual(yield* admission.drain(next, "1 second"), { kind: "sealed" });
+      yield* admission.abort(next);
+    }).pipe(
+      Effect.ensuring(Deferred.succeed(scopeCloseRelease, undefined)),
+      Effect.provide(
+        layerTest({
+          state,
+          hangSessionScopeClose: true,
+          scopeCloseReached,
+          scopeCloseRelease,
+        }),
+      ),
+      Effect.provideService(ServerAdmission, admission),
     );
   }),
 );

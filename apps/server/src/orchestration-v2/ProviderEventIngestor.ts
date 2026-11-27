@@ -1,3 +1,4 @@
+import { forkAccepted, withAdmission } from "../serverAdmission.ts";
 import {
   NodeId,
   CommandId,
@@ -834,7 +835,7 @@ export const layer: Layer.Layer<
                   if (!instance?.snapshot.refreshUsage) return;
                   yield* instance.snapshot.refreshUsage.pipe(
                     Effect.ignoreCause({ log: true }),
-                    Effect.forkIn(scope, { startImmediately: true }),
+                    forkAccepted(scope),
                   );
                 }),
               ),
@@ -922,6 +923,17 @@ export const layer: Layer.Layer<
                   : input.event.type === "thread_model_selection.updated"
                     ? threadCommands.withLock(input.event.threadId, effect)
                     : effect,
+              withAdmission("continuation"),
+              Effect.catchTags({
+                ServerMaintenanceBusy: (cause) =>
+                  Effect.fail(
+                    new ProviderEventPublishError({
+                      providerSessionId: input.providerSessionId,
+                      eventCount: 1,
+                      cause,
+                    }),
+                  ),
+              }),
             ),
         ),
     });

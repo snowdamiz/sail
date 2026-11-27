@@ -36,6 +36,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import { forkAccepted, ServerAdmission, withAdmission } from "../serverAdmission.ts";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
@@ -709,6 +710,8 @@ export const layerWithOptions = (
                 }),
               ),
             );
+
+      const admission = yield* ServerAdmission;
 
       const subscriberReleaseCleanup = new WeakMap<
         Queue.Queue<ProviderSessionEventSignal, Cause.Done>,
@@ -1397,7 +1400,9 @@ export const layerWithOptions = (
             ),
           }),
           Effect.delay("1 second"),
-          FiberSet.run(releaseRecordRetries),
+          forkAccepted(layerScope),
+          Effect.tap((fiber) => FiberSet.add(releaseRecordRetries, fiber)),
+          Effect.ignoreCause({ log: true }),
         );
       };
 
@@ -1629,6 +1634,7 @@ export const layerWithOptions = (
                 ),
             }),
         ).pipe(
+          withAdmission("continuation"),
           Effect.catchCause((cause) =>
             Effect.fail(
               new ProviderSessionReleaseError({
@@ -2498,7 +2504,9 @@ export const layerWithOptions = (
               Effect.suspend(() => {
                 const cleanup = subscriberReleaseCleanup.get(queue);
                 subscriberReleaseCleanup.delete(queue);
-                return cleanup === undefined ? Effect.void : Effect.forkDetach(cleanup);
+                return cleanup === undefined
+                  ? Effect.void
+                  : cleanup.pipe(forkAccepted(), Effect.ignoreCause({ log: true }));
               }),
             ),
           );
@@ -3204,7 +3212,7 @@ export const layerWithOptions = (
               }).pipe(logReleaseFailure(entry.runtime.providerSessionId));
             }),
           ),
-          Effect.forkIn(layerScope),
+          forkAccepted(layerScope),
         );
       };
 
@@ -3237,8 +3245,8 @@ export const layerWithOptions = (
 
       return ProviderSessionManagerV2.of({
         shutdown,
-        open: (input) =>
-          sessionOpen.withLock(
+        open: (input) => {
+          const work = sessionOpen.withLock(
             input.providerSessionId,
             Effect.gen(function* () {
               const cwd = input.runtimePolicy.cwd;
@@ -3300,52 +3308,122 @@ export const layerWithOptions = (
                   dropMcpCredentialReservation(input.threadId, mcpCredentialId);
                 }
               });
-              const sessionScope = yield* Scope.fork(sessionScopes);
-              // Added before the adapter's finalizers so it runs after them: the pump drains shutdown events first.
-              const sessionClosed = yield* Deferred.make<void>();
-              yield* Scope.addFinalizer(sessionScope, Deferred.done(sessionClosed, Exit.void));
-              yield* agentScope.clear(input.threadId);
-              const runtime = yield* installationGate
-                .execute(
-                  input.modelSelection.instanceId,
-                  adapter.openSession({
-                    threadId: input.threadId,
-                    providerSessionId: input.providerSessionId,
-                    modelSelection: input.modelSelection,
-                    runtimePolicy: input.runtimePolicy,
-                    promptSuggestions: promptSuggestionsEnabled,
-                    ...(input.resumeFromSession === undefined
-                      ? {}
-                      : { resumeFromSession: input.resumeFromSession }),
-                    ...(input.initialNativeThreadId === undefined
-                      ? {}
-                      : { initialNativeThreadId: input.initialNativeThreadId }),
-                    ...(input.initialProviderItemIdentityVersion === undefined
-                      ? {}
-                      : {
-                          initialProviderItemIdentityVersion:
-                            input.initialProviderItemIdentityVersion,
-                        }),
-                  }),
-                )
-                .pipe(
-                  Effect.provideService(Scope.Scope, sessionScope),
-                  // Bound scope close after cleanup; a wedged finalizer must not hold the open lock or interrupter.
-                  Effect.onError(() =>
-                    dropReservation.pipe(
-                      Effect.andThen(
-                        prepared.issued
-                          ? clearMcpSession(input.threadId, mcpCredentialId)
-                          : Effect.void,
-                      ),
-                      Effect.ensuring(
-                        closeScopeWithin(sessionScope, {
+              let sessionScope: Scope.Closeable | undefined;
+              let published = false;
+              const closeFailedOpen = Effect.suspend(() =>
+                dropReservation.pipe(
+                  Effect.andThen(
+                    prepared.issued
+                      ? clearMcpSession(input.threadId, mcpCredentialId)
+                      : Effect.void,
+                  ),
+                  Effect.ensuring(
+                    sessionScope === undefined
+                      ? Effect.void
+                      : closeScopeWithin(sessionScope, {
                           providerSessionId: input.providerSessionId,
                           reason: "open_failed",
                         }),
-                      ),
-                    ),
                   ),
+                ),
+              );
+              return yield* Effect.gen(function* () {
+                const scope = yield* Scope.fork(sessionScopes);
+                sessionScope = scope;
+                // Run after the adapter finalizers so the pump can drain shutdown events first.
+                const sessionClosed = yield* Deferred.make<void>();
+                yield* Effect.gen(function* () {
+                  const releaseLifetime = admission?.trackLifetime("provider-session");
+                  yield* Scope.addFinalizer(
+                    scope,
+                    Deferred.done(sessionClosed, Exit.void).pipe(
+                      Effect.ensuring(Effect.sync(() => releaseLifetime?.())),
+                    ),
+                  );
+                }).pipe(Effect.uninterruptible);
+                yield* agentScope.clear(input.threadId);
+                const runtime = yield* installationGate
+                  .execute(
+                    input.modelSelection.instanceId,
+                    adapter.openSession({
+                      threadId: input.threadId,
+                      providerSessionId: input.providerSessionId,
+                      modelSelection: input.modelSelection,
+                      runtimePolicy: input.runtimePolicy,
+                      promptSuggestions: promptSuggestionsEnabled,
+                      ...(input.resumeFromSession === undefined
+                        ? {}
+                        : { resumeFromSession: input.resumeFromSession }),
+                      ...(input.initialNativeThreadId === undefined
+                        ? {}
+                        : { initialNativeThreadId: input.initialNativeThreadId }),
+                      ...(input.initialProviderItemIdentityVersion === undefined
+                        ? {}
+                        : {
+                            initialProviderItemIdentityVersion:
+                              input.initialProviderItemIdentityVersion,
+                          }),
+                    }),
+                  )
+                  .pipe(
+                    Effect.provideService(Scope.Scope, scope),
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderSessionOpenError({
+                          instanceId: input.modelSelection.instanceId,
+                          providerSessionId: input.providerSessionId,
+                          cause,
+                        }),
+                    ),
+                    withMetrics({
+                      counter: providerSessionsTotal,
+                      attributes: { provider: adapter.driver, operation: "open" },
+                    }),
+                  );
+                const eventSubscribers = yield* Ref.make<
+                  ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
+                >(new Map());
+                const exposedRuntime = decorateRuntime(runtime, eventSubscribers);
+                const entry: LiveSessionEntry = {
+                  attachedThreadIds: new Set([input.threadId]),
+                  loadedProviderThreadKeyByThread: new Map(),
+                  openedWithLinkedEnvironments,
+                  linkedEnvironmentsByThread: new Map(),
+                  mcpCredentialIdByThread:
+                    mcpCredentialId === undefined
+                      ? new Map()
+                      : new Map([[input.threadId, mcpCredentialId]]),
+                  supportsMultipleProviderThreads:
+                    runtime.providerSession.capabilities.sessions
+                      .supportsMultipleProviderThreadsPerSession,
+                  runtime,
+                  exposedRuntime,
+                  eventSubscribers,
+                  requestEventPermit: yield* Semaphore.make(1),
+                  scope,
+                  idleGeneration: 0,
+                  busyTurns: new Set(),
+                  idleFiber: null,
+                  pinnedSinceMs: null,
+                  idleThreadUnloads: new Map(),
+                };
+                yield* Ref.update(sessions, (current) => {
+                  const updated = new Map(current);
+                  updated.set(key, entry);
+                  published = true;
+                  return updated;
+                });
+                yield* dropReservation;
+                yield* withActivityError(
+                  input.providerSessionId,
+                  writeProviderSessionEvents({
+                    runtime,
+                    threadIds: [input.threadId],
+                    type: "provider-session.attached",
+                    payload: runtime.providerSession,
+                  }),
+                );
+                yield* startEventPump(entry, sessionClosed).pipe(
                   Effect.mapError(
                     (cause) =>
                       new ProviderSessionOpenError({
@@ -3354,75 +3432,38 @@ export const layerWithOptions = (
                         cause,
                       }),
                   ),
-                  withMetrics({
-                    counter: providerSessionsTotal,
-                    attributes: { provider: adapter.driver, operation: "open" },
-                  }),
                 );
-              const eventSubscribers = yield* Ref.make<
-                ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
-              >(new Map());
-              const exposedRuntime = decorateRuntime(runtime, eventSubscribers);
-              const entry: LiveSessionEntry = {
-                attachedThreadIds: new Set([input.threadId]),
-                loadedProviderThreadKeyByThread: new Map(),
-                openedWithLinkedEnvironments,
-                linkedEnvironmentsByThread: new Map(),
-                mcpCredentialIdByThread:
-                  mcpCredentialId === undefined
-                    ? new Map()
-                    : new Map([[input.threadId, mcpCredentialId]]),
-                supportsMultipleProviderThreads:
-                  runtime.providerSession.capabilities.sessions
-                    .supportsMultipleProviderThreadsPerSession,
-                runtime,
-                exposedRuntime,
-                eventSubscribers,
-                requestEventPermit: yield* Semaphore.make(1),
-                scope: sessionScope,
-                idleGeneration: 0,
-                busyTurns: new Set(),
-                idleFiber: null,
-                pinnedSinceMs: null,
-                idleThreadUnloads: new Map(),
-              };
-              yield* Ref.update(sessions, (current) => {
-                const updated = new Map(current);
-                updated.set(key, entry);
-                return updated;
-              });
-              yield* dropReservation;
-              yield* withActivityError(
-                input.providerSessionId,
-                writeProviderSessionEvents({
-                  runtime,
-                  threadIds: [input.threadId],
-                  type: "provider-session.attached",
-                  payload: runtime.providerSession,
-                }),
-              ).pipe(
-                // Release on interruption too; no event pump or idle timer exists to clean up yet.
+                yield* scheduleIdleRelease(input.providerSessionId);
+                return exposedRuntime;
+              }).pipe(
                 Effect.onError((cause) =>
-                  releaseEntry(
-                    Cause.hasInterruptsOnly(cause)
-                      ? {
-                          providerSessionId: input.providerSessionId,
-                          reason: "manual_shutdown",
-                          detail: "The provider session start was interrupted.",
-                        }
-                      : {
-                          providerSessionId: input.providerSessionId,
-                          reason: "runtime_error",
-                          detail: "Failed to persist the provider-session attachment.",
-                        },
-                  ).pipe(logReleaseFailure(input.providerSessionId)),
+                  published
+                    ? releaseEntry({
+                        providerSessionId: input.providerSessionId,
+                        reason: Cause.hasInterruptsOnly(cause)
+                          ? "manual_shutdown"
+                          : "runtime_error",
+                        detail: "Failed to finish opening the provider session.",
+                      }).pipe(logReleaseFailure(input.providerSessionId))
+                    : closeFailedOpen,
                 ),
               );
-              yield* startEventPump(entry, sessionClosed);
-              yield* scheduleIdleRelease(input.providerSessionId);
-              return exposedRuntime;
             }),
-          ),
+          );
+          return work.pipe(
+            withAdmission("root"),
+            Effect.catchTags({
+              ServerMaintenanceBusy: (cause) =>
+                Effect.fail(
+                  new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause,
+                  }),
+                ),
+            }),
+          );
+        },
         isLive: (providerSessionId) =>
           Ref.get(sessions).pipe(
             Effect.map((current) => current.has(sessionKey(providerSessionId))),

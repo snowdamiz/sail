@@ -1,3 +1,4 @@
+import { forkAccepted } from "../serverAdmission.ts";
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -2259,7 +2260,16 @@ export const layer: Layer.Layer<
             ),
             Effect.ensuring(endPreviewActivity),
             Effect.ensuring(eventSubscription.close),
-            Effect.forkDetach,
+            forkAccepted(),
+            Effect.onError(() => eventSubscription.close),
+            Effect.mapError(
+              (cause) =>
+                new RunExecutionStartError({
+                  commandId: input.commandId,
+                  runId: input.run.id,
+                  cause,
+                }),
+            ),
           );
 
         // A provider turn is a sign that the session is still alive. Keep

@@ -1,3 +1,4 @@
+import { isServerMaintenanceBusy, ServerAdmission, withAdmission } from "../serverAdmission.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto digest is effectful; a sync hash keeps historyPath a plain function.
 import * as NodeCrypto from "node:crypto";
 
@@ -15,6 +16,7 @@ import {
   TerminalCwdStatError,
   TerminalError,
   TerminalHistoryError,
+  TerminalMaintenanceBusy,
   TerminalNotRunningError,
   TerminalProviderInstanceNotFoundError,
   TerminalProviderEnvironmentError,
@@ -1831,6 +1833,17 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
 
+  const admission = yield* ServerAdmission;
+  const admitTerminal =
+    (lane: "root" | "continuation") =>
+    <A, E, R>(work: Effect.Effect<A, E, R>) =>
+      work.pipe(
+        withAdmission(lane),
+        Effect.mapError((error) =>
+          isServerMaintenanceBusy(error) ? new TerminalMaintenanceBusy({ retryable: true }) : error,
+        ),
+      );
+
   const logsDir = options.logsDir;
   const historyLineLimit = options.historyLineLimit ?? DEFAULT_HISTORY_LINE_LIMIT;
   const historyByteLimit = options.historyByteLimit ?? DEFAULT_HISTORY_BYTE_LIMIT;
@@ -2735,9 +2748,16 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         exitSignal: action.exitSignal,
       });
       yield* evictInactiveSessionsIfNeeded();
+      if (admission !== undefined) yield* flushPersist(action.threadId, action.terminalId);
       return;
     }
   });
+
+  const startProcessEventDrain = (session: TerminalSessionState, pid: number) => {
+    const release = admission?.trackLifetime("terminal-settlement");
+    const fiber = runFork(drainProcessEvents(session, pid));
+    if (release !== undefined) fiber.addObserver(release);
+  };
 
   const stopProcess = Effect.fn("terminal.stopProcess")(function* (session: TerminalSessionState) {
     const process = session.process;
@@ -2835,14 +2855,25 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       survivesRestart: true,
     });
     const attempt = yield* Effect.result(
-      options.ptyAdapter.spawn({
-        shell: launch.command,
-        ...(launch.args.length > 0 ? { args: [...launch.args] } : {}),
-        cwd: session.cwd,
-        cols: session.cols,
-        rows: session.rows,
-        env: spawnEnv,
-      }),
+      Effect.uninterruptibleMask((restore) =>
+        restore(
+          options.ptyAdapter.spawn({
+            shell: launch.command,
+            ...(launch.args.length > 0 ? { args: [...launch.args] } : {}),
+            cwd: session.cwd,
+            cols: session.cols,
+            rows: session.rows,
+            env: spawnEnv,
+          }),
+        ).pipe(
+          Effect.tap((process) =>
+            Effect.sync(() => {
+              const release = admission?.trackLifetime("terminal-process");
+              if (release !== undefined) process.onExit(release);
+            }),
+          ),
+        ),
+      ),
     );
 
     if (attempt._tag === "Success") {
@@ -2967,13 +2998,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
                 if (!enqueueProcessEvent(session, processPid, { type: "output", data })) {
                   return;
                 }
-                if (eventsActivated) runFork(drainProcessEvents(session, processPid));
+                if (eventsActivated) startProcessEventDrain(session, processPid);
               });
               session.unsubscribeExit = spawnResult.process.onExit((event) => {
                 if (!enqueueProcessEvent(session, processPid, { type: "exit", event })) {
                   return;
                 }
-                if (eventsActivated) runFork(drainProcessEvents(session, processPid));
+                if (eventsActivated) startProcessEventDrain(session, processPid);
               });
               eventStamp = advanceEventSequence(session);
               return [undefined, state] as const;
@@ -2988,7 +3019,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             });
             // Publish startup before draining any events replayed during subscription.
             eventsActivated = true;
-            if (session.processEventDrainRunning) runFork(drainProcessEvents(session, processPid));
+            if (session.processEventDrainRunning) startProcessEventDrain(session, processPid);
           }),
         ),
       ),
@@ -3042,46 +3073,49 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     }
   });
 
-  const closeSession = Effect.fn("terminal.closeSession")(function* (
-    threadId: string,
-    terminalId: string,
-    deleteHistoryOnClose: boolean,
-  ) {
-    const key = toSessionKey(threadId, terminalId);
-    const session = yield* getSession(threadId, terminalId);
-    const closedEventSequence = Option.isSome(session) ? session.value.eventSequence + 1 : 0;
+  const closeSession = Effect.fn("terminal.closeSession")(
+    function* (threadId: string, terminalId: string, deleteHistoryOnClose: boolean) {
+      const key = toSessionKey(threadId, terminalId);
+      const session = yield* getSession(threadId, terminalId);
+      const closedEventSequence = Option.isSome(session) ? session.value.eventSequence + 1 : 0;
 
-    if (Option.isSome(session)) {
-      yield* stopProcess(session.value);
-      yield* unregisterTerminal({ threadId, terminalId });
-      yield* persistHistory(threadId, terminalId, session.value.history);
-    }
-
-    yield* flushPersist(threadId, terminalId);
-
-    const removed = yield* modifyManagerState((state) => {
-      closedSessionKeys.add(key);
-      if (!state.sessions.has(key)) {
-        return [false, state] as const;
+      if (Option.isSome(session)) {
+        yield* stopProcess(session.value);
+        yield* unregisterTerminal({ threadId, terminalId });
+        yield* persistHistory(threadId, terminalId, session.value.history);
       }
-      const sessions = new Map(state.sessions);
-      sessions.delete(key);
-      return [true, { ...state, sessions }] as const;
-    });
 
-    if (removed) {
-      yield* publishEvent({
-        type: "closed",
-        threadId,
-        terminalId,
-        sequence: closedEventSequence,
+      yield* flushPersist(threadId, terminalId);
+
+      const removed = yield* modifyManagerState((state) => {
+        closedSessionKeys.add(key);
+        if (!state.sessions.has(key)) {
+          return [false, state] as const;
+        }
+        const sessions = new Map(state.sessions);
+        sessions.delete(key);
+        return [true, { ...state, sessions }] as const;
       });
-    }
 
-    if (deleteHistoryOnClose) {
-      yield* deleteHistory(threadId, terminalId);
-    }
-  });
+      if (removed) {
+        yield* publishEvent({
+          type: "closed",
+          threadId,
+          terminalId,
+          sequence: closedEventSequence,
+        });
+      }
+
+      if (deleteHistoryOnClose) {
+        yield* deleteHistory(threadId, terminalId);
+      }
+    },
+    (work) =>
+      work.pipe(
+        withAdmission("continuation"),
+        Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
+      ),
+  );
 
   // Two unchanged snapshots cover children forked just after the first snapshot.
   // Process identity prevents a restarted shell from inheriting quiet state.
@@ -3446,7 +3480,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     withWorkspaceLease(
       path.resolve(input.worktreePath ?? input.cwd),
       openWithWorkspaceLease(input),
-    );
+    ).pipe(admitTerminal("root"));
 
   const open: TerminalManager["Service"]["open"] = (input) =>
     withThreadLock(
@@ -3852,6 +3886,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           }),
       });
     },
+    (effect, input) => effect.pipe(admitTerminal(input.reply ? "continuation" : "root")),
   );
 
   const resizeLocked = Effect.fn("terminal.resize")(function* (
@@ -3903,6 +3938,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           history: session.history,
           immediate: true,
         });
+        if (session.process === null) yield* flushPersist(input.threadId, terminalId);
         yield* publishEvent({
           type: "cleared",
           threadId: input.threadId,
@@ -3910,7 +3946,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           sequence: eventStamp.sequence,
         });
       }),
-    );
+    ).pipe(admitTerminal("root"));
 
   const close: TerminalManager["Service"]["close"] = (input) =>
     withThreadLock(
@@ -3932,7 +3968,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           yield* deleteAllHistoryForThread(input.threadId);
         }
       }),
-    );
+    ).pipe(admitTerminal("continuation"));
 
   const closeIdle: TerminalManager["Service"]["closeIdle"] = (input) =>
     withThreadLock(
@@ -3968,6 +4004,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         );
       }),
     ).pipe(
+      withAdmission("continuation"),
       Effect.catch((error) =>
         Effect.logWarning("failed to close idle terminals", {
           threadId: input.threadId,

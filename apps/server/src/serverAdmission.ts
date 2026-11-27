@@ -18,9 +18,22 @@ export class ServerMaintenanceBusy extends Schema.TaggedError<ServerMaintenanceB
   }
 }
 
+export const isServerMaintenanceBusy = Schema.is(ServerMaintenanceBusy);
+
+type LiveProducer =
+  | "native-child"
+  | "provider-continuation"
+  | "provider-session"
+  | "terminal-process"
+  | "terminal-settlement";
+
 type DrainBlocker =
+  | LiveProducer
   | "in-flight"
   | "orchestration"
+  | "remote-delegation"
+  | "delegated-work"
+  | "native-work"
   | "scheduled-delivery"
   | "workflow"
   | "quiescence-unknown"
@@ -54,6 +67,7 @@ export const makeAdmission = <E>(observe: Effect.Effect<ReadonlyArray<DrainBlock
   let phase: Phase = { kind: "open" };
   const permits = new Set<symbol>();
   const observers = new Set<Effect.Effect<ReadonlyArray<DrainBlocker>>>();
+  const liveProducers = new Map<LiveProducer, number>();
   let observerRevision = 0;
   let changed = Deferred.makeUnsafe<void>();
 
@@ -77,6 +91,23 @@ export const makeAdmission = <E>(observe: Effect.Effect<ReadonlyArray<DrainBlock
           signalChange();
         }),
     );
+
+  // Called by an admitted owner before handing a lifetime to a scope or native callback.
+  const trackLifetime = (producer: LiveProducer) => {
+    liveProducers.set(producer, (liveProducers.get(producer) ?? 0) + 1);
+    observerRevision++;
+    if (phase.kind !== "open") signalChange();
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      const remaining = (liveProducers.get(producer) ?? 1) - 1;
+      if (remaining === 0) liveProducers.delete(producer);
+      else liveProducers.set(producer, remaining);
+      observerRevision++;
+      if (phase.kind !== "open") signalChange();
+    };
+  };
 
   const acquirePermit = (lane: "root" | "continuation", parent: symbol | undefined) =>
     Effect.suspend(() => {
@@ -110,14 +141,14 @@ export const makeAdmission = <E>(observe: Effect.Effect<ReadonlyArray<DrainBlock
     );
   });
 
-  const fork = <A, E, R>(scope: Scope.Scope, work: Effect.Effect<A, E, R>) =>
+  const fork = <A, E, R>(scope: Scope.Scope | undefined, work: Effect.Effect<A, E, R>) =>
     Effect.uninterruptible(
       Effect.gen(function* () {
         const parent = yield* CurrentPermit;
         const permit = yield* acquirePermit("continuation", parent);
         const fiber = yield* work.pipe(
           Effect.provideService(CurrentPermit, permit),
-          Effect.forkIn(scope),
+          scope === undefined ? Effect.forkDetach : Effect.forkIn(scope),
           Effect.onError(() => Effect.sync(() => releasePermit(permit))),
         );
         fiber.addObserver(() => releasePermit(permit));
@@ -157,7 +188,7 @@ export const makeAdmission = <E>(observe: Effect.Effect<ReadonlyArray<DrainBlock
           // A read-only observer can finish after a deadline without holding admission closed.
           const read = Effect.gen(function* () {
             const census = Effect.all([observe, ...observers]).pipe(
-              Effect.map((reports) => [...new Set(reports.flat())]),
+              Effect.map((reports) => [...new Set([...reports.flat(), ...liveProducers.keys()])]),
             );
             const result = yield* Effect.acquireUseRelease(
               Effect.forkDetach(Effect.exit(census), { startImmediately: true }),
@@ -209,7 +240,7 @@ export const makeAdmission = <E>(observe: Effect.Effect<ReadonlyArray<DrainBlock
     );
   });
 
-  return { run, fork, drain, abort, registerObserver };
+  return { run, fork, drain, abort, registerObserver, trackLifetime };
 };
 
 export class ServerAdmission extends Context.Reference<
@@ -222,10 +253,14 @@ export const withAdmission =
     Effect.flatMap(ServerAdmission, (admission) => admission?.run(lane, work) ?? work);
 
 export const forkAccepted =
-  (scope: Scope.Scope) =>
+  (scope?: Scope.Scope) =>
   <A, E, R>(
     work: Effect.Effect<A, E, R>,
   ): Effect.Effect<Fiber.Fiber<A, E>, ServerMaintenanceBusy, R> =>
     Effect.flatMap(ServerAdmission, (admission) =>
-      admission === undefined ? Effect.forkIn(work, scope) : admission.fork(scope, work),
+      admission !== undefined
+        ? admission.fork(scope, work)
+        : scope === undefined
+          ? Effect.forkDetach(work)
+          : Effect.forkIn(work, scope),
     );

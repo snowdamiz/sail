@@ -1,3 +1,5 @@
+import { ServerAdmission } from "../serverAdmission.ts";
+import { observeNativeChild } from "../process/nativeChildAdmission.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -10,7 +12,7 @@ import type * as CursorAgentSdk from "@t3tools/provider-cursor/server/CursorAgen
 import * as CursorAgentSdkProcessRunner from "@t3tools/provider-cursor/server/CursorAgentSdkProcessRunner";
 import * as CursorSdk from "@t3tools/provider-cursor/server/CursorSdk";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import * as ProviderContinuationInbox from "../orchestration-v2/ProviderContinuationInbox.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 export type ProviderOrchestrationAdapterInfrastructure =
@@ -43,6 +45,7 @@ const resolveCursorWorkerLaunch = Effect.gen(function* () {
   const command = yield* HostProcess.ExecutablePath;
   const isExecutable = yield* HostProcess.IsExecutable;
   const providerProcesses = yield* ProviderProcesses.ProviderProcesses;
+  const admission = yield* ServerAdmission;
   // In a bundle import.meta.url is bin.mjs; development and tests use this source module.
   const entry = yield* path
     .fromFileUrl(
@@ -52,6 +55,8 @@ const resolveCursorWorkerLaunch = Effect.gen(function* () {
   return {
     command,
     args: [...(isExecutable ? [] : [entry]), "__cursor-sdk-worker"],
+    observeProcess: (child: Parameters<typeof observeNativeChild>[0]) =>
+      observeNativeChild(child).pipe(Effect.provideService(ServerAdmission, admission)),
     ...(providerProcesses.register === undefined
       ? {}
       : { registerProcess: providerProcesses.register }),
@@ -72,5 +77,5 @@ export const layer = Layer.mergeAll(
   ),
   CursorSdk.layer,
   layerIdAllocator,
-  ProviderContinuationRequests.layer,
+  ProviderContinuationInbox.layer,
 );
