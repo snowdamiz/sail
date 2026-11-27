@@ -1,0 +1,80 @@
+// @effect-diagnostics extendsNativeError:off - The command table shared by the plain Node fake CLIs, in the sandbox and on this computer.
+
+export type FlagKind = "boolean" | "string";
+
+export interface CommandSpec {
+  readonly path: ReadonlyArray<string>;
+  readonly args?: ReadonlyArray<string>;
+  readonly flags?: Readonly<Record<string, FlagKind>>;
+  readonly afterDoubleDash?: boolean;
+}
+
+export interface Invocation<C extends CommandSpec> {
+  readonly command: C;
+  readonly args: Readonly<Record<string, string>>;
+  readonly flags: ReadonlyMap<string, string | true>;
+  readonly afterDoubleDash: ReadonlyArray<string>;
+  readonly global: ReadonlySet<string>;
+}
+
+export type UsageCode = "unknown_command" | "unknown_flag" | "invalid_arguments";
+
+export class UsageError extends Error {
+  readonly code: UsageCode;
+  constructor(code: UsageCode, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+export function parse<C extends CommandSpec>(
+  table: ReadonlyArray<C>,
+  argv: ReadonlyArray<string>,
+  globalFlags: ReadonlyArray<string> = [],
+): Invocation<C> {
+  const dash = argv.indexOf("--");
+  const head = dash === -1 ? argv : argv.slice(0, dash);
+  const afterDoubleDash = dash === -1 ? [] : argv.slice(dash + 1);
+  const global = new Set(head.filter((token) => globalFlags.includes(token)));
+  const tokens = head.filter((token) => !globalFlags.includes(token));
+  const command = table
+    .filter((entry) => entry.path.every((word, index) => tokens[index] === word))
+    .toSorted((a, b) => b.path.length - a.path.length)[0];
+  if (!command) {
+    throw new UsageError("unknown_command", `unknown command: ${tokens.join(" ") || "(none)"}`);
+  }
+  const name = command.path.join(" ");
+  const positionals: Array<string> = [];
+  const flags = new Map<string, string | true>();
+  for (let index = command.path.length; index < tokens.length; index++) {
+    const token = tokens[index] ?? "";
+    const dashes = token.startsWith("--") ? 2 : token.startsWith("-") && token.length > 1 ? 1 : 0;
+    if (dashes === 0) {
+      positionals.push(token);
+      continue;
+    }
+    const equals = dashes === 2 ? token.indexOf("=") : -1;
+    const flag = token.slice(dashes, equals === -1 ? undefined : equals);
+    const kind = command.flags?.[flag];
+    if (kind === undefined)
+      throw new UsageError("unknown_flag", `unknown flag ${token} for ${name}`);
+    if (kind === "boolean") {
+      if (equals !== -1) throw new UsageError("invalid_arguments", `--${flag} takes no value`);
+      flags.set(flag, true);
+      continue;
+    }
+    const value = equals === -1 ? tokens[++index] : token.slice(equals + 1);
+    if (value === undefined) throw new UsageError("invalid_arguments", `${token} needs a value`);
+    flags.set(flag, value);
+  }
+  const names = command.args ?? [];
+  if (positionals.length !== names.length) {
+    const usage = [name, ...names.map((arg) => `<${arg}>`)].join(" ");
+    throw new UsageError("invalid_arguments", `usage: ${usage}`);
+  }
+  if (dash !== -1 && !command.afterDoubleDash) {
+    throw new UsageError("invalid_arguments", `${name} takes no arguments after --`);
+  }
+  const args = Object.fromEntries(names.map((arg, index) => [arg, positionals[index] ?? ""]));
+  return { command, args, flags, afterDoubleDash, global };
+}

@@ -1,0 +1,1194 @@
+// @effect-diagnostics nodeBuiltinImport:off - Drives the shared fixture Caddy through the Docker CLI.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
+import * as NodeEvents from "node:events";
+import * as NodeFS from "node:fs";
+import * as NodeHttps from "node:https";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeReadline from "node:readline";
+import * as NodeUtil from "node:util";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
+
+import {
+  CA_VERSION,
+  CADDY_CONTAINER,
+  caddyContainer,
+  CADDYFILE,
+  CADDYFILE_VERSION,
+  caddyDir,
+  ensureCaddy,
+  ensureRootCa,
+  ROOT_LABEL,
+  rootFingerprint,
+  isOlderCaddyfile,
+  publicUrl,
+  publishSite,
+  rootCertPath,
+} from "./caddy.ts";
+import {
+  docker,
+  dockerSucceeds,
+  FIXTURE_LABEL,
+  hasDocker,
+  NETWORK,
+  DOCKER_TEST_TIMEOUT_MS,
+} from "./docker.ts";
+import { fixturesRoot, takeLock } from "./state.ts";
+
+// oxlint-disable-next-line t3code/no-test-timeout-or-unreasoned-skip -- Docker work on the VM every lane shares, not a hidden wait.
+vi.setConfig({ testTimeout: DOCKER_TEST_TIMEOUT_MS, hookTimeout: DOCKER_TEST_TIMEOUT_MS });
+
+const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
+const run = NodeCrypto.randomBytes(3).toString("hex");
+const upstream = `sail-caddy-test-${run}`;
+const ids = Array.from({ length: 6 }, (_, index) => `caddy-test-${run}-${index}`);
+
+const HOME = `caddy-test-${run}`;
+const CADDY_TS = JSON.stringify(NodePath.join(import.meta.dirname, "caddy.ts"));
+
+const inChild = (script: string, env: NodeJS.ProcessEnv = process.env) =>
+  execFile(process.execPath, ["--input-type=module", "-e", script], { env });
+
+const publishScript = (id: string, to: string, home: string) =>
+  `import { publishSite } from ${CADDY_TS};
+   publishSite({ id: ${JSON.stringify(id)}, home: ${JSON.stringify(home)}, container: ${JSON.stringify(to.split(":")[0])}, host: ${JSON.stringify(`${id}.localtest.me`)}, upstream: ${JSON.stringify(to)} });`;
+
+const publishInChild = (id: string, to = `${upstream}:8080`) =>
+  inChild(publishScript(id, to, HOME));
+
+/**
+ * Holds the reload lock until a second process waits on it, then lists `sites/` as any other
+ * reload would see it. Bounded, so a publisher that never arrives cannot hold the lock for long.
+ */
+const LIST_SITES_WHEN_SOMEONE_WAITS = `echo held
+i=0
+until [ "$(ps -o args | grep -c '^flock /data/reload.lock')" -ge 2 ] || [ "$i" -ge 600 ]; do
+  i=$((i + 1)); sleep 0.05
+done
+ls /etc/caddy/sites`;
+
+/** Holds the reload lock until a second process waits on it, then until told to let go. */
+const HOLD_UNTIL_TOLD = `echo held
+i=0
+until [ "$(ps -o args | grep -c '^flock /data/reload.lock')" -ge 2 ] || [ "$i" -ge 600 ]; do
+  i=$((i + 1)); sleep 0.05
+done
+echo waiting
+read -r go`;
+
+/** A test's own Caddy, with its data volumes and its directory. */
+function removeTestContainer(name: string): void {
+  if (!dockerSucceeds(["container", "inspect", name])) return;
+  const id = docker(["container", "inspect", "--format", "{{.Id}}", name]).trim();
+  docker(["rm", "--force", id]);
+}
+
+function removeInstance(container: string, dir: string): void {
+  try {
+    removeTestContainer(container);
+  } finally {
+    try {
+      const volumes = docker(["volume", "ls", "-q", "--filter", `name=^${container}-data-`]).trim();
+      if (volumes) docker(["volume", "rm", "--force", ...volumes.split("\n")]);
+    } finally {
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+}
+
+/** An older lane's reload: holds the lock inside the container, until told, once a replacer looks. */
+const HOLD_UNTIL_PROBED = `echo held
+i=0
+until ps -o args | grep -q '^grep -c ^flock' || [ "$i" -ge 20000 ]; do i=$((i + 1)); done
+echo probed
+read -r go`;
+
+const status = async (url: string) =>
+  (
+    await execFile("curl", [
+      "-s",
+      "-o",
+      "/dev/null",
+      "-w",
+      "%{http_code}",
+      "--cacert",
+      rootCertPath(),
+      url,
+    ])
+  ).stdout;
+
+const scratch = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "fixture-caddy-test-"));
+afterAll(() => NodeFS.rmSync(scratch, { recursive: true, force: true }));
+
+const openssl = (args: ReadonlyArray<string>) =>
+  NodeChildProcess.spawnSync("openssl", args, { encoding: "utf8" });
+
+/** A leaf for `san`, signed by the root in `ca`, as anything holding the root key could make. */
+function issue(ca: string, san: string): { readonly key: string; readonly cert: string } {
+  const dir = NodeFS.mkdtempSync(NodePath.join(scratch, "leaf-"));
+  const at = (name: string) => NodePath.join(dir, name);
+  NodeFS.writeFileSync(at("ext.cnf"), `subjectAltName=${san}\nbasicConstraints=CA:FALSE\n`);
+  const steps = [
+    ["req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes"].concat([
+      "-keyout",
+      at("leaf.key"),
+      "-out",
+      at("leaf.csr"),
+      "-subj",
+      "/CN=leaf",
+    ]),
+    ["x509", "-req", "-in", at("leaf.csr"), "-CA", NodePath.join(ca, "root.crt")]
+      .concat(["-CAkey", NodePath.join(ca, "root.key"), "-set_serial", "1", "-days", "1"])
+      .concat(["-extfile", at("ext.cnf"), "-out", at("leaf.crt")]),
+  ];
+  for (const step of steps) expect(openssl(step).status, step[0]).toBe(0);
+  return { key: at("leaf.key"), cert: at("leaf.crt") };
+}
+
+const verifies = (ca: string, san: string) =>
+  openssl(["verify", "-CAfile", NodePath.join(ca, "root.crt"), issue(ca, san).cert]).status === 0;
+
+/** Node's own TLS client, which an app under test would use with `NODE_EXTRA_CA_CERTS`. */
+async function nodeAccepts(ca: string, san: string, host: string): Promise<boolean> {
+  const leaf = issue(ca, san);
+  const server = NodeHttps.createServer(
+    { key: NodeFS.readFileSync(leaf.key), cert: NodeFS.readFileSync(leaf.cert) },
+    (_request, response) => response.end("ok"),
+  );
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { readonly port: number };
+  try {
+    return await new Promise<boolean>((resolve) => {
+      const request = NodeHttps.get(
+        {
+          host: "127.0.0.1",
+          servername: host,
+          port,
+          ca: NodeFS.readFileSync(NodePath.join(ca, "root.crt")),
+        },
+        (response) => {
+          response.resume();
+          resolve(true);
+        },
+      );
+      request.on("error", () => resolve(false));
+    });
+  } finally {
+    server.close();
+  }
+}
+
+const CURL = NodeFS.existsSync("/usr/bin/curl") ? "/usr/bin/curl" : "curl";
+const libreSsl = () =>
+  /LibreSSL/.test(NodeChildProcess.spawnSync(CURL, ["--version"], { encoding: "utf8" }).stdout);
+
+/** The system curl, on LibreSSL on macOS, which reads a name constraint differently from OpenSSL. */
+async function curlAccepts(
+  ca: string,
+  san: string,
+  host: string,
+  trust = NodePath.join(ca, "root.crt"),
+): Promise<boolean> {
+  const leaf = issue(ca, san);
+  const server = NodeHttps.createServer(
+    { key: NodeFS.readFileSync(leaf.key), cert: NodeFS.readFileSync(leaf.cert) },
+    (_request, response) => response.end("ok"),
+  );
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { readonly port: number };
+  try {
+    const args = ["-s", "--cacert", trust].concat([
+      "--resolve",
+      `${host}:${port}:127.0.0.1`,
+      `https://${host}:${port}/`,
+    ]);
+    return await execFile(CURL, args).then(
+      ({ stdout }) => stdout === "ok",
+      () => false,
+    );
+  } finally {
+    server.close();
+  }
+}
+
+const V1_CONSTRAINTS = "critical,permitted;DNS:localtest.me";
+const V2_CONSTRAINTS = `${V1_CONSTRAINTS},excluded;IP:0.0.0.0/0.0.0.0,excluded;IP:::/::`;
+
+/** A root an older revision made: version 1 had no version file and said nothing about IPs. */
+function makeOldRoot(dir: string, version: 1 | 2): void {
+  const ca = NodePath.join(dir, "ca");
+  NodeFS.mkdirSync(ca, { recursive: true });
+  const made = openssl([
+    "req",
+    "-x509",
+    "-newkey",
+    "ec",
+    "-pkeyopt",
+    "ec_paramgen_curve:P-256",
+    "-nodes",
+    "-keyout",
+    NodePath.join(ca, "root.key"),
+    "-out",
+    NodePath.join(ca, "root.crt"),
+    "-days",
+    "30",
+    "-subj",
+    "/CN=Sail fixtures local CA",
+    "-addext",
+    "basicConstraints=critical,CA:TRUE",
+    "-addext",
+    "keyUsage=critical,keyCertSign,cRLSign",
+    "-addext",
+    `nameConstraints=${version === 1 ? V1_CONSTRAINTS : V2_CONSTRAINTS}`,
+  ]);
+  expect(made.status).toBe(0);
+  if (version === 2) NodeFS.writeFileSync(NodePath.join(ca, "version"), "2\n");
+}
+
+describe("fixture root CA", () => {
+  const dir = NodeFS.mkdtempSync(NodePath.join(scratch, "home-"));
+  const ca = NodePath.join(dir, "ca");
+  beforeAll(() => {
+    ensureRootCa(dir);
+  });
+
+  it("signs localtest.me names and nothing else, IP addresses included", () => {
+    expect(verifies(ca, "DNS:demo.localtest.me")).toBe(true);
+    expect(verifies(ca, "DNS:auth.localtest.me")).toBe(true);
+    expect(verifies(ca, "DNS:evil.example.com")).toBe(false);
+    expect(verifies(ca, "DNS:evil-localtest.me")).toBe(false);
+    expect(verifies(ca, "IP:127.0.0.1")).toBe(false);
+    expect(verifies(ca, "IP:1.1.1.1")).toBe(false);
+    expect(verifies(ca, "IP:::1")).toBe(false);
+  });
+
+  it("is refused by Node's TLS client for an IP address or a name that only ends in localtest.me", async () => {
+    expect(await nodeAccepts(ca, "DNS:demo.localtest.me", "demo.localtest.me")).toBe(true);
+    expect(await nodeAccepts(ca, "IP:127.0.0.1", "")).toBe(false);
+    expect(await nodeAccepts(ca, "DNS:evil-localtest.me", "evil-localtest.me")).toBe(false);
+  });
+
+  it("is refused by macOS curl for a name that only ends in localtest.me", async () => {
+    expect(await curlAccepts(ca, "DNS:demo.localtest.me", "demo.localtest.me")).toBe(true);
+    expect(await curlAccepts(ca, "DNS:evil-localtest.me", "evil-localtest.me")).toBe(false);
+  });
+
+  it("replaces a version 2 root, which LibreSSL lets vouch for evil-localtest.me", async () => {
+    const old = NodeFS.mkdtempSync(NodePath.join(scratch, "v2-"));
+    makeOldRoot(old, 2);
+    const oldCa = NodePath.join(old, "ca");
+    expect(verifies(oldCa, "DNS:evil-localtest.me"), "OpenSSL refused it already").toBe(false);
+    if (libreSsl())
+      expect(await curlAccepts(oldCa, "DNS:evil-localtest.me", "evil-localtest.me")).toBe(true);
+    const kept = NodePath.join(old, "kept-v2.crt");
+    NodeFS.copyFileSync(NodePath.join(oldCa, "root.crt"), kept);
+    expect(ensureRootCa(old)).toBe(true);
+    expect(await curlAccepts(oldCa, "DNS:evil-localtest.me", "evil-localtest.me")).toBe(false);
+    const signed = issue(oldCa, "DNS:demo.localtest.me");
+    expect(
+      openssl(["verify", "-CAfile", kept, signed.cert]).status,
+      "a lane that kept the version 2 root still verifies what the new root signs",
+    ).toBe(0);
+    if (libreSsl())
+      expect(
+        await curlAccepts(oldCa, "DNS:evil-localtest.me", "evil-localtest.me", kept),
+        "and that copy still lets LibreSSL accept the suffix, until it is deleted",
+      ).toBe(true);
+  });
+
+  it("puts back a root that a rotation killed between its renames left aside", () => {
+    const dir = NodeFS.mkdtempSync(NodePath.join(scratch, "killed-"));
+    expect(ensureRootCa(dir)).toBe(true);
+    const before = rootFingerprint(dir);
+    NodeFS.renameSync(NodePath.join(dir, "ca"), NodePath.join(dir, "ca-x1y2z3-retired"));
+    expect(ensureRootCa(dir), "recovered, so there is nothing to make").toBe(false);
+    expect(rootFingerprint(dir)).toBe(before);
+  });
+
+  it("makes a root when the version is there but the root or its key is not", () => {
+    for (const missing of ["root.crt", "root.key"]) {
+      const dir = NodeFS.mkdtempSync(NodePath.join(scratch, "partial-"));
+      expect(ensureRootCa(dir)).toBe(true);
+      NodeFS.rmSync(NodePath.join(dir, "ca", missing));
+      expect(ensureRootCa(dir), `without ${missing}`).toBe(true);
+      expect(NodeFS.existsSync(NodePath.join(dir, "ca", missing))).toBe(true);
+      expect(rootFingerprint(dir)).toMatch(/^[0-9a-f]{12}$/);
+    }
+  });
+
+  it("keeps the old root when a new key's root cannot take its place", async () => {
+    const old = NodeFS.mkdtempSync(NodePath.join(scratch, "promote-"));
+    makeOldRoot(old, 1);
+    const before = NodeFS.readFileSync(NodePath.join(old, "ca", "root.crt"), "utf8");
+    const failed = await inChild(
+      `import fs from "node:fs";
+       import { syncBuiltinESMExports } from "node:module";
+       const rename = fs.renameSync;
+       fs.renameSync = (from, to) => {
+         if (to.endsWith("/ca") && !from.endsWith("-retired")) throw Object.assign(new Error("promotion failed"), { code: "EIO" });
+         return rename(from, to);
+       };
+       syncBuiltinESMExports();
+       const { ensureRootCa } = await import(${CADDY_TS});
+       ensureRootCa(${JSON.stringify(old)});`,
+    ).then(
+      () => "",
+      (error: { readonly stderr: string }) => error.stderr,
+    );
+    expect(failed).toContain("promotion failed");
+    expect(NodeFS.readFileSync(NodePath.join(old, "ca", "root.crt"), "utf8")).toBe(before);
+    expect(NodeFS.readdirSync(old).toSorted()).toEqual(["ca", "caddy.lock"]);
+  });
+
+  it("replaces an older root once when several lanes upgrade it at the same moment", async () => {
+    const old = NodeFS.mkdtempSync(NodePath.join(scratch, "race-"));
+    makeOldRoot(old, 1);
+    const go = NodePath.join(old, "go");
+    const lanes = Array.from({ length: 4 }, () =>
+      NodeChildProcess.spawn(process.execPath, [
+        "--input-type=module",
+        "-e",
+        `import * as NodeFS from "node:fs";
+         import { ensureRootCa } from ${JSON.stringify(NodePath.join(import.meta.dirname, "caddy.ts"))};
+         process.stdout.write("ready\\n");
+         while (!NodeFS.existsSync(${JSON.stringify(go)})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
+         process.stdout.write(String(ensureRootCa(${JSON.stringify(old)})));`,
+      ]),
+    );
+    const outputs = lanes.map((lane) => {
+      let output = "";
+      lane.stdout.setEncoding("utf8");
+      lane.stdout.on("data", (chunk: string) => (output += chunk));
+      return new Promise<string>((resolve) => lane.once("close", () => resolve(output)));
+    });
+    await Promise.all(
+      lanes.map(
+        (lane) =>
+          new Promise((resolve) =>
+            NodeReadline.createInterface({ input: lane.stdout }).once("line", resolve),
+          ),
+      ),
+    );
+    NodeFS.writeFileSync(go, "");
+    const answers = (await Promise.all(outputs)).map((output) => output.replace("ready\n", ""));
+    expect(
+      answers.filter((answer) => answer === "true"),
+      answers.join(","),
+    ).toHaveLength(1);
+    const ca = NodePath.join(old, "ca");
+    const publicKey = (args: ReadonlyArray<string>) => openssl(args).stdout;
+    expect(publicKey(["x509", "-noout", "-pubkey", "-in", NodePath.join(ca, "root.crt")])).toBe(
+      publicKey(["pkey", "-pubout", "-in", NodePath.join(ca, "root.key")]),
+    );
+    expect(verifies(ca, "IP:127.0.0.1")).toBe(false);
+    expect(NodeFS.readdirSync(old).toSorted()).toEqual(["ca", "caddy.lock", "go"]);
+  });
+
+  it("replaces a root an older revision made, and keeps a current or newer one", () => {
+    const old = NodeFS.mkdtempSync(NodePath.join(scratch, "old-"));
+    makeOldRoot(old, 1);
+    const before = NodeFS.readFileSync(NodePath.join(old, "ca", "root.crt"), "utf8");
+    expect(verifies(NodePath.join(old, "ca"), "IP:127.0.0.1")).toBe(true);
+    expect(ensureRootCa(old)).toBe(true);
+    const after = NodeFS.readFileSync(NodePath.join(old, "ca", "root.crt"), "utf8");
+    expect(after).not.toBe(before);
+    expect(verifies(NodePath.join(old, "ca"), "IP:127.0.0.1")).toBe(false);
+    expect(ensureRootCa(old)).toBe(false);
+    expect(NodeFS.readFileSync(NodePath.join(old, "ca", "root.crt"), "utf8")).toBe(after);
+    NodeFS.writeFileSync(NodePath.join(old, "ca", "version"), `${CA_VERSION + 1}\n`);
+    expect(ensureRootCa(old)).toBe(false);
+    expect(NodeFS.readFileSync(NodePath.join(old, "ca", "root.crt"), "utf8")).toBe(after);
+  });
+});
+
+describe("fixture Caddyfile version", () => {
+  const stamped = (version: number) =>
+    CADDYFILE.replace(
+      /^# sail-fixtures Caddyfile v\d+\n/,
+      `# sail-fixtures Caddyfile v${version}\n`,
+    );
+
+  it("never replaces a Caddyfile a newer checkout wrote", () => {
+    expect(isOlderCaddyfile(stamped(CADDYFILE_VERSION + 1))).toBe(false);
+    expect(isOlderCaddyfile(stamped(999_999))).toBe(false);
+    expect(isOlderCaddyfile(CADDYFILE)).toBe(false);
+    expect(isOlderCaddyfile(stamped(CADDYFILE_VERSION - 1))).toBe(true);
+    expect(isOlderCaddyfile("{\n}\n")).toBe(true);
+  });
+
+  it("bumps the version with every change to the Caddyfile's text", () => {
+    const sha256 = NodeCrypto.createHash("sha256").update(CADDYFILE).digest("hex");
+    expect(
+      { version: CADDYFILE_VERSION, sha256 },
+      "changed the Caddyfile? bump CADDYFILE_VERSION, then pin the new hash here",
+    ).toEqual({
+      version: 1,
+      sha256: "2c5ea0ff0916ab982970fe5a092e4bf1babdb1643db0f32160eff5c56b9fa247",
+    });
+  });
+});
+
+describe.skipIf(!hasDocker())("fixture Caddy", () => {
+  beforeAll(() => {
+    vi.stubEnv("SAIL_FIXTURES_CADDY_INSTANCE", `test-fixture-${run}`);
+    vi.stubEnv("SAIL_FIXTURES_HTTP_PORT", undefined);
+    vi.stubEnv("SAIL_FIXTURES_HTTPS_PORT", undefined);
+    ensureCaddy(HOME);
+    docker([
+      "run",
+      "--detach",
+      "--name",
+      upstream,
+      "--label",
+      `${FIXTURE_LABEL}=caddy-test`,
+      "--network",
+      NETWORK,
+      "--memory",
+      "64m",
+      "caddy:2",
+      "caddy",
+      "respond",
+      "--listen",
+      ":8080",
+      "--body",
+      "ok",
+    ]);
+    docker([
+      "exec",
+      upstream,
+      "sh",
+      "-c",
+      "i=0; until wget -q -O /dev/null http://127.0.0.1:8080/; do [ $((i += 1)) -lt 100 ] || exit 1; sleep 0.1; done",
+    ]);
+  });
+
+  afterAll(() => {
+    try {
+      try {
+        removeTestContainer(upstream);
+      } finally {
+        removeInstance(caddyContainer(), caddyDir());
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("serves every site that processes publish at the same time", async () => {
+    await Promise.all(ids.map((id) => publishInChild(id)));
+    const answers = await Promise.all(
+      ids.map((id) => status(`${publicUrl(`${id}.localtest.me`)}/`)),
+    );
+    expect(answers).toEqual(ids.map(() => "200"));
+  });
+
+  it("never lets another reload see a site Caddy refuses", async () => {
+    const bad = `caddy-test-${run}-bad`;
+    const holder = NodeChildProcess.spawn("docker", [
+      "exec",
+      caddyContainer(),
+      "flock",
+      "/data/reload.lock",
+      "sh",
+      "-c",
+      LIST_SITES_WHEN_SOMEONE_WAITS,
+    ]);
+    let listing = "";
+    holder.stdout.setEncoding("utf8");
+    const held = new Promise<void>((resolve) =>
+      holder.stdout.on("data", (chunk: string) => {
+        listing += chunk;
+        if (listing.startsWith("held\n")) resolve();
+      }),
+    );
+    const released = new Promise((resolve) => holder.once("exit", resolve));
+    await held;
+    const publishing = publishInChild(bad, "x {");
+    await expect(released).resolves.toBe(0);
+    await expect(publishing).rejects.toThrow();
+    expect(listing.split("\n")).toContain(`${ids[0]}.caddy`);
+    expect(listing.split("\n")).not.toContain(`${bad}.caddy`);
+    expect(NodeFS.existsSync(NodePath.join(caddyDir(), "sites", `${bad}.caddy`))).toBe(false);
+    expect(await status(`${publicUrl(`${ids[0]}.localtest.me`)}/`)).toBe("200");
+  });
+
+  it("runs Caddy on the root on disk, with that root's own data volume", () => {
+    const root = rootFingerprint();
+    const state = JSON.parse(docker(["inspect", "--format", "{{json .}}", caddyContainer()])) as {
+      readonly Config: { readonly Labels: Readonly<Record<string, string>> };
+      readonly Mounts: ReadonlyArray<{ readonly Destination: string; readonly Name?: string }>;
+    };
+    expect(state.Config.Labels[ROOT_LABEL]).toBe(root);
+    expect(state.Mounts.find((mount) => mount.Destination === "/data")?.Name).toBe(
+      `${caddyContainer()}-data-${root}`,
+    );
+    const ca = JSON.parse(
+      docker([
+        "exec",
+        caddyContainer(),
+        "wget",
+        "-q",
+        "-O",
+        "-",
+        "http://127.0.0.1:2019/pki/ca/local",
+      ]),
+    ) as { readonly root_certificate: string };
+    expect(ca.root_certificate.trim()).toBe(NodeFS.readFileSync(rootCertPath(), "utf8").trim());
+  });
+
+  it("serves with a shared root that cannot sign an IP address", () => {
+    expect(verifies(NodePath.dirname(rootCertPath()), "IP:127.0.0.1")).toBe(false);
+    expect(verifies(NodePath.dirname(rootCertPath()), "DNS:demo.localtest.me")).toBe(true);
+  });
+
+  it("refuses the hosts the fixtures reserve", () => {
+    expect(() =>
+      publishSite({
+        id: `caddy-test-${run}-auth`,
+        home: HOME,
+        container: "x",
+        host: "auth.localtest.me",
+        upstream: "x:1",
+      }),
+    ).toThrow(/reserved/);
+    for (const host of ["evil-localtest.me", "localtest.me.example.com", "a.b.localtest.me"])
+      expect(() =>
+        publishSite({
+          id: `caddy-test-${run}-outside`,
+          home: HOME,
+          container: "x",
+          host,
+          upstream: "x:1",
+        }),
+      ).toThrow(/not a name under localtest.me/);
+    expect(
+      NodeFS.existsSync(NodePath.join(caddyDir(), "sites", `caddy-test-${run}-outside.caddy`)),
+    ).toBe(false);
+  });
+});
+
+describe.skipIf(!hasDocker())("a Caddy that two homes share", () => {
+  const instance = `test-${run}`;
+  const {
+    SAIL_FIXTURES_HTTPS_PORT: _https,
+    SAIL_FIXTURES_HTTP_PORT: _http,
+    ...inherited
+  } = process.env;
+  const env: NodeJS.ProcessEnv = { ...inherited, SAIL_FIXTURES_CADDY_INSTANCE: instance };
+  const container = `${CADDY_CONTAINER}-${instance}`;
+  const dir = NodePath.join(fixturesRoot(), `caddy-${instance}`);
+  const backend = `sail-caddy-two-${run}`;
+  const site = (home: string) => `two-${run}-${home}`;
+  const inInstance = (script: string) => inChild(script, env);
+  const ensureFor = (home: string) =>
+    inInstance(`import { ensureCaddy } from ${CADDY_TS}; ensureCaddy(${JSON.stringify(home)});`);
+  const publishFor = (home: string, to = `${backend}:8080`) =>
+    inInstance(publishScript(site(home), to, home));
+  const removeFor = (home: string) =>
+    inInstance(
+      `import { removeSite } from ${CADDY_TS}; removeSite(${JSON.stringify(site(home))});`,
+    );
+  const running = () =>
+    JSON.parse(docker(["inspect", "--format", "{{json .}}", container])) as {
+      readonly Id: string;
+      readonly Config: { readonly Labels: Readonly<Record<string, string>> };
+    };
+  const fingerprint = () =>
+    NodeCrypto.createHash("sha256")
+      .update(NodeFS.readFileSync(NodePath.join(dir, "ca", "root.crt")))
+      .digest("hex")
+      .slice(0, 12);
+  /** What a lane that read the root when it started sees, by the CA file it kept. */
+  const statusWith = async (root: string, home: string) => {
+    const port = docker(["port", container, "443/tcp"]).trim().split("\n")[0]?.split(":").pop();
+    const host = `${site(home)}.localtest.me`;
+    const args = ["-s", "-o", "/dev/null", "-w", "%{http_code}", "--cacert", root];
+    const target = [`${host}:${port}:127.0.0.1`, `https://${host}:${port}/`];
+    return execFile("curl", [...args, "--resolve", ...target]).then(
+      ({ stdout }) => stdout,
+      () => "unreachable",
+    );
+  };
+  /** Caddy issues a new site's certificate after the reload returns, slowly at load 90. */
+  const servesWith = (root: string, home: string) =>
+    expect.poll(() => statusWith(root, home), { timeout: 120_000, interval: 250 }).toBe("200");
+  const keepRoot = (name: string) => {
+    const kept = NodePath.join(scratch, `${name}.crt`);
+    NodeFS.copyFileSync(NodePath.join(dir, "ca", "root.crt"), kept);
+    return kept;
+  };
+  const putOldRoot = () => {
+    NodeFS.rmSync(NodePath.join(dir, "ca"), { recursive: true, force: true });
+    makeOldRoot(dir, 2);
+  };
+
+  beforeAll(() => {
+    docker(
+      ["run", "--detach", "--name", backend, "--label", `${FIXTURE_LABEL}=caddy-test`]
+        .concat(["--network", NETWORK, "--memory", "64m", "caddy:2"])
+        .concat(["caddy", "respond", "--listen", ":8080", "--body", "ok"]),
+    );
+    NodeFS.mkdirSync(dir, { recursive: true });
+  });
+
+  afterAll(() => {
+    try {
+      removeTestContainer(backend);
+    } finally {
+      removeInstance(container, dir);
+    }
+  });
+
+  it("keeps the root other homes trust, and refuses to replace a Caddy they serve through", async () => {
+    putOldRoot();
+    NodeFS.mkdirSync(NodePath.join(dir, "sites"), { recursive: true });
+    NodeFS.writeFileSync(
+      NodePath.join(dir, "sites", `${site("z")}.caddy`),
+      `${site("z")}.localtest.me {\n\ttls internal\n\treverse_proxy ${backend}:8080\n}\n`,
+    );
+    await publishFor("a");
+    const first = running();
+    const rootA = keepRoot("root-a");
+    expect(first.Config.Labels[ROOT_LABEL], "the version 2 root, which home z trusts").toBe(
+      fingerprint(),
+    );
+    expect(NodeFS.readFileSync(NodePath.join(dir, "ca", "version"), "utf8")).toBe("2\n");
+    await servesWith(rootA, "a");
+
+    await ensureFor("b");
+    expect(running().Id, "home b waits for the newer root too").toBe(first.Id);
+
+    const served = NodePath.join(scratch, `ca-${run}`);
+    NodeFS.cpSync(NodePath.join(dir, "ca"), served, { recursive: true });
+    putOldRoot();
+    const refused = await ensureFor("b").then(
+      () => "",
+      (error: { readonly stderr: string }) => error.stderr,
+    );
+    expect(refused).toMatch(new RegExp(`other homes still serve .*${site("a")}`));
+    expect(running().Id).toBe(first.Id);
+    expect(await statusWith(rootA, "a"), "home a keeps working on the root it read").toBe("200");
+    NodeFS.rmSync(NodePath.join(dir, "ca"), { recursive: true });
+    NodeFS.cpSync(served, NodePath.join(dir, "ca"), { recursive: true });
+
+    NodeFS.rmSync(NodePath.join(dir, "sites", `${site("z")}.caddy`));
+    await removeFor("a");
+    await ensureFor("b");
+    const second = running();
+    expect(second.Id, "nobody else serves through it now").not.toBe(first.Id);
+    expect(second.Config.Labels[ROOT_LABEL]).toBe(fingerprint());
+    expect(NodeFS.readFileSync(NodePath.join(dir, "ca", "version"), "utf8")).toBe(
+      `${CA_VERSION}\n`,
+    );
+    await publishFor("b");
+    await servesWith(keepRoot("root-b"), "b");
+    expect(await statusWith(rootA, "b"), "a lane that read the version 2 root").toBe("200");
+    await removeFor("b");
+  });
+
+  it("leaves the root as it was when the old Caddy cannot be removed", async () => {
+    await ensureFor("a");
+    const before = running().Id;
+    const root = fingerprint();
+    NodeFS.writeFileSync(NodePath.join(dir, "ca", "version"), "2\n");
+    const shim = NodePath.join(scratch, `rm-fails-${run}`);
+    NodeFS.mkdirSync(shim, { recursive: true });
+    const realDocker = NodeChildProcess.execFileSync("sh", ["-c", "command -v docker"], {
+      encoding: "utf8",
+    }).trim();
+    NodeFS.writeFileSync(
+      NodePath.join(shim, "docker"),
+      `#!/bin/sh\n[ "$1" = rm ] && { echo "Error response from daemon: removal is stuck" >&2; exit 1; }\nexec ${JSON.stringify(realDocker)} "$@"\n`,
+      { mode: 0o755 },
+    );
+    const failed = await execFile(
+      process.execPath,
+      ["--input-type=module", "-e", `import { ensureCaddy } from ${CADDY_TS}; ensureCaddy("b");`],
+      { env: { ...env, PATH: `${shim}${NodePath.delimiter}${env.PATH ?? ""}` } },
+    ).then(
+      () => "",
+      (error: { readonly stderr: string }) => error.stderr,
+    );
+    expect(failed).toContain("removal is stuck");
+    expect(fingerprint(), "the root on disk is still the one Caddy runs on").toBe(root);
+    expect(running().Id).toBe(before);
+    await ensureFor("b");
+    expect(running().Id, "replaced once removal works").not.toBe(before);
+  });
+
+  it("replaces a Caddy an older revision started without a root label", async () => {
+    await ensureFor("a");
+    docker(["rm", "--force", container]);
+    docker(
+      ["run", "--detach", "--name", container, "--label", `${FIXTURE_LABEL}=caddy`]
+        .concat([
+          "--network",
+          NETWORK,
+          "--memory",
+          "64m",
+          "--volume",
+          `${dir}:/etc/caddy`,
+          "--volume",
+          `${container}-data-legacy:/data`,
+        ])
+        .concat(["caddy:2", "caddy", "run", "--config", "/etc/caddy/Caddyfile"])
+        .concat(["--adapter", "caddyfile"]),
+    );
+    const unlabeled = running().Id;
+    NodeFS.writeFileSync(NodePath.join(dir, "ca", "version"), "2\n");
+    await ensureFor("b");
+    const now = running();
+    expect(now.Id).not.toBe(unlabeled);
+    expect(now.Config.Labels[ROOT_LABEL]).toBe(fingerprint());
+    expect(NodeFS.readFileSync(NodePath.join(dir, "ca", "version"), "utf8")).toBe(
+      `${CA_VERSION}\n`,
+    );
+  });
+
+  it("counts a site live while its container runs under a swap name, and idle once it is gone", async () => {
+    await ensureFor("a");
+    const before = running().Id;
+    const swapped = `${backend}-fly`;
+    docker(
+      ["run", "--detach", "--name", `${swapped}_blue`, "--label", `${FIXTURE_LABEL}=caddy-test`]
+        .concat(["--network", NETWORK, "--memory", "64m", "caddy:2", "caddy", "respond"])
+        .concat(["--listen", ":8080", "--body", "blue"]),
+    );
+    try {
+      await inInstance(
+        `import { publishSite } from ${CADDY_TS};
+         publishSite({ id: ${JSON.stringify(site("f"))}, home: "f", container: ${JSON.stringify(swapped)}, host: ${JSON.stringify(`${site("f")}.localtest.me`)}, upstream: "deadbeef0123.vm.app.internal:8080" });`,
+      ).catch(() => undefined);
+      NodeFS.writeFileSync(NodePath.join(dir, "ca", "version"), "2\n");
+      await ensureFor("b");
+      expect(running().Id, "home f still serves through it").toBe(before);
+    } finally {
+      docker(["rm", "--force", `${swapped}_blue`]);
+    }
+    await ensureFor("b");
+    expect(running().Id, "nobody serves through it now").not.toBe(before);
+    await removeFor("f");
+  });
+
+  it("waits for a reload that holds only the lock inside the container", async () => {
+    await ensureFor("a");
+    const before = running().Id;
+    const holder = NodeChildProcess.spawn("docker", [
+      "exec",
+      "--interactive",
+      container,
+      "flock",
+      "/data/reload.lock",
+      "sh",
+      "-c",
+      HOLD_UNTIL_PROBED,
+    ]);
+    const held = NodeEvents.EventEmitter.once(holder, "exit");
+    let replacing: ReturnType<typeof ensureFor> | undefined;
+    try {
+      const lines = NodeReadline.createInterface({ input: holder.stdout })[Symbol.asyncIterator]();
+      expect((await lines.next()).value).toBe("held");
+      NodeFS.writeFileSync(NodePath.join(dir, "ca", "version"), "2\n");
+      replacing = ensureFor("b");
+      const milestone = await Promise.race([
+        lines.next(),
+        replacing.then(() => {
+          throw new Error("replacement completed before reload holder was probed");
+        }),
+      ]);
+      expect(milestone.value, "home b looks for reloads before it replaces Caddy").toBe("probed");
+      expect(running().Id, "and waits while one runs").toBe(before);
+      holder.stdin.end("go\n");
+      expect((await held)[0], "never cut off").toBe(0);
+      await replacing;
+      expect(running().Id).not.toBe(before);
+    } finally {
+      if (!holder.stdin.writableEnded) holder.stdin.end("go\n");
+      await Promise.allSettled([held, replacing]);
+    }
+  });
+
+  it("holds the reload lock across restarting a Caddy before replacement", async () => {
+    await ensureFor("a");
+    const before = running().Id;
+    docker(["stop", before]);
+    NodeFS.writeFileSync(NodePath.join(dir, "ca", "version"), "2\n");
+    await inInstance(`import assert from "node:assert/strict";
+import cp from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { ensureCaddy } from ${CADDY_TS};
+const call = cp.spawnSync;
+let checked = false;
+cp.spawnSync = (command, args, ...rest) => {
+  if (command === "docker" && args[0] === "rm" && args.includes(${JSON.stringify(before)})) {
+    const restarted = call("docker", ["restart", ${JSON.stringify(before)}], {encoding: "utf8"});
+    assert.equal(restarted.status, 0, restarted.stderr);
+    const lock = call("docker", ["exec", ${JSON.stringify(before)}, "flock", "-n", "/data/reload.lock", "true"], {encoding: "utf8"});
+    assert.equal(lock.status, 1);
+    assert.equal(lock.stderr, "");
+    checked = true;
+  }
+  return call(command, args, ...rest);
+};
+syncBuiltinESMExports();
+ensureCaddy("b");
+assert.ok(checked);`);
+    expect(running().Id).not.toBe(before);
+  });
+
+  it("replaces a Caddy that stops during the preflight census", async () => {
+    await ensureFor("a");
+    const before = running().Id;
+    const stale = NodePath.join(dir, "sites", `${site("stopped")}.caddy`);
+    NodeFS.writeFileSync(
+      stale,
+      `${site("stopped")}.localtest.me {\n tls internal\n reverse_proxy sail-gone-${run}:8080\n}\n`,
+    );
+    NodeFS.writeFileSync(NodePath.join(dir, "ca", "version"), "2\n");
+    try {
+      await inInstance(`import assert from "node:assert/strict";
+import cp from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { ensureCaddy } from ${CADDY_TS};
+const call = cp.spawnSync;
+let scans = 0;
+cp.spawnSync = (command, args, ...rest) => {
+  if (command === "docker" && args[0] === "ps" && args.includes("{{.Names}}") && ++scans === 2) {
+    const stopped = call("docker", ["stop", ${JSON.stringify(before)}]);
+    assert.equal(stopped.status, 0);
+  }
+  return call(command, args, ...rest);
+};
+syncBuiltinESMExports();
+ensureCaddy("b");
+assert.ok(scans >= 3);`);
+      expect(running().Id).not.toBe(before);
+    } finally {
+      NodeFS.rmSync(stale, { force: true });
+    }
+  });
+
+  it("defers a stopped Caddy's upgrade if the old volume lock cannot be obtained", async () => {
+    await ensureFor("a");
+    const before = running().Id;
+    docker(["stop", before]);
+    NodeFS.writeFileSync(NodePath.join(dir, "ca", "version"), "2\n");
+    const shim = NodePath.join(scratch, `hold-refused-${run}`);
+    NodeFS.mkdirSync(shim, { recursive: true });
+    const realDocker = NodeChildProcess.execFileSync("sh", ["-c", "command -v docker"], {
+      encoding: "utf8",
+    }).trim();
+    NodeFS.writeFileSync(
+      NodePath.join(shim, "docker"),
+      `#!/bin/sh
+case "$*" in *"--volumes-from"*) echo "injected lock helper failure" >&2; exit 1;; esac
+exec ${JSON.stringify(realDocker)} "$@"
+`,
+      { mode: 0o755 },
+    );
+    await inChild(`import { ensureCaddy } from ${CADDY_TS}; ensureCaddy("b");`, {
+      ...env,
+      PATH: `${shim}${NodePath.delimiter}${env.PATH ?? ""}`,
+    });
+    expect(running().Id).toBe(before);
+    expect(docker(["inspect", "--format", "{{.State.Running}}", before]).trim()).toBe("true");
+    expect(NodeFS.readFileSync(NodePath.join(dir, "ca", "version"), "utf8")).toBe("2\n");
+  });
+
+  it("rebuilds the CA if an already stopped Caddy has lost its root key", async () => {
+    await ensureFor("a");
+    const before = running().Id;
+    docker(["stop", before]);
+    NodeFS.rmSync(NodePath.join(dir, "ca", "root.key"));
+    await ensureFor("b");
+    expect(running().Id).not.toBe(before);
+    expect(NodeFS.existsSync(NodePath.join(dir, "ca", "root.key"))).toBe(true);
+    expect(running().Config.Labels[ROOT_LABEL]).toBe(fingerprint());
+  });
+
+  it("reconciles again if the old container disappears before lock acquisition", async () => {
+    await ensureFor("a");
+    const before = running().Id;
+    const stale = NodePath.join(dir, "sites", `${site("removed")}.caddy`);
+    NodeFS.writeFileSync(
+      stale,
+      `${site("removed")}.localtest.me {\n tls internal\n reverse_proxy sail-gone-${run}:8080\n}\n`,
+    );
+    NodeFS.writeFileSync(NodePath.join(dir, "ca", "version"), "2\n");
+    try {
+      await inInstance(`import assert from "node:assert/strict";
+import cp from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { ensureCaddy } from ${CADDY_TS};
+const call = cp.spawnSync;
+let scans = 0;
+cp.spawnSync = (command, args, ...rest) => {
+  if (command === "docker" && args[0] === "ps" && args.includes("{{.Names}}") && ++scans === 2) {
+    const removed = call("docker", ["rm", "--force", ${JSON.stringify(before)}]);
+    assert.equal(removed.status, 0);
+  }
+  return call(command, args, ...rest);
+};
+syncBuiltinESMExports();
+ensureCaddy("b");
+assert.ok(scans >= 3);`);
+      expect(running().Id).not.toBe(before);
+    } finally {
+      NodeFS.rmSync(stale, { force: true });
+    }
+  });
+
+  it("holds the legacy lock across the final census before replacement", async () => {
+    await ensureFor("a");
+    const before = running().Id;
+    const stale = NodePath.join(dir, "sites", `${site("stale")}.caddy`);
+    const peer = NodePath.join(dir, "sites", `${site("peer")}.caddy`);
+    const ready = NodePath.join(dir, "peer-held");
+    NodeFS.writeFileSync(
+      stale,
+      `${site("stale")}.localtest.me {\n tls internal\n reverse_proxy sail-gone-${run}:8080\n}\n`,
+    );
+    NodeFS.writeFileSync(NodePath.join(dir, "ca", "version"), "2\n");
+    try {
+      await inInstance(`import assert from "node:assert/strict";
+import cp from "node:child_process";
+import fs from "node:fs";
+import { once } from "node:events";
+import { syncBuiltinESMExports } from "node:module";
+import { ensureCaddy } from ${CADDY_TS};
+const call = cp.spawnSync;
+let scans = 0;
+let done;
+cp.spawnSync = (command, args, ...rest) => {
+  if (command === "docker" && args[0] === "ps" && args.includes("{{.Names}}")) {
+    scans++;
+    if (scans === 2) {
+      const child = cp.spawn("docker", ["exec", ${JSON.stringify(before)}, "flock", "/data/reload.lock", "sh", "-c",
+        ${JSON.stringify(`printf %s '${site("peer")}.localtest.me {
+ tls internal
+ reverse_proxy ${backend}:8080
+}
+' > /etc/caddy/sites/${site("peer")}.caddy
+touch /etc/caddy/peer-held
+sleep 2
+caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`)}
+      ], {stdio: "ignore"});
+      done = once(child, "exit");
+      const deadline = Date.now() + 30000;
+      while (!fs.existsSync(${JSON.stringify(ready)}) && Date.now() < deadline)
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,25);
+      assert.ok(fs.existsSync(${JSON.stringify(ready)}));
+    }
+    if (scans === 3) {
+      const probe = call("docker", ["exec", ${JSON.stringify(before)}, "flock", "-n", "/data/reload.lock", "true"]);
+      assert.notEqual(probe.status, 0, "replacement owns the legacy lock during its final census");
+    }
+  }
+  return call(command, args, ...rest);
+};
+syncBuiltinESMExports();
+try {
+  ensureCaddy("b");
+  assert.equal(scans, 3);
+} finally {
+  cp.spawnSync = call;
+  syncBuiltinESMExports();
+  if (done) assert.equal((await done)[0], 0, "legacy reload completed");
+}`);
+      expect(running().Id).toBe(before);
+      await servesWith(keepRoot("root-peer"), "peer");
+    } finally {
+      NodeFS.rmSync(stale, { force: true });
+      NodeFS.rmSync(ready, { force: true });
+      if (NodeFS.existsSync(peer)) await removeFor("peer");
+    }
+    await ensureFor("b");
+    expect(running().Id).not.toBe(before);
+  });
+
+  it("rolls back only its own publication after a certificate failure", async () => {
+    await ensureFor("a");
+    const id = site("rollback");
+    const file = NodePath.join(dir, "sites", `${id}.caddy`);
+    const next = `sail-gone-${run}:8080`;
+    const legacy = `${id}.localtest.me {\n tls internal\n reverse_proxy ${backend}:8080\n}\n# legacy publication\n`;
+    const peerUpstream = `sail-peer-${run}:8080`;
+    const republished = legacy.replace(`${backend}:8080`, peerUpstream);
+    for (const change of ["none", "stopped", "remove", "legacy-republish", "legacy-predecessor"]) {
+      await publishFor("rollback");
+      const before = NodeFS.readFileSync(file, "utf8");
+      const other = `import { removeSite } from ${CADDY_TS}; removeSite(${JSON.stringify(id)});`;
+      await inInstance(`import assert from "node:assert/strict";
+import cp from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+const call = cp.spawnSync;
+const now = Date.now;
+let advanced = false;
+let replacedPredecessor = false;
+cp.spawnSync = (command, args, ...rest) => {
+  if (${JSON.stringify(change)} === "legacy-predecessor" && !replacedPredecessor &&
+      command === "docker" && args.includes("flock") && args.includes("put")) {
+    const peer = call("docker", ["exec", "--interactive", ${JSON.stringify(container)}, "flock", "/data/reload.lock", "sh", "-c",
+      ${JSON.stringify(`cat > /etc/caddy/sites/${id}.caddy && caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`)}],
+      {input: ${JSON.stringify(legacy)}, encoding: "utf8"});
+    assert.equal(peer.status, 0, peer.stderr);
+    replacedPredecessor = true;
+  }
+  if (command === process.execPath && args[0] === "-e" && args[1].includes('require("node:tls").connect')) {
+    assert.equal(advanced, false);
+    if (${JSON.stringify(change)} === "stopped") {
+      const stopped = call("docker", ["stop", ${JSON.stringify(container)}], {encoding: "utf8"});
+      assert.equal(stopped.status, 0, stopped.stderr);
+    }
+    if (${JSON.stringify(change)} === "legacy-republish") {
+      const peer = call("docker", ["exec", "--interactive", ${JSON.stringify(container)}, "flock", "/data/reload.lock", "sh", "-c",
+        ${JSON.stringify(`cat > /etc/caddy/sites/${id}.caddy && caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`)}],
+        {input: ${JSON.stringify(republished)}, encoding: "utf8"});
+      assert.equal(peer.status, 0, peer.stderr);
+    }
+    if (${JSON.stringify(change)} === "remove") {
+      const other = call(process.execPath, ["--input-type=module", "-e", ${JSON.stringify(other)}], {encoding: "utf8"});
+      assert.equal(other.status, 0, other.stderr);
+    }
+    advanced = true;
+    return { status: 1, stderr: "injected certificate failure", stdout: "" };
+  }
+  return call(command, args, ...rest);
+};
+syncBuiltinESMExports();
+Date.now = () => now() + (advanced ? 120000 : 0);
+assert.throws(() => { ${publishScript(id, next, "rollback").replace(/import .*;\n/, "")} }, /injected certificate failure/);
+import { publishSite } from ${CADDY_TS};`);
+      if (change === "none" || change === "stopped") {
+        expect(NodeFS.readFileSync(file, "utf8")).toBe(before);
+        expect(docker(["inspect", "--format", "{{.State.Running}}", container]).trim()).toBe(
+          "true",
+        );
+        await servesWith(keepRoot("root-rollback"), "rollback");
+      } else if (change === "remove") expect(NodeFS.existsSync(file)).toBe(false);
+      else if (change === "legacy-predecessor")
+        expect(NodeFS.readFileSync(file, "utf8")).toBe(legacy);
+      else expect(NodeFS.readFileSync(file, "utf8")).toBe(republished);
+      await removeFor("rollback");
+    }
+  });
+
+  it("serializes certificate verification for concurrent publishers of the same site", async () => {
+    await ensureFor("a");
+    const id = site("two-publishes");
+    const file = NodePath.join(dir, "sites", `${id}.caddy`);
+    const hold = NodePath.join(scratch, "publisher-ready");
+    const release = NodePath.join(scratch, "publisher-release");
+    const fail = (first: boolean) =>
+      inInstance(`import assert from "node:assert/strict";
+import cp from "node:child_process";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { publishSite } from ${CADDY_TS};
+const call = cp.spawnSync;
+const now = Date.now;
+let advanced = false;
+cp.spawnSync = (command, args, ...rest) => {
+  if (command === process.execPath && args[0] === "-e" && args[1].includes('require("node:tls").connect')) {
+    if (${first}) {
+      fs.writeFileSync(${JSON.stringify(hold)}, "");
+      const deadline = now() + 30000;
+      while (!fs.existsSync(${JSON.stringify(release)}) && now() < deadline)
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,25);
+      assert.ok(fs.existsSync(${JSON.stringify(release)}));
+    }
+    advanced = true;
+    return {status: 1, stderr: "injected certificate failure", stdout: ""};
+  }
+  return call(command, args, ...rest);
+};
+syncBuiltinESMExports();
+Date.now = () => now() + (advanced ? 120000 : 0);
+assert.throws(() => { ${publishScript(id, `sail-gone-${first ? "a" : "b"}-${run}:8080`, "a").replace(/import .*;\n/, "")} }, /injected certificate failure/);`);
+    const first = fail(true);
+    let second: ReturnType<typeof fail> | undefined;
+    try {
+      await expect.poll(() => NodeFS.existsSync(hold), { timeout: 120_000 }).toBe(true);
+      expect(NodeFS.existsSync(file)).toBe(true);
+      const publicationLock = takeLock(`${file}.publish.lock`);
+      publicationLock?.();
+      expect(
+        publicationLock,
+        "first publisher still owns the site during verification",
+      ).toBeUndefined();
+      second = fail(false);
+      NodeFS.writeFileSync(release, "");
+      await Promise.all([first, second]);
+      expect(NodeFS.existsSync(file), "both failed publications rolled back").toBe(false);
+    } finally {
+      NodeFS.writeFileSync(release, "");
+      await Promise.allSettled([first, second]);
+      await removeFor("two-publishes");
+    }
+  });
+
+  it("replaces the Caddy only once a reload in flight lets go of the host lock", async () => {
+    await ensureFor("a");
+    const before = running().Id;
+    const holder = NodeChildProcess.spawn("docker", [
+      "exec",
+      "--interactive",
+      container,
+      "flock",
+      "/data/reload.lock",
+      "sh",
+      "-c",
+      HOLD_UNTIL_TOLD,
+    ]);
+    const holderExited = NodeEvents.EventEmitter.once(holder, "exit");
+    let reloading: ReturnType<typeof publishFor> | undefined;
+    let replaced: ReturnType<typeof NodeEvents.EventEmitter.once> | undefined;
+    try {
+      const lines = NodeReadline.createInterface({ input: holder.stdout })[Symbol.asyncIterator]();
+      expect((await lines.next()).value).toBe("held");
+      reloading = publishFor("a", `sail-gone-${run}:8080`);
+      const milestone = await Promise.race([
+        lines.next(),
+        reloading.then(() => {
+          throw new Error("reload completed before holder observed it waiting");
+        }),
+      ]);
+      expect(milestone.value, "home a's reload waits inside the container").toBe("waiting");
+      const probe = takeLock(NodePath.join(dir, "caddy.lock"));
+      probe?.();
+      expect(probe, "and holds the host lock while it waits").toBeUndefined();
+
+      NodeFS.writeFileSync(NodePath.join(dir, "ca", "version"), "2\n");
+      const replacing = NodeChildProcess.spawn(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `import { ensureCaddy } from ${CADDY_TS};
+           import { takeLock } from ${JSON.stringify(NodePath.join(import.meta.dirname, "state.ts"))};
+           const free = takeLock(${JSON.stringify(NodePath.join(dir, "caddy.lock"))});
+           free?.();
+           process.stdout.write(free ? "free\\n" : "blocked\\n");
+           ensureCaddy("b");`,
+        ],
+        { env, stdio: ["ignore", "pipe", "inherit"] },
+      );
+      replaced = NodeEvents.EventEmitter.once(replacing, "exit");
+      const seen = await Promise.race([
+        NodeEvents.EventEmitter.once(replacing.stdout, "data").then(([data]) => String(data)),
+        replaced.then(() => undefined),
+      ]);
+      expect(seen, "home b finds the reload holding the lock it must take").toBe("blocked\n");
+      expect(running().Id).toBe(before);
+      holder.stdin.end("go\n");
+      await expect(reloading, "the reload was not cut off").resolves.toBeDefined();
+      expect((await replaced)[0]).toBe(0);
+      expect(running().Id).not.toBe(before);
+    } finally {
+      if (!holder.stdin.writableEnded) holder.stdin.end("go\n");
+      await Promise.allSettled([holderExited, reloading, replaced]);
+    }
+    await removeFor("a");
+  });
+});

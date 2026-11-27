@@ -409,6 +409,70 @@ esac
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    const RECORDED: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/fixtures/fake-boat/recorded/");
+
+    fn recorded_boat() -> (Boat, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("sail-boat-recorded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = format!(
+            r#"#!/bin/sh
+r='{RECORDED}'
+[ "$1" = --json ] && shift
+case "$1" in
+  new) case " $* " in *" --no-auto-stop "*) cat "$r/new-trial-refused.stderr" >&2; exit 1 ;; esac
+    cat "$r/new.jsonl" ;;
+  resume) case " $* " in *" --no-auto-stop "*) cat "$r/new-trial-refused.stderr" >&2; exit 1 ;; esac
+    cat "$r/resume-expired.stderr" >&2; exit 1 ;;
+  info) if [ "$2" = stopped ]; then cat "$r/info-stopped.jsonl"; else cat "$r/info.jsonl"; fi ;;
+  status|onboard|list|snapshots|host|exec|usage|limits) cat "$r/$1.jsonl" ;;
+  *) exit 1 ;;
+esac
+"#
+        );
+        let bin = dir.join("boat");
+        std::fs::write(&bin, script).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (Boat::at(bin), dir)
+    }
+
+    #[tokio::test]
+    async fn parses_what_the_fake_boat_prints() {
+        let (boat, dir) = recorded_boat();
+        let account = boat.account().await.unwrap();
+        assert!(account.signed_in);
+        assert_eq!(account.identifier.as_deref(), Some("fake-user@localtest.me"));
+        assert_eq!(account.plan.as_deref(), Some("trial"));
+
+        let id = boat.create("sail · m", "small", None).await.unwrap();
+        assert!(id.starts_with("bx-"), "{id}");
+        let sandbox = boat.info(&id).await.unwrap();
+        assert_eq!((sandbox.id.as_str(), sandbox.state.as_str()), (id.as_str(), "running"));
+        assert_eq!((sandbox.stopped_at, sandbox.ttl_seconds), (None, Some(7200)));
+        assert!(sandbox.trial_deadline().is_some());
+        assert_eq!(boat.list().await.unwrap(), vec![sandbox]);
+        let stopped = boat.info("stopped").await.unwrap();
+        assert_eq!((stopped.id.as_str(), stopped.state.as_str()), (id.as_str(), "stopped"));
+        assert!(stopped.stopped_at.is_some());
+        assert_eq!(stopped.archive_after, None);
+        assert_eq!(boat.resume(&id, "small").await.unwrap(), Resume::DataExpired);
+
+        let names = boat.named_snapshots().await.unwrap();
+        assert!(matches!(names.as_slice(), [n] if n.starts_with("fake-boat-test-")), "{names:?}");
+        let url = boat.host_public(&id, 8123).await.unwrap();
+        assert!(url.starts_with(&format!("https://{id}-8123.localtest.me")), "{url}");
+        let ran = boat.exec(&id, "id -un", 30).await.unwrap();
+        assert_eq!(ran.exit_code, Some(0));
+        assert!(ran.stdout.starts_with("user\n"), "{}", ran.stdout);
+        assert_eq!(boat.usage_since(&id, 0).await.unwrap().dollars, 0.0);
+        let starts = boat.starts().await.unwrap();
+        assert_eq!((starts.used_today, starts.limit_today), (3, 100));
+        let sign_in = boat.start_sign_in().await.unwrap();
+        let code = sign_in.code.unwrap();
+        assert_eq!(sign_in.url, format!("https://auth.localtest.me/boat/device?code={code}"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn only_the_trial_lifetime_this_app_sets_is_renewed() {
         let ends = "2026-11-24T12:00:00Z".parse().unwrap();
