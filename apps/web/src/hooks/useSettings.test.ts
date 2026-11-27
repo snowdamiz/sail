@@ -1,5 +1,9 @@
-import { DEFAULT_SERVER_SETTINGS, ProviderInstanceId } from "@t3tools/contracts";
-import { DEFAULT_CLIENT_SETTINGS, type ClientSettings } from "@t3tools/contracts/settings";
+import { DEFAULT_SERVER_SETTINGS, EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  DEFAULT_CLIENT_SETTINGS,
+  type ClientPreferencesSnapshot,
+  type ClientSettings,
+} from "@t3tools/contracts/settings";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const persistenceMocks = vi.hoisted(() => ({
@@ -17,10 +21,14 @@ import {
   ensureClientSettingsHydrated,
   getClientSettings,
   mergeEnvironmentSettings,
+  observeClientPreferences,
   persistClientSettingsPatch,
   persistClientSettingsUpdate,
   prepareModelPreferencesPatch,
+  subscribeClientSettings,
 } from "./useSettings";
+import { readBrowserClientSettings, writeBrowserClientSettings } from "~/clientPersistenceStorage";
+import { editClientPreferences } from "@t3tools/client-runtime/state/shared-settings";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 
 beforeEach(() => {
@@ -213,6 +221,79 @@ describe("persistClientSettingsPatch", () => {
         ...otherTabSettings,
         wordWrap: false,
       });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("main server preference persistence", () => {
+  it("preserves an offline edit written by another tab while acknowledging a batch", async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal(
+      "window",
+      Object.assign(new EventTarget(), {
+        localStorage: {
+          getItem: (key: string) => storage.get(key) ?? null,
+          setItem: (key: string, value: string) => storage.set(key, value),
+        },
+      }),
+    );
+    try {
+      persistenceMocks.setClientSettings.mockImplementation(async (settings) => {
+        writeBrowserClientSettings(settings);
+      });
+      __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS);
+
+      const environmentId = EnvironmentId.make("main");
+      const source = {
+        environmentId,
+        snapshot: { revision: 1, values: { fontSizeCode: 16 } },
+        access: "writable",
+      } as const;
+      const firstResponse = Promise.withResolvers<ClientPreferencesSnapshot>();
+      const firstStarted = Promise.withResolvers<void>();
+      const secondStarted = Promise.withResolvers<void>();
+      const write = vi
+        .fn()
+        .mockImplementationOnce(() => {
+          firstStarted.resolve();
+          return firstResponse.promise;
+        })
+        .mockImplementationOnce(async () => {
+          secondStarted.resolve();
+          return { revision: 3, values: { fontSizeCode: 18, wordWrap: false } };
+        });
+      const sync = { source, sessionGeneration: 0, pinServer: false, write };
+      observeClientPreferences({ ...sync, connected: false });
+      await persistClientSettingsPatch({ fontSizeCode: 18 });
+      expect(write).not.toHaveBeenCalled();
+      observeClientPreferences({ ...sync, sessionGeneration: 1, connected: true });
+      await firstStarted.promise;
+
+      const stored = readBrowserClientSettings();
+      if (stored === null) throw new Error("Expected saved client preferences.");
+      writeBrowserClientSettings(
+        editClientPreferences(stored, { ...stored, wordWrap: false }, source),
+      );
+
+      const drained = Promise.withResolvers<void>();
+      const unsubscribe = subscribeClientSettings(() => {
+        const cache = getClientSettings().clientPreferencesCache;
+        if (cache?.snapshot.revision === 3 && cache.sending === undefined) drained.resolve();
+      });
+      firstResponse.resolve({ revision: 2, values: { fontSizeCode: 18 } });
+      await secondStarted.promise;
+      expect(write).toHaveBeenNthCalledWith(
+        2,
+        environmentId,
+        expect.objectContaining({
+          sequence: 2,
+          changes: { wordWrap: false },
+        }),
+      );
+      await drained.promise;
+      unsubscribe();
     } finally {
       vi.unstubAllGlobals();
     }

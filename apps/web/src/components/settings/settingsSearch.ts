@@ -769,6 +769,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("notification toast popup completion input approval failure")],
   },
   {
+    id: "sync-client-preferences",
+    title: msg("Use the same preferences on every device"),
+    to: "/settings/general",
+  },
+  {
     id: "language",
     title: msg("Language"),
     to: "/settings/general",

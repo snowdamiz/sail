@@ -22,10 +22,16 @@ but its renderer follows the same boundary.
 
 ## Settings ownership
 
-Client preferences live in the current client; environment defaults and project overrides live on
-their owning server. An unavailable settings target must never fall back to another environment.
-**All environments** is an explicit bulk edit of currently connected servers, not a durable global
-default or sync promise.
+Sail syncs portable client preferences through one main server. The selected server owns the
+committed values. Each browser or desktop keeps the last applied values and unacknowledged edits
+in a cache bound to that server. A fresh device loads server values before publishing changes.
+The first writable device with customized preferences can initialize a new record. Concurrent
+writes merge by field in server commit order. A read-only session keeps its edits on the device.
+
+Device settings such as the browser viewport, browser profiles, microphone selection, and desktop
+quit confirmation stay on the device. Turning sync off or removing the main server keeps the
+current preferences on the device. Environment defaults and project overrides live on their
+owning server. **All environments** is an explicit bulk edit of currently connected servers.
 
 ## Durable intent and side effects
 

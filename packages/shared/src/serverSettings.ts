@@ -391,6 +391,7 @@ export function applyServerSettingsPatch(
   const selectionPatch = patch.textGenerationModelSelection;
   const {
     migrateModelPreferences,
+    writeClientPreferences,
     setModelFavorites,
     setModelsHidden,
     setProviderModelOrder,
@@ -502,8 +503,31 @@ export function applyServerSettingsPatch(
     };
   }
   const next = deepMerge(current, patchForMerge);
+  const previousPreferences = current.clientPreferences ?? { revision: 0, values: {} };
+  const writeSequences = current.clientPreferenceWriteSequences ?? {};
+  const acceptPreferenceWrite =
+    writeClientPreferences !== undefined &&
+    writeClientPreferences.sequence > (writeSequences[writeClientPreferences.writerId] ?? 0);
+
   const nextWithReplacementsBase = {
     ...next,
+    ...(acceptPreferenceWrite
+      ? {
+          clientPreferences: {
+            revision: previousPreferences.revision + 1,
+            values: {
+              ...(previousPreferences.revision === 0
+                ? writeClientPreferences.initialize
+                : previousPreferences.values),
+              ...writeClientPreferences.changes,
+            },
+          },
+          clientPreferenceWriteSequences: {
+            ...writeSequences,
+            [writeClientPreferences.writerId]: writeClientPreferences.sequence,
+          },
+        }
+      : {}),
     favorites,
     providerModelPreferences: nextModelPreferences,
     ...(worktreeCleanupPatch === undefined

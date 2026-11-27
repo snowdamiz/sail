@@ -413,7 +413,7 @@ export const VoiceTranscriptionDestination = Schema.Union([
 ]);
 export type VoiceTranscriptionDestination = typeof VoiceTranscriptionDestination.Type;
 
-export const ClientSettingsSchema = Schema.Struct({
+const ClientSettingsFields = Schema.Struct({
   notificationMode: NotificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("off" as const)),
   ),
@@ -618,9 +618,201 @@ export const ClientSettingsSchema = Schema.Struct({
   // KaTeX out of the render path entirely.
   mathRenderingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 });
+export const ClientSettingsPatch = Schema.Struct({
+  syncClientPreferences: Schema.optionalKey(Schema.Boolean),
+
+  notificationMode: Schema.optionalKey(NotificationMode),
+  inAppNotificationsEnabled: Schema.optionalKey(Schema.Boolean),
+  diffColorScheme: Schema.optionalKey(DiffColorScheme),
+  chatWidth: Schema.optionalKey(ChatWidth),
+  htmlPreviewWidth: Schema.optionalKey(HtmlPreviewWidth),
+  effortDisplay: Schema.optionalKey(EffortDisplay),
+  loadBalancingEnabled: Schema.optionalKey(Schema.Boolean),
+  loadBalancingWeights: Schema.optionalKey(LoadBalancingWeights),
+  appearanceContrast: Schema.optionalKey(AppearanceContrast),
+  panelAnimationDurationMs: Schema.optionalKey(PanelAnimationDurationMs),
+  browserDefaultViewport: Schema.optionalKey(PreviewViewportSetting),
+  browserDefaultZoomFactor: Schema.optionalKey(PreviewZoomFactor),
+  browserDefaultAppearance: Schema.optionalKey(PreviewAppearancePreference),
+  browserRecordingFrameRate: Schema.optionalKey(BrowserRecordingFrameRate),
+  browserRecordingShowKeyPresses: Schema.optionalKey(Schema.Boolean),
+  browserRecordingShowMousePresses: Schema.optionalKey(Schema.Boolean),
+  browserLinkTarget: Schema.optionalKey(BrowserLinkTarget),
+  browserSearchEngine: Schema.optionalKey(BrowserSearchEngine),
+  browserCustomSearchUrl: Schema.optionalKey(BrowserCustomSearchUrl),
+  browserAutoShowFloatingPreview: Schema.optionalKey(Schema.Boolean),
+  browserProfiles: Schema.optionalKey(Schema.Array(BrowserProfile)),
+  browserDefaultProfileId: Schema.optionalKey(BrowserProfileId),
+  confirmQuit: Schema.optionalKey(QuitConfirmationMode),
+  confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
+  confirmTerminalClose: Schema.optionalKey(Schema.Boolean),
+  confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
+  confirmThreadUnpin: Schema.optionalKey(Schema.Boolean),
+  diffFilesCollapsed: Schema.optionalKey(Schema.Boolean),
+  diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
+  diffLayout: Schema.optionalKey(DiffLayout),
+  environmentIdentificationMode: Schema.optionalKey(EnvironmentIdentificationMode),
+  glassOpacity: Schema.optionalKey(GlassOpacity),
+  onboardingCompletedAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  fontSizeInterface: Schema.optionalKey(InterfaceFontSize),
+  fontSizePrompt: Schema.optionalKey(PromptFontSize),
+  fontSizeCode: Schema.optionalKey(CodeFontSize),
+  fontSizeTerminal: Schema.optionalKey(TerminalFontSize),
+  fontFamilyCode: Schema.optionalKey(FontFamilyPreference),
+  fontFamilyComposer: Schema.optionalKey(FontFamilyPreference),
+  fontFamilySans: Schema.optionalKey(FontFamilyPreference),
+  fontFamilyTerminal: Schema.optionalKey(FontFamilyPreference),
+  fontSmoothing: Schema.optionalKey(Schema.Boolean),
+  persistComposerContextStrip: Schema.optionalKey(Schema.Boolean),
+  favorites: Schema.optionalKey(ModelFavorites),
+  providerModelPreferences: Schema.optionalKey(ProviderModelPreferences),
+  pullRequestMergeMethodOverrides: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, PullRequestMergeMethod),
+  ),
+  pullRequestLinksOpenInApp: Schema.optionalKey(Schema.Boolean),
+  composerRichTextEnabled: Schema.optionalKey(Schema.Boolean),
+  sendShortcut: Schema.optionalKey(Schema.Literals(["enter", "mod-enter-multiline", "mod-enter"])),
+  followUpBehavior: Schema.optionalKey(Schema.Literals(["queue", "steer"])),
+  sideThreadOpenTarget: Schema.optionalKey(SideThreadOpenTarget),
+  proactivePanelsEnabled: Schema.optionalKey(Schema.Boolean),
+  showSkillsInSlashMenu: Schema.optionalKey(Schema.Boolean),
+  boringSidebarEnabled: Schema.optionalKey(Schema.Boolean),
+  boringSidebarMultilineRows: Schema.optionalKey(Schema.Boolean),
+  toolCallVisibility: Schema.optionalKey(ToolCallVisibility),
+  screenReaderAnnouncements: Schema.optionalKey(ScreenReaderAnnouncements),
+  screenReaderWindowTitle: Schema.optionalKey(Schema.Boolean),
+  threadDetailsUsageEnabled: Schema.optionalKey(Schema.Boolean),
+  threadDetailsItems: Schema.optionalKey(Schema.Record(Schema.String, Schema.Boolean)),
+  sidebarWorkingShelfEnabled: Schema.optionalKey(Schema.Boolean),
+  sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
+  sidebarProjectGroupingOverrides: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),
+  ),
+  sidebarProjectSortOrder: Schema.optionalKey(SidebarProjectSortOrder),
+  sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
+  timestampFormat: Schema.optionalKey(TimestampFormat),
+  voiceMicrophone: Schema.optionalKey(Schema.String),
+  voiceMicrophones: Schema.optionalKey(Schema.Array(VoiceMicrophoneEntry)),
+  voiceShortcutMode: Schema.optionalKey(VoiceShortcutMode),
+  speechLanguage: Schema.optionalKey(SpeechLanguage),
+  speechTranslateToEnglish: Schema.optionalKey(Schema.Boolean),
+  speechCustomWords: Schema.optionalKey(SpeechCustomWords),
+  speechSilenceFiltering: Schema.optionalKey(Schema.Boolean),
+  speechStreaming: Schema.optionalKey(Schema.Boolean),
+  speechRemoveFillerWords: Schema.optionalKey(Schema.Boolean),
+  speechPostProcessingPrompt: Schema.optionalKey(SpeechPostProcessingPromptSettings),
+  speechCorrectionWord: Schema.optionalKey(SpeechCorrectionCue),
+  language: Schema.optionalKey(Schema.String),
+  snapShotEnabled: Schema.optionalKey(Schema.Boolean),
+  snapShotIncludeAccessibility: Schema.optionalKey(Schema.Boolean),
+  snapShotShortcut: Schema.optionalKey(SnapShotShortcut),
+  snapShotPlaySound: Schema.optionalKey(Schema.Boolean),
+  snapShotSound: Schema.optionalKey(SnapShotSound),
+  snapShotFlash: Schema.optionalKey(Schema.Boolean),
+  snapShotAnimations: Schema.optionalKey(Schema.Boolean),
+  wordWrap: Schema.optionalKey(Schema.Boolean),
+  mathRenderingEnabled: Schema.optionalKey(Schema.Boolean),
+});
+export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;
+
+// New settings stay on the device until explicitly reviewed for portability.
+export const SHARED_CLIENT_PREFERENCE_KEYS = [
+  "diffColorScheme",
+  "chatWidth",
+  "htmlPreviewWidth",
+  "effortDisplay",
+  "appearanceContrast",
+  "confirmThreadArchive",
+  "confirmThreadDelete",
+  "confirmThreadUnpin",
+  "diffFilesCollapsed",
+  "diffIgnoreWhitespace",
+  "diffLayout",
+  "environmentIdentificationMode",
+  "fontSizeInterface",
+  "fontSizePrompt",
+  "fontSizeCode",
+  "fontSizeTerminal",
+  "persistComposerContextStrip",
+  "pullRequestLinksOpenInApp",
+  "composerRichTextEnabled",
+  "sendShortcut",
+  "followUpBehavior",
+  "sideThreadOpenTarget",
+  "proactivePanelsEnabled",
+  "showSkillsInSlashMenu",
+  "boringSidebarEnabled",
+  "boringSidebarMultilineRows",
+  "toolCallVisibility",
+  "threadDetailsUsageEnabled",
+  "threadDetailsItems",
+  "sidebarWorkingShelfEnabled",
+  "sidebarProjectGroupingMode",
+  "sidebarProjectSortOrder",
+  "sidebarThreadSortOrder",
+  "timestampFormat",
+  "speechLanguage",
+  "speechTranslateToEnglish",
+  "speechSilenceFiltering",
+  "speechRemoveFillerWords",
+  "language",
+  "wordWrap",
+  "mathRenderingEnabled",
+] as const satisfies readonly (keyof ClientSettingsPatch)[];
+
+const SharedClientPreferences = ClientSettingsPatch.mapFields((fields) =>
+  Struct.pick(fields, SHARED_CLIENT_PREFERENCE_KEYS),
+);
+
+export const ClientPreferencesSnapshot = Schema.Struct({
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  values: SharedClientPreferences,
+});
+export type ClientPreferencesSnapshot = typeof ClientPreferencesSnapshot.Type;
+
+const ClientPreferenceWriterId = Schema.String.check(Schema.isUUID());
+const ClientPreferenceSequence = Schema.Int.check(Schema.isGreaterThan(0));
+
+export const ClientPreferencesWrite = Schema.Struct({
+  writerId: ClientPreferenceWriterId,
+  sequence: ClientPreferenceSequence,
+  changes: SharedClientPreferences,
+  initialize: Schema.optionalKey(SharedClientPreferences),
+});
+export type ClientPreferencesWrite = typeof ClientPreferencesWrite.Type;
+
+const ClientPreferencesCache = Schema.Struct({
+  environmentId: EnvironmentId,
+  snapshot: ClientPreferencesSnapshot,
+  pending: SharedClientPreferences,
+  sending: Schema.optionalKey(ClientPreferencesWrite),
+  writer: Schema.optionalKey(
+    Schema.Struct({
+      id: ClientPreferenceWriterId,
+      sequence: ClientPreferenceSequence,
+    }),
+  ),
+  overrides: SharedClientPreferences,
+});
+export type ClientPreferencesCache = typeof ClientPreferencesCache.Type;
+
+export const ClientSettingsSchema = Schema.Struct({
+  ...ClientSettingsFields.fields,
+  syncClientPreferences: Schema.optionalKey(Schema.Boolean),
+  clientPreferencesMainServerId: Schema.optionalKey(EnvironmentId),
+  clientPreferencesCache: Schema.optionalKey(ClientPreferencesCache),
+});
 export type ClientSettings = typeof ClientSettingsSchema.Type;
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = Schema.decodeSync(ClientSettingsSchema)({});
+
+export function clientSettingsForStorage(
+  settings: typeof ClientSettingsSchema.Encoded,
+): typeof ClientSettingsSchema.Encoded {
+  return settings.clientPreferencesCache === undefined
+    ? settings
+    : Struct.omit(settings, SHARED_CLIENT_PREFERENCE_KEYS);
+}
 
 const UsageModelTokenPrice = Schema.Number.check(
   Schema.isFinite(),
@@ -1391,6 +1583,11 @@ export const CloudSpeechCredentials = Schema.Struct({
 });
 
 export const ServerSettings = Schema.Struct({
+  clientPreferences: Schema.optionalKey(ClientPreferencesSnapshot),
+  clientPreferenceWriteSequences: Schema.optionalKey(
+    Schema.Record(ClientPreferenceWriterId, ClientPreferenceSequence),
+  ),
+
   // Null means unmigrated; empty is authoritative and must not resurrect cleared preferences.
   favorites: Schema.NullOr(ModelFavorites).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   providerModelPreferences: Schema.NullOr(ProviderModelPreferences).pipe(
@@ -1827,7 +2024,11 @@ export class ServerSettingsError extends Schema.TaggedError<ServerSettingsError>
   }
 }
 
-export type UnifiedSettings = Omit<ServerSettings, keyof ModelPreferences> & ClientSettings;
+export type UnifiedSettings = Omit<
+  ServerSettings,
+  keyof ModelPreferences | "clientPreferences" | "clientPreferenceWriteSequences"
+> &
+  ClientSettings;
 export const DEFAULT_UNIFIED_SETTINGS: UnifiedSettings = {
   ...DEFAULT_SERVER_SETTINGS,
   ...DEFAULT_CLIENT_SETTINGS,
@@ -1840,6 +2041,8 @@ const ModelSelectionPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  writeClientPreferences: Schema.optionalKey(ClientPreferencesWrite),
+
   setModelFavorites: Schema.optionalKey(
     Schema.Array(Schema.Struct({ ...ModelFavorite.fields, favorite: Schema.Boolean })),
   ),
@@ -2102,98 +2305,3 @@ export function requiredScopesForProjectMutation(
     ]),
   ];
 }
-
-export const ClientSettingsPatch = Schema.Struct({
-  notificationMode: Schema.optionalKey(NotificationMode),
-  inAppNotificationsEnabled: Schema.optionalKey(Schema.Boolean),
-  diffColorScheme: Schema.optionalKey(DiffColorScheme),
-  chatWidth: Schema.optionalKey(ChatWidth),
-  htmlPreviewWidth: Schema.optionalKey(HtmlPreviewWidth),
-  effortDisplay: Schema.optionalKey(EffortDisplay),
-  loadBalancingEnabled: Schema.optionalKey(Schema.Boolean),
-  loadBalancingWeights: Schema.optionalKey(LoadBalancingWeights),
-  appearanceContrast: Schema.optionalKey(AppearanceContrast),
-  panelAnimationDurationMs: Schema.optionalKey(PanelAnimationDurationMs),
-  browserDefaultViewport: Schema.optionalKey(PreviewViewportSetting),
-  browserDefaultZoomFactor: Schema.optionalKey(PreviewZoomFactor),
-  browserDefaultAppearance: Schema.optionalKey(PreviewAppearancePreference),
-  browserRecordingFrameRate: Schema.optionalKey(BrowserRecordingFrameRate),
-  browserRecordingShowKeyPresses: Schema.optionalKey(Schema.Boolean),
-  browserRecordingShowMousePresses: Schema.optionalKey(Schema.Boolean),
-  browserLinkTarget: Schema.optionalKey(BrowserLinkTarget),
-  browserSearchEngine: Schema.optionalKey(BrowserSearchEngine),
-  browserCustomSearchUrl: Schema.optionalKey(BrowserCustomSearchUrl),
-  browserAutoShowFloatingPreview: Schema.optionalKey(Schema.Boolean),
-  browserProfiles: Schema.optionalKey(Schema.Array(BrowserProfile)),
-  browserDefaultProfileId: Schema.optionalKey(BrowserProfileId),
-  confirmQuit: Schema.optionalKey(QuitConfirmationMode),
-  confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
-  confirmTerminalClose: Schema.optionalKey(Schema.Boolean),
-  confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
-  confirmThreadUnpin: Schema.optionalKey(Schema.Boolean),
-  diffFilesCollapsed: Schema.optionalKey(Schema.Boolean),
-  diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
-  diffLayout: Schema.optionalKey(DiffLayout),
-  environmentIdentificationMode: Schema.optionalKey(EnvironmentIdentificationMode),
-  glassOpacity: Schema.optionalKey(GlassOpacity),
-  onboardingCompletedAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  fontSizeInterface: Schema.optionalKey(InterfaceFontSize),
-  fontSizePrompt: Schema.optionalKey(PromptFontSize),
-  fontSizeCode: Schema.optionalKey(CodeFontSize),
-  fontSizeTerminal: Schema.optionalKey(TerminalFontSize),
-  fontFamilyCode: Schema.optionalKey(FontFamilyPreference),
-  fontFamilyComposer: Schema.optionalKey(FontFamilyPreference),
-  fontFamilySans: Schema.optionalKey(FontFamilyPreference),
-  fontFamilyTerminal: Schema.optionalKey(FontFamilyPreference),
-  fontSmoothing: Schema.optionalKey(Schema.Boolean),
-  persistComposerContextStrip: Schema.optionalKey(Schema.Boolean),
-  favorites: Schema.optionalKey(ModelFavorites),
-  providerModelPreferences: Schema.optionalKey(ProviderModelPreferences),
-  pullRequestMergeMethodOverrides: Schema.optionalKey(
-    Schema.Record(TrimmedNonEmptyString, PullRequestMergeMethod),
-  ),
-  pullRequestLinksOpenInApp: Schema.optionalKey(Schema.Boolean),
-  composerRichTextEnabled: Schema.optionalKey(Schema.Boolean),
-  sendShortcut: Schema.optionalKey(Schema.Literals(["enter", "mod-enter-multiline", "mod-enter"])),
-  followUpBehavior: Schema.optionalKey(Schema.Literals(["queue", "steer"])),
-  sideThreadOpenTarget: Schema.optionalKey(SideThreadOpenTarget),
-  proactivePanelsEnabled: Schema.optionalKey(Schema.Boolean),
-  showSkillsInSlashMenu: Schema.optionalKey(Schema.Boolean),
-  boringSidebarEnabled: Schema.optionalKey(Schema.Boolean),
-  boringSidebarMultilineRows: Schema.optionalKey(Schema.Boolean),
-  toolCallVisibility: Schema.optionalKey(ToolCallVisibility),
-  screenReaderAnnouncements: Schema.optionalKey(ScreenReaderAnnouncements),
-  screenReaderWindowTitle: Schema.optionalKey(Schema.Boolean),
-  threadDetailsUsageEnabled: Schema.optionalKey(Schema.Boolean),
-  threadDetailsItems: Schema.optionalKey(Schema.Record(Schema.String, Schema.Boolean)),
-  sidebarWorkingShelfEnabled: Schema.optionalKey(Schema.Boolean),
-  sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
-  sidebarProjectGroupingOverrides: Schema.optionalKey(
-    Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),
-  ),
-  sidebarProjectSortOrder: Schema.optionalKey(SidebarProjectSortOrder),
-  sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
-  timestampFormat: Schema.optionalKey(TimestampFormat),
-  voiceMicrophone: Schema.optionalKey(Schema.String),
-  voiceMicrophones: Schema.optionalKey(Schema.Array(VoiceMicrophoneEntry)),
-  voiceShortcutMode: Schema.optionalKey(VoiceShortcutMode),
-  speechLanguage: Schema.optionalKey(SpeechLanguage),
-  speechTranslateToEnglish: Schema.optionalKey(Schema.Boolean),
-  speechCustomWords: Schema.optionalKey(SpeechCustomWords),
-  speechSilenceFiltering: Schema.optionalKey(Schema.Boolean),
-  speechStreaming: Schema.optionalKey(Schema.Boolean),
-  speechRemoveFillerWords: Schema.optionalKey(Schema.Boolean),
-  speechPostProcessingPrompt: Schema.optionalKey(SpeechPostProcessingPromptSettings),
-  speechCorrectionWord: Schema.optionalKey(SpeechCorrectionCue),
-  language: Schema.optionalKey(Schema.String),
-  snapShotEnabled: Schema.optionalKey(Schema.Boolean),
-  snapShotIncludeAccessibility: Schema.optionalKey(Schema.Boolean),
-  snapShotShortcut: Schema.optionalKey(SnapShotShortcut),
-  snapShotPlaySound: Schema.optionalKey(Schema.Boolean),
-  snapShotSound: Schema.optionalKey(SnapShotSound),
-  snapShotFlash: Schema.optionalKey(Schema.Boolean),
-  snapShotAnimations: Schema.optionalKey(Schema.Boolean),
-  wordWrap: Schema.optionalKey(Schema.Boolean),
-  mathRenderingEnabled: Schema.optionalKey(Schema.Boolean),
-});
-export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;

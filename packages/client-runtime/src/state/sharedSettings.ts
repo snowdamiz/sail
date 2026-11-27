@@ -69,3 +69,13 @@ export function supportsSharedSettingsSync(environment: {
 }): boolean {
   return environment.connection.phase === "connected" && environment.serverConfig !== null;
 }
+
+export {
+  acknowledgeClientPreferences,
+  editClientPreferences,
+  prepareClientPreferencesWrite,
+  reconcileClientPreferences,
+  restoreClientPreferences,
+  selectClientPreferencesServer,
+  type ClientPreferencesSource,
+} from "./clientPreferences.ts";

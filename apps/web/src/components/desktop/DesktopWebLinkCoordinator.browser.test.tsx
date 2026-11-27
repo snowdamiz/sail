@@ -1,3 +1,4 @@
+import type { ClientSettings } from "@t3tools/contracts/settings";
 import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
@@ -20,6 +21,7 @@ const state = vi.hoisted(() => ({
     _tag: "Success",
     value: "remote",
   })),
+  setClientSettings: vi.fn(async (_settings: ClientSettings) => undefined),
   setLocalEnvironmentEnabled: vi.fn(async (_enabled: boolean) => undefined),
   localEnvironmentDisabled: false,
   remoteConnected: true,
@@ -177,6 +179,7 @@ async function mount(...urls: string[]) {
   stack.use(
     stubGlobal("desktopBridge", {
       getClientSettings: async () => null,
+      setClientSettings: state.setClientSettings,
       getLocalEnvironmentBootstraps: () => [],
       setLocalEnvironmentEnabled: state.setLocalEnvironmentEnabled,
       webLinks: {
@@ -313,9 +316,17 @@ it("turns off Local environment only after the user chooses the connected server
 
   await expect.element(useMainServer).toBeEnabled();
   expect(state.setLocalEnvironmentEnabled).not.toHaveBeenCalled();
+  expect(state.setClientSettings).not.toHaveBeenCalled();
 
+  const restarted = Promise.withResolvers<boolean>();
+  state.setLocalEnvironmentEnabled.mockImplementationOnce(async (enabled) => {
+    expect(state.setClientSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ clientPreferencesMainServerId: EnvironmentId.make("remote") }),
+    );
+    restarted.resolve(enabled);
+  });
   await useMainServer.click();
-  expect(state.setLocalEnvironmentEnabled).toHaveBeenCalledExactlyOnceWith(false);
+  expect(await restarted.promise).toBe(false);
 });
 
 it("keeps the paired server and the local server when the restart is declined", async () => {

@@ -1,4 +1,9 @@
-import { ClientSettingsSchema, type ClientSettings } from "@t3tools/contracts";
+import {
+  clientSettingsForStorage,
+  ClientSettingsSchema,
+  type ClientSettings,
+} from "@t3tools/contracts/settings";
+import { restoreClientPreferences } from "@t3tools/client-runtime/state/shared-settings";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import { resolveSymlinkTarget } from "@t3tools/shared/symlink";
 import * as Context from "effect/Context";
@@ -13,7 +18,7 @@ import * as Ref from "effect/Ref";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 
-const ClientSettingsJson = fromLenientJson(ClientSettingsSchema);
+const ClientSettingsJson = fromLenientJson(Schema.toEncoded(ClientSettingsSchema));
 const decodeClientSettingsDocument = Schema.decodeEffect(
   fromLenientJson(Schema.Record(Schema.String, Schema.Unknown)),
 );
@@ -21,10 +26,12 @@ const decodeClientSettingsValue = Schema.decodeUnknownEffect(ClientSettingsSchem
 const decodeClientSettingsJson = Effect.fnUntraced(function* (raw: string) {
   const document = yield* decodeClientSettingsDocument(raw);
   // Select the shape before validation so invalid legacy settings cannot become defaults.
-  return yield* decodeClientSettingsValue(
+  const settings = yield* decodeClientSettingsValue(
     Object.hasOwn(document, "settings") ? document.settings : document,
   );
+  return restoreClientPreferences(settings);
 });
+const encodeClientSettings = Schema.encodeEffect(ClientSettingsSchema);
 const encodeClientSettingsJson = Schema.encodeEffect(ClientSettingsJson);
 
 export class DesktopClientSettingsReadError extends Schema.TaggedError<DesktopClientSettingsReadError>()(
@@ -142,7 +149,9 @@ const writeClientSettings = Effect.fnUntraced(function* (input: {
   );
   const directory = input.path.dirname(targetPath);
   const tempPath = `${targetPath}.${process.pid}.${input.suffix}.tmp`;
-  const encoded = yield* encodeClientSettingsJson(input.settings).pipe(
+  const encoded = yield* encodeClientSettings(input.settings).pipe(
+    Effect.map(clientSettingsForStorage),
+    Effect.flatMap(encodeClientSettingsJson),
     Effect.mapError(
       (cause) =>
         new DesktopClientSettingsWriteError({

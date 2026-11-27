@@ -1,3 +1,4 @@
+import { clientPreferencesServerAtom } from "~/state/clientPreferences";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { m as resolveMessage } from "~/i18n/messages";
 import { useAtomValue } from "@effect/atom-react";
@@ -847,6 +848,7 @@ export function GeneralSettingsPanel() {
   const m = useMessages();
   const setting = useSearchableSetting();
   const settings = useScopedSettings();
+  const preferenceServer = useAtomValue(clientPreferencesServerAtom);
   const updateSettings = useUpdateScopedSettings();
   const lastEnabledProjectGroupingMode = useRef<SidebarProjectGroupingMode>(
     readLastEnabledProjectGroupingMode(),
@@ -1135,6 +1137,17 @@ export function GeneralSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection id="display" title={gt("Display")}>
+        <SettingsRow
+          {...setting("sync-client-preferences")}
+          control={
+            <Switch
+              checked={preferenceServer != null && settings.syncClientPreferences !== false}
+              disabled={preferenceServer == null}
+              onCheckedChange={(checked) => updateSettings({ syncClientPreferences: checked })}
+              aria-label={gt("Use the same preferences on every device")}
+            />
+          }
+        />
         <SettingsRow
           {...setting("language")}
           description={<T>System default follows your browser or OS language.</T>}

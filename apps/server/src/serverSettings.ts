@@ -161,8 +161,10 @@ export function redactServerSettingsForClient(
     : mapSettingsSecretValues(redacted, (value) =>
         isSecretReference(value) ? SECRET_REDACTED : value,
       );
+  const { clientPreferenceWriteSequences: _writeSequences, ...visible } = shaped;
   return {
-    ...shaped,
+    ...visible,
+    clientPreferences: shaped.clientPreferences ?? { revision: 0, values: {} },
     secretProviders: withoutUnknownSecretProviderConfigs(shaped),
     // Older clients decode only "cliproxy" sources and reject the whole settings payload otherwise.
     usageLimitSources: client.httpUsageLimitSources
