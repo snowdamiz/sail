@@ -45,6 +45,21 @@ Windows packages the bundled server and its unpacked native modules in `resource
 
 ## One-time credentials setup
 
+### Sail lane container package
+
+Before the first Sail `-lane.*` release, the package owner must provision
+`ghcr.io/<owner>/sail-server-lane` as a private package outside the release
+workflow. In the package settings, an admin must grant the Sail repository
+**Write** under **Manage Actions access**. Each lane image job requires GitHub
+Packages to report the package as `private` using the workflow's `GITHUB_TOKEN`.
+Missing or unverifiable package metadata blocks the push.
+
+A first push from a public repository can create a public package. GitHub
+prevents changing a public package back to private. If the name is already
+occupied by a public package, the owner must resolve it before retrying the
+lane release.
+[GitHub Packages visibility and access settings](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility)
+
 ### npm OIDC trusted publishing
 
 Configure `t3` on npm with GitHub Actions Trusted Publishing for `.github/workflows/release.yml` (the workflow publishes only the `t3` launcher tarball via `npm publish --provenance`). Set the publisher's environment to `production`, which `publish_cli` declares.
