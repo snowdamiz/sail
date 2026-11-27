@@ -278,10 +278,7 @@ it.effect("keeps a one-time run after a restart interrupts an earlier manual run
       expect(task?.lastRunStatus).toBe("failed");
       expect(task?.nextRunAt).toBe("2026-11-01T08:00:00.000Z");
     }).pipe(Effect.provide(serviceLayer));
-  }).pipe(
-    Effect.provideService(ServerActivation, Effect.never),
-    Effect.provide(SqlitePersistence.layerMemory),
-  ),
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
 it.effect("reports the stored task when the row was replaced during the run", () =>

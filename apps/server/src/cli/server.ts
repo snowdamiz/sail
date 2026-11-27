@@ -36,7 +36,7 @@ const runServerCommand = Effect.fn("server.runServerCommand")(function* (
   yield* verifyServiceMaintenanceHome(config);
   const run = Effect.raceFirst(
     runServer.pipe(Effect.provideService(ServerConfig.ServerConfig, config)),
-    awaitServiceLauncherStop().pipe(Effect.andThen(Effect.interrupt)),
+    awaitServiceLauncherStop(),
   ).pipe(
     // Settings' Reclaim stops the server; repair once the database is closed, before the restart.
     Effect.ensuring(

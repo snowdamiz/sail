@@ -1,3 +1,4 @@
+import { ServerAdmission } from "./serverAdmission.ts";
 import {
   CommandId,
   DEFAULT_MODEL,
@@ -482,6 +483,14 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
   const random = yield* SecureRandom.SecureRandom;
   const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
+  const admission = yield* ServerAdmission;
+  const reconcileSealed = providerRuntimeRecovery.reconcile("shutdown").pipe(
+    Effect.tap((summary) =>
+      Effect.logInfo("Sealed server shutdown reconciliation completed", summary),
+    ),
+    Effect.asVoid,
+    Effect.orDie,
+  );
 
   const commandGate = yield* makeCommandGate;
   const httpListening = yield* Deferred.make<void>();
@@ -501,6 +510,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
       if (workerFiber !== null) {
         yield* Fiber.interrupt(workerFiber).pipe(Effect.ignore);
       }
+      if (yield* admission?.isConfirmedSeal ?? Effect.succeed(false)) return;
       yield* providerRuntimeRecovery.prepareForShutdown.pipe(
         Effect.ensuring(providerSessions.shutdown),
       );
@@ -714,7 +724,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
         },
       }),
     );
-    yield* launcher.maintenanceReady?.(maintenanceIdentity) ?? Effect.void;
+    yield* launcher.maintenanceReady?.(maintenanceIdentity, reconcileSealed) ?? Effect.void;
     yield* Effect.logDebug("startup phase: complete");
     yield* flushCompileCache;
   }).pipe(

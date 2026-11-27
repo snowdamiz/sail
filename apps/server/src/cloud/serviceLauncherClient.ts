@@ -4,6 +4,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Semaphore from "effect/Semaphore";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -147,6 +148,7 @@ export class ServiceLauncherClient extends Context.Service<
     }) => Effect.Effect<ServerSelfUpdateOutcome | undefined, ServiceLauncherClientError>;
     readonly maintenanceReady?: (
       identity: MaintenanceIdentity,
+      reconcileSealed: Effect.Effect<void>,
     ) => Effect.Effect<void, ServiceLauncherClientError, Scope.Scope>;
   }
 >()("t3/cloud/serviceLauncherClient") {}
@@ -517,6 +519,7 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
 
   const maintenanceReady = Effect.fn("cloud.service_launcher_client.maintenance_ready")(function* (
     identity: MaintenanceIdentity,
+    reconcileSealed: Effect.Effect<void>,
   ) {
     if (peer === undefined) return;
     const admission = yield* ServerAdmission;
@@ -545,13 +548,15 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
 
     let current: { readonly fence: MaintenanceFence; readonly token: symbol } | undefined;
     const retired = new Set<string>();
+    const sealGate = yield* Semaphore.make(1);
     yield* Effect.forever(
       Effect.gen(function* () {
         const command = yield* Queue.take(commands);
         if (command.type === "maintenance-abort") {
           if (current !== undefined && !sameMaintenanceFence(current.fence, command.fence)) return;
-          if (current !== undefined) yield* admission.abort(current.token);
+          const attempt = current;
           current = undefined;
+          if (attempt !== undefined) yield* sealGate.withPermit(admission.abort(attempt.token));
           retired.add(command.fence.updateId);
           yield* send({ type: "maintenance-aborted", fence: command.fence }).pipe(
             Effect.timeoutOption("1 second"),
@@ -564,11 +569,26 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
         current = attempt;
         yield* Effect.gen(function* () {
           const result = yield* admission.drain(attempt.token, command.budgetMs);
-          if (current !== attempt) return;
-          yield* send({
-            type: result.kind === "sealed" ? "maintenance-sealed" : "maintenance-deferred",
-            fence: attempt.fence,
-          }).pipe(Effect.timeoutOption("1 second"), Effect.ignore);
+          yield* sealGate.withPermit(
+            Effect.gen(function* () {
+              if (current !== attempt) return;
+              const confirmed =
+                result.kind === "sealed" &&
+                (yield* admission.confirmSeal(attempt.token, reconcileSealed).pipe(
+                  Effect.timeout(command.budgetMs),
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("Failed to reconcile sealed server for maintenance", {
+                      cause,
+                    }).pipe(Effect.as(false)),
+                  ),
+                ));
+              if (current !== attempt) return;
+              yield* send({
+                type: confirmed ? "maintenance-sealed" : "maintenance-deferred",
+                fence: attempt.fence,
+              }).pipe(Effect.timeoutOption("1 second"), Effect.ignore);
+            }),
+          );
         }).pipe(Effect.forkScoped({ startImmediately: true }));
       }),
     ).pipe(Effect.forkScoped);

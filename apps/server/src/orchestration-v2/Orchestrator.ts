@@ -1,4 +1,9 @@
-import { ServerMaintenanceBusy, withAdmission } from "../serverAdmission.ts";
+import {
+  forkAccepted,
+  ServerAdmission,
+  ServerMaintenanceBusy,
+  withAdmission,
+} from "../serverAdmission.ts";
 import { admitCommand } from "./CommandAdmission.ts";
 import type {
   OrchestrationV2ThreadLinkMetadata,
@@ -112,6 +117,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FiberSet from "effect/FiberSet";
+import * as Queue from "effect/Queue";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
@@ -1660,6 +1666,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const commandPolicy = yield* CommandPolicyV2;
   const contextHandoffService = yield* ContextHandoffServiceV2;
   const eventSink = yield* EventSinkV2;
+  const admission = yield* ServerAdmission;
+  const scope = yield* Effect.scope;
   const commandReceipts = yield* CommandReceiptStoreV2;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
@@ -16934,7 +16942,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   cause,
                 }),
               ),
-              FiberSet.run(parentTaskSyncRetries),
+              forkAccepted(scope),
+              Effect.tap((fiber) => FiberSet.add(parentTaskSyncRetries, fiber)),
+              Effect.ignoreCause({ log: true }),
             ),
           ),
         ),
@@ -17024,32 +17034,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   // Projections already contain historical terminals; replaying them delays startup queue promotion with database size.
   const terminalEventsAfterSequence = yield* eventSink.latestSequence().pipe(Effect.orDie);
-  // Filter run updates before buffering so blocked queue promotion does not retain unrelated tool bodies.
-  yield* eventSink
-    .stream({ afterSequence: terminalEventsAfterSequence, eventType: "run.updated" })
-    .pipe(
-      Stream.filter(
-        (stored) =>
-          stored.event.type === "run.updated" &&
-          (!String(stored.commandId).startsWith("command:runtime-reconcile:") ||
-            (stored.event.payload.delegatedTaskId !== undefined &&
-              stored.event.payload.status === "queued" &&
-              stored.event.payload.queueHeld === true)) &&
-          ((stored.event.payload.delegatedTaskId !== undefined &&
-            (stored.event.payload.status === "queued" ||
-              stored.event.payload.status === "starting" ||
-              stored.event.payload.status === "waiting")) ||
-            stored.event.payload.status === "completed" ||
-            stored.event.payload.status === "interrupted" ||
-            stored.event.payload.status === "failed" ||
-            stored.event.payload.status === "cancelled" ||
-            stored.event.payload.status === "rolled_back"),
+  const runUpdates = yield* Queue.unbounded<{
+    readonly stored: OrchestrationV2StoredEvent;
+    readonly release: (() => void) | undefined;
+  }>();
+  yield* eventSink.onCommittedRunUpdates((stored) => {
+    if (stored.event.type !== "run.updated") return;
+    const run = stored.event.payload;
+    const delegatedProgress =
+      run.delegatedTaskId !== undefined &&
+      (run.status === "queued" || run.status === "starting" || run.status === "waiting");
+    if (String(stored.commandId).startsWith("command:runtime-reconcile:")) {
+      if (!(delegatedProgress && run.status === "queued" && run.queueHeld === true)) return;
+    } else if (!delegatedProgress && delegatedTaskTerminalStatus(run.status) === null) return;
+    const release = admission?.trackLifetime("run-settlement");
+    Queue.offerUnsafe(runUpdates, { stored, release });
+  });
+  yield* Effect.forever(
+    Queue.take(runUpdates).pipe(
+      Effect.flatMap(({ stored, release }) =>
+        threadReactions.run(
+          stored.event.threadId,
+          handleRunUpdate(stored).pipe(Effect.ensuring(Effect.sync(() => release?.()))),
+        ),
       ),
-      Stream.runForEach((stored) =>
-        threadReactions.run(stored.event.threadId, handleRunUpdate(stored)),
-      ),
-      Effect.forkScoped,
-    );
+    ),
+  ).pipe(Effect.forkScoped);
 
   yield* eventSink
     .stream({ afterSequence: terminalEventsAfterSequence, eventType: "provider-turn.updated" })

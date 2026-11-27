@@ -823,9 +823,10 @@ function sendMessage(
       reject(new Error("service child IPC is disconnected."));
       return;
     }
-    const timer = message.type.startsWith("maintenance-")
-      ? setTimeout(() => reject(new Error("Maintenance IPC send timed out.")), 1_000)
-      : undefined;
+    const timer =
+      message.type === "stop" || message.type.startsWith("maintenance-")
+        ? setTimeout(() => reject(new Error("Maintenance IPC send timed out.")), 1_000)
+        : undefined;
     try {
       child.send(message, (error) => {
         clearTimeout(timer);
@@ -1831,8 +1832,12 @@ export class Launcher {
     this.#clearTimer();
     await this.#selectState({ ...this.#state, maintenance: { ...attempt, phase: "cutover" } });
     this.#child = null;
-    await this.#terminate(child.process);
+    await terminateChild(child.process, "SIGTERM", true);
     this.#maintenance?.assertReaped?.();
+    if (child.process.exitCode !== 0) {
+      await this.#returnToPrevious(update, "failed", "unclean-maintenance-shutdown");
+      return;
+    }
     try {
       await publishStagedSailRelease(
         peer.baseDir,

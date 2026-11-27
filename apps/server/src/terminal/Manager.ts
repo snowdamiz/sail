@@ -2753,13 +2753,30 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     }
   });
 
+  const processEventDrains = new Map<TerminalSessionState, Set<Fiber.Fiber<void, never>>>();
   const startProcessEventDrain = (session: TerminalSessionState, pid: number) => {
     const release = admission?.trackLifetime("terminal-settlement");
     const fiber = runFork(drainProcessEvents(session, pid));
-    if (release !== undefined) fiber.addObserver(release);
+    const drains = processEventDrains.get(session) ?? new Set();
+    drains.add(fiber);
+    processEventDrains.set(session, drains);
+    fiber.addObserver(() => {
+      drains.delete(fiber);
+      if (drains.size === 0) processEventDrains.delete(session);
+      release?.();
+    });
   };
 
+  const settleProcessEvents = Effect.fn("terminal.settleProcessEvents")(function* (
+    session: TerminalSessionState,
+  ) {
+    // Stop accepting callbacks before waiting for the output and exit already queued.
+    cleanupProcessHandles(session);
+    yield* Fiber.awaitAll(processEventDrains.get(session) ?? []);
+  });
+
   const stopProcess = Effect.fn("terminal.stopProcess")(function* (session: TerminalSessionState) {
+    yield* settleProcessEvents(session);
     const process = session.process;
     if (!process) return;
 
@@ -2786,7 +2803,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     });
     yield* startKillEscalation(process, session.threadId, session.terminalId);
     yield* evictInactiveSessionsIfNeeded();
-  });
+  }, Effect.uninterruptible);
 
   const trySpawn = Effect.fn("terminal.trySpawn")(function* (
     shellCandidates: ReadonlyArray<ShellCandidate>,
@@ -3077,14 +3094,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     function* (threadId: string, terminalId: string, deleteHistoryOnClose: boolean) {
       const key = toSessionKey(threadId, terminalId);
       const session = yield* getSession(threadId, terminalId);
-      const closedEventSequence = Option.isSome(session) ? session.value.eventSequence + 1 : 0;
-
       if (Option.isSome(session)) {
         yield* stopProcess(session.value);
         yield* unregisterTerminal({ threadId, terminalId });
         yield* persistHistory(threadId, terminalId, session.value.history);
       }
 
+      const closedEventSequence = Option.isSome(session) ? session.value.eventSequence + 1 : 0;
       yield* flushPersist(threadId, terminalId);
 
       const removed = yield* modifyManagerState((state) => {

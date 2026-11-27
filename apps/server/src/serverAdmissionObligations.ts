@@ -22,6 +22,13 @@ export const observeDurableObligations = Effect.fn("ServerAdmission.observeDurab
                    WHERE status NOT IN ('completed', 'interrupted', 'failed', 'cancelled', 'superseded'))
         OR EXISTS (SELECT 1 FROM orchestration_v2_projection_runtime_requests
                    WHERE status NOT IN ('resolved', 'expired', 'cancelled'))
+        OR EXISTS (
+          SELECT 1 FROM orchestration_v2_projection_turn_items item
+          JOIN orchestration_v2_projection_runs run ON run.run_id = item.run_id
+          WHERE item.type = 'user_message' AND item.status = 'pending'
+            AND run.status IN ('completed', 'interrupted', 'failed', 'cancelled')
+            AND json_extract(item.payload_json, '$.inputIntent') IN ('steer', 'promoted_queued_to_steer')
+        )
         OR EXISTS (SELECT 1 FROM orchestration_v2_effect_outbox
                    WHERE status NOT IN ('succeeded', 'failed', 'cancelled'))
       ) AS orchestration,

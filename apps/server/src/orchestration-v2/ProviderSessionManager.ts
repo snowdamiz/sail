@@ -1487,12 +1487,17 @@ export const layerWithOptions = (
       // provider process that never yields its message stream).
       const closeScopeWithin = Effect.fn("ProviderSessionManager.closeScopeWithin")(function* (
         scope: Scope.Closeable,
-        annotations: { readonly providerSessionId?: ProviderSessionId; readonly reason: string },
+        annotations: {
+          readonly providerSessionId?: ProviderSessionId;
+          readonly reason: string;
+        },
+        awaitCompletion = false,
       ) {
         const closeFiber = yield* Scope.close(scope, Exit.void).pipe(
           Effect.exit,
           Effect.forkDetach({ startImmediately: true }),
         );
+        if (awaitCompletion) return Option.some(yield* Fiber.join(closeFiber));
         const closeExit = yield* Fiber.join(closeFiber).pipe(
           Effect.timeoutOption(RELEASE_SCOPE_CLOSE_TIMEOUT_MS),
         );
@@ -1525,6 +1530,7 @@ export const layerWithOptions = (
         readonly detail?: string;
         readonly detachedThreadId?: ThreadId;
         readonly cancelIdleFiber?: boolean;
+        readonly maintenance?: true;
         readonly onlyIfIdleGeneration?: number;
         readonly keepIfBusyOtherThan?: OwnBusyTurns;
         readonly keepIf?: Effect.Effect<boolean>;
@@ -1572,10 +1578,11 @@ export const layerWithOptions = (
                       input.detachedThreadId,
                     );
                   }
-                  const closeExit = yield* closeScopeWithin(entry.scope, {
-                    providerSessionId: input.providerSessionId,
-                    reason: input.reason,
-                  });
+                  const closeExit = yield* closeScopeWithin(
+                    entry.scope,
+                    { providerSessionId: input.providerSessionId, reason: input.reason },
+                    input.maintenance === true,
+                  );
                   const records = {
                     entry,
                     reason: input.reason,
@@ -1646,10 +1653,12 @@ export const layerWithOptions = (
           ),
         );
 
+      let retirementUnverified = false;
       const releaseIfStillIdle = Effect.fn("ProviderSessionManager.releaseIfStillIdle")(
         function* (input: {
           readonly providerSessionId: ProviderSessionId;
           readonly generation: number;
+          readonly maintenance?: true;
         }): Effect.fn.Return<void> {
           const current = yield* Ref.get(sessions);
           const key = sessionKey(input.providerSessionId);
@@ -1667,7 +1676,7 @@ export const layerWithOptions = (
             (probedRuntime.hasPendingBackgroundWork === undefined
               ? false
               : yield* probedRuntime.hasPendingBackgroundWork.pipe(
-                  Effect.catchCause(() => Effect.succeed(false)),
+                  Effect.catchCause(() => Effect.succeed(input.maintenance === true)),
                 )) ||
             // Closing now would skip the archive of a child whose parent has not taken its result.
             Option.isSome(
@@ -1678,6 +1687,7 @@ export const layerWithOptions = (
               ),
             );
           if (hasPendingWork) {
+            if (input.maintenance === true) return;
             const now = yield* Clock.currentTimeMillis;
             const pinnedSinceMs = entry.pinnedSinceMs ?? now;
             if (now - pinnedSinceMs < maxIdlePinMs) {
@@ -1728,18 +1738,50 @@ export const layerWithOptions = (
           yield* releaseEntry({
             providerSessionId: input.providerSessionId,
             reason: "idle_timeout",
-            cancelIdleFiber: false,
+            cancelIdleFiber: input.maintenance === true,
+            ...(input.maintenance === true ? { maintenance: true } : {}),
             onlyIfIdleGeneration: input.generation,
           }).pipe(
             Effect.catchCause((cause) =>
-              Effect.logWarning("orchestration-v2.driver-session.idle-release-failed", {
-                providerSessionId: input.providerSessionId,
-                cause,
-              }),
+              Effect.sync(() => {
+                if (input.maintenance) retirementUnverified = true;
+              }).pipe(
+                Effect.andThen(
+                  Effect.logWarning("orchestration-v2.driver-session.idle-release-failed", {
+                    providerSessionId: input.providerSessionId,
+                    cause,
+                  }),
+                ),
+              ),
             ),
           );
         },
       );
+
+      if (admission !== undefined) {
+        yield* admission.registerObserver(
+          Effect.sync(() => (retirementUnverified ? ["provider-retirement-unverified"] : [])),
+        );
+        yield* admission.registerProviderRetirement(
+          Effect.gen(function* () {
+            const current = yield* Ref.get(sessions);
+            yield* Effect.forEach(
+              current.values(),
+              (entry) =>
+                entry.runtime.driver === "acpRegistry" &&
+                entry.runtime.canResumeAfterRestart === true &&
+                entry.runtime.eventsEndOnClose === true
+                  ? releaseIfStillIdle({
+                      providerSessionId: entry.runtime.providerSessionId,
+                      generation: entry.idleGeneration,
+                      maintenance: true,
+                    })
+                  : Effect.void,
+              { discard: true, concurrency: "unbounded" },
+            );
+          }),
+        );
+      }
 
       const withActivityError = <A, E, R>(
         providerSessionId: ProviderSessionId,
@@ -3022,9 +3064,11 @@ export const layerWithOptions = (
         let stoppedByProvider = false;
         let lastSessionStatus = entry.runtime.providerSession.status;
         const retryStalls = makeRetryStallWatch(entry);
-        return entry.runtime.events.pipe(
-          // Several adapters never end their event stream, and a parked pump retains the whole session.
-          Stream.interruptWhen(Deferred.await(sessionClosed)),
+        const events =
+          entry.runtime.eventsEndOnClose === true
+            ? entry.runtime.events
+            : entry.runtime.events.pipe(Stream.interruptWhen(Deferred.await(sessionClosed)));
+        return events.pipe(
           Stream.runForEach((nativeEvent) => {
             if (shutdownSignal.received) return Effect.void;
             // Live output bypasses persistence and subscribers so floods cannot delay domain events.
@@ -3212,7 +3256,15 @@ export const layerWithOptions = (
               }).pipe(logReleaseFailure(entry.runtime.providerSessionId));
             }),
           ),
-          forkAccepted(layerScope),
+          (work) =>
+            Effect.uninterruptible(
+              Effect.gen(function* () {
+                const release = admission?.trackLifetime("provider-event-pump");
+                const fiber = yield* Effect.forkIn(work, layerScope);
+                if (release !== undefined) fiber.addObserver(release);
+                return fiber;
+              }),
+            ),
         );
       };
 
@@ -3423,16 +3475,7 @@ export const layerWithOptions = (
                     payload: runtime.providerSession,
                   }),
                 );
-                yield* startEventPump(entry, sessionClosed).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new ProviderSessionOpenError({
-                        instanceId: input.modelSelection.instanceId,
-                        providerSessionId: input.providerSessionId,
-                        cause,
-                      }),
-                  ),
-                );
+                yield* startEventPump(entry, sessionClosed);
                 yield* scheduleIdleRelease(input.providerSessionId);
                 return exposedRuntime;
               }).pipe(

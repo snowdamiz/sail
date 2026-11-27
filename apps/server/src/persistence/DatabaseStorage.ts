@@ -17,7 +17,7 @@ import { resolveHostCliCommand } from "../cli/invocation.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
 import * as DatabaseMaintenance from "./DatabaseMaintenance.ts";
-import { forkAccepted, withAdmission } from "../serverAdmission.ts";
+import { forkAccepted, ServerAdmission, withAdmission } from "../serverAdmission.ts";
 import { forkParked } from "../serverActivation.ts";
 
 // Bound each reclaim pass to one minute of churn.
@@ -53,6 +53,15 @@ const make = Effect.gen(function* () {
   const statusRef = yield* SubscriptionRef.make<DatabaseStorageStatus | null>(null);
   const restart = yield* ServerRestart;
   const reclaimFiles = DatabaseMaintenance.reclaimFiles(path, config.dbPath);
+  const admission = yield* ServerAdmission;
+  yield* (
+    admission?.registerObserver(
+      fs.exists(reclaimFiles.request).pipe(
+        Effect.map((pending) => (pending ? (["database-reclaim-pending"] as const) : [])),
+        Effect.orElseSucceed(() => ["quiescence-unknown"] as const),
+      ),
+    ) ?? Effect.void
+  );
   let reclaimFailure = Option.getOrUndefined(
     yield* fs.readFileString(reclaimFiles.failure).pipe(Effect.option),
   );

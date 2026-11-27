@@ -25,7 +25,9 @@ type LiveProducer =
   | "provider-continuation"
   | "provider-session"
   | "terminal-process"
-  | "terminal-settlement";
+  | "terminal-settlement"
+  | "run-settlement"
+  | "provider-event-pump";
 
 type DrainBlocker =
   | LiveProducer
@@ -49,6 +51,8 @@ type DrainBlocker =
   | "source-control-sign-in-unqualified"
   | "connect-configured"
   | "relay-webhook-configured"
+  | "database-reclaim-pending"
+  | "provider-retirement-unverified"
   | "settings-state-unknown"
   | "quiescence-unknown"
   | "producer-inventory-incomplete";
@@ -83,6 +87,8 @@ export const makeAdmission = <E>(
   // Gate changes and permit registration run in synchronous sections on the server's JS thread.
   let phase: Phase = { kind: "open" };
   const permits = new Set<symbol>();
+  let confirmedSeal: symbol | undefined;
+  let retireIdleProviders: Effect.Effect<void> | undefined;
   const observers = new Set<Effect.Effect<ReadonlyArray<DrainBlocker>>>();
   const liveProducers = new Map<LiveProducer, number>();
   let observerRevision = 0;
@@ -108,6 +114,48 @@ export const makeAdmission = <E>(
           signalChange();
         }),
     );
+
+  const registerProviderRetirement = (retire: Effect.Effect<void>) =>
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        retireIdleProviders = retire;
+      }),
+      () =>
+        Effect.sync(() => {
+          if (retireIdleProviders === retire) retireIdleProviders = undefined;
+        }),
+    );
+
+  const census = Effect.suspend(() =>
+    Effect.all([observe, ...observers]).pipe(
+      Effect.map((reports) => [
+        ...new Set([
+          ...reports.flat(),
+          ...liveProducers.keys(),
+          ...(producerInventory === "incomplete" ? ["producer-inventory-incomplete" as const] : []),
+        ]),
+      ]),
+    ),
+  );
+  const isSealed = (token: symbol) => phase.kind === "sealed" && phase.drain.token === token;
+  const confirmSeal = Effect.fn("ServerAdmission.confirmSeal")(function* (
+    token: symbol,
+    reconcile: Effect.Effect<void>,
+  ) {
+    if (!isSealed(token)) return false;
+    const revision = observerRevision;
+    yield* reconcile;
+    const blockers = yield* census.pipe(Effect.orDie);
+    if (
+      !isSealed(token) ||
+      permits.size !== 0 ||
+      blockers.length !== 0 ||
+      observerRevision !== revision
+    )
+      return false;
+    confirmedSeal = token;
+    return true;
+  });
 
   // Called by an admitted owner before handing a lifetime to a scope or native callback.
   const trackLifetime = (producer: LiveProducer) => {
@@ -221,17 +269,6 @@ export const makeAdmission = <E>(
         const waitForSettlement = Effect.gen(function* () {
           // A read-only observer can finish after a deadline without holding admission closed.
           const read = Effect.gen(function* () {
-            const census = Effect.all([observe, ...observers]).pipe(
-              Effect.map((reports) => [
-                ...new Set([
-                  ...reports.flat(),
-                  ...liveProducers.keys(),
-                  ...(producerInventory === "incomplete"
-                    ? ["producer-inventory-incomplete" as const]
-                    : []),
-                ]),
-              ]),
-            );
             const result = yield* Effect.acquireUseRelease(
               Effect.forkDetach(Effect.exit(census), { startImmediately: true }),
               Fiber.join,
@@ -243,7 +280,23 @@ export const makeAdmission = <E>(
             const notification = changed;
             blockers = permits.size > 0 ? ["in-flight"] : yield* read;
             if (!stillDraining()) return "requested";
+            if (
+              retireIdleProviders !== undefined &&
+              blockers.includes("provider-session") &&
+              blockers.every(
+                (blocker) =>
+                  blocker === "producer-inventory-incomplete" ||
+                  blocker === "provider-session" ||
+                  blocker === "provider-event-pump" ||
+                  blocker === "native-child",
+              )
+            ) {
+              yield* fork(undefined, Effect.uninterruptible(retireIdleProviders)).pipe(
+                Effect.ignore,
+              );
+            }
             if (blockers.length === 0) {
+              if (permits.size > 0) continue;
               phase = { kind: "sealing", drain: attempt };
               while (permits.size > 0) yield* Deferred.await(changed);
               if (!stillDraining()) return "requested";
@@ -289,6 +342,9 @@ export const makeAdmission = <E>(
     drain,
     abort,
     registerObserver,
+    registerProviderRetirement,
+    isConfirmedSeal: Effect.sync(() => confirmedSeal !== undefined && isSealed(confirmedSeal)),
+    confirmSeal,
     trackLifetime,
     producerInventoryComplete: producerInventory === "complete",
   };

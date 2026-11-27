@@ -595,7 +595,9 @@ it.layer(
       const scanned = yield* Deferred.make<void>();
       const admission = makeAdmission(Deferred.succeed(scanned, undefined).pipe(Effect.as([])));
       yield* Effect.gen(function* () {
-        const { manager, ptyAdapter } = yield* createManager(5, { processKillGraceMs: 5_000 });
+        const { manager, ptyAdapter, logsDir } = yield* createManager(5, {
+          processKillGraceMs: 5_000,
+        });
         const input = openInput();
         assert.equal((yield* manager.open(input)).status, "running");
         const [process] = ptyAdapter.processes;
@@ -612,7 +614,26 @@ it.layer(
           })
           .pipe(Effect.flip);
         assert.equal(write._tag, "TerminalMaintenanceBusy");
-        yield* manager.close({ threadId: input.threadId, terminalId: input.terminalId });
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const unsubscribe = yield* manager.subscribe((event) =>
+          event.type === "output" && event.data === "first\n"
+            ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            : Effect.void,
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+        process.emitData("first\n");
+        yield* Deferred.await(entered);
+        process.emitData("accepted before close\n");
+        const closing = yield* manager
+          .close({ threadId: input.threadId, terminalId: input.terminalId })
+          .pipe(Effect.forkScoped({ startImmediately: true }));
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(closing);
+        const fs = yield* FileSystem.FileSystem;
+        expect(yield* fs.readFileString(yield* historyLogPath(logsDir))).toBe(
+          "first\naccepted before close\n",
+        );
         assert.equal(
           (yield* manager.open(input).pipe(Effect.flip))._tag,
           "TerminalMaintenanceBusy",

@@ -473,10 +473,15 @@ it.effect(
         "root",
         Effect.sync(() => admission.trackLifetime("native-child")),
       );
+      const entered = yield* Deferred.make<void>();
+      const reconciled = yield* Deferred.make<void>();
+      const reconcile = Deferred.succeed(entered, undefined).pipe(
+        Effect.andThen(Deferred.await(reconciled)),
+      );
       const client = yield* makeClient(host, "1.0.0");
       assert.isDefined(client.maintenanceReady);
       yield* client
-        .maintenanceReady({ baseDir, dbPath, environmentId: peer.environmentId })
+        .maintenanceReady({ baseDir, dbPath, environmentId: peer.environmentId }, reconcile)
         .pipe(Effect.provideService(ServerAdmission, admission));
       assert.equal((yield* Queue.take(replies)).type, "maintenance-ready");
       host.emit({ type: "maintenance-drain", fence, budgetMs: 10_000 });
@@ -484,7 +489,12 @@ it.effect(
       const refused = yield* Effect.flip(admission.run("root", Effect.void));
       assert.isTrue(refused.retryable);
       yield* admission.run("continuation", Effect.sync(release));
+      yield* Deferred.await(entered);
+      assert.isFalse(yield* admission.isConfirmedSeal);
+      yield* Effect.flip(admission.run("continuation", Effect.void));
+      yield* Deferred.succeed(reconciled, undefined);
       assert.deepEqual(yield* Queue.take(replies), { type: "maintenance-sealed", fence });
+      assert.isTrue(yield* admission.isConfirmedSeal);
 
       host.emit({ type: "maintenance-abort", fence: { ...fence, updateId: peer.instanceId } });
       yield* Effect.flip(admission.run("continuation", Effect.void));
