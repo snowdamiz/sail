@@ -1,12 +1,13 @@
-import { SAIL_HULL_PATH, SAIL_JIB_PATH, SAIL_MAIN_PATH } from "@t3tools/shared/sailBrand";
+import { SAIL_BACKGROUND, SAIL_ICON_RADIUS, SAIL_MARK_PATHS } from "@t3tools/shared/sailBrand";
 import type { SVGProps } from "react";
 
 export function SailBrandMark(props: SVGProps<SVGSVGElement>) {
   return (
-    <svg {...props} viewBox="18 16 92 98" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d={SAIL_MAIN_PATH} fill="var(--color-sky-400)" />
-      <path d={SAIL_JIB_PATH} fill="currentColor" />
-      <path d={SAIL_HULL_PATH} fill="var(--color-sky-500)" />
+    <svg {...props} viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+      <rect width={128} height={128} rx={SAIL_ICON_RADIUS} fill={SAIL_BACKGROUND} />
+      {SAIL_MARK_PATHS.map(({ d, fill }) => (
+        <path key={d} d={d} fill={fill} />
+      ))}
     </svg>
   );
 }
