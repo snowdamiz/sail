@@ -4469,6 +4469,7 @@ export class OrchestrationV2DispatchCommandError extends Schema.TaggedError<Orch
     commandId: CommandId,
     commandType: Schema.String,
     message: Schema.String,
+    retryable: Schema.optional(Schema.Literal(true)),
     detail: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
@@ -4497,6 +4498,7 @@ export class OrchestrationV2ThreadLaunchError extends Schema.TaggedError<Orchest
     commandId: CommandId,
     projectId: ProjectId,
     message: Schema.String,
+    retryable: Schema.optional(Schema.Literal(true)),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}

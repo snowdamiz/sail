@@ -1,3 +1,4 @@
+import { forkAccepted, withAdmission } from "../serverAdmission.ts";
 import {
   CommandId,
   MessageId,
@@ -179,6 +180,7 @@ export type WebhookTriggerResult =
       readonly deliveryId: ScheduledTaskWebhookDeliveryId;
       readonly outcome: "accepted" | "duplicate" | "coalesced" | "prompt_too_long" | "filtered";
     }
+  | { readonly _tag: "maintenance_busy"; readonly retryable: true }
   | { readonly _tag: "not_found" }
   | { readonly _tag: "rejected_signature" }
   | { readonly _tag: "disabled" }
@@ -1235,7 +1237,7 @@ export const layer = Layer.effect(
                 cause,
               }),
             ),
-            Effect.forkIn(serviceScope),
+            forkAccepted(serviceScope),
           );
         }
         // The stored row can belong to a replacement, so report this dispatch separately.
@@ -1354,6 +1356,8 @@ export const layer = Layer.effect(
                 )
               : runTask(task, "scheduled"),
           ).pipe(
+            withAdmission("root"),
+            Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
             Effect.catch((cause) =>
               Effect.logWarning("Scheduled task run failed", { taskId: task.id, cause }),
             ),
@@ -1767,21 +1771,36 @@ export const layer = Layer.effect(
 
     const runNow: ScheduledTaskService["Service"]["runNow"] = Effect.fn(
       "ScheduledTaskService.runNow",
-    )(function* (input: ScheduledTaskRunNowInput) {
-      const task = yield* loadTask(input.id);
-      if (task.schedule.type === "webhook") {
-        return yield* taskError("Webhook tasks run when their URL receives a request.", {
-          taskId: input.id,
-        });
-      }
-      return yield* runTask(task, "manual").pipe(
-        Effect.mapError((cause) =>
-          isScheduledTaskError(cause)
-            ? cause
-            : taskError("Could not run schedule task.", { taskId: input.id, cause }),
+    )(
+      function* (input: ScheduledTaskRunNowInput) {
+        const task = yield* loadTask(input.id);
+        if (task.schedule.type === "webhook") {
+          return yield* taskError("Webhook tasks run when their URL receives a request.", {
+            taskId: input.id,
+          });
+        }
+        return yield* runTask(task, "manual").pipe(
+          Effect.mapError((cause) =>
+            isScheduledTaskError(cause)
+              ? cause
+              : taskError("Could not run schedule task.", { taskId: input.id, cause }),
+          ),
+        );
+      },
+      withAdmission("root"),
+      (effect, input) =>
+        effect.pipe(
+          Effect.catchTags({
+            ServerMaintenanceBusy: (cause) =>
+              new ScheduledTaskError({
+                message: cause.message,
+                retryable: true,
+                taskId: input.id,
+                cause,
+              }),
+          }),
         ),
-      );
-    });
+    );
 
     const rotateWebhookToken: ScheduledTaskService["Service"]["rotateWebhookToken"] = Effect.fn(
       "ScheduledTaskService.rotateWebhookToken",
@@ -2170,6 +2189,11 @@ export const layer = Layer.effect(
 
     const triggerWebhook: ScheduledTaskService["Service"]["triggerWebhook"] = (request) =>
       triggerWebhookUnobserved(request).pipe(
+        withAdmission("root"),
+        Effect.catchTags({
+          ServerMaintenanceBusy: () =>
+            Effect.succeed({ _tag: "maintenance_busy", retryable: true } as const),
+        }),
         // Accepted deliveries may have queued a coalescing window.
         Effect.ensuring(pendingWebhooks.invalidate),
         Effect.tapError(() => observeDelivery(request, "error", undefined, undefined)),
@@ -2557,7 +2581,7 @@ export const layer = Layer.effect(
             // A relay-delivered webhook is traced to the relay; the run it starts is local work
             // whose spans carry workspace paths.
             withLocalTracing,
-            Effect.forkIn(serviceScope),
+            forkAccepted(serviceScope),
           );
           // Dispatch owns the accepted delivery now; retries must keep its claim.
           claimAcquired = false;
@@ -2685,12 +2709,18 @@ export const layer = Layer.effect(
                     return next;
                   })
                 : Effect.void,
-          ).pipe(Effect.forkIn(serviceScope));
+          ).pipe(forkAccepted(serviceScope));
         },
         { discard: true },
       );
     });
-    yield* scheduler.register("webhook-coalescing", dispatchPending());
+    yield* scheduler.register(
+      "webhook-coalescing",
+      dispatchPending().pipe(
+        withAdmission("continuation"),
+        Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
+      ),
+    );
 
     return ScheduledTaskService.of({
       list,

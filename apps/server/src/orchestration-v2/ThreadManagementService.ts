@@ -1,3 +1,5 @@
+import { admitCommand } from "./CommandAdmission.ts";
+import { withAdmission } from "../serverAdmission.ts";
 import type {
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -848,6 +850,7 @@ const make = Effect.gen(function* () {
     ensureCommandTranscripts(command).pipe(
       Effect.andThen(assertDispatchTargetEnabled(command)),
       Effect.andThen(orchestrator.dispatch(command)),
+      admitCommand(command),
     );
 
   const getProjectThreadRecords: ThreadManagementServiceShape["getProjectThreadRecords"] = (
@@ -1033,7 +1036,7 @@ const make = Effect.gen(function* () {
             ? "restarted"
             : "steered";
     return { dispatch: dispatched, projection, message, run, turnItem, delivery };
-  });
+  }, withAdmission("root"));
 
   const submitRunOutput: ThreadManagementServiceShape["submitRunOutput"] = Effect.fn(
     "ThreadManagementService.submitRunOutput",

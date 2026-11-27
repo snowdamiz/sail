@@ -1,3 +1,4 @@
+import { withAdmission } from "../serverAdmission.ts";
 import { CommandId, type RunId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -1003,6 +1004,11 @@ export const layerWithOptions = (
                 ? cause
                 : new OrchestrationEffectWorkerError({ operation: "run", cause }),
             ),
+          ),
+        (effect, _filter?: ClaimFilter) =>
+          effect.pipe(
+            withAdmission("continuation"),
+            Effect.catchTags({ ServerMaintenanceBusy: () => Effect.succeed(false) }),
           ),
       );
 

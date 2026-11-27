@@ -1,3 +1,5 @@
+import { ServerMaintenanceBusy, withAdmission } from "../serverAdmission.ts";
+import { admitCommand } from "./CommandAdmission.ts";
 import type {
   OrchestrationV2ThreadLinkMetadata,
   GuestShareId,
@@ -401,6 +403,7 @@ export const OrchestratorV2Error = Schema.Union([
   OrchestratorThreadAboveModeLimitError,
   OrchestratorProviderSelectionBusyError,
   OrchestratorRuntimeModeAboveCeilingError,
+  ServerMaintenanceBusy,
 ]);
 export type OrchestratorV2Error = typeof OrchestratorV2Error.Type;
 
@@ -16820,69 +16823,72 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
-  const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
-    // The latest stable run is the one with a checkpoint. Wait for a just-completed run's capture,
-    // outside the locks its commit takes, so a fork right after a turn starts from that turn.
-    if (
-      (command.type === "thread.fork" || command.type === "thread.merge_back") &&
-      command.sourcePoint.type === "latest_stable"
-    ) {
-      yield* awaitLatestRunCapture(command.sourceThreadId);
-    }
-    const dispatch = threadDispatch.withLock(
-      commandThreadId(command),
-      dispatchWithReceiptEffect(command),
-    );
-    // A fork holds its source's lock, so a source deletion and its fork never interleave. A
-    // parent's lock comes before its side chats' locks. A side chat fork from a side chat or a
-    // fork onto an existing thread would invert that order; dispatch rejects both, so they skip it.
-    if (command.type === "thread.fork" && command.sourceThreadId !== command.targetThreadId) {
-      const source = yield* findThread(command.sourceThreadId);
-      const target = yield* findThread(command.targetThreadId);
-      const skipsSourceLock =
-        source === null ||
-        target !== null ||
-        (command.sideChat === true && source.lineage.sideChat === true);
-      return yield* skipsSourceLock
-        ? dispatch
-        : threadDispatch.withLock(command.sourceThreadId, dispatch);
-    }
-    if (
-      command.type === "thread.delete" ||
-      command.type === "thread.archive" ||
-      command.type === "thread.unarchive"
-    ) {
-      const cascade = threadDispatch.withLock(
-        command.threadId,
-        liveSideChatIds(command.threadId).pipe(
-          Effect.flatMap((sideChatIds) =>
-            sideChatIds.reduce(
-              (locked, sideChatId) => threadDispatch.withLock(sideChatId, locked),
-              dispatchWithReceiptEffect(command, sideChatIds),
+  const dispatchWithReceipt = Effect.fnUntraced(
+    function* (command: OrchestrationV2ServerCommand) {
+      // The latest stable run is the one with a checkpoint. Wait for a just-completed run's capture,
+      // outside the locks its commit takes, so a fork right after a turn starts from that turn.
+      if (
+        (command.type === "thread.fork" || command.type === "thread.merge_back") &&
+        command.sourcePoint.type === "latest_stable"
+      ) {
+        yield* awaitLatestRunCapture(command.sourceThreadId);
+      }
+      const dispatch = threadDispatch.withLock(
+        commandThreadId(command),
+        dispatchWithReceiptEffect(command),
+      );
+      // A fork holds its source's lock, so a source deletion and its fork never interleave. A
+      // parent's lock comes before its side chats' locks. A side chat fork from a side chat or a
+      // fork onto an existing thread would invert that order; dispatch rejects both, so they skip it.
+      if (command.type === "thread.fork" && command.sourceThreadId !== command.targetThreadId) {
+        const source = yield* findThread(command.sourceThreadId);
+        const target = yield* findThread(command.targetThreadId);
+        const skipsSourceLock =
+          source === null ||
+          target !== null ||
+          (command.sideChat === true && source.lineage.sideChat === true);
+        return yield* skipsSourceLock
+          ? dispatch
+          : threadDispatch.withLock(command.sourceThreadId, dispatch);
+      }
+      if (
+        command.type === "thread.delete" ||
+        command.type === "thread.archive" ||
+        command.type === "thread.unarchive"
+      ) {
+        const cascade = threadDispatch.withLock(
+          command.threadId,
+          liveSideChatIds(command.threadId).pipe(
+            Effect.flatMap((sideChatIds) =>
+              sideChatIds.reduce(
+                (locked, sideChatId) => threadDispatch.withLock(sideChatId, locked),
+                dispatchWithReceiptEffect(command, sideChatIds),
+              ),
             ),
           ),
-        ),
-      );
-      return yield* command.type === "thread.delete"
-        ? threadDispatch.withDeletionLock(cascade)
-        : cascade;
-    }
-    // Taken before the lineage read, so a message whose read yields keeps its
-    // place ahead of later messages to the same thread.
-    const message =
-      command.type === "thread.metadata.update" ? metadataUpdateContinuation(command) : command;
-    if (message?.type === "message.dispatch")
-      return yield* messageIntake.withLock(
-        message.threadId,
-        mayStartSubagentFollowup(message)
-          ? withSubagentParentLock(message.threadId, dispatch)
-          : dispatch,
-      );
-    // Answering a message-mode question can also start a follow-up.
-    return yield* command.type === "runtime-request.respond"
-      ? withSubagentParentLock(command.threadId, dispatch)
-      : dispatch;
-  });
+        );
+        return yield* command.type === "thread.delete"
+          ? threadDispatch.withDeletionLock(cascade)
+          : cascade;
+      }
+      // Taken before the lineage read, so a message whose read yields keeps its
+      // place ahead of later messages to the same thread.
+      const message =
+        command.type === "thread.metadata.update" ? metadataUpdateContinuation(command) : command;
+      if (message?.type === "message.dispatch")
+        return yield* messageIntake.withLock(
+          message.threadId,
+          mayStartSubagentFollowup(message)
+            ? withSubagentParentLock(message.threadId, dispatch)
+            : dispatch,
+        );
+      // Answering a message-mode question can also start a follow-up.
+      return yield* command.type === "runtime-request.respond"
+        ? withSubagentParentLock(command.threadId, dispatch)
+        : dispatch;
+    },
+    (effect, command) => admitCommand(command)(effect),
+  );
 
   const parentTaskSyncRetries = yield* FiberSet.make();
   const syncDelegatedParentTask = Effect.fn("Orchestrator.syncDelegatedParentTask")(function* (
@@ -17454,7 +17460,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           );
         }),
       );
-    }),
+    }, withAdmission("root")),
     searchThreadStream: (input) =>
       projectionStore
         .searchThreadStream(input)

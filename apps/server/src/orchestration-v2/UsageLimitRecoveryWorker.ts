@@ -1,3 +1,4 @@
+import { withAdmission } from "../serverAdmission.ts";
 import { CommandId, MessageId, type OrchestrationV2Command } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -150,6 +151,12 @@ export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const sweep = yield* makeSweep;
     const scheduler = yield* Scheduler.Scheduler;
-    yield* scheduler.register("usage-limit-recovery", sweep());
+    yield* scheduler.register(
+      "usage-limit-recovery",
+      sweep().pipe(
+        withAdmission("root"),
+        Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
+      ),
+    );
   }),
 );

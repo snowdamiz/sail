@@ -1,3 +1,4 @@
+import { forkAccepted, ServerAdmission, withAdmission } from "../serverAdmission.ts";
 // The workflow service on Effect's workflow engine. Loaded only when workflows are enabled: the
 // engine's modules are not worth their load time on a server that registers none.
 import * as Cause from "effect/Cause";
@@ -64,6 +65,7 @@ import {
 } from "./WorkflowForge.ts";
 import {
   hookId as hookIdOf,
+  type WorkflowError,
   WorkflowHookBusyError,
   WorkflowInputError,
   WorkflowNotRegisteredError,
@@ -260,6 +262,18 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
     if (wait !== undefined) yield* seeTurn(wait);
   });
 
+  const admitWorkflow =
+    (lane: "root" | "continuation") =>
+    <A, E extends WorkflowError, R>(work: Effect.Effect<A, E, R>) =>
+      work.pipe(
+        withAdmission(lane),
+        Effect.mapError((cause) =>
+          cause._tag === "ServerMaintenanceBusy"
+            ? new WorkflowInputError({ problem: cause.message, retryable: true })
+            : cause,
+        ),
+      );
+
   const start: Workflows["Service"]["start"] = Effect.fn("Workflows.start")(
     function* (name, input, options) {
       // A parent written against one version of a child must not get another one's payload.
@@ -405,7 +419,11 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
         }
       }
     }
-  }).pipe(Effect.withSpan("Workflows.fireSchedules"));
+  }).pipe(
+    withAdmission("root"),
+    Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
+    Effect.withSpan("Workflows.fireSchedules"),
+  );
 
   // Trackers and hosts count requests, and nothing here is in that much of a hurry.
   const lookedAt = new Map<string, number>();
@@ -510,7 +528,11 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
         );
       }
     }
-  }).pipe(Effect.withSpan("Workflows.fireOpened"));
+  }).pipe(
+    withAdmission("root"),
+    Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
+    Effect.withSpan("Workflows.fireOpened"),
+  );
 
   const noChecksSince = new Map<string, number>();
   /** End each wait on a pull request that has got where the wait wanted it. */
@@ -767,8 +789,13 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
     for (const row of yield* store.cancelsCutShort(END_STEP)) {
       if (cancelling.has(row.run_id) || ending.has(row.run_id)) continue;
       const engine = byTag.get(row.engine_tag);
-      if (engine !== undefined) yield* withEngine(engine.interrupt(row.run_id));
-      yield* stopSteps(row.run_id, yield* store.runningThreads(row.run_id));
+      yield* Effect.gen(function* () {
+        if (engine !== undefined) yield* withEngine(engine.interrupt(row.run_id));
+        yield* stopSteps(row.run_id, yield* store.runningThreads(row.run_id));
+      }).pipe(
+        withAdmission("continuation"),
+        Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
+      );
     }
     // A run that ended without its parent hearing of it. Telling twice is harmless.
     for (const child of yield* store.untold) yield* ended(child.run_id);
@@ -787,7 +814,12 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
         );
         if (DateTime.isLessThan(at, due)) continue;
       }
-      if (!link.inFlight.busy(row.run_id)) yield* endCancelled(row);
+      if (!link.inFlight.busy(row.run_id)) {
+        yield* endCancelled(row).pipe(
+          withAdmission("continuation"),
+          Effect.catchTags({ ServerMaintenanceBusy: () => Effect.void }),
+        );
+      }
     }
     for (const row of yield* store.everyRun("running")) yield* reconcile(row);
     for (const row of yield* store.everyRun("waiting")) yield* reconcile(row);
@@ -1065,23 +1097,44 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
         );
         // Waited for briefly, so the caller usually hears of a run that is cleaned up. A cleanup
         // can take minutes; it goes on by itself, and the sweep finishes one that is cut short.
-        const cleanup = yield* Effect.forkIn(
-          endCancelled({ ...row, detail: reason ?? null }),
-          scope,
+        const cleanup = yield* endCancelled({ ...row, detail: reason ?? null }).pipe(
+          forkAccepted(scope),
+          Effect.catchTags({
+            ServerMaintenanceBusy: (cause) =>
+              new WorkflowInputError({ problem: cause.message, retryable: true }),
+          }),
         );
         yield* Fiber.join(cleanup).pipe(Effect.timeoutOption(CANCEL_WAITS));
       }).pipe(Effect.ensuring(Effect.sync(() => cancelling.delete(runId))));
     },
   );
 
+  const pendingCancellationCleanup = store
+    .runsToEnd(END_STEP, END_TRIES)
+    .pipe(
+      Effect.map((rows) =>
+        rows.filter((row) => definitionByTag.get(row.engine_tag)?.onEnd !== undefined),
+      ),
+    );
+  const admission = yield* ServerAdmission;
+  if (admission !== undefined) {
+    yield* admission.registerObserver(
+      Effect.all([pendingCancellationCleanup, store.cancelsCutShort(END_STEP)]).pipe(
+        Effect.map(([cleanup, stops]) =>
+          cleanup.length > 0 || stops.length > 0 ? ["workflow"] : [],
+        ),
+      ),
+    );
+  }
+
   // Steps were registered before this engine existed; now they can reach it.
   link.current = {
-    signal,
+    signal: (...input) => signal(...input).pipe(admitWorkflow("continuation")),
     signalAll,
-    start,
+    start: (...input) => start(...input).pipe(admitWorkflow("continuation")),
     ended,
     watchTurn,
-    cancel: (runId, reason) => cancel(runId, reason),
+    cancel: (runId, reason) => cancel(runId, reason).pipe(admitWorkflow("continuation")),
     list: Effect.fn("WorkflowEngine.list")(function* (filter) {
       return (yield* store.runsWhere(filter)).map((row) => ({
         id: row.run_id,
@@ -1098,23 +1151,33 @@ const make = Effect.fn("WorkflowEngine.make")(function* (
   };
 
   return Workflows.of({
-    start,
+    start: Effect.fnUntraced(function* (...input: Parameters<typeof start>) {
+      return yield* start(...input).pipe(admitWorkflow("root"));
+    }),
     hooks: Effect.succeed(hooks.map(({ workflow, name, path }) => ({ workflow, name, path }))),
     // A cancelled run whose cleanup has not worked yet still needs its version to run it.
     unfinished: Effect.map(
-      Effect.all([store.unfinished, store.runsToEnd(END_STEP, END_TRIES)]),
+      Effect.all([store.unfinished, pendingCancellationCleanup]),
       ([open, ending]) => [
         ...open,
-        ...ending
-          .filter((row) => definitionByTag.get(row.engine_tag)?.onEnd !== undefined)
-          .map((row) => ({ workflow: row.workflow, version: Number(row.version) })),
+        ...ending.map((row) => ({ workflow: row.workflow, version: Number(row.version) })),
       ],
     ),
-    deliver,
-    signal,
-    answer,
-    resume,
-    cancel,
+    deliver: Effect.fnUntraced(function* (...input: Parameters<typeof deliver>) {
+      return yield* deliver(...input).pipe(admitWorkflow("root"));
+    }),
+    signal: Effect.fnUntraced(function* (...input: Parameters<typeof signal>) {
+      return yield* signal(...input).pipe(admitWorkflow("root"));
+    }),
+    answer: Effect.fnUntraced(function* (...input: Parameters<typeof answer>) {
+      return yield* answer(...input).pipe(admitWorkflow("continuation"));
+    }),
+    resume: Effect.fnUntraced(function* (...input: Parameters<typeof resume>) {
+      return yield* resume(...input).pipe(admitWorkflow("root"));
+    }),
+    cancel: Effect.fnUntraced(function* (...input: Parameters<typeof cancel>) {
+      return yield* cancel(...input).pipe(admitWorkflow("continuation"));
+    }),
     get: Effect.fn("Workflows.get")(function* (runId) {
       const row = yield* requireRun(runId);
       const steps = yield* store.steps(runId);

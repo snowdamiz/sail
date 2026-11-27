@@ -123,6 +123,9 @@ export const layer = HttpApiBuilder.group(
           .pipe(Effect.result);
         if (Result.isFailure(started)) {
           if (started.failure._tag === "WorkflowInputError") {
+            if (started.failure.retryable) {
+              return json(503, { error: "maintenance_busy" }, "error", { "retry-after": "1" });
+            }
             return json(
               400,
               { error: "invalid_request", problem: started.failure.problem },
@@ -177,6 +180,10 @@ export const layer = HttpApiBuilder.group(
           return json(409, { error: "hook_disabled" }, "disabled");
         case "blocked_by_policy":
           return json(403, { error: "blocked_by_policy" }, "blocked_by_policy");
+        case "maintenance_busy":
+          return json(503, { error: result._tag }, "error", {
+            "retry-after": "1",
+          });
         case "rate_limited":
           return json(429, { error: result.outcome }, result.outcome);
         case "expired":

@@ -2100,8 +2100,12 @@ export const layerWsRpc = (
                   Effect.map((result) => ({ sequence: result.sequence })),
                   Effect.mapError((cause) => {
                     if (cause._tag === "EnvironmentAuthorizationError") return cause;
-                    const detail = userFacingDispatchErrorMessage(cause);
+                    const retryable = cause._tag === "ServerMaintenanceBusy";
+                    const detail = retryable
+                      ? cause.message
+                      : userFacingDispatchErrorMessage(cause);
                     return new OrchestrationV2DispatchCommandError({
+                      ...(retryable ? { retryable: true } : {}),
                       commandId: command.commandId,
                       commandType: command.type,
                       message: detail ?? "Failed to dispatch orchestration V2 command",
@@ -2324,6 +2328,14 @@ export const layerWsRpc = (
                     projection: projectThreadProjectionForWire(result.projection),
                   })),
                   Effect.catchTags({
+                    ServerMaintenanceBusy: (cause) =>
+                      new OrchestrationV2ThreadLaunchError({
+                        commandId: input.commandId,
+                        projectId: input.projectId,
+                        message: cause.message,
+                        retryable: true,
+                        cause,
+                      }),
                     AttachmentClaimError: (cause) =>
                       new OrchestrationV2ThreadLaunchError({
                         commandId: input.commandId,
