@@ -2236,9 +2236,7 @@
   "809d74fd98dd8b0f": "检出功能分支并继续",
   "88b4d905ceab8dd2": "正在加星…",
   "a3b65ac8567c151f": "感谢你的加星！",
-  "eaaab38a83bf32cf": "这对 T3 Code 的发展很有帮助。",
   "627b9319f42ac2d5": "打开 GitHub",
-  "a76da92cec318964": "喜欢 T3 Code 吗？",
   "7ffe3705e7b0ed0b": "在 GitHub 上给我们一颗星，让我们知道！",
   "4c58cf06d9a4496c": "在 GitHub 上加星",
   "5bbf199afe39d5e1": "忽略",
@@ -2735,9 +2733,6 @@
   "c5d4a1b01d27c81d": "图片附件，{name}，{size}",
   "baa023ab89b1e31f": "不可用的上下文：{label}",
   "52a44f36200620d5": "当前安装使用了正确的架构。",
-  "007ab0ba4a0318eb": "这台 Mac 使用 Apple Silicon，但 T3 Code 仍以 Rosetta 运行 Intel 版本。下载可用更新即可切换到原生的 Apple Silicon 版本。",
-  "0fe3e0e043327f70": "这台 Mac 使用 Apple Silicon，但 T3 Code 仍以 Rosetta 运行 Intel 版本。重启即可安装已下载的 Apple Silicon 版本。",
-  "054fe66b7627aa05": "这台 Mac 使用 Apple Silicon，但 T3 Code 仍以 Rosetta 运行 Intel 版本。下次应用更新会将其替换为原生的 Apple Silicon 版本。",
   "52f309fc7a21cc9d": "更新 {version} 未生效。点击重试。",
   "8d78d07244f8b4a1": "下载 {version} 失败。点击重试。",
   "2dafe72242295047": "有可下载的更新",
@@ -3112,7 +3107,6 @@
   "c646366e142ba05f": "桌面 WSL 状态不可用。",
   "228dcd284ea651b3": "无法加载 WSL 状态。",
   "b08d105dd2553f8d": "该项目未出现在桌面应用中。",
-  "7a4b3f3b83e121d7": "{organization} 已关闭匿名使用数据。",
   "d85822b18e9475df": "由 {organization} 管理。",
   "a6dd531d58080010": "连接此服务器以检查版本。",
   "314cdccee9c14774": "此服务器不支持查询仓库。请先更新，再切换通道。",
@@ -6186,7 +6180,6 @@
   "26dca8ee72dc5d74": "无法读取设置",
   "52e7a660ce883609": "仍在连接",
   "9a50b20569f2c9e7": "无法加载你保存的设置。",
-  "0d22cd9e3b9d94f0": "T3 Code 无法确认此工作区。",
   "573a9e6b17f4e9e3": "重新加载",
   "d6c31ff9bb97570e": "已达扫描上限，部分项目或对话可能缺失。",
   "da6f86321113fb7b": "此连接无法导入项目或会话历史。",
@@ -6223,7 +6216,6 @@
   "bd2304f25f6f999e": "{selected, plural, other {已选择 {selected}/{total} 个}}",
   "228cd9fd55a55070": "无法再次检查项目。{error}",
   "1cc599c5f5874014": "手机",
-  "0f7c08d8284fee68": "适用于 iPhone 和 Android 的 T3 Code 应用",
   "431bee88ecc944e4": "检查 T3 Connect",
   "c747696796f64468": "T3 Connect 已开启，但应用无法访问这台电脑。",
   "96557a906f6167b9": "已登录。请共享这台电脑，以便应用访问。",
@@ -6238,7 +6230,6 @@
   "a0fd24f965eb070b": "无法导入会话历史。",
   "a506c135c2183ac3": "{count, plural, other {{count} 个文件夹}}",
   "efc48b9736a534bc": "刚刚",
-  "edf393ff951b533a": "欢迎使用 T3 Code",
   "3cc77f9daa7eeafd": [
     "正在设置",
     " ",
@@ -6255,26 +6246,6 @@
   ],
   "216ab7514aea1d61": "不使用智能体直接开始",
   "501ce2d99da8bfd1": "设置一个智能体即可开始。",
-  "71f3822326109c8e": [
-    "T3 Code 会收集匿名使用数据以改进应用。如需退出，请参阅",
-    " ",
-    {
-      "t": "a",
-      "i": 1,
-      "c": "隐私政策"
-    },
-    "。"
-  ],
-  "b33f35083757b42c": [
-    "请参阅",
-    " ",
-    {
-      "t": "a",
-      "i": 1,
-      "c": "隐私政策"
-    },
-    "。"
-  ],
   "f77d000c0710f066": "启用",
   "4ed27bf946e504db": "设置",
   "7a26eaacff0607f7": [
@@ -6306,7 +6277,6 @@
     },
     " 历史记录"
   ],
-  "0070a15f6b693068": "在手机上使用 T3 Code",
   "37c66042ce1906da": "用手机扫码获取应用。",
   "1b4364ef89b07f35": "无法检查 T3 Connect。",
   "7b10d40dd15938e5": "你的手机可以访问这台电脑。请在应用中登录同一账号。",
@@ -10274,9 +10244,6 @@
   "c424bee294b9f778": "此环境由 {organization} 管理，部分设置和功能遵循其策略。",
   "82d9538af590f58c": "查看你的智能体、导入项目并设置手机。",
   "6a48fd0a37e725a1": "法律信息",
-  "d6d3ea46ac979e1c": "我们如何处理你的数据，包括 T3 Code 收集的匿名使用数据。",
-  "e741b1ab9396053a": "我们如何处理你的数据。{telemetryOff}",
-  "0bffbbf4d7f780c0": "T3 Code 使用的依赖项、素材和可选工具的声明。",
   "e39a57514be028e9": "查看",
   "7c0512387c3a42ea": "稳定版",
   "3476687eaa175b32": "Nightly 版",
@@ -10304,7 +10271,6 @@
   "5fe5a45199fa9c07": "没有可用的文本生成提供方。",
   "99ceba64591c9257": "查看诊断",
   "eb576a5feda7b535": "打开",
-  "66647e8c8123a51f": "查看政策",
   "6d59e1e516e53d17": "查看许可证",
   "941d08db15f62d17": "已归档",
   "e122b2428c0d03a5": "打开所有环境",
@@ -11970,8 +11936,6 @@
   "dc2a999ca67ccf31": "手机 平板 iPhone iPad iOS Android App Store Google Play 二维码 QR",
   "6310b97b04ef239f": "欢迎页",
   "df9fa3a9cb004b9b": "引导 设置 首次运行 入门 智能体 导入 项目",
-  "3188bc3b3c4508bc": "隐私政策",
-  "901a823214edc8c4": "遥测 分析 用量数据 跟踪 法律 退出",
   "82136480255a5106": "OTel OTLP 遥测 导出 端点 日志 追踪 指标 Grafana",
   "659d081051faf7ff": "日志 追踪 进程 资源历史 失败 span cpu 内存",
   "5eaeacfa9f82051a": "报告 错误 问题 t3 团队 发送 反馈 智能体 工具 自动 当我要求时",
@@ -12079,7 +12043,6 @@
   "9c73aa0c2e2b4e7d": "选择快捷键",
   "300a948f90c4d75c": "后退",
   "2a50e229df85d553": "前进",
-  "8aa6404c8018ea67": "T3 Code 首页",
   "8e9626aa27cb188a": "issue",
   "9d2fc1003e82feb1": "用量",
   "20283eb1dd6119f9": "{count, plural, other {{count} 个附件}}",
@@ -12310,10 +12273,26 @@
   "a16b48709357a5a7": "管理用量",
   "a00e74aaa421c524": "剩余",
   "0e34c3076c08feb2": [
-    { "t": "span", "i": 1, "c": ["↻ +", { "i": 2, "k": "_gt_value_2", "v": "v" }, "%"] },
+    {
+      "t": "span",
+      "i": 1,
+      "c": [
+        "↻ +",
+        {
+          "i": 2,
+          "k": "_gt_value_2",
+          "v": "v"
+        },
+        "%"
+      ]
+    },
     " ",
     "还需 ",
-    { "i": 3, "k": "_gt_value_3", "v": "v" }
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    }
   ],
   "8bd6f07136317c8f": "选中的环境上没有提供方报告订阅限制。",
   "87f5d0c61b335f38": "用已连接的账户在 ChatGPT 中查看用量。",
@@ -12948,5 +12927,39 @@
   "5178f00af5c11b61": "尝试唤醒机器",
   "d6c672884cc6a076": "Boats 服务器",
   "82e4ac5a54ebd8d3": "选择服务器",
-  "8e5ef13e0ab5ed30": "连接到管理 Boat 机器的服务器，然后在此处选择它。"
+  "8e5ef13e0ab5ed30": "连接到管理 Boat 机器的服务器，然后在此处选择它。",
+  "b9da96ef57e7a377": "It really helps Sail grow.",
+  "3702edcb30ebcbb4": "Enjoying Sail?",
+  "34e53591253d2447": "This Mac has Apple Silicon, but Sail is still running the Intel build under Rosetta. Download the available update to switch to the native Apple Silicon build.",
+  "b64968be94ae21f9": "This Mac has Apple Silicon, but Sail is still running the Intel build under Rosetta. Restart to install the downloaded Apple Silicon build.",
+  "f3f5d7e7e293e643": "This Mac has Apple Silicon, but Sail is still running the Intel build under Rosetta. The next app update will replace it with the native Apple Silicon build.",
+  "97b2eab9261e6552": "Sail could not confirm this workspace.",
+  "e1f093eb5f088157": "Sail app for iPhone and Android",
+  "0f7ac680f819ce71": "Welcome to Sail",
+  "2aad7cfd723b4fd2": "Use Sail on your phone",
+  "fa5aaf72a15b3b47": "复制配置",
+  "69c34a56796dc4cb": "源环境",
+  "da23c7158edc3453": "目标环境",
+  "dee54767dd8b9232": "主题：{name}",
+  "9a0abf602fbbc4c4": "提供商：{name}",
+  "476498ac9128a922": "{name} 在目标环境中需要这些值：{variables}",
+  "b5f30c76089c7c28": "本地可执行文件",
+  "e687533044b3f4b4": "无法从源环境导出配置。",
+  "7363fb1e170c7e04": "无法预览目标环境的配置。",
+  "231376c8474c0658": "未能完成复制。请再次预览，查看尚未复制的内容。",
+  "0b5757e3b919ccec": "正在准备预览…",
+  "b663fc94158dd018": "预览复制",
+  "00ceb7f6cb3a5be1": "正在复制配置…",
+  "306e8f387a894fda": "应用复制",
+  "b22d0febc979e17e": "选择环境",
+  "63a8c176f62c3ea8": "复制配置",
+  "fe3583dbbe544445": "在两个环境之间复制提供商、设置、快捷键、主题和用户技能。凭据和本机路径保留在各自的设备上。",
+  "38bb14fd0173700b": "目标环境中的更改",
+  "0ec16e33afdd0511": "服务器设置",
+  "b0218088cb0cf61f": "键盘快捷键",
+  "888bb24ae36e6828": "没有需要复制的更改。",
+  "ac80a1944c1d1b97": "Notices for dependencies, assets, and optional tools used by Sail.",
+  "402105ade374898f": "Sail home",
+  "5ef9294f9d1c61d6": "Boats",
+  "f71b09879b8b3741": "Signing in…"
 }

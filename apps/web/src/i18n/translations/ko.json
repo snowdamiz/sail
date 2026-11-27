@@ -2231,9 +2231,7 @@
   "809d74fd98dd8b0f": "기능 브랜치 체크아웃 후 계속",
   "88b4d905ceab8dd2": "별표 추가하는 중…",
   "a3b65ac8567c151f": "별표를 주셔서 감사합니다!",
-  "eaaab38a83bf32cf": "T3 Code가 성장하는 데 큰 도움이 됩니다.",
   "627b9319f42ac2d5": "GitHub 열기",
-  "a76da92cec318964": "T3 Code가 마음에 드시나요?",
   "7ffe3705e7b0ed0b": "GitHub에서 별표로 알려 주세요!",
   "4c58cf06d9a4496c": "GitHub에서 별표 주기",
   "5bbf199afe39d5e1": "닫기",
@@ -2730,9 +2728,6 @@
   "c5d4a1b01d27c81d": "이미지 첨부 파일, {name}, {size}",
   "baa023ab89b1e31f": "사용할 수 없는 컨텍스트, {label}",
   "52a44f36200620d5": "이 설치는 올바른 아키텍처를 사용하고 있습니다.",
-  "007ab0ba4a0318eb": "이 Mac은 Apple Silicon을 사용하지만 T3 Code는 아직 Rosetta에서 Intel 빌드로 실행 중입니다. 사용 가능한 업데이트를 다운로드하여 네이티브 Apple Silicon 빌드로 전환하세요.",
-  "0fe3e0e043327f70": "이 Mac은 Apple Silicon을 사용하지만 T3 Code는 아직 Rosetta에서 Intel 빌드로 실행 중입니다. 다운로드한 Apple Silicon 빌드를 설치하려면 다시 시작하세요.",
-  "054fe66b7627aa05": "이 Mac은 Apple Silicon을 사용하지만 T3 Code는 아직 Rosetta에서 Intel 빌드로 실행 중입니다. 다음 앱 업데이트 때 네이티브 Apple Silicon 빌드로 교체됩니다.",
   "52f309fc7a21cc9d": "업데이트 {version}이(가) 적용되지 않았습니다. 클릭하여 다시 시도하세요.",
   "8d78d07244f8b4a1": "{version} 다운로드에 실패했습니다. 클릭하여 다시 시도하세요.",
   "2dafe72242295047": "업데이트 다운로드 가능",
@@ -3107,7 +3102,6 @@
   "c646366e142ba05f": "데스크톱 WSL 상태를 사용할 수 없습니다.",
   "228dcd284ea651b3": "WSL 상태를 불러오지 못했습니다.",
   "b08d105dd2553f8d": "데스크톱 앱에 프로젝트가 나타나지 않았습니다.",
-  "7a4b3f3b83e121d7": "{organization}에서 익명 사용 데이터를 껐습니다.",
   "d85822b18e9475df": "{organization}에서 관리합니다.",
   "a6dd531d58080010": "릴리스를 확인하려면 이 서버에 연결하세요.",
   "314cdccee9c14774": "이 서버는 레지스트리 조회를 지원하지 않습니다. 트랙을 전환하기 전에 업데이트하세요.",
@@ -6159,7 +6153,6 @@
   "26dca8ee72dc5d74": "설정을 읽을 수 없습니다",
   "52e7a660ce883609": "아직 연결하는 중",
   "9a50b20569f2c9e7": "저장된 설정을 불러올 수 없습니다.",
-  "0d22cd9e3b9d94f0": "T3 Code에서 이 작업 영역을 확인할 수 없습니다.",
   "573a9e6b17f4e9e3": "새로 고침",
   "d6c31ff9bb97570e": "검색 한도에 도달했습니다. 일부 프로젝트나 대화가 누락되었을 수 있습니다.",
   "da6f86321113fb7b": "이 연결로는 프로젝트나 스레드 기록을 가져올 수 없습니다.",
@@ -6196,7 +6189,6 @@
   "bd2304f25f6f999e": "{selected, plural, other {{total}개 중 {selected}개 선택됨}}",
   "228cd9fd55a55070": "프로젝트를 다시 확인할 수 없습니다. {error}",
   "1cc599c5f5874014": "휴대폰",
-  "0f7c08d8284fee68": "iPhone 및 Android용 T3 Code 앱",
   "431bee88ecc944e4": "T3 Connect 확인",
   "c747696796f64468": "T3 Connect가 켜져 있지만 앱이 이 컴퓨터에 연결할 수 없습니다.",
   "96557a906f6167b9": "로그인했습니다. 앱이 연결할 수 있도록 이 컴퓨터를 공유하세요.",
@@ -6211,7 +6203,6 @@
   "a0fd24f965eb070b": "스레드 기록을 가져올 수 없습니다.",
   "a506c135c2183ac3": "{count, plural, other {폴더 {count}개}}",
   "efc48b9736a534bc": "지금",
-  "edf393ff951b533a": "T3 Code에 오신 것을 환영합니다",
   "3cc77f9daa7eeafd": [
     {
       "t": "span",
@@ -6226,24 +6217,6 @@
   ],
   "216ab7514aea1d61": "에이전트 없이 시작",
   "501ce2d99da8bfd1": "시작하려면 에이전트를 하나 설정하세요.",
-  "71f3822326109c8e": [
-    "T3 Code는 앱 개선을 위해 익명 사용 데이터를 수집합니다. 거부하려면",
-    " ",
-    {
-      "t": "a",
-      "i": 1,
-      "c": "개인정보처리방침"
-    },
-    "을 확인하세요."
-  ],
-  "b33f35083757b42c": [
-    {
-      "t": "a",
-      "i": 1,
-      "c": "개인정보처리방침"
-    },
-    "을 확인하세요."
-  ],
   "f77d000c0710f066": "켜기",
   "4ed27bf946e504db": "설정",
   "7a26eaacff0607f7": [
@@ -6272,7 +6245,6 @@
     },
     " 기록에서"
   ],
-  "0070a15f6b693068": "휴대폰에서 T3 Code 사용",
   "37c66042ce1906da": "휴대폰으로 스캔하여 앱을 받으세요.",
   "1b4364ef89b07f35": "T3 Connect를 확인할 수 없습니다.",
   "7b10d40dd15938e5": "휴대폰에서 이 컴퓨터에 연결할 수 있습니다. 같은 계정으로 앱에 로그인하세요.",
@@ -10213,9 +10185,6 @@
   "c424bee294b9f778": "이 환경은 {organization}에서 관리합니다. 일부 설정과 기능은 해당 정책을 따릅니다.",
   "82d9538af590f58c": "에이전트를 확인하고, 프로젝트를 가져오고, 휴대폰을 설정하세요.",
   "6a48fd0a37e725a1": "법적 고지",
-  "d6d3ea46ac979e1c": "T3 Code가 수집하는 익명 사용 데이터를 포함해 데이터를 처리하는 방법입니다.",
-  "e741b1ab9396053a": "데이터를 처리하는 방법입니다. {telemetryOff}",
-  "0bffbbf4d7f780c0": "T3 Code에서 사용하는 종속성, 에셋, 선택적 도구에 대한 고지입니다.",
   "e39a57514be028e9": "검토",
   "7c0512387c3a42ea": "Stable",
   "3476687eaa175b32": "Nightly",
@@ -10243,7 +10212,6 @@
   "5fe5a45199fa9c07": "사용 가능한 텍스트 생성 제공자가 없습니다.",
   "99ceba64591c9257": "진단 보기",
   "eb576a5feda7b535": "열기",
-  "66647e8c8123a51f": "정책 보기",
   "6d59e1e516e53d17": "라이선스 보기",
   "941d08db15f62d17": "보관됨",
   "e122b2428c0d03a5": "모든 환경 열기",
@@ -11892,8 +11860,6 @@
   "dc2a999ca67ccf31": "휴대폰 태블릿 iPhone iPad iOS Android App Store Google Play QR",
   "6310b97b04ef239f": "시작 페이지",
   "df9fa3a9cb004b9b": "온보딩 설정 첫 실행 시작하기 에이전트 프로젝트 가져오기",
-  "3188bc3b3c4508bc": "개인정보 처리방침",
-  "901a823214edc8c4": "원격 분석 분석 사용 데이터 추적 법적 옵트아웃",
   "82136480255a5106": "OTel OTLP 원격 분석 내보내기 엔드포인트 로그 추적 메트릭 Grafana",
   "659d081051faf7ff": "로그 추적 프로세스 리소스 기록 실패 스팬 cpu 메모리",
   "5eaeacfa9f82051a": "보고 버그 문제 t3 팀 보내기 피드백 에이전트 도구 자동 내가 요청할 때",
@@ -12001,7 +11967,6 @@
   "9c73aa0c2e2b4e7d": "단축키 선택",
   "300a948f90c4d75c": "뒤로",
   "2a50e229df85d553": "앞으로",
-  "8aa6404c8018ea67": "T3 Code 홈",
   "8e9626aa27cb188a": "이슈",
   "9d2fc1003e82feb1": "사용량",
   "20283eb1dd6119f9": "{count, plural, other {첨부 파일 {count}개}}",
@@ -12231,9 +12196,25 @@
   "a16b48709357a5a7": "사용량 관리",
   "a00e74aaa421c524": "남음",
   "0e34c3076c08feb2": [
-    { "t": "span", "i": 1, "c": ["↻ +", { "i": 2, "k": "_gt_value_2", "v": "v" }, "%"] },
+    {
+      "t": "span",
+      "i": 1,
+      "c": [
+        "↻ +",
+        {
+          "i": 2,
+          "k": "_gt_value_2",
+          "v": "v"
+        },
+        "%"
+      ]
+    },
     " ",
-    { "i": 3, "k": "_gt_value_3", "v": "v" },
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
     " 후"
   ],
   "8bd6f07136317c8f": "선택한 환경에 구독 한도를 보고하는 제공자가 없습니다.",
@@ -12866,5 +12847,39 @@
   "5178f00af5c11b61": "머신 깨우기 시도",
   "d6c672884cc6a076": "Boats 서버",
   "82e4ac5a54ebd8d3": "서버 선택",
-  "8e5ef13e0ab5ed30": "Boat 머신을 관리하는 서버에 연결한 다음 여기에서 선택하세요."
+  "8e5ef13e0ab5ed30": "Boat 머신을 관리하는 서버에 연결한 다음 여기에서 선택하세요.",
+  "b9da96ef57e7a377": "It really helps Sail grow.",
+  "3702edcb30ebcbb4": "Enjoying Sail?",
+  "34e53591253d2447": "This Mac has Apple Silicon, but Sail is still running the Intel build under Rosetta. Download the available update to switch to the native Apple Silicon build.",
+  "b64968be94ae21f9": "This Mac has Apple Silicon, but Sail is still running the Intel build under Rosetta. Restart to install the downloaded Apple Silicon build.",
+  "f3f5d7e7e293e643": "This Mac has Apple Silicon, but Sail is still running the Intel build under Rosetta. The next app update will replace it with the native Apple Silicon build.",
+  "97b2eab9261e6552": "Sail could not confirm this workspace.",
+  "e1f093eb5f088157": "Sail app for iPhone and Android",
+  "0f7ac680f819ce71": "Welcome to Sail",
+  "2aad7cfd723b4fd2": "Use Sail on your phone",
+  "fa5aaf72a15b3b47": "설정 복사",
+  "69c34a56796dc4cb": "원본 환경",
+  "da23c7158edc3453": "대상 환경",
+  "dee54767dd8b9232": "테마: {name}",
+  "9a0abf602fbbc4c4": "제공업체: {name}",
+  "476498ac9128a922": "대상 환경에서 {name}에 필요한 값: {variables}",
+  "b5f30c76089c7c28": "로컬 실행 파일",
+  "e687533044b3f4b4": "원본 환경에서 설정을 내보낼 수 없습니다.",
+  "7363fb1e170c7e04": "대상 환경에서 설정을 미리 볼 수 없습니다.",
+  "231376c8474c0658": "설정 복사를 완료하지 못했습니다. 남은 변경 사항을 미리 보기에서 확인하세요.",
+  "0b5757e3b919ccec": "미리 보기 준비 중…",
+  "b663fc94158dd018": "복사 미리 보기",
+  "00ceb7f6cb3a5be1": "설정 복사 중…",
+  "306e8f387a894fda": "복사 적용",
+  "b22d0febc979e17e": "환경 선택",
+  "63a8c176f62c3ea8": "설정 복사",
+  "fe3583dbbe544445": "제공업체, 설정, 단축키, 테마, 사용자 스킬을 다른 환경으로 복사합니다. 자격 증명과 로컬 경로는 각 기기에 남습니다.",
+  "38bb14fd0173700b": "대상 환경의 변경 사항",
+  "0ec16e33afdd0511": "서버 설정",
+  "b0218088cb0cf61f": "키보드 단축키",
+  "888bb24ae36e6828": "복사할 변경 사항이 없습니다.",
+  "ac80a1944c1d1b97": "Notices for dependencies, assets, and optional tools used by Sail.",
+  "402105ade374898f": "Sail home",
+  "5ef9294f9d1c61d6": "Boats",
+  "f71b09879b8b3741": "Signing in…"
 }

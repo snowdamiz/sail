@@ -3,6 +3,7 @@ import { GitPreparePullRequestThreadInput, GitRunStackedActionInput } from "./gi
 import {
   AuthAccessWriteScope,
   AuthEnvironmentMaintainScope,
+  AuthFilesystemReadScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
@@ -22,6 +23,8 @@ import { ClientPreferencesWrite } from "./settings.ts";
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.serverUpdateSettings]: AuthSettingsWriteScope,
+  [WS_METHODS.environmentSetupExport]: AuthProvidersManageScope,
+  [WS_METHODS.environmentSetupImport]: AuthSettingsWriteScope,
   [WS_METHODS.providerAuthRemoveMethod]: AuthProvidersManageScope,
   // An MCP sign-in stores a credential for the agent, as an account sign-in does.
   [WS_METHODS.providerMcpSignInStart]: AuthProvidersManageScope,
@@ -123,6 +126,12 @@ export function clientRpcRequiredScopes(
   method: string,
   input: unknown,
 ): readonly AuthEnvironmentScope[] {
+  if (method === WS_METHODS.environmentSetupExport) {
+    return [AuthProvidersManageScope, AuthFilesystemReadScope];
+  }
+  if (method === WS_METHODS.environmentSetupImport) {
+    return [AuthSettingsWriteScope, AuthProvidersManageScope, AuthTerminalOperateScope];
+  }
   if (method === WS_METHODS.serverUpdateSettings) {
     return isClientPreferencesUpdate(input) ? [CLIENT_GUARDED_RPC_SCOPES[method]] : [];
   }

@@ -108,6 +108,11 @@ export class EnvironmentThemeService extends Context.Service<
   EnvironmentThemeService,
   {
     readonly current: Effect.Effect<ReadonlyArray<EnvironmentTheme>>;
+    readonly publishPortable: (
+      themes: ReadonlyArray<{ readonly id: string; readonly file: EnvironmentThemeFile }>,
+      apply?: boolean,
+      expected?: ReadonlyArray<EnvironmentTheme>,
+    ) => Effect.Effect<void, EnvironmentThemeRefusedError>;
 
     /** The default theme id and the published themes, plus the one named `themeId`. */
     readonly read: (themeId?: string) => Effect.Effect<
@@ -508,6 +513,69 @@ const make = Effect.gen(function* () {
 
   return {
     current: Effect.map(refresh, (state) => state.themes),
+    publishPortable: (themes, apply = true, expected) =>
+      publishSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          const { themes: current } = yield* refresh;
+          const refused = new EnvironmentThemeRefusedError({
+            themeId: themes[0]?.id ?? "",
+            problem: "would exceed the target theme limits or replace an unavailable file.",
+          });
+          if (expected !== undefined && !Equal.equals(current, expected)) return yield* refused;
+          const entries = yield* fs
+            .readDirectory(environmentThemesDir)
+            .pipe(Effect.mapError(() => refused));
+          const names = new Set(
+            entries.flatMap((entry) => {
+              if (!entry.endsWith(THEME_FILE_SUFFIX)) return [];
+              const id = entry.slice(0, -THEME_FILE_SUFFIX.length);
+              return isEnvironmentThemeId(id) && !UNPUBLISHABLE_THEME_IDS.has(id) ? [id] : [];
+            }),
+          );
+          const replacing = new Set(themes.map(({ id }) => id));
+          let totalBytes = 0;
+          for (const { id } of current) {
+            if (replacing.has(id)) continue;
+            const raw = readThemeFileGuarded(
+              `${environmentThemesDir}/${id}${THEME_FILE_SUFFIX}`,
+              MAX_THEME_FILE_BYTES,
+            );
+            if (raw === null) return yield* refused;
+            totalBytes += Buffer.byteLength(raw);
+          }
+          for (const { id, file } of themes) {
+            const destination = `${environmentThemesDir}/${id}${THEME_FILE_SUFFIX}`;
+            if (
+              pathIsTaken(destination) &&
+              readThemeFileGuarded(destination, MAX_THEME_FILE_BYTES) === null
+            ) {
+              return yield* refused;
+            }
+            names.add(id);
+            const size = Buffer.byteLength(
+              yield* encodeEnvironmentThemeFileJson(file).pipe(Effect.mapError(() => refused)),
+            );
+            if (size > MAX_THEME_FILE_BYTES) return yield* refused;
+            totalBytes += size;
+          }
+          if (names.size > MAX_THEME_FILES || totalBytes > MAX_THEME_TOTAL_BYTES)
+            return yield* refused;
+          if (!apply) return;
+          const staged: Array<Effect.Effect<void>> = [];
+          yield* Effect.forEach(
+            themes,
+            ({ id, file }) =>
+              publish(id, file).pipe(
+                Effect.tap((revert) => Effect.sync(() => staged.push(revert))),
+              ),
+            { discard: true },
+          ).pipe(
+            Effect.onError(() =>
+              Effect.forEach(staged.reverse(), (revert) => revert, { discard: true }),
+            ),
+          );
+        }),
+      ),
     read,
     apply,
     get streamChanges() {

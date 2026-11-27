@@ -66,6 +66,8 @@ import * as PreviewControlsHandlers from "./toolkits/previewControls/handlers.ts
 import * as FeedbackHandlers from "./toolkits/feedback/handlers.ts";
 import { FeedbackToolkit } from "./toolkits/feedback/tools.ts";
 import * as Feedback from "../feedback/FeedbackService.ts";
+import { EnvironmentSetupToolkit } from "./toolkits/environmentSetup/tools.ts";
+import * as EnvironmentSetupHandlers from "./toolkits/environmentSetup/handlers.ts";
 import { EnvironmentToolkit } from "./toolkits/environment/tools.ts";
 import * as EnvironmentHandlers from "./toolkits/environment/handlers.ts";
 import { ThemeToolkit } from "./toolkits/theme/tools.ts";
@@ -1241,7 +1243,11 @@ const withToolResultCapture = Effect.fn("McpHttpServer.withToolResultCapture")(f
     addTool: Effect.fn("McpServer.addTool")(function (options) {
       const toolName = options.tool.name;
       // html_render tracks its own path/hash recovery with publish cleanup in HtmlRender.
-      if (toolName === HTML_RENDER_TOOL_NAME) {
+      if (
+        toolName === HTML_RENDER_TOOL_NAME ||
+        toolName === "t3_environment_setup_export" ||
+        toolName === "t3_environment_setup_import"
+      ) {
         return server.addTool(options);
       }
       return server.addTool({
@@ -1435,6 +1441,11 @@ const layerEnvironmentToolkit = toolkitRegistration(
   EnvironmentHandlers.layer,
 ).pipe(Layer.provide(ThreadCommandExecutor.layer));
 
+const layerEnvironmentSetupToolkit = toolkitRegistration(
+  EnvironmentSetupToolkit,
+  EnvironmentSetupHandlers.layer,
+);
+
 const layerThemeToolkit = toolkitRegistration(ThemeToolkit, ThemeHandlers.layer).pipe(
   Layer.provide(ThreadCommandExecutor.layer),
 );
@@ -1520,6 +1531,7 @@ export const layerTools = Layer.mergeAll(
   layerProjectRegistration,
   layerFeedbackToolkit,
   layerEnvironmentToolkit,
+  layerEnvironmentSetupToolkit,
   layerThemeToolkit,
   layerBoatsToolkit,
   layerPreviewControlsRegistration,

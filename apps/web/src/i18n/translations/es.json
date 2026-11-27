@@ -2232,9 +2232,7 @@
   "809d74fd98dd8b0f": "Hacer checkout de la rama de funcionalidad y continuar",
   "88b4d905ceab8dd2": "Dando estrella…",
   "a3b65ac8567c151f": "¡Gracias por la estrella!",
-  "eaaab38a83bf32cf": "Ayuda mucho a que T3 Code crezca.",
   "627b9319f42ac2d5": "Abrir GitHub",
-  "a76da92cec318964": "¿Te gusta T3 Code?",
   "7ffe3705e7b0ed0b": "¡Danos una estrella en GitHub para que lo sepamos!",
   "4c58cf06d9a4496c": "Dar estrella en GitHub",
   "5bbf199afe39d5e1": "Descartar",
@@ -2731,9 +2729,6 @@
   "c5d4a1b01d27c81d": "Imagen adjunta, {name}, {size}",
   "baa023ab89b1e31f": "Contexto no disponible, {label}",
   "52a44f36200620d5": "Esta instalación usa la arquitectura correcta.",
-  "007ab0ba4a0318eb": "Este Mac tiene Apple Silicon, pero T3 Code sigue ejecutando la versión para Intel con Rosetta. Descarga la actualización disponible para cambiar a la versión nativa para Apple Silicon.",
-  "0fe3e0e043327f70": "Este Mac tiene Apple Silicon, pero T3 Code sigue ejecutando la versión para Intel con Rosetta. Reinicia para instalar la versión para Apple Silicon descargada.",
-  "054fe66b7627aa05": "Este Mac tiene Apple Silicon, pero T3 Code sigue ejecutando la versión para Intel con Rosetta. La próxima actualización de la app la sustituirá por la versión nativa para Apple Silicon.",
   "52f309fc7a21cc9d": "No se aplicó la actualización {version}. Haz clic para reintentarlo.",
   "8d78d07244f8b4a1": "Falló la descarga de {version}. Haz clic para reintentarlo.",
   "2dafe72242295047": "Actualización disponible lista para descargar",
@@ -3108,7 +3103,6 @@
   "c646366e142ba05f": "El estado de WSL del escritorio no está disponible.",
   "228dcd284ea651b3": "No se pudo cargar el estado de WSL.",
   "b08d105dd2553f8d": "El proyecto no apareció en la app de escritorio.",
-  "7a4b3f3b83e121d7": "{organization} desactivó los datos de uso anónimos.",
   "d85822b18e9475df": "Gestionado por {organization}.",
   "a6dd531d58080010": "Conéctate a este servidor para comprobar las versiones.",
   "314cdccee9c14774": "Este servidor no permite consultas al registro. Actualízalo antes de cambiar de canal.",
@@ -6180,7 +6174,6 @@
   "26dca8ee72dc5d74": "No se pudieron leer los ajustes",
   "52e7a660ce883609": "Aún conectando",
   "9a50b20569f2c9e7": "No se pudieron cargar tus ajustes guardados.",
-  "0d22cd9e3b9d94f0": "T3 Code no pudo confirmar este espacio de trabajo.",
   "573a9e6b17f4e9e3": "Recargar",
   "d6c31ff9bb97570e": "Se alcanzó el límite de escaneo. Puede que falten algunos proyectos o conversaciones.",
   "da6f86321113fb7b": "Esta conexión no puede importar proyectos ni historial de hilos.",
@@ -6217,7 +6210,6 @@
   "bd2304f25f6f999e": "{selected, plural, one {{selected} de {total} seleccionado} other {{selected} de {total} seleccionados}}",
   "228cd9fd55a55070": "No se pudieron volver a comprobar los proyectos. {error}",
   "1cc599c5f5874014": "Teléfono",
-  "0f7c08d8284fee68": "App de T3 Code para iPhone y Android",
   "431bee88ecc944e4": "Comprobar T3 Connect",
   "c747696796f64468": "T3 Connect está activado, pero la app no puede acceder a este equipo.",
   "96557a906f6167b9": "Sesión iniciada. Comparte este equipo para que la app pueda acceder a él.",
@@ -6232,7 +6224,6 @@
   "a0fd24f965eb070b": "No se pudo importar el historial de hilos.",
   "a506c135c2183ac3": "{count, plural, one {{count} carpeta} other {{count} carpetas}}",
   "efc48b9736a534bc": "ahora",
-  "edf393ff951b533a": "Te damos la bienvenida a T3 Code",
   "3cc77f9daa7eeafd": [
     "Configurando",
     " ",
@@ -6249,26 +6240,6 @@
   ],
   "216ab7514aea1d61": "Empezar sin agente",
   "501ce2d99da8bfd1": "Configura un agente para empezar.",
-  "71f3822326109c8e": [
-    "T3 Code recopila datos de uso anónimos para mejorar la app. Para desactivarlo, consulta la",
-    " ",
-    {
-      "t": "a",
-      "i": 1,
-      "c": "política de privacidad"
-    },
-    "."
-  ],
-  "b33f35083757b42c": [
-    "Consulta la",
-    " ",
-    {
-      "t": "a",
-      "i": 1,
-      "c": "política de privacidad"
-    },
-    "."
-  ],
   "f77d000c0710f066": "Activar",
   "4ed27bf946e504db": "Configurar",
   "7a26eaacff0607f7": [
@@ -6299,7 +6270,6 @@
       "v": "v"
     }
   ],
-  "0070a15f6b693068": "Usa T3 Code en tu teléfono",
   "37c66042ce1906da": "Escanéalo con tu teléfono para obtener la app.",
   "1b4364ef89b07f35": "No se pudo comprobar T3 Connect.",
   "7b10d40dd15938e5": "Tu teléfono puede acceder a este equipo. Inicia sesión en la app con la misma cuenta.",
@@ -10257,9 +10227,6 @@
   "c424bee294b9f778": "Este entorno lo gestiona {organization}. Algunos ajustes y funciones siguen su política.",
   "82d9538af590f58c": "Consulta tus agentes, importa proyectos y configura tu teléfono.",
   "6a48fd0a37e725a1": "Legal",
-  "d6d3ea46ac979e1c": "Cómo tratamos tus datos, incluidos los datos de uso anónimos que recopila T3 Code.",
-  "e741b1ab9396053a": "Cómo tratamos tus datos. {telemetryOff}",
-  "0bffbbf4d7f780c0": "Avisos de las dependencias, recursos y herramientas opcionales que usa T3 Code.",
   "e39a57514be028e9": "Revisar",
   "7c0512387c3a42ea": "Estable",
   "3476687eaa175b32": "Nightly",
@@ -10287,7 +10254,6 @@
   "5fe5a45199fa9c07": "No hay proveedores de generación de texto disponibles.",
   "99ceba64591c9257": "Ver diagnóstico",
   "eb576a5feda7b535": "Abrir",
-  "66647e8c8123a51f": "Ver política",
   "6d59e1e516e53d17": "Ver licencias",
   "941d08db15f62d17": "Archivado",
   "e122b2428c0d03a5": "Abrir todos los entornos",
@@ -11941,8 +11907,6 @@
   "dc2a999ca67ccf31": "teléfono tableta iPhone iPad iOS Android App Store Google Play QR",
   "6310b97b04ef239f": "Página de bienvenida",
   "df9fa3a9cb004b9b": "bienvenida configuración primer inicio primeros pasos agentes importar proyectos",
-  "3188bc3b3c4508bc": "Política de privacidad",
-  "901a823214edc8c4": "telemetría analítica datos de uso seguimiento legal desactivar",
   "82136480255a5106": "OTel OTLP telemetría exportar endpoints registros trazas métricas Grafana",
   "659d081051faf7ff": "registros trazas procesos historial de recursos fallos spans cpu memoria",
   "5eaeacfa9f82051a": "informe error problema t3 equipo enviar comentarios agentes herramientas automático cuando lo pida",
@@ -12050,7 +12014,6 @@
   "9c73aa0c2e2b4e7d": "Elegir atajo",
   "300a948f90c4d75c": "Atrás",
   "2a50e229df85d553": "Adelante",
-  "8aa6404c8018ea67": "Inicio de T3 Code",
   "8e9626aa27cb188a": "Issues",
   "9d2fc1003e82feb1": "Uso",
   "20283eb1dd6119f9": "{count, plural, one {{count} adjunto} other {{count} adjuntos}}",
@@ -12280,10 +12243,26 @@
   "a16b48709357a5a7": "Gestionar uso",
   "a00e74aaa421c524": "restante",
   "0e34c3076c08feb2": [
-    { "t": "span", "i": 1, "c": ["↻ +", { "i": 2, "k": "_gt_value_2", "v": "v" }, "%"] },
+    {
+      "t": "span",
+      "i": 1,
+      "c": [
+        "↻ +",
+        {
+          "i": 2,
+          "k": "_gt_value_2",
+          "v": "v"
+        },
+        "%"
+      ]
+    },
     " ",
     "en ",
-    { "i": 3, "k": "_gt_value_3", "v": "v" }
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    }
   ],
   "8bd6f07136317c8f": "Ningún proveedor de los entornos seleccionados informa de límites de suscripción.",
   "87f5d0c61b335f38": "Consulta el uso en ChatGPT con tu cuenta conectada.",
@@ -12925,5 +12904,39 @@
   "5178f00af5c11b61": "Intentar activar la máquina",
   "d6c672884cc6a076": "Servidor de Boats",
   "82e4ac5a54ebd8d3": "Selecciona un servidor",
-  "8e5ef13e0ab5ed30": "Conéctate al servidor que administra tus máquinas de Boat y selecciónalo aquí."
+  "8e5ef13e0ab5ed30": "Conéctate al servidor que administra tus máquinas de Boat y selecciónalo aquí.",
+  "b9da96ef57e7a377": "It really helps Sail grow.",
+  "3702edcb30ebcbb4": "Enjoying Sail?",
+  "34e53591253d2447": "This Mac has Apple Silicon, but Sail is still running the Intel build under Rosetta. Download the available update to switch to the native Apple Silicon build.",
+  "b64968be94ae21f9": "This Mac has Apple Silicon, but Sail is still running the Intel build under Rosetta. Restart to install the downloaded Apple Silicon build.",
+  "f3f5d7e7e293e643": "This Mac has Apple Silicon, but Sail is still running the Intel build under Rosetta. The next app update will replace it with the native Apple Silicon build.",
+  "97b2eab9261e6552": "Sail could not confirm this workspace.",
+  "e1f093eb5f088157": "Sail app for iPhone and Android",
+  "0f7ac680f819ce71": "Welcome to Sail",
+  "2aad7cfd723b4fd2": "Use Sail on your phone",
+  "fa5aaf72a15b3b47": "Copiar configuración",
+  "69c34a56796dc4cb": "Entorno de origen",
+  "da23c7158edc3453": "Entorno de destino",
+  "dee54767dd8b9232": "Tema: {name}",
+  "9a0abf602fbbc4c4": "Proveedor: {name}",
+  "476498ac9128a922": "{name} necesita estos valores en el destino: {variables}",
+  "b5f30c76089c7c28": "Ejecutable local",
+  "e687533044b3f4b4": "No se pudo exportar la configuración del entorno de origen.",
+  "7363fb1e170c7e04": "No se pudo mostrar la vista previa en el entorno de destino.",
+  "231376c8474c0658": "No se pudo completar la copia. Vuelve a abrir la vista previa para ver qué falta.",
+  "0b5757e3b919ccec": "Preparando vista previa…",
+  "b663fc94158dd018": "Ver vista previa",
+  "00ceb7f6cb3a5be1": "Copiando configuración…",
+  "306e8f387a894fda": "Aplicar copia",
+  "b22d0febc979e17e": "Selecciona un entorno",
+  "63a8c176f62c3ea8": "Copiar configuración",
+  "fe3583dbbe544445": "Copia proveedores, ajustes, atajos, temas y habilidades de usuario entre dos entornos. Las credenciales y las rutas locales se quedan en sus equipos.",
+  "38bb14fd0173700b": "Cambios en el destino",
+  "0ec16e33afdd0511": "Ajustes del servidor",
+  "b0218088cb0cf61f": "Atajos de teclado",
+  "888bb24ae36e6828": "No hay cambios que copiar.",
+  "ac80a1944c1d1b97": "Notices for dependencies, assets, and optional tools used by Sail.",
+  "402105ade374898f": "Sail home",
+  "5ef9294f9d1c61d6": "Boats",
+  "f71b09879b8b3741": "Signing in…"
 }

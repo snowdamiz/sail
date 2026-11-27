@@ -2232,9 +2232,7 @@
   "809d74fd98dd8b0f": "Check out feature branch & continue",
   "88b4d905ceab8dd2": "Starring…",
   "a3b65ac8567c151f": "Thanks for the star!",
-  "eaaab38a83bf32cf": "It really helps T3 Code grow.",
   "627b9319f42ac2d5": "Open GitHub",
-  "a76da92cec318964": "Enjoying T3 Code?",
   "7ffe3705e7b0ed0b": "Give us a star on GitHub to let us know!",
   "4c58cf06d9a4496c": "Star on GitHub",
   "5bbf199afe39d5e1": "Dismiss",
@@ -2731,9 +2729,6 @@
   "c5d4a1b01d27c81d": "Image attachment, {name}, {size}",
   "baa023ab89b1e31f": "Unavailable context, {label}",
   "52a44f36200620d5": "This install is using the correct architecture.",
-  "007ab0ba4a0318eb": "This Mac has Apple Silicon, but T3 Code is still running the Intel build under Rosetta. Download the available update to switch to the native Apple Silicon build.",
-  "0fe3e0e043327f70": "This Mac has Apple Silicon, but T3 Code is still running the Intel build under Rosetta. Restart to install the downloaded Apple Silicon build.",
-  "054fe66b7627aa05": "This Mac has Apple Silicon, but T3 Code is still running the Intel build under Rosetta. The next app update will replace it with the native Apple Silicon build.",
   "52f309fc7a21cc9d": "Update {version} did not apply. Click to retry.",
   "8d78d07244f8b4a1": "Download failed for {version}. Click to retry.",
   "2dafe72242295047": "Update available ready to download",
@@ -3108,7 +3103,6 @@
   "c646366e142ba05f": "Desktop WSL state is unavailable.",
   "228dcd284ea651b3": "Failed to load WSL state.",
   "b08d105dd2553f8d": "The project did not appear in the desktop app.",
-  "7a4b3f3b83e121d7": "{organization} turned off anonymous usage data.",
   "d85822b18e9475df": "Managed by {organization}.",
   "a6dd531d58080010": "Connect to this server to check releases.",
   "314cdccee9c14774": "This server does not support registry lookups. Update it before switching tracks.",
@@ -6182,7 +6176,6 @@
   "26dca8ee72dc5d74": "Could not read settings",
   "52e7a660ce883609": "Still connecting",
   "9a50b20569f2c9e7": "Your saved settings could not be loaded.",
-  "0d22cd9e3b9d94f0": "T3 Code could not confirm this workspace.",
   "573a9e6b17f4e9e3": "Reload",
   "d6c31ff9bb97570e": "Scan limit reached. Some projects or conversations may be missing.",
   "da6f86321113fb7b": "This connection cannot import projects or thread history.",
@@ -6219,7 +6212,6 @@
   "bd2304f25f6f999e": "{selected, plural, one {{selected} of {total} selected} other {{selected} of {total} selected}}",
   "228cd9fd55a55070": "Could not check projects again. {error}",
   "1cc599c5f5874014": "Phone",
-  "0f7c08d8284fee68": "T3 Code app for iPhone and Android",
   "431bee88ecc944e4": "Check T3 Connect",
   "c747696796f64468": "T3 Connect is on, but the app cannot reach this computer.",
   "96557a906f6167b9": "Signed in. Share this computer so the app can reach it.",
@@ -6234,7 +6226,6 @@
   "a0fd24f965eb070b": "Could not import thread history.",
   "a506c135c2183ac3": "{count, plural, one {{count} folder} other {{count} folders}}",
   "efc48b9736a534bc": "now",
-  "edf393ff951b533a": "Welcome to T3 Code",
   "3cc77f9daa7eeafd": [
     "Setting up",
     " ",
@@ -6251,26 +6242,6 @@
   ],
   "216ab7514aea1d61": "Start without an agent",
   "501ce2d99da8bfd1": "Set up one agent to start.",
-  "71f3822326109c8e": [
-    "T3 Code collects anonymous usage data to improve the app. To opt out, see the",
-    " ",
-    {
-      "t": "a",
-      "i": 1,
-      "c": "privacy policy"
-    },
-    "."
-  ],
-  "b33f35083757b42c": [
-    "See the",
-    " ",
-    {
-      "t": "a",
-      "i": 1,
-      "c": "privacy policy"
-    },
-    "."
-  ],
   "f77d000c0710f066": "Turn on",
   "4ed27bf946e504db": "Set up",
   "7a26eaacff0607f7": [
@@ -6302,7 +6273,6 @@
     },
     " history"
   ],
-  "0070a15f6b693068": "Use T3 Code on your phone",
   "37c66042ce1906da": "Scan with your phone to get the app.",
   "1b4364ef89b07f35": "Could not check T3 Connect.",
   "7b10d40dd15938e5": "Your phone can reach this computer. Sign in to the app with the same account.",
@@ -10269,9 +10239,6 @@
   "c424bee294b9f778": "This environment is managed by {organization}. Some settings and features follow its policy.",
   "82d9538af590f58c": "See your agents, import projects, and set up your phone.",
   "6a48fd0a37e725a1": "Legal",
-  "d6d3ea46ac979e1c": "How we handle your data, including the anonymous usage data T3 Code collects.",
-  "e741b1ab9396053a": "How we handle your data. {telemetryOff}",
-  "0bffbbf4d7f780c0": "Notices for dependencies, assets, and optional tools used by T3 Code.",
   "e39a57514be028e9": "Review",
   "7c0512387c3a42ea": "Stable",
   "3476687eaa175b32": "Nightly",
@@ -10299,7 +10266,6 @@
   "5fe5a45199fa9c07": "No text generation providers available.",
   "99ceba64591c9257": "View diagnostics",
   "eb576a5feda7b535": "Open",
-  "66647e8c8123a51f": "View policy",
   "6d59e1e516e53d17": "View licenses",
   "941d08db15f62d17": "Archived",
   "e122b2428c0d03a5": "Open all environments",
@@ -11956,8 +11922,6 @@
   "dc2a999ca67ccf31": "phone tablet iPhone iPad iOS Android App Store Google Play QR",
   "6310b97b04ef239f": "Welcome page",
   "df9fa3a9cb004b9b": "onboarding setup first run getting started agents import projects",
-  "3188bc3b3c4508bc": "Privacy policy",
-  "901a823214edc8c4": "telemetry analytics usage data tracking legal opt out",
   "82136480255a5106": "OTel OTLP telemetry export endpoints logs traces metrics Grafana",
   "659d081051faf7ff": "logs traces processes resource history failures spans cpu memory",
   "5eaeacfa9f82051a": "report bug problem t3 team send feedback agents tools automatic when i ask",
@@ -12065,7 +12029,6 @@
   "9c73aa0c2e2b4e7d": "Choose shortcut",
   "300a948f90c4d75c": "Go back",
   "2a50e229df85d553": "Go forward",
-  "8aa6404c8018ea67": "T3 Code home",
   "8e9626aa27cb188a": "Issues",
   "9d2fc1003e82feb1": "Usage",
   "20283eb1dd6119f9": "{count, plural, one {{count} attachment} other {{count} attachments}}",
@@ -12295,10 +12258,26 @@
   "a16b48709357a5a7": "Manage usage",
   "a00e74aaa421c524": "left",
   "0e34c3076c08feb2": [
-    { "t": "span", "i": 1, "c": ["↻ +", { "i": 2, "k": "_gt_value_2", "v": "v" }, "%"] },
+    {
+      "t": "span",
+      "i": 1,
+      "c": [
+        "↻ +",
+        {
+          "i": 2,
+          "k": "_gt_value_2",
+          "v": "v"
+        },
+        "%"
+      ]
+    },
     " ",
     "in ",
-    { "i": 3, "k": "_gt_value_3", "v": "v" }
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    }
   ],
   "8bd6f07136317c8f": "No provider on the selected environments reports subscription limits.",
   "87f5d0c61b335f38": "View usage in ChatGPT with your connected account.",
@@ -12939,5 +12918,39 @@
   "5178f00af5c11b61": "Try waking",
   "d6c672884cc6a076": "Boats server",
   "82e4ac5a54ebd8d3": "Select a server",
-  "8e5ef13e0ab5ed30": "Connect to the server that manages your Boat machines, then choose it here."
+  "8e5ef13e0ab5ed30": "Connect to the server that manages your Boat machines, then choose it here.",
+  "b9da96ef57e7a377": "It really helps Sail grow.",
+  "3702edcb30ebcbb4": "Enjoying Sail?",
+  "34e53591253d2447": "This Mac has Apple Silicon, but Sail is still running the Intel build under Rosetta. Download the available update to switch to the native Apple Silicon build.",
+  "b64968be94ae21f9": "This Mac has Apple Silicon, but Sail is still running the Intel build under Rosetta. Restart to install the downloaded Apple Silicon build.",
+  "f3f5d7e7e293e643": "This Mac has Apple Silicon, but Sail is still running the Intel build under Rosetta. The next app update will replace it with the native Apple Silicon build.",
+  "97b2eab9261e6552": "Sail could not confirm this workspace.",
+  "e1f093eb5f088157": "Sail app for iPhone and Android",
+  "0f7ac680f819ce71": "Welcome to Sail",
+  "2aad7cfd723b4fd2": "Use Sail on your phone",
+  "fa5aaf72a15b3b47": "Copy setup",
+  "69c34a56796dc4cb": "Source environment",
+  "da23c7158edc3453": "Target environment",
+  "dee54767dd8b9232": "Theme: {name}",
+  "9a0abf602fbbc4c4": "Provider: {name}",
+  "476498ac9128a922": "{name} needs these values on the target: {variables}",
+  "b5f30c76089c7c28": "Local executable",
+  "e687533044b3f4b4": "Could not export setup from the source environment.",
+  "7363fb1e170c7e04": "Could not preview setup on the target environment.",
+  "231376c8474c0658": "Could not finish copying setup. Preview again to see what remains.",
+  "0b5757e3b919ccec": "Preparing preview…",
+  "b663fc94158dd018": "Preview copy",
+  "00ceb7f6cb3a5be1": "Copying setup…",
+  "306e8f387a894fda": "Apply copy",
+  "b22d0febc979e17e": "Select an environment",
+  "63a8c176f62c3ea8": "Copy setup",
+  "fe3583dbbe544445": "Copy providers, settings, shortcuts, themes, and user skills between two environments. Credentials and machine paths stay on their own machines.",
+  "38bb14fd0173700b": "Changes on the target",
+  "0ec16e33afdd0511": "Server settings",
+  "b0218088cb0cf61f": "Keyboard shortcuts",
+  "888bb24ae36e6828": "No changes to copy.",
+  "ac80a1944c1d1b97": "Notices for dependencies, assets, and optional tools used by Sail.",
+  "402105ade374898f": "Sail home",
+  "5ef9294f9d1c61d6": "Boats",
+  "f71b09879b8b3741": "Signing in…"
 }
