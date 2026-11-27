@@ -1,3 +1,6 @@
+import * as Fiber from "effect/Fiber";
+import { forkAccepted } from "../serverAdmission.ts";
+import { admitMcp } from "./maintenanceAdmission.ts";
 import {
   type EnvironmentId,
   type OrchestrationV2LinkOrigin,
@@ -451,6 +454,7 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
 ) {
   // Optional so toolkits that never leave this environment build without it.
   const forwarding = yield* Effect.serviceOption(PeerForwarding.PeerForwarding);
+  const forwardingScope = yield* Effect.scope;
   const handlers: Record<string, unknown> = { ...checked };
   for (const [name, declaration] of Object.entries<Declaration<unknown>>(declarations)) {
     const tool = toolkit.tools[name];
@@ -482,11 +486,24 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
         if (scope.linkedEnvironments === false) return yield* PeerForwarding.linkedEnvironmentsOff;
         yield* (remote as RemoteCheck<typeof params>)(params);
         if (Option.isNone(forwarding)) return yield* linksUnavailable;
-        const result = yield* forwarding.value.call(scope, tool, target, {
-          ...params,
-          environmentId,
-        });
-        return forwarded === undefined ? result : yield* forwarded(params, target, result);
+        const call = forwarding.value.call(scope, tool, target, { ...params, environmentId });
+        const work =
+          forwarded === undefined
+            ? call
+            : call.pipe(Effect.flatMap((result) => forwarded(params, target, result)));
+        switch (name) {
+          case "t3_thread_launch":
+          case "t3_thread_send":
+            return yield* work.pipe(
+              forkAccepted(forwardingScope),
+              Effect.flatMap(Fiber.join),
+              admitMcp("root"),
+            );
+          case "t3_thread_interrupt":
+            return yield* work.pipe(admitMcp("continuation"));
+          default:
+            return yield* work;
+        }
       });
   }
   return handlers as Toolkit.HandlersFrom<Tools>;

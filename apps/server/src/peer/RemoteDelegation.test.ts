@@ -1,3 +1,5 @@
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
+import { observeDurableObligations } from "../serverAdmissionObligations.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -964,6 +966,71 @@ const captureThreadReads = (nativeFetch: typeof globalThis.fetch) => {
   };
   return { reads, fetch };
 };
+
+it.effect("keeps a launched remote task counted across the local recording gap", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+
+      const observe = observeDurableObligations().pipe(Effect.provide(database));
+      const admission = makeAdmission(observe);
+      const launched = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      yield* Ref.set(
+        thread.afterLaunch,
+        Deferred.succeed(launched, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      );
+      const accepted = yield* delegateToBox(a).pipe(
+        Effect.provideService(ServerAdmission, admission),
+        Effect.forkScoped,
+      );
+      yield* Deferred.await(launched);
+      expect(yield* observe).not.toContain("remote-delegation");
+      const token = Symbol();
+      const draining = yield* admission
+        .drain(token, "10 seconds")
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      const refused = yield* a
+        .call("delegate_task", {
+          task: "Another task.",
+          target: { environmentId: box.environmentId },
+          clientRequestId: "remote-delegation-while-draining",
+        })
+        .pipe(Effect.provideService(ServerAdmission, admission));
+      expect(refused.isError).toBe(true);
+      expect(JSON.stringify(refused.content)).toContain("Server maintenance is in progress");
+      yield* Fiber.interrupt(accepted);
+      yield* Deferred.succeed(release, undefined);
+      const recorded = yield* a.orchestrator
+        .streamStoredEventsFrom({
+          threadId: parentThreadId,
+          afterSequence: 0,
+          eventType: "subagent.updated",
+        })
+        .pipe(Stream.runHead);
+      const event = Option.getOrUndefined(recorded)?.event;
+      if (event?.type !== "subagent.updated") return yield* Effect.die("Missing task record");
+      expect(yield* observe).toContain("remote-delegation");
+      yield* Ref.set(thread.reply, "Remote result");
+      yield* Ref.set(thread.status, "completed");
+      yield* Deferred.succeed(thread.finished, undefined);
+      expect((yield* taskResult(a, event.payload.id))?.result).toBe("Remote result");
+      const after = yield* observe;
+      expect(after).not.toContain("remote-delegation");
+      expect(after).toContain("delegated-work");
+      yield* admission.abort(token);
+      expect((yield* Fiber.join(draining)).kind).toBe("aborted");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
 
 it.effect("a task delegated to the box wakes the laptop's parent when it ends there", () =>
   Effect.scoped(

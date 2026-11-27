@@ -1,3 +1,6 @@
+import * as Fiber from "effect/Fiber";
+import { admitMcp } from "../mcp/maintenanceAdmission.ts";
+import { forkAccepted, withAdmission } from "../serverAdmission.ts";
 import {
   CommandId,
   type EnvironmentId,
@@ -437,9 +440,14 @@ const make = Effect.gen(function* () {
           message: "The delegated task was not recorded.",
         });
       }
-      yield* followOne(scope.thread.threadId, taskId).pipe(Effect.forkIn(followers));
+      yield* followOne(scope.thread.threadId, taskId).pipe(
+        forkAccepted(followers),
+        Effect.ignoreCause({ log: true }),
+      );
       return { taskId };
     },
+    // An accepted launch and its local record outlive a disconnecting caller.
+    (work) => work.pipe(forkAccepted(followers), Effect.flatMap(Fiber.join), admitMcp("root")),
   );
 
   const followUp: RemoteDelegation["Service"]["followUp"] = Effect.fn("RemoteDelegation.followUp")(
@@ -521,7 +529,10 @@ const make = Effect.gen(function* () {
               Effect.orElseSucceed(() => undefined),
             );
       if (taskId === undefined) return sent;
-      yield* followOne(parentThreadId, taskId).pipe(Effect.forkIn(followers));
+      yield* followOne(parentThreadId, taskId).pipe(
+        forkAccepted(followers),
+        Effect.ignoreCause({ log: true }),
+      );
       return { ...sent, taskId };
     },
   );
@@ -952,7 +963,7 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
-    });
+    }).pipe(withAdmission("continuation"), Effect.ignoreCause({ log: true }));
 
   const cancel: RemoteDelegation["Service"]["cancel"] = Effect.fn("RemoteDelegation.cancel")(
     function* (scope, task, input) {
@@ -1025,6 +1036,7 @@ const make = Effect.gen(function* () {
         status: "cancel_requested",
       } satisfies OrchestratorMcpTaskCancelResult;
     },
+    admitMcp("continuation"),
   );
 
   const runStatus = Effect.fn("RemoteDelegation.runStatus")(
@@ -1049,7 +1061,10 @@ const make = Effect.gen(function* () {
         // a Stop that slips between the two stays owed for the next start.
         yield* Stream.runForEach(threads.streamDomainEvents, (event) =>
           event.type === "subagent.updated" && event.payload.remoteChild?.stoppedThere === false
-            ? followOne(event.threadId, event.payload.id).pipe(Effect.forkIn(followers))
+            ? followOne(event.threadId, event.payload.id).pipe(
+                forkAccepted(followers),
+                Effect.ignoreCause({ log: true }),
+              )
             : Effect.void,
         ).pipe(
           Effect.ignoreCause({ log: true }),

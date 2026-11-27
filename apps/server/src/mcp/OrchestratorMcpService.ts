@@ -1,3 +1,4 @@
+import { admitMcp } from "./maintenanceAdmission.ts";
 import {
   CommandId,
   type RunId,
@@ -3096,7 +3097,7 @@ const make = Effect.gen(function* () {
             ? awaitTask(scope, taskId, key, input.timeoutMs, restore)
             : restore(readTask(scope, taskId, false, true));
         }),
-      );
+      ).pipe(admitMcp("root"));
     }),
     taskStatus: Effect.fn("OrchestratorMcpService.taskStatus")(function* (callerScope, taskId) {
       const scope = yield* requireThreadScope(callerScope, "task_status");

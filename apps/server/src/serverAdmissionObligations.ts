@@ -8,6 +8,9 @@ export const observeDurableObligations = Effect.fn("ServerAdmission.observeDurab
     const [row] = yield* sql<{
       orchestration: number;
       scheduled_delivery: number;
+      remote_delegation: number;
+      delegated_work: number;
+      native_work: number;
       workflow: number;
     }>`
       SELECT (
@@ -20,6 +23,35 @@ export const observeDurableObligations = Effect.fn("ServerAdmission.observeDurab
         OR EXISTS (SELECT 1 FROM orchestration_v2_effect_outbox
                    WHERE status NOT IN ('succeeded', 'failed', 'cancelled'))
       ) AS orchestration,
+      EXISTS (
+        SELECT 1 FROM orchestration_v2_projection_subagents
+        WHERE origin = 'app_owned' AND child_thread_id IS NULL
+          AND json_type(payload_json, '$.remoteChild') = 'object'
+          AND (
+            json_extract(payload_json, '$.result') IS NULL
+            OR (status IN ('cancelled', 'interrupted')
+                AND json_type(payload_json, '$.remoteChild.stoppedThere') IS NOT 'true')
+            OR json_type(payload_json, '$.remoteChild.stoppedThere') = 'false'
+          )
+      ) AS remote_delegation,
+      EXISTS (
+        SELECT 1 FROM orchestration_v2_projection_subagents task
+        LEFT JOIN orchestration_v2_projection_runs owner ON owner.run_id = task.run_id
+        WHERE task.origin = 'app_owned'
+          AND ((task.child_thread_id IS NOT NULL AND json_extract(task.payload_json, '$.result') IS NULL)
+            OR (task.completion_delivery_state = 'claimed'
+                AND json_extract(owner.payload_json, '$.delegatedCompletion.disposition') = 'open'
+                AND json_type(owner.payload_json, '$.delegatedCompletion.delivery') = 'object'))
+      ) AS delegated_work,
+      (
+        EXISTS (SELECT 1 FROM orchestration_v2_projection_subagents
+                WHERE origin = 'provider_native' AND status IN ('pending', 'starting', 'running', 'waiting'))
+        OR EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_threads
+                   WHERE json_array_length(payload_json, '$.pendingBackgroundTasks') > 0)
+        OR EXISTS (SELECT 1 FROM orchestration_v2_projection_turn_items
+                   WHERE type IN ('command_execution', 'dynamic_tool', 'subagent')
+                     AND status NOT IN ('completed', 'interrupted', 'failed', 'cancelled'))
+      ) AS native_work,
       (
         EXISTS (SELECT 1 FROM scheduled_tasks WHERE last_run_status = 'running')
         OR EXISTS (SELECT 1 FROM scheduled_task_webhook_pending)
@@ -29,6 +61,9 @@ export const observeDurableObligations = Effect.fn("ServerAdmission.observeDurab
     if (row === undefined) return ["quiescence-unknown"] as const;
     return [
       ...(row.orchestration ? ["orchestration" as const] : []),
+      ...(row.remote_delegation ? ["remote-delegation" as const] : []),
+      ...(row.delegated_work ? ["delegated-work" as const] : []),
+      ...(row.native_work ? ["native-work" as const] : []),
       ...(row.scheduled_delivery ? ["scheduled-delivery" as const] : []),
       ...(row.workflow ? ["workflow" as const] : []),
     ];

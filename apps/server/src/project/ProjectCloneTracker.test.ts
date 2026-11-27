@@ -1,3 +1,4 @@
+import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -69,6 +70,7 @@ function makeHarness(options?: {
 describe("ProjectCloneTracker", () => {
   it.effect("creates the project first and reports the clone through the stream", () => {
     const release = Deferred.makeUnsafe<void>();
+    const admission = makeAdmission(Effect.succeed([]));
     const harness = makeHarness({
       clone: (input, options) =>
         Effect.gen(function* () {
@@ -97,15 +99,34 @@ describe("ProjectCloneTracker", () => {
       const running = yield* tracker.get(projectId);
       expect(running).toMatchObject({ phase: "running", stage: "receiving", percent: 40 });
 
+      const token = Symbol();
+      const draining = yield* admission
+        .drain(token, "1 second")
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      const refused = yield* tracker
+        .start(
+          {
+            ...startInput,
+            projectId: ProjectId.make("deferred-clone"),
+            destinationPath: "/workspace/deferred-clone",
+          },
+          harness.hooks,
+        )
+        .pipe(Effect.flip);
+      expect(refused.message).toContain("Server maintenance is in progress");
+      expect(harness.created).toHaveLength(1);
+      expect(draining.pollUnsafe()).toBeUndefined();
       yield* Deferred.succeed(release, undefined);
       const lists = yield* Fiber.join(collected);
       const final = lists.at(-1)?.[0];
       expect(final).toMatchObject({ phase: "done", percent: 100 });
       expect(harness.cloned).toEqual([projectId]);
+      expect(yield* Fiber.join(draining)).toEqual({ kind: "sealed" });
+      yield* admission.abort(token);
 
       yield* TestClock.adjust("31 seconds");
       expect(yield* tracker.get(projectId)).toBeNull();
-    }).pipe(Effect.provide(harness.layer));
+    }).pipe(Effect.provide(harness.layer), Effect.provideService(ServerAdmission, admission));
   });
 
   it.effect("flags a clone stalled when git goes quiet and clears it when git speaks", () => {
