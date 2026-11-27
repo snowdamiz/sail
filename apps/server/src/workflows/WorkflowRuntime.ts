@@ -31,6 +31,7 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import * as ServerConfig from "../config.ts";
+import { forkParked } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { engineTag, text, type WorkflowDefinition } from "./workflow.ts";
 import type * as WorkflowEngine from "./WorkflowEngine.ts";
@@ -786,6 +787,7 @@ export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
     R | Scope.Scope
   >,
   where: string,
+  initialEnabled?: Effect.Effect<boolean>,
 ) {
   const path = yield* Path.Path;
   const outer = yield* Scope.Scope;
@@ -851,7 +853,18 @@ export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
     lock.withPermits(1),
   );
 
-  const live = Effect.suspend(() => Deferred.await(ready));
+  const initialized = yield* Deferred.make<void>();
+  const finishInitialization = Deferred.succeed(initialized, undefined);
+  if (initialEnabled === undefined) {
+    yield* finishInitialization;
+  } else {
+    // The cluster runner can resume persisted work as soon as its layer is built.
+    yield* forkParked(
+      initialEnabled.pipe(Effect.flatMap(turn), Effect.ensuring(finishInitialization)),
+    );
+  }
+  const awaitInitial = Deferred.await(initialized);
+  const live = awaitInitial.pipe(Effect.andThen(Effect.suspend(() => Deferred.await(ready))));
   const current = Effect.map(live, Context.get(Workflows.Workflows));
   const definitions = Effect.map(live, Context.get(WorkflowDefinitions));
   // A watcher outlives a turn: each one hands it the next service's stream.
@@ -918,6 +931,7 @@ export const gate = Effect.fn("WorkflowRuntime.gate")(function* <E, R>(
 
   return {
     turn,
+    awaitInitial,
     context: Context.make(Workflows.Workflows, service).pipe(
       Context.add(
         WorkflowDefinitions,
@@ -949,6 +963,10 @@ export const layer = Layer.effectContext(
     const settings = yield* ServerSettings.ServerSettingsService;
     const where = Option.getOrElse(override, () => config.workflowsDir);
     const changes = yield* settings.subscribeChanges;
+    const enabled = settings.getSettings.pipe(
+      Effect.map((current) => current.workflowsEnabled),
+      Effect.orElseSucceed(() => false),
+    );
     const gated = yield* gate(
       make(
         Effect.map(
@@ -965,15 +983,15 @@ export const layer = Layer.effectContext(
         ),
       ),
       where,
+      enabled,
     );
-    const enabled = yield* settings.getSettings.pipe(
-      Effect.map((current) => current.workflowsEnabled),
-      Effect.orElseSucceed(() => false),
-    );
-    yield* gated.turn(enabled);
-    yield* changes.pipe(
-      Stream.map((current) => current.workflowsEnabled),
-      Stream.runForEach(gated.turn),
+    yield* gated.awaitInitial.pipe(
+      Effect.andThen(
+        changes.pipe(
+          Stream.mapEffect(() => enabled),
+          Stream.runForEach(gated.turn),
+        ),
+      ),
       Effect.forkScoped,
     );
     return gated.context;
