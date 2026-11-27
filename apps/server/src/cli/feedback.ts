@@ -8,6 +8,7 @@ import * as Runtime from "effect/Runtime";
 import * as Schema from "effect/Schema";
 import { Command, Flag, GlobalFlag } from "effect/cli";
 
+import { holdBoatCliAccess } from "../cloud/boatCliAccess.ts";
 import * as ServerConfig from "../config.ts";
 import { readFeedbackReports } from "../feedback/FeedbackList.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
@@ -62,7 +63,8 @@ const listReports = Effect.fn("cli.feedback.listReports")(function* (flags: CliA
     // Settings first, from the file alone, so Off never opens the database.
     const { agentFeedback } = yield* ServerSettings.readServerSettingsFromDisk;
     if (agentFeedback.mode === "off") return yield* new FeedbackOffError({});
-    const { dbPath } = yield* ServerConfig.ServerConfig;
+    const { baseDir, dbPath } = yield* ServerConfig.ServerConfig;
+    yield* holdBoatCliAccess(baseDir);
     const fs = yield* FileSystem.FileSystem;
     if (!(yield* fs.exists(dbPath))) return [];
     // Read-only: no setup, no migrations, no writes, whether or not a server runs.
@@ -70,6 +72,7 @@ const listReports = Effect.fn("cli.feedback.listReports")(function* (flags: CliA
       Effect.provide(NodeSqliteClient.layer({ filename: dbPath, readonly: true })),
     );
   }).pipe(
+    Effect.scoped,
     Effect.provide(ManagedPolicy.layer.pipe(Layer.provideMerge(ServerConfig.layer(config)))),
     Effect.provideService(References.MinimumLogLevel, "Error"),
   );

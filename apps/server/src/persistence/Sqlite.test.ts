@@ -255,7 +255,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("layerCliConfig",
         yield* fs.writeFileString(NodePath.join(runtime, "boat-installation-id"), "fixture\n");
         const journal = NodePath.join(runtime, SERVICE_STATE_FILE);
         const opening = Effect.void.pipe(Effect.provide(SqlitePersistence.layerCliConfig));
-        assert.equal((yield* opening.pipe(Effect.flip))._tag, "BoatCliMutationError");
+        assert.equal((yield* opening.pipe(Effect.flip))._tag, "BoatCliAccessError");
         assert.isFalse(yield* fs.exists(dbPath));
 
         yield* fs.writeFileString(
@@ -266,7 +266,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("layerCliConfig",
           Effect.sync(() => acquireBoatLifecycle(runtime, "recover")),
           () =>
             Effect.gen(function* () {
-              assert.equal((yield* opening.pipe(Effect.flip))._tag, "BoatCliMutationError");
+              assert.equal((yield* opening.pipe(Effect.flip))._tag, "BoatCliAccessError");
               assert.isFalse(yield* fs.exists(dbPath));
             }),
           (release) => Effect.sync(release),

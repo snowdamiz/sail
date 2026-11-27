@@ -11,7 +11,7 @@ import * as HttpClientError from "effect/http/HttpClientError";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 
-import { holdBoatCliMutation } from "../cloud/boatCliMutation.ts";
+import { holdBoatCliAccess } from "../cloud/boatCliAccess.ts";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -102,7 +102,7 @@ export const changeState = Effect.fn("RunningServer.changeState")(function* <A, 
   const changeLocally = <E3>(
     ifServerRuns: (error: ServerOwnership.ServerAlreadyRunningError) => Effect.Effect<never, E3>,
   ) =>
-    holdBoatCliMutation(baseDir).pipe(
+    holdBoatCliAccess(baseDir).pipe(
       Effect.andThen(
         ServerOwnership.acquireServerOwnership(serverRuntimeStatePath).pipe(
           Effect.provide(ProcessRunner.layer),

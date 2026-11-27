@@ -102,7 +102,7 @@ export function acquireBoatMutation(baseDir: string): () => void {
   return runtime === undefined ? () => {} : acquireBoatLifecycle(runtime, "mutate");
 }
 
-export function acquireBoatCliMutation(baseDir: string): () => void {
+export function acquireBoatCliAccess(baseDir: string): () => void {
   const runtime = boatRuntime(baseDir);
   return runtime === undefined ? () => {} : acquireBoatLifecycle(runtime, "cli");
 }

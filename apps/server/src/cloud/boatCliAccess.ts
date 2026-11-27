@@ -1,10 +1,10 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-import { acquireBoatCliMutation, BoatLifecycleBusy } from "./boatLifecycle.ts";
+import { acquireBoatCliAccess, BoatLifecycleBusy } from "./boatLifecycle.ts";
 
-export class BoatCliMutationError extends Schema.TaggedError<BoatCliMutationError>()(
-  "BoatCliMutationError",
+export class BoatCliAccessError extends Schema.TaggedError<BoatCliAccessError>()(
+  "BoatCliAccessError",
   { cause: Schema.Defect() },
 ) {
   override get message() {
@@ -14,11 +14,11 @@ export class BoatCliMutationError extends Schema.TaggedError<BoatCliMutationErro
   }
 }
 
-export const holdBoatCliMutation = (baseDir: string) =>
+export const holdBoatCliAccess = (baseDir: string) =>
   Effect.acquireRelease(
     Effect.try({
-      try: () => acquireBoatCliMutation(baseDir),
-      catch: (cause) => new BoatCliMutationError({ cause }),
+      try: () => acquireBoatCliAccess(baseDir),
+      catch: (cause) => new BoatCliAccessError({ cause }),
     }),
     (release) => Effect.sync(release),
   ).pipe(Effect.asVoid);

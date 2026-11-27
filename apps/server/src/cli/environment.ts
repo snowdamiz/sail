@@ -23,7 +23,7 @@ import * as GlobalFlag from "effect/cli/GlobalFlag";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
-import { holdBoatCliMutation } from "../cloud/boatCliMutation.ts";
+import { holdBoatCliAccess } from "../cloud/boatCliAccess.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
@@ -44,7 +44,7 @@ const runWithPeerLinks = Effect.fn("environment.runWithPeerLinks")(function* <A,
 ) {
   const logLevel = yield* GlobalFlag.LogLevel;
   const config = yield* resolveCliAuthConfig(flags, logLevel, options);
-  yield* holdBoatCliMutation(config.baseDir);
+  yield* holdBoatCliAccess(config.baseDir);
   return yield* PeerLinks.PeerLinks.pipe(
     Effect.flatMap(run),
     // A refused or unreachable link is an expected outcome: print its message, not a stack.

@@ -23,7 +23,7 @@ import * as Schema from "effect/Schema";
 import { Command, Flag, GlobalFlag, Prompt } from "effect/cli";
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
-import { holdBoatCliMutation } from "../cloud/boatCliMutation.ts";
+import { holdBoatCliAccess } from "../cloud/boatCliAccess.ts";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ManagedLimits from "../policy/managedLimits.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
@@ -111,7 +111,7 @@ export const signsInWithDeviceCode = Effect.fn("cloud.cli.signs_in_with_device_c
 const authorizeCli = Effect.fn("cloud.cli.authorize")(function* (options: {
   readonly headless: boolean;
 }) {
-  yield* holdBoatCliMutation((yield* ServerConfig.ServerConfig).baseDir);
+  yield* holdBoatCliAccess((yield* ServerConfig.ServerConfig).baseDir);
   const tokens = yield* CliTokenManager.CloudCliTokenManager;
   const useOutOfBandOAuth = yield* signsInWithDeviceCode({
     headless: options.headless,
@@ -499,7 +499,7 @@ const reportCloudDisconnectResults = Effect.fn("cloud.cli.report_disconnect_resu
 export const disconnectCloud = Effect.fn("cloud.cli.disconnect")(function* (options: {
   readonly clearAuthorization: boolean;
 }) {
-  yield* holdBoatCliMutation((yield* ServerConfig.ServerConfig).baseDir);
+  yield* holdBoatCliAccess((yield* ServerConfig.ServerConfig).baseDir);
   yield* CliState.setCliDesiredCloudLink(false);
   const liveResult = yield* runLiveCloudUnlink();
   const relayResult = yield* Effect.exit(
@@ -574,7 +574,7 @@ const linkEnvironmentForConnect = Effect.fn("cloud.cli.link_environment")(functi
   /** For `t3 up`, where the user already chose T3 Connect: install it quietly, without asking. */
   readonly installRelayClient?: boolean;
 }) {
-  yield* holdBoatCliMutation((yield* ServerConfig.ServerConfig).baseDir);
+  yield* holdBoatCliAccess((yield* ServerConfig.ServerConfig).baseDir);
   const publishOnly = options.publishOnly ?? false;
   if (!publishOnly) {
     const relayClient = yield* RelayClient.RelayClient;
@@ -749,7 +749,7 @@ const connectPublishCommand = Command.make("publish", {
       Effect.gen(function* () {
         const secrets = yield* ServerSecretStore.ServerSecretStore;
         const tokens = yield* CliTokenManager.CloudCliTokenManager;
-        yield* holdBoatCliMutation((yield* ServerConfig.ServerConfig).baseDir);
+        yield* holdBoatCliAccess((yield* ServerConfig.ServerConfig).baseDir);
         const enabled = !flags.disable;
         if (enabled) yield* requireConnectAllowed;
         yield* secrets.set(

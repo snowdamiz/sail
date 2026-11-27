@@ -354,9 +354,9 @@ const fixture = Effect.fn("ServingDrain.fixture")(function* (
   };
 });
 
-it.live.each([false, true])(
-  "finishes a Replay approval and checkpoint during drain (controlled launcher: %s)",
-  (controlled) =>
+it.live.each(["none", "fixture-positive", "production"] as const)(
+  "finishes a Replay approval and checkpoint during drain under %s admission",
+  (launcher) =>
     Effect.gen(function* () {
       const {
         server,
@@ -371,7 +371,8 @@ it.live.each([false, true])(
         draining,
         fence,
         send,
-      } = yield* fixture(controlled ? "fixture-positive" : "none");
+      } = yield* fixture(launcher);
+      const controlled = launcher === "fixture-positive";
       const orchestrator = Context.get(server, OrchestratorV2);
       const dispatch = rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand];
       const threadId = ThreadId.make("drain-thread");
@@ -414,7 +415,8 @@ it.live.each([false, true])(
       );
 
       const fs = yield* FileSystem.FileSystem;
-      const agentPid = controlled ? Number(yield* fs.readFileString(agentPidPath)) : undefined;
+      const agentPid =
+        launcher === "none" ? undefined : Number(yield* fs.readFileString(agentPidPath));
       if (agentPid !== undefined) {
         expect(Number.isSafeInteger(agentPid) && agentPid > 0).toBe(true);
         expect(process.kill(agentPid, 0)).toBe(true);
@@ -471,6 +473,17 @@ it.live.each([false, true])(
       if (attempt !== undefined) {
         expect(yield* admission.abort(token)).toBe(true);
         expect(yield* Fiber.join(attempt)).toMatchObject({ kind: "aborted", reason: "requested" });
+        if (launcher === "production") {
+          expect(yield* admission.drain(Symbol(), "2 seconds")).toMatchObject({
+            kind: "aborted",
+            reason: "deadline",
+            blockers: expect.arrayContaining([
+              "provider-retirement-unverified",
+              "producer-inventory-incomplete",
+            ]),
+          });
+          expect(agentPid === undefined ? false : process.kill(agentPid, 0)).toBe(true);
+        }
         yield* dispatch(deferred);
         expect(yield* messages).toEqual([{ message_id: deferred.messageId }]);
         return;
