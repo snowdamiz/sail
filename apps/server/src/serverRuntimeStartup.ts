@@ -14,6 +14,7 @@ import {
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -28,6 +29,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
+import { sweepStalePendingAttachments } from "./attachmentStore.ts";
 import * as ServerConfig from "./config.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import { flushCompileCache } from "./compileCache.ts";
@@ -622,6 +624,22 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
         Effect.logWarning("Failed to load projects for automatic pull", { cause }),
       ),
       forkParked,
+    );
+
+    yield* forkParked(
+      afterAdmissionReopens(
+        Effect.gen(function* () {
+          const swept = sweepStalePendingAttachments({
+            attachmentsDir: serverConfig.attachmentsDir,
+            nowMs: yield* Clock.currentTimeMillis,
+          });
+          if (swept.deleted > 0) {
+            yield* Effect.logInfo("Removed expired attachment uploads.", {
+              deleted: swept.deleted,
+            });
+          }
+        }),
+      ),
     );
 
     const importPendingTranscripts = legacyV1ThreadImporter.importPendingTranscripts.pipe(
