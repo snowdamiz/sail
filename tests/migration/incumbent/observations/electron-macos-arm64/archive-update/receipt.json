@@ -1,0 +1,266 @@
+{
+  "scope": "Published arm64 v0.1.17 to v0.1.18 using the packaged updater and a loopback checksum control.",
+  "assets": {
+    "0.1.17": {
+      "tag": "v0.1.17",
+      "releaseId": 461234370,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "assets": {
+        "SHA256SUMS": {
+          "sha256": "c298f6aab51e71845cbbe3c8e08807cb095e04bcccbefb0df1bd6c55f5be99cc",
+          "size": 960,
+          "assetId": 802852660
+        },
+        "latest-mac.yml": {
+          "sha256": "bec2826e8578cb368babb738f6162adab4e6b039d55540b8779374060aa17709",
+          "size": 669,
+          "assetId": 802852973
+        },
+        "Sail-0.1.17-arm64.zip": {
+          "sha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+          "size": 230609211,
+          "assetId": 802852659,
+          "sha512": "LXnOh/+QKz1HlD+J/4OTWqXuB0Vvrrj/GxMHnVvNlOK8yWsQKInOydyd9DR8ix3Fkgq16CUViGMv3OgxFQ4Wlw=="
+        }
+      }
+    },
+    "0.1.18": {
+      "tag": "v0.1.18",
+      "releaseId": 461311569,
+      "sourceSha": "8337252d5112501cc06bae39921b84c807c662fc",
+      "assets": {
+        "SHA256SUMS": {
+          "sha256": "b5516d5771ea470e555ce80fb77949a3ab54256b04133a8e0d254246c2b8dc5f",
+          "size": 960,
+          "assetId": 803290142
+        },
+        "latest-mac.yml": {
+          "sha256": "1f687f6bc0d23e5bcb5dc709aca66cdf02e9a7464936c7578ad9df746dde30d2",
+          "size": 669,
+          "assetId": 803290681
+        },
+        "Sail-0.1.18-arm64.zip": {
+          "sha256": "915c9e7c3384b4d4c0a020e42cdd92a2ddb730b966ebc3edde43644116663a0f",
+          "size": 230870809,
+          "assetId": 803290141,
+          "sha512": "beNGEc64bD1sgSKDbeDnjQyhykpEwGSa6FqbHh3HwXIf9li0KpHFiSEf4deT9drPCevRksi1XprhvkZCzLPxww=="
+        }
+      }
+    }
+  },
+  "steps": {
+    "available": {
+      "enabled": true,
+      "status": "available",
+      "channel": "latest",
+      "currentVersion": "0.1.17",
+      "availableVersion": "0.1.18",
+      "downloadedVersion": null,
+      "message": null,
+      "errorContext": null,
+      "canRetry": false,
+      "downloadButtonEnabled": true,
+      "evidence": "The updater state and enabled control confirmed availability. The first native capture showed the earlier Checking frame."
+    },
+    "checksumRejected": {
+      "enabled": true,
+      "status": "available",
+      "channel": "latest",
+      "currentVersion": "0.1.17",
+      "availableVersion": "0.1.18",
+      "downloadedVersion": null,
+      "message": "Electron updater failed to download the update on channel latest. Error: The update archive failed checksum verification.",
+      "errorContext": "download",
+      "canRetry": true
+    },
+    "retryOffered": {
+      "enabled": true,
+      "status": "available",
+      "channel": "latest",
+      "currentVersion": "0.1.17",
+      "availableVersion": "0.1.18",
+      "downloadedVersion": null,
+      "message": "Electron updater failed to download the update on channel latest. Error: The update archive failed checksum verification.",
+      "errorContext": "download",
+      "canRetry": true
+    },
+    "downloaded": {
+      "enabled": true,
+      "status": "downloaded",
+      "channel": "latest",
+      "currentVersion": "0.1.17",
+      "availableVersion": "0.1.18",
+      "downloadedVersion": "0.1.18",
+      "message": null,
+      "errorContext": null,
+      "canRetry": true
+    },
+    "confirmation": "Install update 0.1.18 and restart T3 Code?"
+  },
+  "screenshots": {
+    "checksumRejected": {
+      "height": 780,
+      "pixelWidth": 2200,
+      "width": 1100,
+      "pixelHeight": 1560,
+      "name": "update-rejected.png",
+      "sha256": "3d5a0af8f3ab0861cd3f07e2fdfc168de2e6a5dd45b77db76499ae6314f697d0"
+    },
+    "downloaded": {
+      "pixelHeight": 1560,
+      "height": 780,
+      "width": 1100,
+      "pixelWidth": 2200,
+      "name": "update-ready.png",
+      "sha256": "5f8c13d7f6def36bf60a8a6a71f77121c020c5044c2d63603278795f3b363522"
+    },
+    "confirmation": {
+      "width": 1100,
+      "pixelWidth": 2200,
+      "pixelHeight": 1560,
+      "height": 780,
+      "name": "update-confirm.png",
+      "sha256": "b02ca313282d52b6929c4f8d6bd6a0b47f94287cf9d2117e9aa1e6d9f6ed4861"
+    },
+    "restarted": {
+      "height": 780,
+      "pixelWidth": 2200,
+      "pixelHeight": 1560,
+      "width": 1100,
+      "name": "update-restarted.png",
+      "sha256": "a9c7935275e4687ae1a4ef951dab9cb9956273aea1c8f37eb85315062e5180bc"
+    },
+    "reopened": {
+      "height": 780,
+      "pixelWidth": 2200,
+      "width": 1100,
+      "pixelHeight": 1560,
+      "name": "update-reopened-by-link.png",
+      "sha256": "5d5012acb70423c8a3c893215338e7ceecd20e2e725d0052868445124a42834b"
+    }
+  },
+  "mirrorRequests": [
+    {
+      "asset": "latest-mac.yml",
+      "badManifest": true,
+      "bytes": 669
+    },
+    {
+      "asset": "latest-mac.yml",
+      "badManifest": true,
+      "bytes": 669
+    },
+    {
+      "asset": "Sail-0.1.18-arm64.zip",
+      "badManifest": true,
+      "bytes": 230870809
+    },
+    {
+      "asset": "latest-mac.yml",
+      "badManifest": false,
+      "bytes": 669
+    },
+    {
+      "asset": "latest-mac.yml",
+      "badManifest": false,
+      "bytes": 669
+    },
+    {
+      "asset": "Sail-0.1.18-arm64.zip",
+      "badManifest": false,
+      "bytes": 230870809
+    },
+    {
+      "asset": "latest-mac.yml",
+      "badManifest": false,
+      "bytes": 669
+    }
+  ],
+  "changedChecksumManifestSha256": "5109b3010e90df48d795ecf2d56bdfc4e027d04a12ab9f071823dfb47deb6699",
+  "launch": {
+    "initialVersion": "0.1.17",
+    "restartedVersion": "0.1.18",
+    "automaticRelaunch": true,
+    "sameEnvironment": true,
+    "samePort": true,
+    "newPid": true,
+    "protocol": 2,
+    "sqliteMigration": 118,
+    "bundleEntriesMatched": 327,
+    "installRecord": "pending cleanup on next update check",
+    "reopened": {
+      "action": "Send the saved Sail thread link to the relaunched app with Launch Services",
+      "samePid": true,
+      "title": "Compatibility replay",
+      "finalReplyVisible": true,
+      "highlightedCodeVisible": true,
+      "tableRowsIncludingHeader": 4
+    },
+    "installRecordAfterNextCheck": "cleaned"
+  },
+  "state": {
+    "messages": 3,
+    "runs": 1,
+    "unchangedAfterChecksumRejection": true,
+    "unchangedAfterRelaunch": true,
+    "fingerprints": {
+      "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+      "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+    }
+  },
+  "schemaVersion": 1,
+  "platform": "macOS 27.0.1 (26A434) arm64",
+  "publicFeed": {
+    "provider": "github",
+    "repository": "snowdamiz/sail",
+    "channel": "latest",
+    "release": "0.1.18",
+    "loopbackOverridesUsed": false,
+    "steps": {
+      "available": {
+        "enabled": true,
+        "status": "available",
+        "channel": "latest",
+        "currentVersion": "0.1.17",
+        "availableVersion": "0.1.18",
+        "downloadedVersion": null,
+        "message": null,
+        "errorContext": null,
+        "canRetry": false
+      },
+      "downloaded": {
+        "enabled": true,
+        "status": "downloaded",
+        "channel": "latest",
+        "currentVersion": "0.1.17",
+        "availableVersion": "0.1.18",
+        "downloadedVersion": "0.1.18",
+        "message": null,
+        "errorContext": null,
+        "canRetry": true
+      },
+      "confirmation": "Install update 0.1.18 and restart T3 Code?"
+    },
+    "launch": {
+      "initialVersion": "0.1.17",
+      "restartedVersion": "0.1.18",
+      "automaticRelaunch": true,
+      "sameEnvironment": true,
+      "samePort": true,
+      "newPid": true,
+      "protocol": 2,
+      "sqliteMigration": 118,
+      "bundleEntriesMatched": 327,
+      "installRecord": "pending cleanup on next update check"
+    },
+    "state": {
+      "messages": 3,
+      "runs": 1,
+      "unchangedAfterRelaunch": true,
+      "fingerprints": {
+        "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+        "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+      }
+    }
+  }
+}

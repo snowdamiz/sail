@@ -187,6 +187,11 @@
     "receipt": "../runtime/v0.1.17-to-v0.1.18-cli.json",
     "scope": "Published Linux foreground CLI upgrade on arm64 and emulated x64. The restarted host preserved the Replay transcript, environment identity, and scoped browser and bearer sessions. Both launchers rejected a deliberately invalid checksum."
   },
+  "macosArm64ArchiveUpdate": {
+    "result": "observed",
+    "receipt": "electron-macos-arm64/archive-update/receipt.json",
+    "scope": "Published v0.1.17 to v0.1.18 on macOS arm64 through the loopback mirror and configured GitHub feed. Both runs installed the exact ZIP and relaunched on the same port with the original Replay payloads. The loopback run also verified checksum rejection, retry and reopening the saved thread."
+  },
   "linuxArm64AppImageUpdate": {
     "result": "observed",
     "receipt": "electron-linux-arm64/appimage-update/receipt.json",

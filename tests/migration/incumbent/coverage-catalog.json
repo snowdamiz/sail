@@ -620,6 +620,7 @@
       "evidenceProfile": "process",
       "sourceReferences": ["apps/desktop/src/updates/DesktopUpdates.ts"],
       "supplementalReceipts": [
+        "observations/electron-macos-arm64/archive-update/receipt.json",
         "observations/electron-linux-arm64/appimage-update/receipt.json",
         "observations/electron-linux-arm64/deb-update/receipt.json",
         "observations/electron-linux-x64/deb-update/receipt.json"

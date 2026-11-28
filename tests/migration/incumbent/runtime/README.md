@@ -55,6 +55,16 @@ The [upgrade receipt](v0.1.17-to-v0.1.18-cli.json) covers `t3 update 0.1.18 --ye
 
 Both launchers rejected the target with a deliberately invalid checksum and left the original server and launcher intact. With the published checksum, the installed command switched to v0.1.18. The foreground server stayed at v0.1.17 until it was stopped. On restarting with the same home and port, v0.1.18 reported the same environment identity and three saved messages, accepted both original sessions with their original scope, and returned HTTP 426 to a protocol 1 request. Both published versions used migration 118. Service-managed upgrades require their own run.
 
+## Published arm64 macOS archive update
+
+Extract the verified v0.1.17 arm64 ZIP into a writable scratch directory. Launch its executable with a scratch home and a copy of the Replay database and environment ID. Rerun the [macOS bundle comparison](check.py) after the update to verify the installed files against the published target ZIP.
+
+Use `T3CODE_DESKTOP_MOCK_UPDATES=true` and `T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT` to serve the v0.1.18 ZIP and `latest-mac.yml` on loopback. Replace the arm64 ZIP's SHA-512 in the first manifest with a different value. In **Settings → About**, check for updates and click **Download**. After the checksum error, verify the predecessor version, installed app, and [saved-thread fingerprints](upgrade_state.py).
+
+Restore the published manifest, check for updates, and download again. Click **Install** and **Confirm**. Wait for the updater to relaunch Sail. Check that the server answers on the original port with the same environment ID and protocol. Open the saved thread with its `sail://threads/…` link and check the reply, highlighted code, and table. The next update check removes the previous bundle and staging files.
+
+Use a separate scratch installation with the packaged GitHub feed to repeat the successful upgrade path while v0.1.18 is the latest stable release. Both runs installed the exact v0.1.18 bundle and preserved the saved payloads. [Update receipt](../observations/electron-macos-arm64/archive-update/receipt.json)
+
 ## Published arm64 AppImage update
 
 Use writable copies of the released AppImage and the Replay database in a disposable Debian arm64 container running Xvfb. Start v0.1.17 with `APPIMAGE_EXTRACT_AND_RUN=1`. Set `T3CODE_DESKTOP_MOCK_UPDATES=true` and `T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT` to direct the packaged updater to a loopback mirror. Serve the v0.1.18 `latest-linux-arm64.yml` and AppImage. The mirror rejects byte ranges so the updater takes the full-download path.
