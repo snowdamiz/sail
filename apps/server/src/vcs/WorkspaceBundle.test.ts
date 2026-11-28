@@ -2083,4 +2083,318 @@ describe("WorkspaceBundle", () => {
         expect((yield* git(repoPath, ["branch", "--list", userCommitBranch])).trim()).toBe("");
       }).pipe(Effect.provide(makeTestLayer())),
   );
+
+  it.effect(
+    "never reuses symbolic branch refs (pointing to checked-out branch or dangling) during destination branch allocation",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-symref-branch-alloc-",
+        });
+        const dstRepo = path.join(root, "dst");
+        const srcRepo = path.join(root, "src");
+        const bundlePath = path.join(root, "alias.bundle");
+
+        // Destination main worktree is checked out on `other`, with symbolic ref `alias -> other`.
+        yield* fs.makeDirectory(dstRepo, { recursive: true });
+        yield* git(dstRepo, ["init", "-b", "other"]);
+        yield* fs.writeFileString(path.join(dstRepo, "shared.txt"), "base\n");
+        yield* git(dstRepo, ["add", "-A"]);
+        yield* git(dstRepo, ["commit", "-m", "base commit"]);
+        const baseSha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+        yield* git(dstRepo, ["symbolic-ref", "refs/heads/alias", "refs/heads/other"]);
+
+        // Export a bundle from a repo at the same commit SHA on branch `alias`.
+        yield* git(root, ["clone", dstRepo, srcRepo]);
+        yield* git(srcRepo, ["checkout", "-b", "alias", baseSha]);
+        const exported = yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-symref-alloc-1",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+        expect(exported.branch).toBe("alias");
+        expect(exported.headSha).toBe(baseSha);
+
+        const imported = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-symref-alloc-1",
+          repoCwd: dstRepo,
+          bundlePath,
+          sourceBranch: "alias",
+          targetLabel: "boat",
+        });
+
+        // Must allocate a distinct non-symbolic branch — never `alias` and never `other`.
+        expect(imported.branch).not.toBe("alias");
+        expect(imported.branch).not.toBe("other");
+        expect(imported.branch).toBe("alias-boat");
+        expect(imported.createdBranch).toBe(true);
+        expect(imported.branchRenamedFrom).toBe("alias");
+
+        // Symbolic ref `alias -> other` and main worktree checkout `other` remain intact.
+        expect((yield* git(dstRepo, ["symbolic-ref", "refs/heads/alias"])).trim()).toBe(
+          "refs/heads/other",
+        );
+        expect((yield* git(dstRepo, ["symbolic-ref", "--short", "HEAD"])).trim()).toBe("other");
+        expect(
+          (yield* git(imported.worktreePath, ["symbolic-ref", "--short", "HEAD"])).trim(),
+        ).toBe(imported.branch);
+
+        // Committing in the imported worktree must NOT advance `other`.
+        yield* fs.writeFileString(path.join(imported.worktreePath, "imported.txt"), "new work\n");
+        yield* git(imported.worktreePath, ["add", "imported.txt"]);
+        yield* git(imported.worktreePath, ["commit", "-m", "commit in imported worktree"]);
+        const importedCommitSha = (yield* git(imported.worktreePath, ["rev-parse", "HEAD"])).trim();
+        expect(importedCommitSha).not.toBe(baseSha);
+        expect((yield* git(dstRepo, ["rev-parse", "refs/heads/other"])).trim()).toBe(baseSha);
+
+        // Cleanup removes the imported worktree and allocated branch cleanly (leaving `other` and `alias` untouched).
+        yield* bundleService.removeWorktree({
+          repoCwd: dstRepo,
+          expectedGitCommonDir: imported.gitCommonDir,
+          expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+          worktreePath: imported.worktreePath,
+          branch: imported.branch,
+          expectedBranch: imported.branch,
+          expectedBranchHeadSha: importedCommitSha,
+        });
+        expect(yield* fs.exists(imported.worktreePath)).toBe(false);
+        expect((yield* git(dstRepo, ["branch", "--list", imported.branch])).trim()).toBe("");
+        expect((yield* git(dstRepo, ["rev-parse", "refs/heads/other"])).trim()).toBe(baseSha);
+        expect((yield* git(dstRepo, ["symbolic-ref", "refs/heads/alias"])).trim()).toBe(
+          "refs/heads/other",
+        );
+
+        // Also verify a dangling symbolic ref (omitted by git for-each-ref) is never dereferenced.
+        yield* git(dstRepo, [
+          "symbolic-ref",
+          "refs/heads/dangling-alias",
+          "refs/heads/dangling-target",
+        ]);
+        const danglingBundlePath = path.join(root, "dangling.bundle");
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-symref-dangling-1",
+          cwd: srcRepo,
+          outputPath: danglingBundlePath,
+        });
+        const danglingImported = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-symref-dangling-1",
+          repoCwd: dstRepo,
+          bundlePath: danglingBundlePath,
+          sourceBranch: "dangling-alias",
+          targetLabel: "boat",
+        });
+        expect(danglingImported.branch).toBe("dangling-alias-boat");
+        expect(danglingImported.createdBranch).toBe(true);
+        expect(danglingImported.branchRenamedFrom).toBe("dangling-alias");
+        expect((yield* git(dstRepo, ["branch", "--list", "dangling-target"])).trim()).toBe("");
+        expect((yield* git(dstRepo, ["symbolic-ref", "refs/heads/dangling-alias"])).trim()).toBe(
+          "refs/heads/dangling-target",
+        );
+
+        yield* bundleService.removeWorktree({
+          repoCwd: dstRepo,
+          expectedGitCommonDir: danglingImported.gitCommonDir,
+          expectedGitCommonDirIdentity: danglingImported.gitCommonDirIdentity,
+          worktreePath: danglingImported.worktreePath,
+          branch: danglingImported.branch,
+          expectedBranch: danglingImported.branch,
+          expectedBranchHeadSha: danglingImported.branchHeadSha,
+        });
+        expect(yield* fs.exists(danglingImported.worktreePath)).toBe(false);
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "refuses to delete or reuse a branch held by an active rebase or bisect in another worktree",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-rebase-bisect-guard-",
+        });
+        const dstRepo = path.join(root, "dst");
+        const srcRepo = path.join(root, "src");
+        const rebaseWt = path.join(root, "rebase-wt");
+        const bisectWt = path.join(root, "bisect-wt");
+        const bundlePath = path.join(root, "transfer.bundle");
+
+        // Initialize destination repo with a base commit on `main`.
+        yield* fs.makeDirectory(dstRepo, { recursive: true });
+        yield* git(dstRepo, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(dstRepo, "conflict.txt"), "base\n");
+        yield* git(dstRepo, ["add", "-A"]);
+        yield* git(dstRepo, ["commit", "-m", "base commit"]);
+        const baseSha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+
+        // Create source repo from destination, make a conflicting commit on `feat/rebase-target`.
+        yield* git(root, ["clone", dstRepo, srcRepo]);
+        yield* git(srcRepo, ["checkout", "-b", "feat/rebase-target"]);
+        yield* fs.writeFileString(path.join(srcRepo, "conflict.txt"), "feature change\n");
+        yield* git(srcRepo, ["add", "conflict.txt"]);
+        yield* git(srcRepo, ["commit", "-m", "feature commit"]);
+        const featureSha = (yield* git(srcRepo, ["rev-parse", "HEAD"])).trim();
+
+        // Advance `main` in dstRepo with a conflicting edit so rebasing `feat/rebase-target` onto `main` pauses on conflict.
+        yield* fs.writeFileString(path.join(dstRepo, "conflict.txt"), "main change\n");
+        yield* git(dstRepo, ["add", "conflict.txt"]);
+        yield* git(dstRepo, ["commit", "-m", "main conflicting commit"]);
+
+        // Export and import `feat/rebase-target` into dstRepo to create the transfer branch + worktree.
+        const exported = yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-rebase-probe-1",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+        const imported = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-rebase-probe-1",
+          repoCwd: dstRepo,
+          bundlePath,
+          sourceBranch: exported.branch,
+          targetLabel: "boat",
+        });
+        expect(imported.branch).toBe("feat/rebase-target");
+        expect(imported.branchHeadSha).toBe(featureSha);
+
+        // Remove the imported worktree while leaving the branch `feat/rebase-target` at `featureSha`.
+        yield* bundleService.removeWorktree({
+          repoCwd: dstRepo,
+          expectedGitCommonDir: imported.gitCommonDir,
+          expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+          worktreePath: imported.worktreePath,
+          expectedBranch: imported.branch,
+          expectedBranchHeadSha: imported.branchHeadSha,
+        });
+        expect(yield* fs.exists(imported.worktreePath)).toBe(false);
+        expect((yield* git(dstRepo, ["rev-parse", "refs/heads/feat/rebase-target"])).trim()).toBe(
+          featureSha,
+        );
+
+        // Check out `feat/rebase-target` in another worktree and start a rebase onto `main` that pauses on conflict.
+        yield* git(dstRepo, ["worktree", "add", rebaseWt, "feat/rebase-target"]);
+        const vcsProcess = yield* VcsProcess.VcsProcess;
+        const rebaseStart = yield* vcsProcess.run({
+          operation: "WorkspaceBundle.test.startConflictingRebase",
+          command: "git",
+          args: ["rebase", "main"],
+          cwd: rebaseWt,
+          env: GIT_TEST_ENV,
+          allowNonZeroExit: true,
+          timeoutMs: 15_000,
+        });
+        expect(rebaseStart.exitCode).not.toBe(0);
+
+        // Confirm `git worktree list --porcelain` reports detached HEAD (no `branch` line) for `rebaseWt`.
+        const porcelain = yield* git(dstRepo, ["worktree", "list", "--porcelain"]);
+        const rebaseWtBlock = porcelain
+          .split("\n\n")
+          .find((block) => block.includes(path.basename(rebaseWt)));
+        expect(rebaseWtBlock).toBeDefined();
+        expect(rebaseWtBlock).toContain("detached");
+        expect(rebaseWtBlock).not.toContain("branch refs/heads/feat/rebase-target");
+
+        // 1. removeWorktree MUST refuse deleting `feat/rebase-target` with `git_error`, preserving the ref.
+        const removeDuringRebase = yield* Effect.result(
+          bundleService.removeWorktree({
+            repoCwd: dstRepo,
+            expectedGitCommonDir: imported.gitCommonDir,
+            expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+            branch: "feat/rebase-target",
+            expectedBranchHeadSha: featureSha,
+          }),
+        );
+        expect(Result.isFailure(removeDuringRebase)).toBe(true);
+        if (Result.isFailure(removeDuringRebase)) {
+          expect(removeDuringRebase.failure.code).toBe("git_error");
+        }
+        expect((yield* git(dstRepo, ["rev-parse", "refs/heads/feat/rebase-target"])).trim()).toBe(
+          featureSha,
+        );
+
+        // 2. importWorkspaceBundle (allocateDestinationBranch) MUST refuse to reuse `feat/rebase-target`
+        //    while it is paused in an active rebase, allocating a distinct branch instead!
+        const bundlePath2 = path.join(root, "transfer-2.bundle");
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-rebase-probe-2",
+          cwd: srcRepo,
+          outputPath: bundlePath2,
+        });
+        const importDuringRebase = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-rebase-probe-2",
+          repoCwd: dstRepo,
+          bundlePath: bundlePath2,
+          sourceBranch: "feat/rebase-target",
+          targetLabel: "boat",
+        });
+        expect(importDuringRebase.branch).not.toBe("feat/rebase-target");
+        expect(importDuringRebase.branch).toBe("feat/rebase-target-boat");
+        expect(importDuringRebase.createdBranch).toBe(true);
+        expect(importDuringRebase.branchRenamedFrom).toBe("feat/rebase-target");
+
+        // Clean up the second imported worktree & branch.
+        yield* bundleService.removeWorktree({
+          repoCwd: dstRepo,
+          expectedGitCommonDir: importDuringRebase.gitCommonDir,
+          expectedGitCommonDirIdentity: importDuringRebase.gitCommonDirIdentity,
+          worktreePath: importDuringRebase.worktreePath,
+          branch: importDuringRebase.branch,
+          expectedBranch: importDuringRebase.branch,
+          expectedBranchHeadSha: importDuringRebase.branchHeadSha,
+        });
+
+        // 3. Resolving the conflict and running `git rebase --continue` MUST succeed and update `feat/rebase-target`!
+        yield* fs.writeFileString(path.join(rebaseWt, "conflict.txt"), "resolved change\n");
+        yield* git(rebaseWt, ["add", "conflict.txt"]);
+        yield* vcsProcess.run({
+          operation: "WorkspaceBundle.test.continueRebase",
+          command: "git",
+          args: ["rebase", "--continue"],
+          cwd: rebaseWt,
+          env: { ...GIT_TEST_ENV, GIT_EDITOR: "true" },
+          timeoutMs: 15_000,
+        });
+        expect((yield* git(rebaseWt, ["symbolic-ref", "--short", "HEAD"])).trim()).toBe(
+          "feat/rebase-target",
+        );
+        const rebasedSha = (yield* git(dstRepo, [
+          "rev-parse",
+          "refs/heads/feat/rebase-target",
+        ])).trim();
+        expect(rebasedSha).not.toBe(featureSha);
+
+        // Clean up rebaseWt before testing active bisect guard.
+        yield* git(dstRepo, ["worktree", "remove", "--force", rebaseWt]);
+
+        // 4. Active bisect in another worktree (`BISECT_START`) MUST also prevent deletion and reuse.
+        yield* git(dstRepo, ["worktree", "add", bisectWt, "feat/rebase-target"]);
+        yield* git(bisectWt, ["bisect", "start", "HEAD", baseSha]);
+        try {
+          const removeDuringBisect = yield* Effect.result(
+            bundleService.removeWorktree({
+              repoCwd: dstRepo,
+              expectedGitCommonDir: imported.gitCommonDir,
+              expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+              branch: "feat/rebase-target",
+              expectedBranchHeadSha: rebasedSha,
+            }),
+          );
+          expect(Result.isFailure(removeDuringBisect)).toBe(true);
+          if (Result.isFailure(removeDuringBisect)) {
+            expect(removeDuringBisect.failure.code).toBe("git_error");
+          }
+          expect((yield* git(dstRepo, ["rev-parse", "refs/heads/feat/rebase-target"])).trim()).toBe(
+            rebasedSha,
+          );
+        } finally {
+          yield* git(bisectWt, ["bisect", "reset"]).pipe(Effect.ignore);
+          yield* git(dstRepo, ["worktree", "remove", "--force", bisectWt]).pipe(Effect.ignore);
+        }
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
 });

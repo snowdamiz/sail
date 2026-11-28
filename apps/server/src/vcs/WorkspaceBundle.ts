@@ -367,20 +367,31 @@ function parseWorktreeListPorcelainZ(stdout: string): ReadonlyArray<RegisteredWo
   return entries;
 }
 
-function parseLocalBranchHeads(stdout: string): ReadonlyMap<string, string> {
-  const map = new Map<string, string>();
+interface ParsedLocalBranches {
+  readonly branchHeads: ReadonlyMap<string, string>;
+  readonly symbolicBranches: ReadonlySet<string>;
+}
+
+function parseLocalBranchHeads(stdout: string): ParsedLocalBranches {
+  const branchHeads = new Map<string, string>();
+  const symbolicBranches = new Set<string>();
   for (const rawLine of stdout.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const spaceIdx = line.indexOf(" ");
-    if (spaceIdx <= 0) continue;
-    const refName = line.slice(0, spaceIdx);
-    const sha = line.slice(spaceIdx + 1).trim();
-    if (refName && sha) {
-      map.set(refName, sha);
+    if (rawLine.length === 0) continue;
+    const fields = rawLine.split("\t");
+    const rawRefName = fields[0]?.trim() ?? "";
+    const sha = fields[1]?.trim() ?? "";
+    const symref = fields[2]?.trim() ?? "";
+    if (!rawRefName.startsWith("refs/heads/")) continue;
+    const branchName = rawRefName.slice("refs/heads/".length);
+    if (branchName.length === 0) continue;
+    if (symref.length > 0) {
+      symbolicBranches.add(branchName);
+    }
+    if (sha.length > 0) {
+      branchHeads.set(branchName, sha);
     }
   }
-  return map;
+  return { branchHeads, symbolicBranches };
 }
 
 function allocateDestinationBranch(input: {
@@ -389,6 +400,7 @@ function allocateDestinationBranch(input: {
   readonly targetLabel: "boat" | "local";
   readonly transferId: string;
   readonly localBranches: ReadonlyMap<string, string>;
+  readonly symbolicBranches?: ReadonlySet<string>;
   readonly checkedOutBranches: ReadonlySet<string>;
   readonly reservedBranches?: ReadonlySet<string>;
 }): {
@@ -398,9 +410,11 @@ function allocateDestinationBranch(input: {
   readonly warning: string | null;
 } {
   const shortId = shortTransferId(input.transferId);
+  const isSymbolic = (candidate: string) => input.symbolicBranches?.has(candidate) ?? false;
   const isReserved = (candidate: string) => input.reservedBranches?.has(candidate) ?? false;
   const isAvailableForNew = (candidate: string) =>
     !input.localBranches.has(candidate) &&
+    !isSymbolic(candidate) &&
     !input.checkedOutBranches.has(candidate) &&
     !isReserved(candidate);
 
@@ -419,10 +433,11 @@ function allocateDestinationBranch(input: {
   }
 
   const existingSha = input.localBranches.get(input.sourceBranch);
+  const isSourceSymbolic = isSymbolic(input.sourceBranch);
   const isCheckedOut = input.checkedOutBranches.has(input.sourceBranch);
   const isSourceReserved = isReserved(input.sourceBranch);
 
-  if (!isCheckedOut && !isSourceReserved && existingSha === undefined) {
+  if (!isSourceSymbolic && !isCheckedOut && !isSourceReserved && existingSha === undefined) {
     return {
       branch: input.sourceBranch,
       useExistingBranch: false,
@@ -431,7 +446,7 @@ function allocateDestinationBranch(input: {
     };
   }
 
-  if (!isCheckedOut && !isSourceReserved && existingSha === input.headSha) {
+  if (!isSourceSymbolic && !isCheckedOut && !isSourceReserved && existingSha === input.headSha) {
     return {
       branch: input.sourceBranch,
       useExistingBranch: true,
@@ -452,11 +467,13 @@ function allocateDestinationBranch(input: {
     }
   }
 
-  const reason = isCheckedOut
-    ? "already checked out in another worktree"
-    : isSourceReserved
-      ? "reserved by another transfer"
-      : "exists locally at a different commit";
+  const reason = isSourceSymbolic
+    ? "is a symbolic ref"
+    : isCheckedOut
+      ? "already checked out or in use by another worktree"
+      : isSourceReserved
+        ? "reserved by another transfer"
+        : "exists locally at a different commit";
   return {
     branch: candidate,
     useExistingBranch: false,
@@ -523,6 +540,7 @@ const make = Effect.gen(function* () {
       readonly allowNonZeroExit?: boolean;
       readonly timeoutMs?: number;
       readonly maxOutputBytes?: number;
+      readonly outputMode?: VcsProcess.VcsProcessInput["outputMode"];
     },
   ) => runGit(operation, cwd, [...READ_ONLY_GIT_FLAGS, ...args], options);
 
@@ -1168,6 +1186,12 @@ const make = Effect.gen(function* () {
     return null;
   });
 
+  const isEnoentError = (cause: unknown): boolean =>
+    typeof cause === "object" &&
+    cause !== null &&
+    "code" in cause &&
+    (cause as { readonly code?: unknown }).code === "ENOENT";
+
   const inspectPathWithLstat = (
     targetPath: string,
   ): Effect.Effect<"exists" | "enoent", WorkspaceBundleError> =>
@@ -1177,11 +1201,7 @@ const make = Effect.gen(function* () {
           await NodeFSP.lstat(targetPath);
           return "exists" as const;
         } catch (cause) {
-          const code =
-            typeof cause === "object" && cause !== null && "code" in cause
-              ? (cause as { readonly code?: unknown }).code
-              : undefined;
-          if (code === "ENOENT") {
+          if (isEnoentError(cause)) {
             return "enoent" as const;
           }
           throw cause;
@@ -1194,6 +1214,148 @@ const make = Effect.gen(function* () {
           cause,
         }),
     });
+
+  const readOptionalGitStateFile = (
+    filePath: string,
+  ): Effect.Effect<string | null, WorkspaceBundleError> =>
+    Effect.tryPromise({
+      try: async () => {
+        try {
+          return await NodeFSP.readFile(filePath, "utf8");
+        } catch (cause) {
+          if (isEnoentError(cause)) {
+            return null;
+          }
+          throw cause;
+        }
+      },
+      catch: (cause) =>
+        new WorkspaceBundleError({
+          code: "git_error",
+          message: `Failed to read Git worktree state file '${filePath}': ${cause instanceof Error ? cause.message : String(cause)}`,
+          cause,
+        }),
+    });
+
+  const listLinkedWorktreeGitDirs = (
+    gitCommonDir: string,
+  ): Effect.Effect<ReadonlyArray<string>, WorkspaceBundleError> =>
+    Effect.tryPromise({
+      try: async () => {
+        const worktreesAdminDir = path.join(gitCommonDir, "worktrees");
+        const readEntries = async () => {
+          try {
+            return await NodeFSP.readdir(worktreesAdminDir, { withFileTypes: true });
+          } catch (cause) {
+            if (isEnoentError(cause)) {
+              return null;
+            }
+            throw cause;
+          }
+        };
+        const entries = await readEntries();
+        if (entries === null) {
+          return [];
+        }
+
+        const dirs: Array<string> = [];
+        for (const entry of entries) {
+          const entryPath = path.join(worktreesAdminDir, entry.name);
+          if (entry.isDirectory()) {
+            dirs.push(entryPath);
+          } else if (entry.isSymbolicLink()) {
+            try {
+              const stat = await NodeFSP.stat(entryPath);
+              if (stat.isDirectory()) {
+                dirs.push(entryPath);
+              }
+            } catch (cause) {
+              if (!isEnoentError(cause)) {
+                throw cause;
+              }
+            }
+          }
+        }
+        return dirs;
+      },
+      catch: (cause) =>
+        new WorkspaceBundleError({
+          code: "git_error",
+          message: `Failed to enumerate Git worktree admin directories in '${gitCommonDir}': ${cause instanceof Error ? cause.message : String(cause)}`,
+          cause,
+        }),
+    });
+
+  const findInUseWorktreeBranches = Effect.fn("WorkspaceBundle.findInUseWorktreeBranches")(
+    function* (
+      gitCommonDir: string,
+    ): Effect.fn.Return<ReadonlyMap<string, string>, WorkspaceBundleError> {
+      const normalizedCommonDir = path.resolve(gitCommonDir);
+      const listResult = yield* runReadOnlyGit(
+        "WorkspaceBundle.listWorktreesForInUseBranches",
+        normalizedCommonDir,
+        ["--git-dir", normalizedCommonDir, "worktree", "list", "--porcelain", "-z"],
+        { outputMode: "error" },
+      );
+      if (listResult.stdoutTruncated) {
+        return yield* new WorkspaceBundleError({
+          code: "git_error",
+          message: `Git command 'WorkspaceBundle.listWorktreesForInUseBranches' produced truncated git worktree list output in '${normalizedCommonDir}'.`,
+        });
+      }
+
+      const inUseBranches = new Map<string, string>();
+      for (const entry of parseWorktreeListPorcelainZ(listResult.stdout)) {
+        if (entry.branch !== null && !inUseBranches.has(entry.branch)) {
+          inUseBranches.set(entry.branch, `checked out by worktree '${entry.path}'`);
+        }
+      }
+
+      const linkedWorktreeGitDirs = yield* listLinkedWorktreeGitDirs(normalizedCommonDir);
+      const worktreeGitDirs = [normalizedCommonDir, ...linkedWorktreeGitDirs];
+
+      for (const wtGitDir of worktreeGitDirs) {
+        const rebaseMergeHeadName = yield* readOptionalGitStateFile(
+          path.join(wtGitDir, "rebase-merge", "head-name"),
+        );
+        if (rebaseMergeHeadName !== null) {
+          const trimmed = rebaseMergeHeadName.trim();
+          if (trimmed.startsWith("refs/heads/")) {
+            const branch = trimmed.slice("refs/heads/".length);
+            if (branch.length > 0 && !inUseBranches.has(branch)) {
+              inUseBranches.set(branch, `held by an active rebase in '${wtGitDir}'`);
+            }
+          }
+        }
+
+        const rebaseApplyHeadName = yield* readOptionalGitStateFile(
+          path.join(wtGitDir, "rebase-apply", "head-name"),
+        );
+        if (rebaseApplyHeadName !== null) {
+          const trimmed = rebaseApplyHeadName.trim();
+          if (trimmed.startsWith("refs/heads/")) {
+            const branch = trimmed.slice("refs/heads/".length);
+            if (branch.length > 0 && !inUseBranches.has(branch)) {
+              inUseBranches.set(branch, `held by an active rebase in '${wtGitDir}'`);
+            }
+          }
+        }
+
+        const bisectStart = yield* readOptionalGitStateFile(path.join(wtGitDir, "BISECT_START"));
+        if (bisectStart !== null) {
+          const trimmed = bisectStart.trim();
+          const branch = trimmed.startsWith("refs/heads/")
+            ? trimmed.slice("refs/heads/".length)
+            : trimmed;
+          if (branch.length > 0 && !inUseBranches.has(branch)) {
+            inUseBranches.set(branch, `held by an active bisect in '${wtGitDir}'`);
+          }
+        }
+      }
+
+      return inUseBranches;
+    },
+  );
 
   const verifyExpectedGitCommonDir = Effect.fn("WorkspaceBundle.verifyExpectedGitCommonDir")(
     function* (input: {
@@ -1392,67 +1554,65 @@ const make = Effect.gen(function* () {
           message: `Refusing to delete branch '${branch}' in '${input.repoCwd}' without a verified expectedBranchHeadSha.`,
         });
       } else {
-        // Never delete a branch currently checked out in any registered worktree
-        // (`git update-ref -d` bypasses worktree checkout guards).
-        const registeredWorktreesResult = yield* Effect.result(
-          listRegisteredWorktrees(input.repoCwd),
+        const refName = `refs/heads/${branch}`;
+        const symrefCheckBefore = yield* Effect.result(
+          runReadOnlyGit(
+            "WorkspaceBundle.checkBranchSymbolicRef",
+            input.repoCwd,
+            ["--git-dir", expectedNormalized, "symbolic-ref", "-q", refName],
+            { allowNonZeroExit: true },
+          ),
         );
-        if (Result.isFailure(registeredWorktreesResult)) {
-          branchError = registeredWorktreesResult.failure;
-        } else {
-          const checkedOutEntry = registeredWorktreesResult.success.find(
-            (entry) => entry.branch === branch,
+        if (Result.isFailure(symrefCheckBefore)) {
+          branchError = symrefCheckBefore.failure;
+        } else if (symrefCheckBefore.success.exitCode === 0) {
+          // Ref is a symbolic ref, not a direct branch owned by this transfer:
+          // never delete the symref or its target.
+          yield* Effect.logWarning(
+            "Skipping branch deletion because ref is a symbolic ref rather than a direct branch.",
+            {
+              repoCwd: input.repoCwd,
+              expectedGitCommonDir: expectedNormalized,
+              branch,
+              targetRef: symrefCheckBefore.success.stdout.trim(),
+            },
           );
-          if (checkedOutEntry !== undefined) {
-            branchError = new WorkspaceBundleError({
-              code: "git_error",
-              message: `Refusing to delete branch '${branch}' in '${input.repoCwd}' because it is checked out by worktree '${checkedOutEntry.path}'.`,
-            });
+        } else if (symrefCheckBefore.success.exitCode !== 1) {
+          const symrefDetail =
+            symrefCheckBefore.success.stderr.trim() ||
+            symrefCheckBefore.success.stdout.trim() ||
+            `exit code ${symrefCheckBefore.success.exitCode}`;
+          branchError = new WorkspaceBundleError({
+            code: "git_error",
+            message: `Failed to inspect symbolic-ref status for branch '${branch}' in '${input.repoCwd}': ${symrefDetail}`,
+          });
+        } else {
+          // Re-verify expectedGitCommonDir + filesystem identity and confirm the branch is
+          // neither checked out nor held by an active rebase/bisect in any worktree immediately
+          // before deleting the ref with explicit `--git-dir` and `--no-deref` (`git update-ref -d`
+          // bypasses Git worktree checkout/rebase/bisect guards).
+          const reverifyRepoResult = yield* Effect.result(
+            verifyExpectedGitCommonDir({
+              repoCwd: input.repoCwd,
+              expectedGitCommonDir: input.expectedGitCommonDir,
+              expectedGitCommonDirIdentity: input.expectedGitCommonDirIdentity,
+            }),
+          );
+          if (Result.isFailure(reverifyRepoResult)) {
+            branchError = reverifyRepoResult.failure;
           } else {
-            const refName = `refs/heads/${branch}`;
-            const symrefCheckBefore = yield* Effect.result(
-              runReadOnlyGit(
-                "WorkspaceBundle.checkBranchSymbolicRef",
-                input.repoCwd,
-                ["--git-dir", expectedNormalized, "symbolic-ref", "-q", refName],
-                { allowNonZeroExit: true },
-              ),
+            const inUseBranchesResult = yield* Effect.result(
+              findInUseWorktreeBranches(expectedNormalized),
             );
-            if (Result.isFailure(symrefCheckBefore)) {
-              branchError = symrefCheckBefore.failure;
-            } else if (symrefCheckBefore.success.exitCode === 0) {
-              // Ref is a symbolic ref, not a direct branch owned by this transfer:
-              // never delete the symref or its target.
-              yield* Effect.logWarning(
-                "Skipping branch deletion because ref is a symbolic ref rather than a direct branch.",
-                {
-                  repoCwd: input.repoCwd,
-                  expectedGitCommonDir: expectedNormalized,
-                  branch,
-                  targetRef: symrefCheckBefore.success.stdout.trim(),
-                },
-              );
-            } else if (symrefCheckBefore.success.exitCode !== 1) {
-              const symrefDetail =
-                symrefCheckBefore.success.stderr.trim() ||
-                symrefCheckBefore.success.stdout.trim() ||
-                `exit code ${symrefCheckBefore.success.exitCode}`;
-              branchError = new WorkspaceBundleError({
-                code: "git_error",
-                message: `Failed to inspect symbolic-ref status for branch '${branch}' in '${input.repoCwd}': ${symrefDetail}`,
-              });
+            if (Result.isFailure(inUseBranchesResult)) {
+              branchError = inUseBranchesResult.failure;
             } else {
-              // Re-verify expectedGitCommonDir + filesystem identity immediately before
-              // deleting the ref with explicit `--git-dir` and `--no-deref`.
-              const reverifyRepoResult = yield* Effect.result(
-                verifyExpectedGitCommonDir({
-                  repoCwd: input.repoCwd,
-                  expectedGitCommonDir: input.expectedGitCommonDir,
-                  expectedGitCommonDirIdentity: input.expectedGitCommonDirIdentity,
-                }),
-              );
-              if (Result.isFailure(reverifyRepoResult)) {
-                branchError = reverifyRepoResult.failure;
+              const inUseReason = inUseBranchesResult.success.get(branch);
+              if (inUseReason !== undefined) {
+                branchError = new WorkspaceBundleError({
+                  code: "git_error",
+                  message: `Refusing to delete branch '${branch}' in '${input.repoCwd}' because it is ${inUseReason}.`,
+                });
               } else {
                 const deleteBranchResult = yield* Effect.result(
                   runGit(
@@ -1789,24 +1949,39 @@ const make = Effect.gen(function* () {
           let worktreePathPreExisted = false;
 
           return Effect.gen(function* () {
-            const [localBranchesOutput, registeredWorktrees, dynamicReserved] = yield* Effect.all([
-              runGit("WorkspaceBundle.listLocalBranches", input.repoCwd, [
-                "for-each-ref",
-                "--format=%(refname:short) %(objectname)",
-                "refs/heads",
-              ]),
-              listRegisteredWorktrees(input.repoCwd),
-              input.resolveReservedAllocations !== undefined
-                ? input.resolveReservedAllocations({
-                    repoCwd: input.repoCwd,
+            const [localBranchesOutput, inUseWorktreeBranches, dynamicReserved] = yield* Effect.all(
+              [
+                runReadOnlyGit(
+                  "WorkspaceBundle.listLocalBranches",
+                  input.repoCwd,
+                  [
+                    "--git-dir",
                     gitCommonDir,
-                    gitCommonDirIdentity,
-                  })
-                : Effect.succeed({
-                    reservedWorktreePaths: new Set<string>(),
-                    reservedBranchNames: new Set<string>(),
-                  } satisfies ReservedWorktreeAllocations),
-            ]);
+                    "for-each-ref",
+                    "--format=%(refname)%09%(objectname)%09%(symref)",
+                    "refs/heads",
+                  ],
+                  { outputMode: "error" },
+                ),
+                findInUseWorktreeBranches(gitCommonDir),
+                input.resolveReservedAllocations !== undefined
+                  ? input.resolveReservedAllocations({
+                      repoCwd: input.repoCwd,
+                      gitCommonDir,
+                      gitCommonDirIdentity,
+                    })
+                  : Effect.succeed({
+                      reservedWorktreePaths: new Set<string>(),
+                      reservedBranchNames: new Set<string>(),
+                    } satisfies ReservedWorktreeAllocations),
+              ],
+            );
+            if (localBranchesOutput.stdoutTruncated) {
+              return yield* new WorkspaceBundleError({
+                code: "git_error",
+                message: `Git command 'WorkspaceBundle.listLocalBranches' produced truncated git for-each-ref output in '${input.repoCwd}'.`,
+              });
+            }
 
             const reservedBranches = new Set<string>(input.reservedBranchNames ?? []);
             for (const branch of dynamicReserved.reservedBranchNames) {
@@ -1817,22 +1992,60 @@ const make = Effect.gen(function* () {
               reservedWorktreePaths.add(reservedPath);
             }
 
-            const checkedOutBranches = new Set<string>();
-            for (const entry of registeredWorktrees) {
-              if (entry.branch !== null) {
-                checkedOutBranches.add(entry.branch);
-              }
-            }
+            const checkedOutBranches = new Set<string>(inUseWorktreeBranches.keys());
+            const parsedLocalBranches = parseLocalBranchHeads(localBranchesOutput.stdout);
+            const knownSymbolicBranches = new Set<string>(parsedLocalBranches.symbolicBranches);
 
-            const branchAllocation = allocateDestinationBranch({
+            let branchAllocation = allocateDestinationBranch({
               sourceBranch: input.sourceBranch,
               headSha,
               targetLabel: input.targetLabel,
               transferId: input.transferId,
-              localBranches: parseLocalBranchHeads(localBranchesOutput.stdout),
+              localBranches: parsedLocalBranches.branchHeads,
+              symbolicBranches: knownSymbolicBranches,
               checkedOutBranches,
               reservedBranches,
             });
+            // Also guard against dangling symbolic refs under refs/heads/ (which git for-each-ref
+            // omits) so import never dereferences a symbolic ref into another branch.
+            for (;;) {
+              const symrefCheck = yield* runReadOnlyGit(
+                "WorkspaceBundle.checkAllocatedBranchSymbolicRef",
+                input.repoCwd,
+                [
+                  "--git-dir",
+                  gitCommonDir,
+                  "symbolic-ref",
+                  "-q",
+                  `refs/heads/${branchAllocation.branch}`,
+                ],
+                { allowNonZeroExit: true },
+              );
+              if (symrefCheck.exitCode === 1) {
+                break;
+              }
+              if (symrefCheck.exitCode !== 0) {
+                const detail =
+                  symrefCheck.stderr.trim() ||
+                  symrefCheck.stdout.trim() ||
+                  `exit code ${symrefCheck.exitCode}`;
+                return yield* new WorkspaceBundleError({
+                  code: "git_error",
+                  message: `Failed to inspect symbolic-ref status for destination branch '${branchAllocation.branch}' in '${input.repoCwd}': ${detail}`,
+                });
+              }
+              knownSymbolicBranches.add(branchAllocation.branch);
+              branchAllocation = allocateDestinationBranch({
+                sourceBranch: input.sourceBranch,
+                headSha,
+                targetLabel: input.targetLabel,
+                transferId: input.transferId,
+                localBranches: parsedLocalBranches.branchHeads,
+                symbolicBranches: knownSymbolicBranches,
+                checkedOutBranches,
+                reservedBranches,
+              });
+            }
 
             let worktreePath: string;
             if (input.worktreePath !== undefined) {
