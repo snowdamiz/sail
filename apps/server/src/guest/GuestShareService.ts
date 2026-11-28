@@ -213,6 +213,7 @@ const threadOf = (event: OrchestrationV2DomainEvent): OrchestrationV2AppThread |
     case "thread.metadata-updated":
     case "thread.model-selection-updated":
     case "thread.provider-switched":
+    case "thread.transfer-state-updated":
       return event.payload;
     default:
       return null;
@@ -560,7 +561,12 @@ const make = Effect.gen(function* () {
     const endsShare = (event: OrchestrationV2DomainEvent) => {
       if (event.type === "thread.archived" || event.type === "thread.deleted") return true;
       const updated = threadOf(event);
-      return updated !== null && updated.guestShare?.id !== share.id;
+      return (
+        updated !== null &&
+        (updated.guestShare?.id !== share.id ||
+          updated.archivedAt !== null ||
+          updated.deletedAt !== null)
+      );
     };
     const live = orchestrator
       .streamStoredEventsFrom({ threadId: thread.id, afterSequence: snapshot.snapshotSequence })

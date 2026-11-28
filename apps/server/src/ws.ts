@@ -109,6 +109,7 @@ import {
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
   SecretRequestError,
+  SessionTransferError,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -211,6 +212,7 @@ import * as ManagedProviders from "./policy/managedProviders.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import { invalidateSettingsSecrets } from "./sourceControl/sourceControlHostSecrets.ts";
 import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
+import * as SessionTransferRepository from "./persistence/SessionTransferRepository.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import { makePrepareTerminalLaunch } from "./workspace/restoreMissingWorktree.ts";
@@ -1444,6 +1446,9 @@ export const layerWsRpc = (
       );
       const providerAuthSyncOption = yield* Effect.serviceOption(ProviderAuthSync.ProviderAuthSync);
       const boatProviderSyncOption = yield* Effect.serviceOption(BoatProviderSync.BoatProviderSync);
+      const sessionTransfersOption = yield* Effect.serviceOption(
+        SessionTransferRepository.SessionTransferRepository,
+      );
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
       const issues = yield* IssueService.IssueService;
@@ -3671,6 +3676,93 @@ export const layerWsRpc = (
             ),
         [WS_METHODS.subscribeBoats]: (_input) => boats.events,
         [WS_METHODS.subscribeBoatNotices]: (_input) => boats.notices,
+        [WS_METHODS.sessionTransferPreflight]: (_input) =>
+          Effect.fail(
+            new SessionTransferError({
+              code: "not_implemented",
+              message: "Session transfer preflight is not implemented yet.",
+            }),
+          ),
+        [WS_METHODS.sessionTransferStart]: (_input) =>
+          Effect.fail(
+            new SessionTransferError({
+              code: "not_implemented",
+              message: "Session transfer start is not implemented yet.",
+            }),
+          ),
+        [WS_METHODS.sessionTransferCancel]: (input) =>
+          Effect.fail(
+            new SessionTransferError({
+              code: "not_implemented",
+              transferId: input.transferId,
+              message: "Session transfer cancel is not implemented yet.",
+            }),
+          ),
+        [WS_METHODS.sessionTransferRetry]: (input) =>
+          Effect.fail(
+            new SessionTransferError({
+              code: "not_implemented",
+              transferId: input.transferId,
+              message: "Session transfer retry is not implemented yet.",
+            }),
+          ),
+        [WS_METHODS.sessionTransferList]: (input) =>
+          Option.match(sessionTransfersOption, {
+            onNone: () => Effect.succeed({ transfers: [] }),
+            onSome: (repo) =>
+              (input.activeOnly ? repo.listActive(input.limit) : repo.listRecent(input.limit)).pipe(
+                Effect.map((transfers) => ({ transfers })),
+                Effect.mapError(
+                  (error) =>
+                    new SessionTransferError({
+                      code: "internal",
+                      message: error.message,
+                      cause: error,
+                    }),
+                ),
+              ),
+          }),
+        [WS_METHODS.subscribeSessionTransfers]: (_input) => Stream.empty,
+        [WS_METHODS.sessionTransferPrepareSource]: (input) =>
+          Effect.fail(
+            new SessionTransferError({
+              code: "not_implemented",
+              transferId: input.transferId,
+              message: "Session transfer prepareSource is not implemented yet.",
+            }),
+          ),
+        [WS_METHODS.sessionTransferStageImport]: (input) =>
+          Effect.fail(
+            new SessionTransferError({
+              code: "not_implemented",
+              transferId: input.transferId,
+              message: "Session transfer stageImport is not implemented yet.",
+            }),
+          ),
+        [WS_METHODS.sessionTransferCommitImport]: (input) =>
+          Effect.fail(
+            new SessionTransferError({
+              code: "not_implemented",
+              transferId: input.transferId,
+              message: "Session transfer commitImport is not implemented yet.",
+            }),
+          ),
+        [WS_METHODS.sessionTransferFinalizeSource]: (input) =>
+          Effect.fail(
+            new SessionTransferError({
+              code: "not_implemented",
+              transferId: input.transferId,
+              message: "Session transfer finalizeSource is not implemented yet.",
+            }),
+          ),
+        [WS_METHODS.sessionTransferAbort]: (input) =>
+          Effect.fail(
+            new SessionTransferError({
+              code: "not_implemented",
+              transferId: input.transferId,
+              message: "Session transfer abort is not implemented yet.",
+            }),
+          ),
         [WS_METHODS.previewStopLocalServer]: (input) => portDiscovery.stopServer(input),
         [WS_METHODS.subscribeDiscoveredLocalServers]: (input) =>
           Stream.callback<DiscoveredLocalServerList>((queue) =>
