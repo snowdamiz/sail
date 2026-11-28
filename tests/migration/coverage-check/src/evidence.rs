@@ -10,6 +10,9 @@ use std::{
 
 use crate::catalog::{Artifact, Cell, Observation, Run};
 
+mod linux_cli;
+pub(crate) use linux_cli::verify_linux_cli_lifecycle;
+
 pub fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     serde_json::from_reader(BufReader::new(file))

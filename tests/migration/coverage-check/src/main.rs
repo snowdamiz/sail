@@ -11,7 +11,7 @@ use std::{
 };
 
 use catalog::{Catalog, Cell, Inventory, OpenItem};
-use evidence::{Evidence, is_hex, read_json, verify_reference_pair};
+use evidence::{Evidence, is_hex, read_json, verify_linux_cli_lifecycle, verify_reference_pair};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +24,7 @@ struct Report {
     unobserved_cells: usize,
     verified_observations: usize,
     verified_visual_reference_observations: usize,
+    verified_cli_reference_observations: usize,
     supplemental_receipts: usize,
     open_matrix_items: Vec<OpenItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -214,6 +215,7 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
     let mut observed = BTreeSet::new();
     let mut records = BTreeSet::new();
     let mut verified_visual_references = 0;
+    let mut verified_cli_references = 0;
     for observation in &catalog.observations {
         let cell = &observation.cell;
         let label = format!(
@@ -344,6 +346,18 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
         for artifact in &observation.comparison_artifacts {
             evidence.verify(artifact).with_context(|| label.clone())?;
         }
+        if pass
+            && release_reference
+            && matches!(
+                cell.platform_id.as_str(),
+                "cli-linux-arm64" | "cli-linux-x64"
+            )
+            && matches!(cell.case_id.as_str(), "cli-open" | "installer-home")
+        {
+            verify_linux_cli_lifecycle(&evidence, &inventory, platform, observation)
+                .with_context(|| label.clone())?;
+            verified_cli_references += 1;
+        }
         let has_visual_reference = evidence_profiles[&cell.case_id]
             .iter()
             .any(|kind| kind == "screenshot")
@@ -368,6 +382,7 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
         unobserved_cells: declared_cells - observed_cells,
         verified_observations: catalog.observations.len(),
         verified_visual_reference_observations: verified_visual_references,
+        verified_cli_reference_observations: verified_cli_references,
         supplemental_receipts: supplemental.len(),
         open_matrix_items: catalog.open_matrix_items,
         missing: list_missing.then(|| {

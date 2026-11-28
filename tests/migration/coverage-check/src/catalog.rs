@@ -128,6 +128,16 @@ pub struct Release {
 pub struct Asset {
     pub name: String,
     pub digest: String,
+    pub size: u64,
+    #[serde(rename = "unpackedCli")]
+    pub unpacked_cli: Option<UnpackedCli>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnpackedCli {
+    pub runtime_sha256: String,
+    pub installed_entries: usize,
 }
 
 #[derive(Deserialize)]

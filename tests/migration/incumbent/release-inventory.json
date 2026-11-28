@@ -223,7 +223,11 @@
         "content_type": "application/x-gtar",
         "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/t3-0.1.17-linux-arm64.tar.gz",
         "inPublishedSha256sums": true,
-        "bytesChecked": false
+        "bytesChecked": false,
+        "unpackedCli": {
+          "runtimeSha256": "7da1cd42672d5e4fbb83c50179cf694441e3eef2d1cf6cf2e98f359c94bdec8e",
+          "installedEntries": 3965
+        }
       },
       {
         "id": 802852988,
@@ -233,7 +237,11 @@
         "content_type": "application/x-gtar",
         "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/t3-0.1.17-linux-x64.tar.gz",
         "inPublishedSha256sums": true,
-        "bytesChecked": false
+        "bytesChecked": false,
+        "unpackedCli": {
+          "runtimeSha256": "71a95f081ed384dd7514e15d9cb10018998fa66033931d56bf7ebefb54278e18",
+          "installedEntries": 3975
+        }
       }
     ]
   },

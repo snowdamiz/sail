@@ -130,8 +130,8 @@ def call(port, path, payload=None, headers=None):
         connection.close()
 
 
-def await_runtime(path, process, headless_log):
-    deadline = time.monotonic() + 30
+def await_runtime(path, process, headless_log, timeout=30):
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         require(process.poll() is None, f"Server exited before readiness ({process.returncode})")
         startup = b""
@@ -193,7 +193,7 @@ def pair_credential(output, port):
     return fragment["token"][0]
 
 
-def redeem(port, credential, one_time):
+def redeem(port, credential, one_time, expected_scopes=None):
     payload = {"credential": credential}
     status, body, cookie_headers = call(port, BROWSER_SESSION, payload)
     session = json.loads(body)
@@ -217,6 +217,11 @@ def redeem(port, credential, one_time):
     result = {"path": BROWSER_SESSION, "status": status, "sessionMethod": session["sessionMethod"],
               "cookieCheck": {"path": SESSION, "anonymousAuthenticated": False,
                               "authenticated": True, "status": session_status}}
+    if expected_scopes is not None:
+        require(authenticated["scopes"] == authenticated["permissions"] == expected_scopes,
+                "Browser session grants did not match the requested scopes")
+        result["cookieCheck"].update(scopes=authenticated["scopes"],
+                                     permissions=authenticated["permissions"])
     if one_time:
         reused, _, _ = call(port, BROWSER_SESSION, payload)
         require(reused == 401, "A consumed pairing credential was not rejected")

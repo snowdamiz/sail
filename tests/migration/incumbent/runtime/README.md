@@ -49,6 +49,21 @@ Launch the installed CLI with `--startup-pairing off` and query `/.well-known/t3
 
 The arm64 AppImage launched with `APPIMAGE_EXTRACT_AND_RUN=1` because there was no FUSE device. Its Electron process and backend closed after a DevTools quit request. The x64 AppImage runtime exited 127 under emulation. Extracting the published SquashFS payload with `unsquashfs` and launching its `AppRun` let that desktop app boot. Both Debian installations completed and passed `dpkg --verify`. Their post-install scripts logged an unshare permission diagnostic inside the containers. FUSE, the native x64 AppImage launcher, and desktop sandboxing need separate runs.
 
+## Published Linux CLI lifecycle
+
+The [arm64 captures](../observations/cli-linux-arm64/lifecycle) and [x64 captures](../observations/cli-linux-x64/lifecycle) have two independent fresh boots and two independent copied-home boots each. They use the released standalone CLI on Debian 12.15, with x64 under Rosetta in Docker. Each copied boot reopened the saved Replay thread through the live CLI and preserved the complete message and run payloads.
+
+Mount the published tarball at `/archive.tar.gz` and its unpacked runtime at `/release`, both read-only. Mount the isolated Replay backup at `/seed.sqlite` and its saved thread ID file at `/thread-id`. Mount `tests/migration` at `/fixture` and a writable empty capture directory at `/out`. Run the following in a disposable Debian 12 container with network access limited to its own loopback interface.
+
+```sh
+python3 /fixture/incumbent/runtime/capture-cli.py \
+  /archive.tar.gz /release /seed.sqlite /thread-id /out
+```
+
+Add `--emulated` for the x64 Rosetta run, which allows up to 90 seconds for readiness. The capture checks the archive and installed entries, the executable linked from the owned process or mapped by Rosetta, and selection of the explicit home. It records readiness, the descriptor, a one-use read-only browser session with the requested grants, and cleanup after Ctrl-C. Pairing credentials and cookies stay in memory.
+
+Run [render-cli.py](render-cli.py) with Pillow on each output directory after formatting its JSON. It renders the sanitized terminal transcript and binds the PNG to the process and state receipts. The Rust coverage audit checks both boots for each claimed configuration and compares the copied state to the [pinned seed](cli-lifecycle-seed.json).
+
 ## Published foreground CLI upgrade
 
 The [upgrade receipt](v0.1.17-to-v0.1.18-cli.json) covers `t3 update 0.1.18 --yes` on Linux arm64 and emulated x64. Install v0.1.17 into a scratch home with a copy of the Replay database. Run its installed foreground server and establish both a browser cookie session and a bearer session with `orchestration:read`. Serve the published v0.1.18 archives and checksums through `T3CODE_RELEASE_BASE_URL`.

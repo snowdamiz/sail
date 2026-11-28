@@ -73,6 +73,66 @@ impl Fixture {
         fs::copy(source.join(path), target).unwrap();
     }
 
+    fn cli(case_id: &str, state: &str, arch: &str) -> Self {
+        let mut fixture = Self::new();
+        let source = fixture.repo.join("tests/migration/incumbent");
+        let original: Value =
+            serde_json::from_slice(&fs::read(source.join("coverage-catalog.json")).unwrap())
+                .unwrap();
+        let platform = format!("cli-linux-{arch}");
+        let case = original["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["id"] == case_id)
+            .unwrap();
+        let observation = original["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| {
+                record["caseId"] == case_id
+                    && record["platformId"] == platform
+                    && record["state"] == state
+            })
+            .unwrap();
+        fixture.catalog["cases"] = json!([case]);
+        fixture.catalog["cases"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("supplementalReceipts");
+        fixture.catalog["platformSets"]["packaged"] = json!([platform]);
+        fixture.catalog["observations"] = json!([observation]);
+        fixture.copy(&source, &json!("runtime/cli-lifecycle-seed.json"));
+        for artifact in observation["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|run| run["artifacts"].as_array().unwrap())
+        {
+            fixture.copy(&source, &artifact["path"]);
+        }
+        fixture
+    }
+
+    fn edit_first_cli_json(&mut self, kind: &str, edit: impl FnOnce(&mut Value)) {
+        let artifact = self.catalog["observations"][0]["runs"][0]["artifacts"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|artifact| artifact["kind"] == kind)
+            .unwrap();
+        let path = self
+            .directory
+            .path()
+            .join(artifact["path"].as_str().unwrap());
+        let mut data = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        edit(&mut data);
+        let bytes = serde_json::to_vec(&data).unwrap();
+        fs::write(path, &bytes).unwrap();
+        artifact["sha256"] = json!(format!("{:x}", Sha256::digest(bytes)));
+    }
+
     fn run(&self) -> Output {
         let path = self.directory.path().join("coverage-catalog.json");
         fs::write(&path, serde_json::to_vec(&self.catalog).unwrap()).unwrap();
@@ -90,6 +150,81 @@ impl Fixture {
         assert!(!result.status.success(), "accepted invalid catalog");
         assert!(stderr.contains(reason), "{stderr}");
     }
+}
+
+#[test]
+fn verifies_native_and_translated_cli_lifecycle_receipts() {
+    for (case, state, arch) in [
+        ("cli-open", "start", "arm64"),
+        ("installer-home", "copied-home-boots", "x64"),
+    ] {
+        let result = Fixture::cli(case, state, arch).run();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(report["observedCells"], 1);
+        assert_eq!(report["verifiedVisualReferenceObservations"], 0);
+        assert_eq!(report["verifiedCliReferenceObservations"], 1);
+    }
+}
+
+#[test]
+fn rejects_a_rehashed_cli_transcript_named_for_a_different_package() {
+    let mut fixture = Fixture::cli("cli-open", "version", "arm64");
+    fixture.edit_first_cli_json("process-transcript", |data| {
+        data["package"]["archive"] = json!("Sail-0.1.17-arm64.deb");
+    });
+    fixture.rejects("CLI receipt does not match the installed release asset");
+
+    let mut fixture = Fixture::cli("cli-open", "version", "arm64");
+    fixture.edit_first_cli_json("process-transcript", |data| {
+        data["package"]["runtimeSha256"] = json!("f".repeat(64));
+    });
+    fixture.rejects("CLI receipt does not match the installed release asset");
+}
+
+#[test]
+fn rejects_a_rehashed_cli_pairing_receipt_with_successful_reuse() {
+    let mut fixture = Fixture::cli("cli-open", "pair", "arm64");
+    fixture.edit_first_cli_json("process-transcript", |data| {
+        data["pair"]["browserSession"]["reuseStatus"] = json!(200);
+    });
+    fixture.rejects("incorrect one-time CLI pairing or cookie grants");
+}
+
+#[test]
+fn rejects_a_rehashed_copied_home_with_a_changed_saved_message_fingerprint() {
+    let mut fixture = Fixture::cli("installer-home", "copied-home-boots", "x64");
+    fixture.edit_first_cli_json("state-receipt", |data| {
+        data["afterStop"]["messages"] = json!("f".repeat(64));
+    });
+    fixture.rejects("copied CLI home did not preserve the pinned fixture payloads");
+}
+
+#[test]
+fn rejects_a_terminal_screenshot_from_another_boot() {
+    let mut fixture = Fixture::cli("cli-open", "stop", "arm64");
+    let first_and_repeat = fixture.catalog["observations"][0]["runs"]
+        .as_array_mut()
+        .unwrap();
+    let repeat = first_and_repeat[1]["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|artifact| artifact["kind"] == "terminal-screenshot")
+        .unwrap()
+        .clone();
+    let first = first_and_repeat[0]["artifacts"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|artifact| artifact["kind"] == "terminal-screenshot")
+        .unwrap();
+    *first = repeat;
+    fixture.rejects("terminal image is not bound to the CLI receipts");
 }
 
 #[test]

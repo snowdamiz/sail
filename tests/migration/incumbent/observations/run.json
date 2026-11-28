@@ -198,6 +198,12 @@
     "result": "pass",
     "receipt": "../runtime/v0.1.17-macos-arm64.json"
   },
+  "cliLifecycle": {
+    "result": "pass",
+    "arm64": "cli-linux-arm64/lifecycle",
+    "x64": "cli-linux-x64/lifecycle",
+    "scope": "Two fresh and two copied-home boots of each published v0.1.17 Linux CLI archive on Debian 12.15. The x64 boot uses Rosetta in Docker. Covered CLI version, selected-home readiness, read-only pairing and one-use replay rejection, Ctrl-C cleanup, and live readback of the copied Replay thread."
+  },
   "macosPackageFormats": {
     "result": "observed",
     "receipt": "../runtime/v0.1.17-macos-package-formats.json",

@@ -92,12 +92,14 @@
     "cli-linux-arm64": {
       "surface": "cli",
       "os": "linux",
-      "arch": "arm64"
+      "arch": "arm64",
+      "inventoryTarget": "linux-arm64"
     },
     "cli-linux-x64": {
       "surface": "cli",
       "os": "linux",
-      "arch": "x64"
+      "arch": "x64",
+      "inventoryTarget": "linux-x64"
     },
     "oci-linux-arm64": {
       "surface": "oci",
@@ -1910,6 +1912,1428 @@
           "kind": "action-and-state",
           "path": "observations/served-chromium-linux/settled/reference-pair-comparison.json",
           "sha256": "2a5931ab76932c34884962386737659e7953c30686c7f2430b12fdc841ecdd16"
+        }
+      ]
+    },
+    {
+      "caseId": "cli-open",
+      "platformId": "cli-linux-arm64",
+      "state": "version",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-arm64-native-fresh",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-first/process.json",
+              "sha256": "f4422b4e362cf7facf4c7ee09cd97518a6a9a170342dcc52811099b828da519f"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-first/state.json",
+              "sha256": "ea482cf9354feb557d5ad036256f5a739b2b13dca99e2c389f56768e11cf1d15"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-first/terminal.png",
+              "sha256": "afa801aca219b18be78adb97ecd27f3eedeb38a29ccc08127ba6c103d2876b65"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/process.json",
+              "sha256": "8efcfb7d78a12f0ecc49ea8d37e3b408f30b0cfb7856f67743275950e5e45c9a"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/state.json",
+              "sha256": "e6b35a98f5ba77b304b3d4e1a2193a2dab15a0cc6b069f6694584cc1ccbce06d"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/terminal.png",
+              "sha256": "b4a955d7c62fc6660b398ff5ad59cb64290d5d760deedddf199922b0d3037b35"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "cli-open",
+      "platformId": "cli-linux-arm64",
+      "state": "start",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-arm64-native-fresh",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-first/process.json",
+              "sha256": "f4422b4e362cf7facf4c7ee09cd97518a6a9a170342dcc52811099b828da519f"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-first/state.json",
+              "sha256": "ea482cf9354feb557d5ad036256f5a739b2b13dca99e2c389f56768e11cf1d15"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-first/terminal.png",
+              "sha256": "afa801aca219b18be78adb97ecd27f3eedeb38a29ccc08127ba6c103d2876b65"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/process.json",
+              "sha256": "8efcfb7d78a12f0ecc49ea8d37e3b408f30b0cfb7856f67743275950e5e45c9a"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/state.json",
+              "sha256": "e6b35a98f5ba77b304b3d4e1a2193a2dab15a0cc6b069f6694584cc1ccbce06d"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/terminal.png",
+              "sha256": "b4a955d7c62fc6660b398ff5ad59cb64290d5d760deedddf199922b0d3037b35"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "cli-open",
+      "platformId": "cli-linux-arm64",
+      "state": "pair",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-arm64-native-fresh",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-first/process.json",
+              "sha256": "f4422b4e362cf7facf4c7ee09cd97518a6a9a170342dcc52811099b828da519f"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-first/state.json",
+              "sha256": "ea482cf9354feb557d5ad036256f5a739b2b13dca99e2c389f56768e11cf1d15"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-first/terminal.png",
+              "sha256": "afa801aca219b18be78adb97ecd27f3eedeb38a29ccc08127ba6c103d2876b65"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/process.json",
+              "sha256": "8efcfb7d78a12f0ecc49ea8d37e3b408f30b0cfb7856f67743275950e5e45c9a"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/state.json",
+              "sha256": "e6b35a98f5ba77b304b3d4e1a2193a2dab15a0cc6b069f6694584cc1ccbce06d"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/terminal.png",
+              "sha256": "b4a955d7c62fc6660b398ff5ad59cb64290d5d760deedddf199922b0d3037b35"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "cli-open",
+      "platformId": "cli-linux-arm64",
+      "state": "stop",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-arm64-native-fresh",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-first/process.json",
+              "sha256": "f4422b4e362cf7facf4c7ee09cd97518a6a9a170342dcc52811099b828da519f"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-first/state.json",
+              "sha256": "ea482cf9354feb557d5ad036256f5a739b2b13dca99e2c389f56768e11cf1d15"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-first/terminal.png",
+              "sha256": "afa801aca219b18be78adb97ecd27f3eedeb38a29ccc08127ba6c103d2876b65"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/process.json",
+              "sha256": "8efcfb7d78a12f0ecc49ea8d37e3b408f30b0cfb7856f67743275950e5e45c9a"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/state.json",
+              "sha256": "e6b35a98f5ba77b304b3d4e1a2193a2dab15a0cc6b069f6694584cc1ccbce06d"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/terminal.png",
+              "sha256": "b4a955d7c62fc6660b398ff5ad59cb64290d5d760deedddf199922b0d3037b35"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "cli-open",
+      "platformId": "cli-linux-arm64",
+      "state": "version",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-arm64-native-copied",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-first/process.json",
+              "sha256": "a116929393a1bf528dda08df2b862036b20dff8aa53b9fd3ef996926542b52c0"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-first/state.json",
+              "sha256": "c5a6fdf72776b128dce775622a5680f394f9c94b127a72082db2444157d58311"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-first/terminal.png",
+              "sha256": "a5e8bf0c92628a97fe6c8d28e17ce6f148bacc7bad05c385ff1ae51d597f69b8"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/process.json",
+              "sha256": "30e3d0073b65e971a9e370cdcfff78dcbea8a6332073c967d0a956505f042f5e"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/state.json",
+              "sha256": "9ef43bfff35d4202121cdfe635fa14b3433d86d84e453a09a9543d780a3befaa"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/terminal.png",
+              "sha256": "44c7e160fd51099b363c9daa498be9905dad19707ff80b1b8652d9512003a9ed"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "cli-open",
+      "platformId": "cli-linux-arm64",
+      "state": "start",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-arm64-native-copied",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-first/process.json",
+              "sha256": "a116929393a1bf528dda08df2b862036b20dff8aa53b9fd3ef996926542b52c0"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-first/state.json",
+              "sha256": "c5a6fdf72776b128dce775622a5680f394f9c94b127a72082db2444157d58311"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-first/terminal.png",
+              "sha256": "a5e8bf0c92628a97fe6c8d28e17ce6f148bacc7bad05c385ff1ae51d597f69b8"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/process.json",
+              "sha256": "30e3d0073b65e971a9e370cdcfff78dcbea8a6332073c967d0a956505f042f5e"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/state.json",
+              "sha256": "9ef43bfff35d4202121cdfe635fa14b3433d86d84e453a09a9543d780a3befaa"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/terminal.png",
+              "sha256": "44c7e160fd51099b363c9daa498be9905dad19707ff80b1b8652d9512003a9ed"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "cli-open",
+      "platformId": "cli-linux-arm64",
+      "state": "pair",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-arm64-native-copied",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-first/process.json",
+              "sha256": "a116929393a1bf528dda08df2b862036b20dff8aa53b9fd3ef996926542b52c0"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-first/state.json",
+              "sha256": "c5a6fdf72776b128dce775622a5680f394f9c94b127a72082db2444157d58311"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-first/terminal.png",
+              "sha256": "a5e8bf0c92628a97fe6c8d28e17ce6f148bacc7bad05c385ff1ae51d597f69b8"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/process.json",
+              "sha256": "30e3d0073b65e971a9e370cdcfff78dcbea8a6332073c967d0a956505f042f5e"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/state.json",
+              "sha256": "9ef43bfff35d4202121cdfe635fa14b3433d86d84e453a09a9543d780a3befaa"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/terminal.png",
+              "sha256": "44c7e160fd51099b363c9daa498be9905dad19707ff80b1b8652d9512003a9ed"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "cli-open",
+      "platformId": "cli-linux-arm64",
+      "state": "stop",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-arm64-native-copied",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-first/process.json",
+              "sha256": "a116929393a1bf528dda08df2b862036b20dff8aa53b9fd3ef996926542b52c0"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-first/state.json",
+              "sha256": "c5a6fdf72776b128dce775622a5680f394f9c94b127a72082db2444157d58311"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-first/terminal.png",
+              "sha256": "a5e8bf0c92628a97fe6c8d28e17ce6f148bacc7bad05c385ff1ae51d597f69b8"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/process.json",
+              "sha256": "30e3d0073b65e971a9e370cdcfff78dcbea8a6332073c967d0a956505f042f5e"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/state.json",
+              "sha256": "9ef43bfff35d4202121cdfe635fa14b3433d86d84e453a09a9543d780a3befaa"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/terminal.png",
+              "sha256": "44c7e160fd51099b363c9daa498be9905dad19707ff80b1b8652d9512003a9ed"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "installer-home",
+      "platformId": "cli-linux-arm64",
+      "state": "copied-home-boots",
+      "entrypoint": "installer",
+      "configurationId": "debian-12.15-arm64-native-copied",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-first/process.json",
+              "sha256": "a116929393a1bf528dda08df2b862036b20dff8aa53b9fd3ef996926542b52c0"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-first/state.json",
+              "sha256": "c5a6fdf72776b128dce775622a5680f394f9c94b127a72082db2444157d58311"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-first/terminal.png",
+              "sha256": "a5e8bf0c92628a97fe6c8d28e17ce6f148bacc7bad05c385ff1ae51d597f69b8"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/process.json",
+              "sha256": "30e3d0073b65e971a9e370cdcfff78dcbea8a6332073c967d0a956505f042f5e"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/state.json",
+              "sha256": "9ef43bfff35d4202121cdfe635fa14b3433d86d84e453a09a9543d780a3befaa"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/terminal.png",
+              "sha256": "44c7e160fd51099b363c9daa498be9905dad19707ff80b1b8652d9512003a9ed"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "cli-open",
+      "platformId": "cli-linux-x64",
+      "state": "version",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-x64-emulated-fresh",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-first/process.json",
+              "sha256": "994486ee4d7692857807080a7e6e0fa9dcaf450f2f1bee1e92061e499e6b6cd9"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-first/state.json",
+              "sha256": "b151897d0f2da971f084b62bf3ea59221e545b561d9d50fe1b2d638cd431ab3b"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-first/terminal.png",
+              "sha256": "6824844c00d7f2782f5a61de72dddca092b858133291482181af6c3cfb136baf"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/process.json",
+              "sha256": "bb31238eff732faf0dff9a26b91917290292096e9364fcbe007e312324fcd52c"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/state.json",
+              "sha256": "05016feec70a1a88b975e15f4f6bc7d01a03c42f0f57472ea492dde32e6f7875"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/terminal.png",
+              "sha256": "d4abdcf1b236bb72ed9486bad50b5c2630f0ad5277ddbce35da98258876e10f1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "cli-open",
+      "platformId": "cli-linux-x64",
+      "state": "start",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-x64-emulated-fresh",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-first/process.json",
+              "sha256": "994486ee4d7692857807080a7e6e0fa9dcaf450f2f1bee1e92061e499e6b6cd9"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-first/state.json",
+              "sha256": "b151897d0f2da971f084b62bf3ea59221e545b561d9d50fe1b2d638cd431ab3b"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-first/terminal.png",
+              "sha256": "6824844c00d7f2782f5a61de72dddca092b858133291482181af6c3cfb136baf"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/process.json",
+              "sha256": "bb31238eff732faf0dff9a26b91917290292096e9364fcbe007e312324fcd52c"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/state.json",
+              "sha256": "05016feec70a1a88b975e15f4f6bc7d01a03c42f0f57472ea492dde32e6f7875"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/terminal.png",
+              "sha256": "d4abdcf1b236bb72ed9486bad50b5c2630f0ad5277ddbce35da98258876e10f1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "cli-open",
+      "platformId": "cli-linux-x64",
+      "state": "pair",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-x64-emulated-fresh",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-first/process.json",
+              "sha256": "994486ee4d7692857807080a7e6e0fa9dcaf450f2f1bee1e92061e499e6b6cd9"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-first/state.json",
+              "sha256": "b151897d0f2da971f084b62bf3ea59221e545b561d9d50fe1b2d638cd431ab3b"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-first/terminal.png",
+              "sha256": "6824844c00d7f2782f5a61de72dddca092b858133291482181af6c3cfb136baf"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/process.json",
+              "sha256": "bb31238eff732faf0dff9a26b91917290292096e9364fcbe007e312324fcd52c"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/state.json",
+              "sha256": "05016feec70a1a88b975e15f4f6bc7d01a03c42f0f57472ea492dde32e6f7875"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/terminal.png",
+              "sha256": "d4abdcf1b236bb72ed9486bad50b5c2630f0ad5277ddbce35da98258876e10f1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "cli-open",
+      "platformId": "cli-linux-x64",
+      "state": "stop",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-x64-emulated-fresh",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-first/process.json",
+              "sha256": "994486ee4d7692857807080a7e6e0fa9dcaf450f2f1bee1e92061e499e6b6cd9"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-first/state.json",
+              "sha256": "b151897d0f2da971f084b62bf3ea59221e545b561d9d50fe1b2d638cd431ab3b"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-first/terminal.png",
+              "sha256": "6824844c00d7f2782f5a61de72dddca092b858133291482181af6c3cfb136baf"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/process.json",
+              "sha256": "bb31238eff732faf0dff9a26b91917290292096e9364fcbe007e312324fcd52c"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/state.json",
+              "sha256": "05016feec70a1a88b975e15f4f6bc7d01a03c42f0f57472ea492dde32e6f7875"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/terminal.png",
+              "sha256": "d4abdcf1b236bb72ed9486bad50b5c2630f0ad5277ddbce35da98258876e10f1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "cli-open",
+      "platformId": "cli-linux-x64",
+      "state": "version",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-x64-emulated-copied",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/copied-first/process.json",
+              "sha256": "6c2b5c0d14cc11d0e7987300be43cab87de2e457704916f77b70d5524e771e07"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/copied-first/state.json",
+              "sha256": "5ff130d4f71312afaafb1f9feb01d6b6e3614f007615be7eb555d7acd22d8908"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/copied-first/terminal.png",
+              "sha256": "9f70980089d3f5d0a2e3372b2bd05ed86f8751a2332d0c84235c16faf259d0c0"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/copied-repeat/process.json",
+              "sha256": "1d079e87d2cacd7a669b8d4a2027b5b531c50d9e966b896fe5ba413795c49861"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/copied-repeat/state.json",
+              "sha256": "b4f1407e063e2d18f33afe29be26ef6b4f4d8d52597edd86da853e88b1878776"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/copied-repeat/terminal.png",
+              "sha256": "6b9cbd649b248079b37c9bc9c069db283e70b17526732354f3a74c299fce590b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "cli-open",
+      "platformId": "cli-linux-x64",
+      "state": "start",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-x64-emulated-copied",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/copied-first/process.json",
+              "sha256": "6c2b5c0d14cc11d0e7987300be43cab87de2e457704916f77b70d5524e771e07"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/copied-first/state.json",
+              "sha256": "5ff130d4f71312afaafb1f9feb01d6b6e3614f007615be7eb555d7acd22d8908"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/copied-first/terminal.png",
+              "sha256": "9f70980089d3f5d0a2e3372b2bd05ed86f8751a2332d0c84235c16faf259d0c0"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/copied-repeat/process.json",
+              "sha256": "1d079e87d2cacd7a669b8d4a2027b5b531c50d9e966b896fe5ba413795c49861"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/copied-repeat/state.json",
+              "sha256": "b4f1407e063e2d18f33afe29be26ef6b4f4d8d52597edd86da853e88b1878776"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/copied-repeat/terminal.png",
+              "sha256": "6b9cbd649b248079b37c9bc9c069db283e70b17526732354f3a74c299fce590b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "cli-open",
+      "platformId": "cli-linux-x64",
+      "state": "pair",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-x64-emulated-copied",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/copied-first/process.json",
+              "sha256": "6c2b5c0d14cc11d0e7987300be43cab87de2e457704916f77b70d5524e771e07"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/copied-first/state.json",
+              "sha256": "5ff130d4f71312afaafb1f9feb01d6b6e3614f007615be7eb555d7acd22d8908"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/copied-first/terminal.png",
+              "sha256": "9f70980089d3f5d0a2e3372b2bd05ed86f8751a2332d0c84235c16faf259d0c0"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/copied-repeat/process.json",
+              "sha256": "1d079e87d2cacd7a669b8d4a2027b5b531c50d9e966b896fe5ba413795c49861"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/copied-repeat/state.json",
+              "sha256": "b4f1407e063e2d18f33afe29be26ef6b4f4d8d52597edd86da853e88b1878776"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/copied-repeat/terminal.png",
+              "sha256": "6b9cbd649b248079b37c9bc9c069db283e70b17526732354f3a74c299fce590b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "cli-open",
+      "platformId": "cli-linux-x64",
+      "state": "stop",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-x64-emulated-copied",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/copied-first/process.json",
+              "sha256": "6c2b5c0d14cc11d0e7987300be43cab87de2e457704916f77b70d5524e771e07"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/copied-first/state.json",
+              "sha256": "5ff130d4f71312afaafb1f9feb01d6b6e3614f007615be7eb555d7acd22d8908"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/copied-first/terminal.png",
+              "sha256": "9f70980089d3f5d0a2e3372b2bd05ed86f8751a2332d0c84235c16faf259d0c0"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/copied-repeat/process.json",
+              "sha256": "1d079e87d2cacd7a669b8d4a2027b5b531c50d9e966b896fe5ba413795c49861"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/copied-repeat/state.json",
+              "sha256": "b4f1407e063e2d18f33afe29be26ef6b4f4d8d52597edd86da853e88b1878776"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/copied-repeat/terminal.png",
+              "sha256": "6b9cbd649b248079b37c9bc9c069db283e70b17526732354f3a74c299fce590b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "installer-home",
+      "platformId": "cli-linux-x64",
+      "state": "copied-home-boots",
+      "entrypoint": "installer",
+      "configurationId": "debian-12.15-x64-emulated-copied",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/copied-first/process.json",
+              "sha256": "6c2b5c0d14cc11d0e7987300be43cab87de2e457704916f77b70d5524e771e07"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/copied-first/state.json",
+              "sha256": "5ff130d4f71312afaafb1f9feb01d6b6e3614f007615be7eb555d7acd22d8908"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/copied-first/terminal.png",
+              "sha256": "9f70980089d3f5d0a2e3372b2bd05ed86f8751a2332d0c84235c16faf259d0c0"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "linux-cli-lifecycle",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+            "origin": "http://127.0.0.1",
+            "connectionMode": "loopback",
+            "displayProfile": null
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-x64/lifecycle/copied-repeat/process.json",
+              "sha256": "1d079e87d2cacd7a669b8d4a2027b5b531c50d9e966b896fe5ba413795c49861"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-x64/lifecycle/copied-repeat/state.json",
+              "sha256": "b4f1407e063e2d18f33afe29be26ef6b4f4d8d52597edd86da853e88b1878776"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-x64/lifecycle/copied-repeat/terminal.png",
+              "sha256": "6b9cbd649b248079b37c9bc9c069db283e70b17526732354f3a74c299fce590b"
+            }
+          ]
         }
       ]
     }
