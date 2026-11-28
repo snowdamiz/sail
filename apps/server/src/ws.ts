@@ -1928,6 +1928,11 @@ export const layerWsRpc = (
           ),
         );
 
+      const localSessionsEnabled = ServerConfig.isLocalSessionsEnabled(config);
+      const localSessionsDisabledMessage =
+        "This server does not run local sessions. Launch or connect a Boat machine instead.";
+      const controlPlaneAllowedV2Commands = new Set<string>(["thread.delete", "thread.archive"]);
+
       const loadServerConfig = Effect.fn("ws.loadServerConfig")(function* (options: {
         readonly usageLimitsCommand: boolean;
         readonly workspaceSnapshotsOnDemand: boolean;
@@ -1953,7 +1958,9 @@ export const layerWsRpc = (
         );
         const environment = yield* serverEnvironment.getDescriptor;
         const auth = yield* serverAuth.getDescriptor();
-        const scratchWorkspaceRoot = yield* managedFolders.scratchRoot;
+        const scratchWorkspaceRoot = localSessionsEnabled
+          ? yield* managedFolders.scratchRoot
+          : Option.none<string>();
         const lastEventLoopStall = yield* eventLoopMonitor.latestNoticeableStall;
         const discovery = yield* resolveOpenDiscoveryForConfig({
           editors: externalLauncher.resolveAvailableEditors(),
@@ -2114,64 +2121,73 @@ export const layerWsRpc = (
         [WS_METHODS.issueTrackersConnect]: (input) => issueTrackers.connect(input),
         [WS_METHODS.issueTrackersBindProject]: (input) => issueTrackers.bindProject(input),
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
-          Effect.annotateCurrentSpan({
-            "orchestration_v2.command_id": command.commandId,
-            "orchestration_v2.command_type": command.type,
-            "orchestration_v2.thread_id":
-              command.type === "thread.fork" || command.type === "thread.merge_back"
-                ? command.targetThreadId
-                : command.type === "delegated_task.request" ||
-                    command.type === "delegated_task.wake-policy" ||
-                    command.type === "delegated_task.completion-delivery.acknowledge" ||
-                    command.type === "delegated_task.completion-delivery.dispose" ||
-                    command.type === "thread.created.record"
-                  ? command.parentThreadId
-                  : command.threadId,
-            ...(command.type === "thread.fork" || command.type === "thread.merge_back"
-              ? { "orchestration_v2.source_thread_id": command.sourceThreadId }
-              : {}),
-          }).pipe(
-            Effect.andThen(
-              startup
-                .enqueueCommand(
-                  (command.type === "prepared-run.retry"
-                    ? threadLaunch.retryPreparation(command)
-                    : ThreadMessageIntake.dispatchCommand(
-                        ThreadManagementService.withCreationProvenance(command, {
-                          createdBy: "user",
-                          creationSource:
-                            "creationSource" in command ? command.creationSource : "web",
-                        }),
-                        {
-                          managesProviders:
-                            currentSession.scopes.includes(AuthProvidersManageScope),
-                        },
-                      )
-                  ).pipe(Effect.provide(intakeContext)),
-                )
-                .pipe(
-                  Effect.tap((result) =>
-                    result.replayed ? Effect.void : recordClientCommandAnalytics(command),
-                  ),
-                  Effect.map((result) => ({ sequence: result.sequence })),
-                  Effect.mapError((cause) => {
-                    if (cause._tag === "EnvironmentAuthorizationError") return cause;
-                    const retryable = cause._tag === "ServerMaintenanceBusy";
-                    const detail = retryable
-                      ? cause.message
-                      : userFacingDispatchErrorMessage(cause);
-                    return new OrchestrationV2DispatchCommandError({
-                      ...(retryable ? { retryable: true } : {}),
-                      commandId: command.commandId,
-                      commandType: command.type,
-                      message: detail ?? "Failed to dispatch orchestration V2 command",
-                      ...(detail === undefined ? {} : { detail }),
-                      cause,
-                    });
-                  }),
+          !localSessionsEnabled && !controlPlaneAllowedV2Commands.has(command.type)
+            ? Effect.fail(
+                new OrchestrationV2DispatchCommandError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  message: localSessionsDisabledMessage,
+                  detail: localSessionsDisabledMessage,
+                }),
+              )
+            : Effect.annotateCurrentSpan({
+                "orchestration_v2.command_id": command.commandId,
+                "orchestration_v2.command_type": command.type,
+                "orchestration_v2.thread_id":
+                  command.type === "thread.fork" || command.type === "thread.merge_back"
+                    ? command.targetThreadId
+                    : command.type === "delegated_task.request" ||
+                        command.type === "delegated_task.wake-policy" ||
+                        command.type === "delegated_task.completion-delivery.acknowledge" ||
+                        command.type === "delegated_task.completion-delivery.dispose" ||
+                        command.type === "thread.created.record"
+                      ? command.parentThreadId
+                      : command.threadId,
+                ...(command.type === "thread.fork" || command.type === "thread.merge_back"
+                  ? { "orchestration_v2.source_thread_id": command.sourceThreadId }
+                  : {}),
+              }).pipe(
+                Effect.andThen(
+                  startup
+                    .enqueueCommand(
+                      (command.type === "prepared-run.retry"
+                        ? threadLaunch.retryPreparation(command)
+                        : ThreadMessageIntake.dispatchCommand(
+                            ThreadManagementService.withCreationProvenance(command, {
+                              createdBy: "user",
+                              creationSource:
+                                "creationSource" in command ? command.creationSource : "web",
+                            }),
+                            {
+                              managesProviders:
+                                currentSession.scopes.includes(AuthProvidersManageScope),
+                            },
+                          )
+                      ).pipe(Effect.provide(intakeContext)),
+                    )
+                    .pipe(
+                      Effect.tap((result) =>
+                        result.replayed ? Effect.void : recordClientCommandAnalytics(command),
+                      ),
+                      Effect.map((result) => ({ sequence: result.sequence })),
+                      Effect.mapError((cause) => {
+                        if (cause._tag === "EnvironmentAuthorizationError") return cause;
+                        const retryable = cause._tag === "ServerMaintenanceBusy";
+                        const detail = retryable
+                          ? cause.message
+                          : userFacingDispatchErrorMessage(cause);
+                        return new OrchestrationV2DispatchCommandError({
+                          ...(retryable ? { retryable: true } : {}),
+                          commandId: command.commandId,
+                          commandType: command.type,
+                          message: detail ?? "Failed to dispatch orchestration V2 command",
+                          ...(detail === undefined ? {} : { detail }),
+                          cause,
+                        });
+                      }),
+                    ),
                 ),
-            ),
-          ),
+              ),
         [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: (input) => threadManagement.stopWorkflow(input),
         [ORCHESTRATION_V2_WS_METHODS.forceStopThread]: (input) =>
           threadManagement.forceStopThread(input),
@@ -2309,156 +2325,164 @@ export const layerWsRpc = (
             ),
           ),
         [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input) =>
-          Effect.annotateCurrentSpan({
-            "orchestration_v2.command_id": input.commandId,
-            "orchestration_v2.project_id": input.projectId,
-          }).pipe(
-            Effect.andThen(
-              startup
-                .enqueueCommand(
-                  threadLaunch
-                    .checkWorktreeBase({
-                      commandId: input.commandId,
-                      projectId: input.projectId,
-                      workspaceStrategy: input.workspaceStrategy,
-                    })
-                    .pipe(
-                      Effect.andThen(
-                        ThreadMessageIntake.launchThread({
+          !localSessionsEnabled
+            ? Effect.fail(
+                new OrchestrationV2ThreadLaunchError({
+                  commandId: input.commandId,
+                  projectId: input.projectId,
+                  message: localSessionsDisabledMessage,
+                }),
+              )
+            : Effect.annotateCurrentSpan({
+                "orchestration_v2.command_id": input.commandId,
+                "orchestration_v2.project_id": input.projectId,
+              }).pipe(
+                Effect.andThen(
+                  startup
+                    .enqueueCommand(
+                      threadLaunch
+                        .checkWorktreeBase({
                           commandId: input.commandId,
-                          ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
-                          ...(input.reuseExistingThread === undefined
-                            ? {}
-                            : { reuseExistingThread: input.reuseExistingThread }),
                           projectId: input.projectId,
-                          title: input.title,
-                          ...(input.generateTitle === undefined
-                            ? {}
-                            : { generateTitle: input.generateTitle }),
-                          modelSelection: input.modelSelection,
-                          runtimeMode: input.runtimeMode,
-                          interactionMode: input.interactionMode,
                           workspaceStrategy: input.workspaceStrategy,
-                          ...(input.initialMessage === undefined
-                            ? {}
-                            : {
-                                initialMessage: {
-                                  ...(input.initialMessage.messageId === undefined
-                                    ? {}
-                                    : { messageId: input.initialMessage.messageId }),
-                                  text: input.initialMessage.text,
-                                  attachments: input.initialMessage.attachments,
-                                  ...(input.initialMessage.context === undefined
-                                    ? {}
-                                    : { context: input.initialMessage.context }),
-                                },
-                              }),
-                          createdBy: "user",
-                          creationSource: input.creationSource ?? "web",
-                        }),
-                      ),
-                      Effect.provide(intakeContext),
-                    ),
-                )
-                .pipe(
-                  // A resumed launch is a retry of one already counted.
-                  Effect.tap((result) =>
-                    result.resumed
-                      ? Effect.void
-                      : analytics
-                          .record("client.thread.started", {
-                            ...originProps,
-                            workspaceStrategy: input.workspaceStrategy.type,
-                          })
-                          .pipe(
-                            Effect.andThen(
-                              input.initialMessage === undefined
-                                ? Effect.void
-                                : analytics.record("client.turn.requested", originProps),
-                            ),
-                            Effect.ignore,
+                        })
+                        .pipe(
+                          Effect.andThen(
+                            ThreadMessageIntake.launchThread({
+                              commandId: input.commandId,
+                              ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+                              ...(input.reuseExistingThread === undefined
+                                ? {}
+                                : { reuseExistingThread: input.reuseExistingThread }),
+                              projectId: input.projectId,
+                              title: input.title,
+                              ...(input.generateTitle === undefined
+                                ? {}
+                                : { generateTitle: input.generateTitle }),
+                              modelSelection: input.modelSelection,
+                              runtimeMode: input.runtimeMode,
+                              interactionMode: input.interactionMode,
+                              workspaceStrategy: input.workspaceStrategy,
+                              ...(input.initialMessage === undefined
+                                ? {}
+                                : {
+                                    initialMessage: {
+                                      ...(input.initialMessage.messageId === undefined
+                                        ? {}
+                                        : { messageId: input.initialMessage.messageId }),
+                                      text: input.initialMessage.text,
+                                      attachments: input.initialMessage.attachments,
+                                      ...(input.initialMessage.context === undefined
+                                        ? {}
+                                        : { context: input.initialMessage.context }),
+                                    },
+                                  }),
+                              createdBy: "user",
+                              creationSource: input.creationSource ?? "web",
+                            }),
                           ),
-                  ),
-                  Effect.map((result) => ({
-                    ...result,
-                    projection: projectThreadProjectionForWire(result.projection),
-                  })),
-                  Effect.catchTags({
-                    ServerMaintenanceBusy: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: cause.message,
-                        retryable: true,
-                        cause,
+                          Effect.provide(intakeContext),
+                        ),
+                    )
+                    .pipe(
+                      // A resumed launch is a retry of one already counted.
+                      Effect.tap((result) =>
+                        result.resumed
+                          ? Effect.void
+                          : analytics
+                              .record("client.thread.started", {
+                                ...originProps,
+                                workspaceStrategy: input.workspaceStrategy.type,
+                              })
+                              .pipe(
+                                Effect.andThen(
+                                  input.initialMessage === undefined
+                                    ? Effect.void
+                                    : analytics.record("client.turn.requested", originProps),
+                                ),
+                                Effect.ignore,
+                              ),
+                      ),
+                      Effect.map((result) => ({
+                        ...result,
+                        projection: projectThreadProjectionForWire(result.projection),
+                      })),
+                      Effect.catchTags({
+                        ServerMaintenanceBusy: (cause) =>
+                          new OrchestrationV2ThreadLaunchError({
+                            commandId: input.commandId,
+                            projectId: input.projectId,
+                            message: cause.message,
+                            retryable: true,
+                            cause,
+                          }),
+                        AttachmentClaimError: (cause) =>
+                          new OrchestrationV2ThreadLaunchError({
+                            commandId: input.commandId,
+                            projectId: input.projectId,
+                            message: cause.message,
+                            cause,
+                          }),
+                        ThreadLaunchError: (cause) =>
+                          new OrchestrationV2ThreadLaunchError({
+                            commandId: input.commandId,
+                            projectId: input.projectId,
+                            message: "Failed to launch thread",
+                            cause,
+                          }),
+                        ServerRuntimeStartupError: (cause) =>
+                          new OrchestrationV2ThreadLaunchError({
+                            commandId: input.commandId,
+                            projectId: input.projectId,
+                            message: "Failed to launch thread",
+                            cause,
+                          }),
+                        ThreadManagementProviderInstanceDisabledError: (cause) =>
+                          new OrchestrationV2ThreadLaunchError({
+                            commandId: input.commandId,
+                            projectId: input.projectId,
+                            message: cause.message,
+                            cause,
+                          }),
+                        ThreadLaunchBaseRefError: (cause) =>
+                          new OrchestrationV2ThreadLaunchError({
+                            commandId: input.commandId,
+                            projectId: input.projectId,
+                            message: cause.message,
+                            cause,
+                          }),
+                        ThreadLaunchBranchExistsError: (cause) =>
+                          new OrchestrationV2ThreadLaunchError({
+                            commandId: input.commandId,
+                            projectId: input.projectId,
+                            message: cause.message,
+                            cause,
+                          }),
+                        ThreadLaunchBranchConflictError: (cause) =>
+                          new OrchestrationV2ThreadLaunchError({
+                            commandId: input.commandId,
+                            projectId: input.projectId,
+                            message: cause.message,
+                            cause,
+                          }),
+                        ThreadLaunchNotRepositoryError: (cause) =>
+                          new OrchestrationV2ThreadLaunchError({
+                            commandId: input.commandId,
+                            projectId: input.projectId,
+                            message: cause.message,
+                            cause,
+                          }),
+                        TaskFolderError: (cause) =>
+                          new OrchestrationV2ThreadLaunchError({
+                            commandId: input.commandId,
+                            projectId: input.projectId,
+                            message: cause.message,
+                            cause,
+                          }),
                       }),
-                    AttachmentClaimError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: cause.message,
-                        cause,
-                      }),
-                    ThreadLaunchError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: "Failed to launch thread",
-                        cause,
-                      }),
-                    ServerRuntimeStartupError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: "Failed to launch thread",
-                        cause,
-                      }),
-                    ThreadManagementProviderInstanceDisabledError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: cause.message,
-                        cause,
-                      }),
-                    ThreadLaunchBaseRefError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: cause.message,
-                        cause,
-                      }),
-                    ThreadLaunchBranchExistsError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: cause.message,
-                        cause,
-                      }),
-                    ThreadLaunchBranchConflictError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: cause.message,
-                        cause,
-                      }),
-                    ThreadLaunchNotRepositoryError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: cause.message,
-                        cause,
-                      }),
-                    TaskFolderError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: cause.message,
-                        cause,
-                      }),
-                  }),
+                    ),
                 ),
-            ),
-          ),
+              ),
         [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: (input) =>
           Stream.unwrap(subscribeOrchestrationV2Shell(input)),
         [ORCHESTRATION_V2_WS_METHODS.subscribeThread]: (input) =>
@@ -3165,65 +3189,92 @@ export const layerWsRpc = (
         [WS_METHODS.sourceControlStarred]: (input) => sourceControlSignIn.starred(input),
         [WS_METHODS.sourceControlStar]: (input) => sourceControlSignIn.star(input),
         [WS_METHODS.projectCloneStart]: (input) =>
-          projectCloneTracker.start(input, {
-            createProject: (project) =>
-              projectService
-                .create({
-                  commandId: CommandId.make(`project-clone-create:${project.projectId}`),
-                  projectId: project.projectId,
-                  title: project.title,
-                  workspaceRoot: project.workspaceRoot,
-                  createWorkspaceRootIfMissing: true,
-                })
+          !localSessionsEnabled
+            ? Effect.fail(
+                new OrchestrationDispatchCommandError({
+                  message: localSessionsDisabledMessage,
+                }),
+              )
+            : projectCloneTracker.start(input, {
+                createProject: (project) =>
+                  projectService
+                    .create({
+                      commandId: CommandId.make(`project-clone-create:${project.projectId}`),
+                      projectId: project.projectId,
+                      title: project.title,
+                      workspaceRoot: project.workspaceRoot,
+                      createWorkspaceRootIfMissing: true,
+                    })
+                    .pipe(
+                      Effect.asVoid,
+                      Effect.mapError((cause) =>
+                        cause._tag === "ProjectConflictError"
+                          ? cause
+                          : new OrchestrationDispatchCommandError({
+                              message: "Failed to create clone project.",
+                              cause,
+                            }),
+                      ),
+                    ),
+                onCloned: (project) =>
+                  repositoryIdentityResolver.resolve(project.workspaceRoot, { refresh: true }).pipe(
+                    Effect.andThen(
+                      projectService.update({
+                        commandId: CommandId.make(`project-clone-done:${project.projectId}`),
+                        projectId: project.projectId,
+                      }),
+                    ),
+                    Effect.andThen(refreshGitStatus(project.workspaceRoot)),
+                    // The folder was empty when the project was created, so the cached
+                    // enrichment says "no repository" and clients cannot group it yet.
+                    Effect.andThen(projectEnrichment.invalidate([project.workspaceRoot])),
+                    Effect.andThen(projectEnrichment.request(project.workspaceRoot)),
+                    Effect.ignoreCause({ log: true }),
+                  ),
+              }),
+        [WS_METHODS.projectsEnsureScratch]: () =>
+          !localSessionsEnabled
+            ? Effect.fail(
+                new OrchestrationDispatchCommandError({
+                  message: localSessionsDisabledMessage,
+                }),
+              )
+            : managedFolders.ensureScratchProject.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationDispatchCommandError({ message: cause.message, cause }),
+                ),
+              ),
+        [WS_METHODS.projectsCreateNew]: (input) =>
+          !localSessionsEnabled
+            ? Effect.fail(
+                new OrchestrationDispatchCommandError({
+                  message: localSessionsDisabledMessage,
+                }),
+              )
+            : managedFolders
+                .createNamedProject(input)
                 .pipe(
-                  Effect.asVoid,
-                  Effect.mapError((cause) =>
-                    cause._tag === "ProjectConflictError"
-                      ? cause
-                      : new OrchestrationDispatchCommandError({
-                          message: "Failed to create clone project.",
-                          cause,
-                        }),
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationDispatchCommandError({ message: cause.message, cause }),
                   ),
                 ),
-            onCloned: (project) =>
-              repositoryIdentityResolver.resolve(project.workspaceRoot, { refresh: true }).pipe(
-                Effect.andThen(
-                  projectService.update({
-                    commandId: CommandId.make(`project-clone-done:${project.projectId}`),
-                    projectId: project.projectId,
-                  }),
-                ),
-                Effect.andThen(refreshGitStatus(project.workspaceRoot)),
-                // The folder was empty when the project was created, so the cached
-                // enrichment says "no repository" and clients cannot group it yet.
-                Effect.andThen(projectEnrichment.invalidate([project.workspaceRoot])),
-                Effect.andThen(projectEnrichment.request(project.workspaceRoot)),
-                Effect.ignoreCause({ log: true }),
-              ),
-          }),
-        [WS_METHODS.projectsEnsureScratch]: () =>
-          managedFolders.ensureScratchProject.pipe(
-            Effect.mapError(
-              (cause) => new OrchestrationDispatchCommandError({ message: cause.message, cause }),
-            ),
-          ),
-        [WS_METHODS.projectsCreateNew]: (input) =>
-          managedFolders
-            .createNamedProject(input)
-            .pipe(
-              Effect.mapError(
-                (cause) => new OrchestrationDispatchCommandError({ message: cause.message, cause }),
-              ),
-            ),
         [WS_METHODS.projectsCreateFromThread]: (input) =>
-          scratchThreadPromotion
-            .promote(input)
-            .pipe(
-              Effect.mapError(
-                (cause) => new OrchestrationDispatchCommandError({ message: cause.message, cause }),
-              ),
-            ),
+          !localSessionsEnabled
+            ? Effect.fail(
+                new OrchestrationDispatchCommandError({
+                  message: localSessionsDisabledMessage,
+                }),
+              )
+            : scratchThreadPromotion
+                .promote(input)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationDispatchCommandError({ message: cause.message, cause }),
+                  ),
+                ),
         [WS_METHODS.projectCloneCancel]: (input) =>
           projectCloneTracker.cancel(input.projectId).pipe(Effect.map((applied) => ({ applied }))),
         [WS_METHODS.projectCloneRetry]: (input) =>
@@ -3312,19 +3363,27 @@ export const layerWsRpc = (
             ),
           ),
         [WS_METHODS.projectsMutate]: (mutation) =>
-          startup.enqueueCommand(mutateProject(mutation)).pipe(
-            Effect.mapError(
-              (cause) =>
+          !localSessionsEnabled && mutation.type !== "project.delete"
+            ? Effect.fail(
                 new ProjectMutationError({
                   commandId: mutation.commandId,
-                  message:
-                    cause._tag === "ProjectNotEmptyError" || cause._tag === "ProjectInvalidError"
-                      ? cause.message
-                      : "Failed to mutate project.",
-                  cause,
+                  message: localSessionsDisabledMessage,
                 }),
-            ),
-          ),
+              )
+            : startup.enqueueCommand(mutateProject(mutation)).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProjectMutationError({
+                      commandId: mutation.commandId,
+                      message:
+                        cause._tag === "ProjectNotEmptyError" ||
+                        cause._tag === "ProjectInvalidError"
+                          ? cause.message
+                          : "Failed to mutate project.",
+                      cause,
+                    }),
+                ),
+              ),
         [WS_METHODS.shellOpenInEditor]: (input) => externalLauncher.launchEditor(input),
         [WS_METHODS.filesystemGetMetadata]: (input) => workspaceFileSystem.getMetadata(input),
         [WS_METHODS.filesystemBrowse]: (input) =>
@@ -3357,7 +3416,14 @@ export const layerWsRpc = (
         [WS_METHODS.attachmentsDelete]: (input) => deletePendingAttachment(input.attachmentId),
         [WS_METHODS.agentSessionsScan]: () => agentSessionScanner.scan,
         [WS_METHODS.agentSessionsImport]: (input) =>
-          agentSessionImporter.importRecentAgentThreads(input),
+          !localSessionsEnabled
+            ? Effect.fail(
+                new EnvironmentAuthorizationError({
+                  message: localSessionsDisabledMessage,
+                  requiredScope: AuthOrchestrationOperateScope,
+                }),
+              )
+            : agentSessionImporter.importRecentAgentThreads(input),
         [WS_METHODS.assetsCreateUrl]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(function* (input) {
@@ -3598,23 +3664,41 @@ export const layerWsRpc = (
         [WS_METHODS.reviewGetDiffPreview]: (input) => review.getDiffPreview(input),
         [WS_METHODS.reviewGetDiffFileContents]: (input) => review.getDiffFileContents(input),
         [WS_METHODS.terminalOpen]: (input) =>
-          prepareTerminalLaunch(input).pipe(
-            Effect.flatMap((launch) =>
-              terminalManager
-                .open(launch.input)
-                .pipe(Effect.provideService(TerminalManager.TerminalCwdRecovery, launch.recover)),
-            ),
-          ),
-        [WS_METHODS.terminalAttach]: (input, metadata) =>
-          Stream.unwrap(
-            prepareTerminalLaunch(input).pipe(
-              Effect.map((launch) =>
-                terminalManager
-                  .attachOutputStream(launch.input, terminalViewerId(metadata))
-                  .pipe(Stream.provideService(TerminalManager.TerminalCwdRecovery, launch.recover)),
+          !localSessionsEnabled
+            ? Effect.fail(
+                new EnvironmentAuthorizationError({
+                  message: localSessionsDisabledMessage,
+                  requiredScope: AuthTerminalOperateScope,
+                }),
+              )
+            : prepareTerminalLaunch(input).pipe(
+                Effect.flatMap((launch) =>
+                  terminalManager
+                    .open(launch.input)
+                    .pipe(
+                      Effect.provideService(TerminalManager.TerminalCwdRecovery, launch.recover),
+                    ),
+                ),
               ),
-            ),
-          ),
+        [WS_METHODS.terminalAttach]: (input, metadata) =>
+          !localSessionsEnabled
+            ? Stream.fail(
+                new EnvironmentAuthorizationError({
+                  message: localSessionsDisabledMessage,
+                  requiredScope: AuthTerminalOperateScope,
+                }),
+              )
+            : Stream.unwrap(
+                prepareTerminalLaunch(input).pipe(
+                  Effect.map((launch) =>
+                    terminalManager
+                      .attachOutputStream(launch.input, terminalViewerId(metadata))
+                      .pipe(
+                        Stream.provideService(TerminalManager.TerminalCwdRecovery, launch.recover),
+                      ),
+                  ),
+                ),
+              ),
         [WS_METHODS.terminalWrite]: (input, metadata) =>
           terminalManager.write(input, terminalViewerId(metadata)),
         [WS_METHODS.terminalResize]: (input, metadata) =>
@@ -3635,7 +3719,15 @@ export const layerWsRpc = (
               (unsubscribe) => Effect.sync(unsubscribe),
             ),
           ),
-        [WS_METHODS.previewOpen]: (input) => previewManager.open(input),
+        [WS_METHODS.previewOpen]: (input) =>
+          !localSessionsEnabled
+            ? Effect.fail(
+                new EnvironmentAuthorizationError({
+                  message: localSessionsDisabledMessage,
+                  requiredScope: AuthOrchestrationOperateScope,
+                }),
+              )
+            : previewManager.open(input),
         [WS_METHODS.previewResize]: (input) => previewManager.resize(input),
         [WS_METHODS.previewAdjust]: (input) => previewManager.adjust(input),
         [WS_METHODS.previewClose]: (input) => previewManager.close(input),

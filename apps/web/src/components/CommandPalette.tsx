@@ -2,6 +2,7 @@ import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { decodeMsg, msg, T, useGT, useMessages, Var } from "gt-react";
 import { m, type MessageResolver } from "../i18n/messages";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
+import { SailBrandMark } from "./SailBrandMark";
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 
@@ -51,6 +52,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
   AuthFilesystemReadScope,
+  environmentSupportsLocalSessions,
   type DesktopWslState,
   type EnvironmentId,
   type FilesystemBrowseResult,
@@ -641,7 +643,9 @@ function OpenCommandPaletteDialog(props: {
 
   const addProjectEnvironmentOptions = (() => {
     const options = environments
-      .filter((environment) => canCreateProjectInEnvironment(environment.connection.phase))
+      .filter((environment) =>
+        canCreateProjectInEnvironment(environment.connection.phase, environment.serverConfig),
+      )
       .map((environment): AddProjectEnvironmentOption => {
         const isPrimary = environment.entry.target._tag === "PrimaryConnectionTarget";
         return {
@@ -656,7 +660,10 @@ function OpenCommandPaletteDialog(props: {
           ),
           isPrimary,
           machine: resolveEnvironmentMachineKind(environment.serverConfig),
-          isConnected: canCreateProjectInEnvironment(environment.connection.phase),
+          isConnected: canCreateProjectInEnvironment(
+            environment.connection.phase,
+            environment.serverConfig,
+          ),
           status: connectionStatusText(environment.connection, messages),
         };
       });
@@ -1220,7 +1227,7 @@ function OpenCommandPaletteDialog(props: {
 
   const startAddProjectSourceSelection = (environmentId: EnvironmentId): void => {
     const environment = environments.find((candidate) => candidate.environmentId === environmentId);
-    if (!canCreateProjectInEnvironment(environment?.connection.phase)) {
+    if (!canCreateProjectInEnvironment(environment?.connection.phase, environment?.serverConfig)) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -1286,9 +1293,18 @@ function OpenCommandPaletteDialog(props: {
     },
   ];
 
+  const hasControlPlaneServer = environments.some(
+    (environment) =>
+      environment.connection.phase === "connected" &&
+      !environmentSupportsLocalSessions(environment.serverConfig),
+  );
   const openConnectionSettings = () => {
     setOpen(false);
     void navigate({ to: "/settings/connections" });
+  };
+  const openBoatsPage = () => {
+    setOpen(false);
+    void navigate({ to: "/boats" });
   };
   const addProjectEntry = resolveAddProjectEntry(
     addProjectEnvironmentOptions,
@@ -1298,7 +1314,11 @@ function OpenCommandPaletteDialog(props: {
   const openAddProjectFlow = () => {
     switch (addProjectEntry.kind) {
       case "connect-environment":
-        openConnectionSettings();
+        if (hasControlPlaneServer) {
+          openBoatsPage();
+        } else {
+          openConnectionSettings();
+        }
         return;
       case "choose-environment":
         pushPaletteView({
@@ -1322,6 +1342,22 @@ function OpenCommandPaletteDialog(props: {
             value: ADD_PROJECT_ENTRY_GROUP,
             label: "",
             items: [
+              ...(hasControlPlaneServer
+                ? [
+                    {
+                      kind: "action" as const,
+                      value: "action:add-project:open-boats",
+                      searchTerms: ["boats", "boat", "machine", "cloud", "launch"],
+                      title: gt("Open Boats"),
+                      description: gt("Launch or connect a Boat machine to add projects"),
+                      icon: <SailBrandMark className={ITEM_ICON_CLASS} aria-hidden="true" />,
+                      keepOpen: true,
+                      run: async () => {
+                        openBoatsPage();
+                      },
+                    },
+                  ]
+                : []),
               {
                 kind: "action",
                 value: "action:add-project:connect-environment",
@@ -2031,7 +2067,7 @@ function OpenCommandPaletteDialog(props: {
     const environment = environments.find(
       (candidate) => candidate.environmentId === input.environmentId,
     );
-    if (!canCreateProjectInEnvironment(environment?.connection.phase)) {
+    if (!canCreateProjectInEnvironment(environment?.connection.phase, environment?.serverConfig)) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -2192,7 +2228,10 @@ function OpenCommandPaletteDialog(props: {
     newProjectFlow !== null &&
     newProjectName.length > 0 &&
     !isCreatingNewProject &&
-    canCreateProjectInEnvironment(browseEnvironment?.connection.phase);
+    canCreateProjectInEnvironment(
+      browseEnvironment?.connection.phase,
+      browseEnvironment?.serverConfig,
+    );
 
   async function submitNewProject(): Promise<void> {
     if (newProjectFlow === null || !canSubmitNewProject || newProjectSubmittingRef.current) {
@@ -2233,7 +2272,12 @@ function OpenCommandPaletteDialog(props: {
     if (!addProjectCloneFlow) {
       return;
     }
-    if (!canCreateProjectInEnvironment(browseEnvironment?.connection.phase)) {
+    if (
+      !canCreateProjectInEnvironment(
+        browseEnvironment?.connection.phase,
+        browseEnvironment?.serverConfig,
+      )
+    ) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -2659,7 +2703,10 @@ function OpenCommandPaletteDialog(props: {
     !relativePathNeedsActiveProject &&
     canCreateProject &&
     (!isCloneDestinationStep || canCloneProject) &&
-    canCreateProjectInEnvironment(browseEnvironment?.connection.phase);
+    canCreateProjectInEnvironment(
+      browseEnvironment?.connection.phase,
+      browseEnvironment?.serverConfig,
+    );
   const willCreateProjectPath =
     canSubmitBrowsePath &&
     !isBrowsePending &&
@@ -2690,7 +2737,10 @@ function OpenCommandPaletteDialog(props: {
   const canSubmitRemoteProjectFlow =
     addProjectCloneFlow?.step === "repository" &&
     query.trim().length > 0 &&
-    canCreateProjectInEnvironment(browseEnvironment?.connection.phase) &&
+    canCreateProjectInEnvironment(
+      browseEnvironment?.connection.phase,
+      browseEnvironment?.serverConfig,
+    ) &&
     !isRemoteProjectPending;
   const fileManagerName = getLocalFileManagerName(navigator.platform, messages);
   const canOpenProjectFromFileManager =
@@ -3089,7 +3139,10 @@ function OpenCommandPaletteDialog(props: {
         tooltip={browseSubmitLabel}
         disabled={
           !canCreateProject ||
-          !canCreateProjectInEnvironment(browseEnvironment?.connection.phase) ||
+          !canCreateProjectInEnvironment(
+            browseEnvironment?.connection.phase,
+            browseEnvironment?.serverConfig,
+          ) ||
           relativePathNeedsActiveProject ||
           (isCloneDestinationStep && (!canCloneProject || isRemoteProjectPending))
         }

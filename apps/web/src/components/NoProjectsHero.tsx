@@ -1,11 +1,15 @@
-import { workspaceAreaProps } from "../lib/workspaceFocus";
+import { canCreateProjectInEnvironment } from "@t3tools/client-runtime/operations/projects";
+import { environmentSupportsLocalSessions } from "@t3tools/contracts";
+import { Link } from "@tanstack/react-router";
 import { T, useGT } from "gt-react";
 import { MessageSquareDashedIcon, PlusIcon } from "lucide-react";
 
 import { openCommandPalette } from "../commandPaletteBus";
 import { isElectron } from "../env";
 import { useScratchProject } from "../hooks/useScratchProject";
-import { usePrimaryEnvironmentId } from "../state/environments";
+import { workspaceAreaProps } from "../lib/workspaceFocus";
+import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
+import { SailBrandMark } from "./SailBrandMark";
 import { Button } from "./ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "./ui/empty";
 import { SidebarInset } from "./ui/sidebar";
@@ -14,9 +18,19 @@ import { WorkspacePageHeader } from "./WorkspacePageHeader";
 export function NoProjectsHero() {
   const gt = useGT();
   const contentArea = workspaceAreaProps("home", 1, gt("Home"));
+  const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const { scratchEnvironmentId, startScratchThread } = useScratchProject();
   const scratchTargetEnvironmentId = scratchEnvironmentId(primaryEnvironmentId);
+  const hasSessionHost = environments.some((environment) =>
+    canCreateProjectInEnvironment(environment.connection.phase, environment.serverConfig),
+  );
+  const hasControlPlane = environments.some(
+    (environment) =>
+      environment.connection.phase === "connected" &&
+      !environmentSupportsLocalSessions(environment.serverConfig),
+  );
+  const needsBoat = !hasSessionHost && hasControlPlane;
 
   return (
     <SidebarInset
@@ -31,27 +45,49 @@ export function NoProjectsHero() {
           <div className="w-full max-w-lg px-8 py-12">
             <EmptyHeader className="max-w-none">
               <EmptyTitle>
-                <T>What should we work on?</T>
+                {needsBoat ? <T>Connect a Boat to start</T> : <T>What should we work on?</T>}
               </EmptyTitle>
               <EmptyDescription>
-                {scratchTargetEnvironmentId === null
-                  ? gt("Add a project to start your first thread.")
-                  : gt("Add a project, or start without one.")}
+                {needsBoat
+                  ? gt(
+                      "This server manages Boats and synced settings. Launch or connect a Boat machine to run sessions.",
+                    )
+                  : scratchTargetEnvironmentId === null
+                    ? gt("Add a project to start your first thread.")
+                    : gt("Add a project, or start without one.")}
               </EmptyDescription>
               <div className="mt-6 flex justify-center gap-2">
-                <Button size="sm" onClick={() => openCommandPalette({ open: "add-project" })}>
-                  <PlusIcon className="size-4" />
-                  <T>Add project</T>
-                </Button>
-                {scratchTargetEnvironmentId === null ? null : (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void startScratchThread(scratchTargetEnvironmentId)}
-                  >
-                    <MessageSquareDashedIcon className="size-4" />
-                    <T>Start without a project</T>
-                  </Button>
+                {needsBoat ? (
+                  <>
+                    <Button size="sm" render={<Link to="/boats" />}>
+                      <SailBrandMark className="size-4" aria-hidden="true" />
+                      <T>Open Boats</T>
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      render={<Link to="/settings/connections" />}
+                    >
+                      <T>Connect a computer</T>
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button size="sm" onClick={() => openCommandPalette({ open: "add-project" })}>
+                      <PlusIcon className="size-4" />
+                      <T>Add project</T>
+                    </Button>
+                    {scratchTargetEnvironmentId === null ? null : (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void startScratchThread(scratchTargetEnvironmentId)}
+                      >
+                        <MessageSquareDashedIcon className="size-4" />
+                        <T>Start without a project</T>
+                      </Button>
+                    )}
+                  </>
                 )}
               </div>
             </EmptyHeader>

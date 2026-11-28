@@ -365,4 +365,32 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmen
       }).pipe(Effect.provide(layerTest));
     }),
   );
+
+  it.effect(
+    "advertises localSessions: false and omits serverBrowser when local sessions are disabled",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-server-env-control-plane-",
+        });
+        const config = yield* makeServerConfig(baseDir);
+        yield* fs.makeDirectory(config.stateDir, { recursive: true });
+
+        const descriptor = yield* Effect.gen(function* () {
+          const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
+          return yield* serverEnvironment.getDescriptor;
+        }).pipe(
+          Effect.provide(
+            ServerEnvironment.layer.pipe(
+              Layer.provide(layerEmptySecretStore),
+              Layer.provide(ServerConfig.layer({ ...config, localSessionsEnabled: false })),
+            ),
+          ),
+        );
+
+        expect(descriptor.capabilities.localSessions).toBe(false);
+        expect(descriptor.capabilities.serverBrowser).toBeUndefined();
+      }),
+  );
 });

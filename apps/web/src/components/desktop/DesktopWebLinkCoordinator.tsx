@@ -5,7 +5,11 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
+import {
+  environmentSupportsLocalSessions,
+  type EnvironmentId,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { promptLinkAppPath } from "@t3tools/shared/promptLinks";
 import { readPairingAppLink, resolveRemotePairingTarget } from "@t3tools/shared/remote";
@@ -165,6 +169,9 @@ function MainServerDialog({
   const environment = useEnvironment(server.environmentId);
   const [restarting, setRestarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isControlPlane =
+    environment?.serverConfig != null &&
+    !environmentSupportsLocalSessions(environment.serverConfig);
   const canRestart =
     environment?.connection.phase === "connected" &&
     !isDesktopLocalConnectionTarget(environment.entry.target);
@@ -188,9 +195,14 @@ function MainServerDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>{gt("Backend added")}</AlertDialogTitle>
           <AlertDialogDescription>
-            {gt(
-              "Sail will restart with Local environment turned off. Local agents and terminals will stop. You can turn Local environment back on in Settings → Environments.",
-            )}
+            {isControlPlane
+              ? gt(
+                  "Sail will restart with Local environment turned off. Local agents and terminals will stop. {host} manages Boats and synced settings; coding sessions will run only on Boat machines. You can turn Local environment back on in Settings → Environments.",
+                  { host: server.host },
+                )
+              : gt(
+                  "Sail will restart with Local environment turned off. Local agents and terminals will stop. You can turn Local environment back on in Settings → Environments.",
+                )}
           </AlertDialogDescription>
           {!canRestart ? (
             <p role="status" className="text-sm text-muted-foreground">

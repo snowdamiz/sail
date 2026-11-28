@@ -1,4 +1,7 @@
+import { useAtomValue } from "@effect/atom-react";
+import { environmentSupportsLocalSessions } from "@t3tools/contracts";
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { serverEnvironment } from "~/state/server";
 import { useBoatAccess } from "../access";
 import type { UiState } from "../types";
 import { cleanName, hourly, NAME_RE, suggestName } from "../machine";
@@ -13,8 +16,62 @@ interface Props {
   onBack: () => void;
 }
 
+function LocalProjectsFieldset({
+  picked,
+  onToggle,
+}: {
+  picked: string[];
+  onToggle: (id: string) => void;
+}) {
+  const projects = useLocalProjects();
+  return (
+    <fieldset className="field">
+      <legend className="caption">projects</legend>
+      <div className="pick pick-checklist" role="group" aria-label="Projects to add">
+        <div className="pick-scroll">
+          <ProjectList
+            projects={projects}
+            shown={projects.list ?? []}
+            query=""
+            option={(p) => {
+              const on = picked.includes(p.id);
+              // One clone per repository: another project of the same repo is already picked.
+              const sameRepo =
+                !on &&
+                (projects.list ?? []).some((o) => o.repoKey === p.repoKey && picked.includes(o.id));
+              const flip = () => !sameRepo && onToggle(p.id);
+              return {
+                role: "checkbox",
+                tabIndex: 0,
+                "aria-checked": on,
+                "aria-disabled": sameRepo,
+                className: `pick-option${on ? " is-active" : ""}${sameRepo ? " is-done" : ""}`,
+                onClick: flip,
+                onKeyDown: (e: KeyboardEvent) => {
+                  if (e.key === " " || e.key === "Enter") {
+                    e.preventDefault();
+                    flip();
+                  }
+                },
+                badge: on ? (
+                  <span className="line-ok">
+                    <Icon name="check" size={10} />
+                  </span>
+                ) : null,
+              };
+            }}
+          />
+        </div>
+      </div>
+      <span className="hint">Optional · cloned from git once it's up, .env files included</span>
+    </fieldset>
+  );
+}
+
 export function NewMachine({ state, onNameChange, onCreate, onBack }: Props) {
   const access = useBoatAccess();
+  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(access.environmentId));
+  const supportsLocalProjects = environmentSupportsLocalSessions(serverConfig);
   const taken = state.machines.map((m) => m.name);
   const [name, setName] = useState(() => suggestName(taken));
   // Boat's own default: room for builds and tests without the large price.
@@ -22,7 +79,6 @@ export function NewMachine({ state, onNameChange, onCreate, onBack }: Props) {
     state.sizes.some((s) => s.id === "default") ? "default" : (state.sizes[0]?.id ?? ""),
   );
   const input = useRef<HTMLInputElement>(null);
-  const projects = useLocalProjects();
   const [picked, setPicked] = useState<string[]>([]);
   const toggle = (id: string) =>
     setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
@@ -40,9 +96,11 @@ export function NewMachine({ state, onNameChange, onCreate, onBack }: Props) {
         ? "You already have a machine with this name"
         : null;
 
+  const selectedProjects = supportsLocalProjects ? picked : [];
+
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (!problem && size) onCreate(name, size, picked);
+    if (!problem && size) onCreate(name, size, selectedProjects);
   };
 
   return (
@@ -96,48 +154,7 @@ export function NewMachine({ state, onNameChange, onCreate, onBack }: Props) {
           </span>
         </fieldset>
 
-        <fieldset className="field">
-          <legend className="caption">projects</legend>
-          <div className="pick pick-checklist" role="group" aria-label="Projects to add">
-            <div className="pick-scroll">
-              <ProjectList
-                projects={projects}
-                shown={projects.list ?? []}
-                query=""
-                option={(p) => {
-                  const on = picked.includes(p.id);
-                  // One clone per repository: another project of the same repo is already picked.
-                  const sameRepo =
-                    !on &&
-                    (projects.list ?? []).some(
-                      (o) => o.repoKey === p.repoKey && picked.includes(o.id),
-                    );
-                  const flip = () => !sameRepo && toggle(p.id);
-                  return {
-                    role: "checkbox",
-                    tabIndex: 0,
-                    "aria-checked": on,
-                    "aria-disabled": sameRepo,
-                    className: `pick-option${on ? " is-active" : ""}${sameRepo ? " is-done" : ""}`,
-                    onClick: flip,
-                    onKeyDown: (e: KeyboardEvent) => {
-                      if (e.key === " " || e.key === "Enter") {
-                        e.preventDefault();
-                        flip();
-                      }
-                    },
-                    badge: on ? (
-                      <span className="line-ok">
-                        <Icon name="check" size={10} />
-                      </span>
-                    ) : null,
-                  };
-                }}
-              />
-            </div>
-          </div>
-          <span className="hint">Optional · cloned from git once it's up, .env files included</span>
-        </fieldset>
+        {supportsLocalProjects ? <LocalProjectsFieldset picked={picked} onToggle={toggle} /> : null}
       </div>
       <div className="view-foot">
         <button
@@ -149,8 +166,8 @@ export function NewMachine({ state, onNameChange, onCreate, onBack }: Props) {
         </button>
         <p className="foot-note">
           Takes about a minute
-          {picked.length
-            ? `, then ${picked.length} ${picked.length === 1 ? "project" : "projects"}`
+          {selectedProjects.length
+            ? `, then ${selectedProjects.length} ${selectedProjects.length === 1 ? "project" : "projects"}`
             : ""}
           .{access.onHost ? " Sail will ask to add it." : ""}
         </p>

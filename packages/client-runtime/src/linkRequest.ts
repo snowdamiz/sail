@@ -21,11 +21,13 @@ import type { MFunctionType } from "gt-i18n/types";
 
 export type LinkRequestItem = Extract<OrchestrationV2TurnItem, { readonly type: "link_request" }>;
 
-/** Whether an environment offers links: it supports them and its Linked environments beta is on. */
+/** Whether an environment offers links: it supports them and its Linked environments beta is on (or always on for control-plane servers). */
 export const offersLinkedEnvironments = (
   config: Pick<ServerConfig, "environment" | "settings"> | null | undefined,
 ): boolean =>
-  config?.environment.capabilities.peerLinks === true && config.settings.linkedEnvironmentsEnabled;
+  config?.environment.capabilities.peerLinks === true &&
+  (config.settings.linkedEnvironmentsEnabled ||
+    config.environment.capabilities.localSessions === false);
 
 /**
  * The machines an environment's agents can work on, by name: its unexpired links (the server

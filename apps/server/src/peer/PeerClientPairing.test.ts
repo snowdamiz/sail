@@ -1,5 +1,6 @@
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   AuthAccessWriteScope,
   type AuthEnvironmentScope,
@@ -26,10 +27,13 @@ import * as TestClock from "effect/testing/TestClock";
 import { Toolkit } from "effect/ai";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as Sqlite from "../persistence/Sqlite.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as McpToolAccess from "../mcp/McpToolAccess.ts";
+import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as PeerClientPairing from "./PeerClientPairing.ts";
 import * as PeerLinks from "./PeerLinks.ts";
@@ -277,6 +281,60 @@ it.effect("a linked environment from before link pairing is never asked for one"
       expect(yield* Ref.get(b.bearers)).toEqual([]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "allows client pairing on a control-plane server even when Linked environments is off",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* serveBox();
+        const baseConfig = yield* ServerConfig.ServerConfig.pipe(
+          Effect.provide(ServerConfig.layerTest(process.cwd(), "/tmp/t3-control-plane-pairing")),
+        );
+        const controlPlaneLayer = ServerConfig.layer({
+          ...baseConfig,
+          localSessionsEnabled: false,
+        });
+        const linking = yield* PeerLinks.layer.pipe(
+          Layer.provideMerge(ServerSettings.layerTest({ linkedEnvironmentsEnabled: false })),
+          Layer.provideMerge(Sqlite.layerMemory),
+          Layer.provide(Layer.mergeAll(ServerSecretStore.layer, FetchHttpClient.layer)),
+          Layer.provide(Layer.succeed(PeerLinks.LoopbackHost, (host) => host === "localhost")),
+          Layer.provide(
+            Layer.succeed(ServerEnvironment.ServerEnvironment, {
+              getEnvironmentId: Effect.succeed(laptop.environmentId),
+              getDescriptor: Effect.succeed(laptop),
+            }),
+          ),
+          Layer.provide(controlPlaneLayer),
+          Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+          Layer.fresh,
+          Layer.build,
+        );
+        const authContext = yield* Layer.build(layerEnvironmentAuth("t3-peer-link-cp-auth-"));
+        const auth = Context.get(authContext, EnvironmentAuth.EnvironmentAuth);
+        const pairing = yield* PeerClientPairing.layer.pipe(
+          Layer.provide(Layer.succeedContext(linking)),
+          Layer.provide(Layer.succeed(EnvironmentAuth.EnvironmentAuth, auth)),
+          Layer.provide(controlPlaneLayer),
+          Layer.provide(FetchHttpClient.layer),
+          Layer.build,
+        );
+        const links = Context.get(linking, PeerLinks.PeerLinks);
+        const settings = Context.get(linking, ServerSettings.ServerSettingsService);
+        const pairingService = Context.get(pairing, PeerClientPairing.PeerClientPairing);
+
+        yield* settings.updateSettings({ linkedEnvironmentsEnabled: false });
+        yield* linkTo(links, b, "full-access");
+        const phone = yield* auth.issueSession({
+          scopes: AuthStandardClientScopes,
+          label: "Phone",
+        });
+        const issued = yield* pairingService.request({ environmentId: box.environmentId }, phone);
+        expect(issued.type).toBe("credential");
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("a linked environment from before client pairing is never asked", () =>

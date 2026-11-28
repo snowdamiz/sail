@@ -29,7 +29,7 @@ export function useAddProjectTargets(
       (environment) =>
         !hasProject.has(environment.environmentId) &&
         canClone.has(environment.environmentId) &&
-        canCreateProjectInEnvironment(environment.connection.phase) &&
+        canCreateProjectInEnvironment(environment.connection.phase, environment.serverConfig) &&
         environment.serverConfig !== null,
     )
     .map((environment) => ({

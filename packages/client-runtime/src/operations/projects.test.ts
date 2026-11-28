@@ -3,6 +3,8 @@ import { describe, expect, it } from "vite-plus/test";
 import { EnvironmentId, ProjectId } from "@t3tools/contracts";
 
 import {
+  availableScratchWorkspaceRoot,
+  canCreateProjectInEnvironment,
   findExistingAddProject,
   getCloneDestinationForPickedFolder,
   getCloneDestinationPath,
@@ -238,5 +240,21 @@ describe("add project shared logic", () => {
     expect(findExistingAddProject({ projects, environmentId: env, path: "/repo" })?.id).toBe(
       "project",
     );
+  });
+
+  it("blocks project creation and scratch workspaces on control-plane environments", () => {
+    const controlPlaneConfig = {
+      scratchWorkspaceRoot: "/data/scratch",
+      environment: { capabilities: { repositoryIdentity: true, localSessions: false } },
+    };
+    const normalConfig = {
+      scratchWorkspaceRoot: "/Users/me/.t3/scratch",
+      environment: { capabilities: { repositoryIdentity: true } },
+    };
+
+    expect(canCreateProjectInEnvironment("connected", controlPlaneConfig)).toBe(false);
+    expect(availableScratchWorkspaceRoot("connected", controlPlaneConfig)).toBeNull();
+    expect(canCreateProjectInEnvironment("connected", normalConfig)).toBe(true);
+    expect(availableScratchWorkspaceRoot("connected", normalConfig)).toBe("/Users/me/.t3/scratch");
   });
 });

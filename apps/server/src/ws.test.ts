@@ -20,6 +20,7 @@ import {
   AuthTerminalOperateScope,
   ORCHESTRATION_PROTOCOL_VERSION,
   ORCHESTRATION_PROTOCOL_QUERY_PARAM,
+  ORCHESTRATION_V2_WS_METHODS,
   EnvironmentId,
   EventId,
   GitManagerError,
@@ -3176,4 +3177,114 @@ it.effect("a session that can only read sees a workflow run but cannot steer it"
     );
     assert.deepEqual(calls, []);
   }).pipe(Effect.provide(layerWorkflowRpcTest), Effect.scoped),
+);
+
+it.effect(
+  "rejects local sessions, projects, terminals, and previews when localSessionsEnabled is false",
+  () =>
+    Effect.gen(function* () {
+      const dispatched: Array<string> = [];
+      const baseConfig = yield* ServerConfigModule.ServerConfig;
+      const controlPlaneConfig = ServerConfigModule.layer({
+        ...baseConfig,
+        localSessionsEnabled: false,
+      });
+      const scopes = [
+        AuthOrchestrationReadScope,
+        AuthOrchestrationOperateScope,
+        AuthTerminalOperateScope,
+      ];
+      const controlPlaneRpcs = RpcGroup.make(
+        WsRpcGroup.requests.get(ORCHESTRATION_V2_WS_METHODS.dispatchCommand)!,
+        WsRpcGroup.requests.get(WS_METHODS.projectsEnsureScratch)!,
+        WsRpcGroup.requests.get(WS_METHODS.projectsCreateNew)!,
+        WsRpcGroup.requests.get(WS_METHODS.terminalOpen)!,
+        WsRpcGroup.requests.get(WS_METHODS.previewOpen)!,
+      );
+      const services = Layer.mergeAll(
+        layerUnusedConfigRpcServices,
+        Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+        Layer.mock(UsageLimitSources.UsageLimitSources)({}),
+        Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
+        Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
+        Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+        Layer.mock(ServerEnvironment.ServerEnvironment)({}),
+        Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+        Layer.mock(ServerRuntimeStartup.ServerRuntimeStartup)({
+          enqueueCommand: (effect) => effect,
+        }),
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          dispatch: (command) =>
+            Effect.sync(() => {
+              dispatched.push(command.type);
+              return { sequence: 1, storedEvents: [] };
+            }),
+        }),
+        controlPlaneConfig,
+      );
+      const client = yield* RpcTest.makeClient(controlPlaneRpcs).pipe(
+        Effect.provide(
+          layerWsRpc(
+            {
+              sessionId: AuthSessionId.make("control-plane-test"),
+              subject: "control-plane-test",
+              method: "browser-session-cookie",
+              scopes,
+            },
+            {},
+            yield* ServerBrowser.ServerBrowser,
+            () => Effect.void,
+            { secretReferences: true },
+          ).pipe(Layer.provide(services), Layer.merge(RpcAuthorization.layer(scopes))),
+        ),
+      );
+
+      const threadCreateErr = yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+        type: "thread.create",
+        commandId: "cmd-create" as never,
+        threadId: ThreadId.make("thread-1"),
+        projectId: ProjectId.make("project-1"),
+        title: "Test",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      }).pipe(Effect.flip);
+      assert.equal(threadCreateErr._tag, "OrchestrationV2DispatchCommandError");
+      assert.include(threadCreateErr.message, "Boat");
+
+      // Cleanup commands remain allowed.
+      yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+        type: "thread.delete",
+        commandId: "cmd-delete" as never,
+        threadId: ThreadId.make("thread-1"),
+      });
+      assert.deepEqual(dispatched, ["thread.delete"]);
+
+      const scratchErr = yield* client[WS_METHODS.projectsEnsureScratch]({}).pipe(Effect.flip);
+      assert.equal(scratchErr._tag, "OrchestrationDispatchCommandError");
+
+      const createNewErr = yield* client[WS_METHODS.projectsCreateNew]({
+        name: "demo",
+      }).pipe(Effect.flip);
+      assert.equal(createNewErr._tag, "OrchestrationDispatchCommandError");
+
+      const terminalErr = yield* client[WS_METHODS.terminalOpen]({
+        threadId: ThreadId.make("thread-1"),
+        terminalId: "term-1",
+        cwd: "/tmp",
+      }).pipe(Effect.flip);
+      assert.equal(terminalErr._tag, "EnvironmentAuthorizationError");
+
+      const previewErr = yield* client[WS_METHODS.previewOpen]({
+        threadId: ThreadId.make("thread-1"),
+        url: "https://example.com",
+      }).pipe(Effect.flip);
+      assert.equal(previewErr._tag, "EnvironmentAuthorizationError");
+    }).pipe(Effect.provide(layerWorkflowRpcTest), Effect.scoped),
 );

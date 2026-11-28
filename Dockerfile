@@ -12,7 +12,7 @@ RUN --mount=type=cache,id=sail-cargo-registry,target=/usr/local/cargo/registry,s
 
 # The bundle and web client are the same on every platform, so this stage runs natively when
 # cross-building. Only the staged runtime externals pick packages for the target.
-FROM --platform=$BUILDPLATFORM node:26.13.1-bookworm@sha256:893ea48106e988a5f91e69629d6472600daa9d0494adf7db87eb0b886ce82255 AS build
+FROM --platform=$BUILDPLATFORM node:26.13.1-bookworm@sha256:893ea48106e988a5f31e69629d6472600daa9d0494adf7db87eb0b886ce82255 AS build
 ENV CI=true \
     VP_NODE_MANAGER=no \
     VP_BIN_DIR=/opt/vp/bin \
@@ -66,22 +66,10 @@ RUN apt-get update \
 FROM node:26.13.1-bookworm-slim@sha256:0042e17d232a87a2cd485be1da7900fca4d10a4ad11b29e9285da1d2e54798c9 AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-      bash ca-certificates curl git openssh-client procps ripgrep tini \
+      bash ca-certificates curl git openssh-client procps tini \
     && rm -rf /var/lib/apt/lists/* \
     && userdel --remove node \
     && useradd --uid 1000 --user-group --home-dir /data/home --no-create-home --shell /bin/bash sail
-# sail owns the npm prefix, so the agent CLIs can update themselves without root.
-ARG CLAUDE_CODE_VERSION=2.1.332
-ARG CODEX_VERSION=0.172.0
-ARG OPENCODE_VERSION=1.19.6
-RUN npm install --global --prefix /opt/npm-global \
-      --allow-scripts=@anthropic-ai/claude-code,opencode-ai \
-      @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
-      @openai/codex@${CODEX_VERSION} \
-      opencode-ai@${OPENCODE_VERSION} \
-    && rm -rf /root/.npm /tmp/node-compile-cache /tmp/opencode \
-      /root/.cache/opencode /root/.config/opencode /root/.local/share/opencode /root/.local/state/opencode \
-    && chown -R sail:sail /opt/npm-global
 
 COPY --from=rust /out/sail-boatd /opt/sail/bin/sail-boatd
 COPY --from=op-cli /out/op /usr/local/bin/op
@@ -89,11 +77,11 @@ COPY --from=build /stage/node_modules /opt/sail/node_modules
 COPY --from=build /src/apps/server/dist /opt/sail/server
 COPY --from=rust /out/t3-resource-monitor /opt/sail/server/resource-monitor/t3-resource-monitor
 COPY --chmod=0755 deploy/docker/entrypoint.sh /usr/local/bin/sail-entrypoint
-# Sail's PATH and npm prefix point at directories sail can write, so only sail gets them: root
-# keeps the image's PATH and its passwd HOME, and code that runs as root names commands by path.
+# Sail's PATH points at directories sail can write, so only sail gets it: root keeps
+# the image's PATH and its passwd HOME, and code that runs as root names commands by path.
 COPY <<'EOF' /etc/sail/env.sh
-export HOME=/data/home USER=sail LOGNAME=sail NPM_CONFIG_PREFIX=/opt/npm-global
-export PATH=/data/home/.local/bin:/opt/npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export HOME=/data/home USER=sail LOGNAME=sail
+export PATH=/data/home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EOF
 # Root drops to sail before sail's environment applies, so no root process ever has sail's HOME.
 COPY --chmod=0755 <<'EOF' /usr/local/bin/as-sail
@@ -108,21 +96,7 @@ COPY --chmod=0755 <<'EOF' /usr/local/bin/t3
 #!/bin/sh
 exec /usr/local/bin/as-sail /usr/local/bin/node /opt/sail/server/bin.mjs "$@"
 EOF
-# The agent CLIs update themselves in sail's directories, so root reaches them only as sail.
-COPY --chmod=0755 <<'EOF' /usr/local/bin/claude
-#!/bin/sh
-name=${0##*/}
-if [ "$(/usr/bin/id -u)" = 0 ]; then
-  exec /usr/bin/setpriv --reuid=sail --regid=sail --init-groups --no-new-privs -- "/usr/local/bin/$name" "$@"
-fi
-for dir in /data/home/.local/bin /opt/npm-global/bin; do
-  [ -f "$dir/$name" ] && [ -x "$dir/$name" ] && exec /usr/local/bin/as-sail "$dir/$name" "$@"
-done
-echo "$name is not installed for sail" >&2
-exit 127
-EOF
-RUN ln /usr/local/bin/claude /usr/local/bin/codex && ln /usr/local/bin/claude /usr/local/bin/opencode
-# /etc/profile resets PATH for login shells, such as fly ssh console; the web terminal inherits the server's environment.
+# /etc/profile resets PATH for login shells, such as fly ssh console.
 COPY <<'EOF' /etc/profile.d/sail-env.sh
 [ "$(/usr/bin/id -u)" = 0 ] || . /etc/sail/env.sh
 EOF

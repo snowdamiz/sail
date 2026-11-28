@@ -17,6 +17,7 @@ import {
   linkRequestInitialMachine,
   linkRequestTarget,
   linkRequestTargetName,
+  offersLinkedEnvironments,
   rankMachinesByHint,
 } from "./linkRequest.ts";
 
@@ -483,5 +484,21 @@ describe("linkRequestFailureMessage", () => {
     expect(linkRequestFailureMessage({ _tag: "SchemaError", message: "code=abc" })).toBe(
       "Could not answer the request. Try again.",
     );
+  });
+});
+
+describe("offersLinkedEnvironments", () => {
+  it("enables linked environments automatically on control-plane servers", () => {
+    const base = {
+      environment: { capabilities: { peerLinks: true } },
+      settings: { linkedEnvironmentsEnabled: false },
+    } as unknown as ServerConfig;
+    expect(offersLinkedEnvironments(base)).toBe(false);
+
+    const controlPlane = {
+      environment: { capabilities: { peerLinks: true, localSessions: false } },
+      settings: { linkedEnvironmentsEnabled: false },
+    } as unknown as ServerConfig;
+    expect(offersLinkedEnvironments(controlPlane)).toBe(true);
   });
 });

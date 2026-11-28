@@ -10,7 +10,7 @@ import type {
   SourceControlDiscoveryResult,
   SourceControlRepositoryInfo,
 } from "@t3tools/contracts";
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import { environmentSupportsLocalSessions, SourceControlProviderKind } from "@t3tools/contracts";
 import { cloneUrlRepositoryPath, isScpLikeCloneUrl } from "@t3tools/shared/cloneUrl";
 import {
   isAbsolutePath,
@@ -41,17 +41,23 @@ import { sourceControlInstallHintText } from "../contractLabels.ts";
 
 export type AddProjectRemoteSource = SourceControlProviderKind | "url";
 
+type LocalSessionsServerConfig = Parameters<typeof environmentSupportsLocalSessions>[0];
+
 export function canCreateProjectInEnvironment(
   connectionPhase: EnvironmentConnectionPhase | null | undefined,
+  serverConfig?: LocalSessionsServerConfig,
 ): boolean {
-  return connectionPhase === "connected";
+  return connectionPhase === "connected" && environmentSupportsLocalSessions(serverConfig);
 }
 
 export function availableScratchWorkspaceRoot(
   connectionPhase: EnvironmentConnectionPhase | null | undefined,
-  serverConfig: Pick<ServerConfig, "scratchWorkspaceRoot"> | null | undefined,
+  serverConfig:
+    | (Pick<ServerConfig, "scratchWorkspaceRoot"> & NonNullable<LocalSessionsServerConfig>)
+    | null
+    | undefined,
 ): string | null {
-  return canCreateProjectInEnvironment(connectionPhase)
+  return canCreateProjectInEnvironment(connectionPhase, serverConfig)
     ? (serverConfig?.scratchWorkspaceRoot ?? null)
     : null;
 }

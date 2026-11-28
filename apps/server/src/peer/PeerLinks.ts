@@ -39,6 +39,7 @@ import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import { isLocalLoopbackHost, isTailnetHost } from "@t3tools/shared/hostClassification";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
@@ -260,11 +261,15 @@ const make = Effect.gen(function* () {
   const httpClient = yield* HttpClient.HttpClient;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const serverConfig = yield* Effect.serviceOption(ServerConfig.ServerConfig);
   const isOwnLoopback = yield* LoopbackHost;
-  const enabled = serverSettings.getSettings.pipe(
-    Effect.map((settings) => settings.linkedEnvironmentsEnabled),
-    Effect.orElseSucceed(() => false),
-  );
+  const enabled =
+    Option.isSome(serverConfig) && !ServerConfig.isLocalSessionsEnabled(serverConfig.value)
+      ? Effect.succeed(true)
+      : serverSettings.getSettings.pipe(
+          Effect.map((settings) => settings.linkedEnvironmentsEnabled),
+          Effect.orElseSucceed(() => false),
+        );
 
   /** A fresh name for one link's token; the row records it. */
   const newSecretName = random.randomBytes(16).pipe(
