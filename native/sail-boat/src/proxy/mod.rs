@@ -39,9 +39,8 @@ const DESCRIPTOR_REFRESH: std::time::Duration = std::time::Duration::from_millis
 /// T3's largest request: a 100 MB file into the preview browser.
 const MAX_BODY: usize = 128 * 1024 * 1024;
 
-pub async fn serve(machine: Arc<MachineRuntime>) -> Result<()> {
-    let port = machine.record().local_port;
-    let app = Router::new()
+pub fn router(machine: Arc<MachineRuntime>) -> Router {
+    Router::new()
         .route("/.well-known/t3/environment", get(descriptor))
         .route("/oauth/token", post(oauth_token))
         .route("/api/auth/session", get(auth_session))
@@ -61,7 +60,12 @@ pub async fn serve(machine: Arc<MachineRuntime>) -> Result<()> {
         .fallback(fallback)
         .layer(middleware::from_fn(cors))
         .layer(middleware::from_fn(local_host_only))
-        .with_state(machine);
+        .with_state(machine)
+}
+
+pub async fn serve(machine: Arc<MachineRuntime>) -> Result<()> {
+    let port = machine.record().local_port;
+    let app = router(machine);
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     axum::serve(listener, app).await?;
     Ok(())
@@ -101,7 +105,10 @@ async fn cors(req: Request, next: Next) -> Response {
 }
 
 fn client_authorized(m: &MachineRuntime, headers: &HeaderMap) -> bool {
-    auth::bearer(headers).is_some_and(|t| m.record().client_tokens.iter().any(|c| c == t))
+    auth::bearer(headers).is_some_and(|t| {
+        auth::constant_time_eq(t.as_bytes(), m.internal_proxy_token().as_bytes())
+            || m.record().client_tokens.iter().any(|c| auth::constant_time_eq(c.as_bytes(), t.as_bytes()))
+    })
 }
 
 fn unauthorized() -> Response {
@@ -275,7 +282,14 @@ const HOP_BY_HOP: &[&str] = &[
 ];
 
 /// Routes whose URL carries its own one-time token instead of a bearer header.
-const URL_TOKEN_ROUTES: &[&str] = &[assets::ROUTE, "/api/attachments/upload/"];
+const URL_TOKEN_ROUTES: &[&str] = &[assets::ROUTE, "/api/attachments/upload/", "/api/session-transfers/"];
+
+/// Binary transfer routes streamed end-to-end without buffering the request body in memory.
+const STREAMING_ROUTES: &[&str] = &["/api/session-transfers/", "/api/attachments/upload/"];
+
+fn is_streaming_route(path: &str) -> bool {
+    STREAMING_ROUTES.iter().any(|prefix| path.starts_with(prefix))
+}
 
 fn query_param(query: &str, name: &str) -> Option<String> {
     url::form_urlencoded::parse(query.as_bytes()).find(|(k, _)| k == name).map(|(_, v)| v.into_owned())
@@ -320,21 +334,25 @@ async fn fallback(State(m): M, upgrade: Result<WebSocketUpgrade, WebSocketUpgrad
 
 /// Plain requests without a route of their own need the live machine: wake it if needed, swap in
 /// the upstream token. URL-token requests without a bearer may come from any web page: they reach a
-/// running machine but never wake it or keep it awake. The assets a recorded answer points to
-/// are kept as they pass, and answered from what was kept while the machine does not run.
+/// running machine but never wake it or keep it awake. Session-transfer routes always signal user
+/// activity so the Boat watchdog does not sleep the machine mid-transfer. The assets a recorded
+/// answer points to are kept as they pass, and answered from what was kept while the machine does
+/// not run.
 async fn forward(State(m): M, req: Request) -> Response {
     let (parts, body) = req.into_parts();
-    let url_token = URL_TOKEN_ROUTES.iter().any(|r| parts.uri.path().starts_with(r));
+    let path = parts.uri.path();
+    let is_session_transfer = path.starts_with("/api/session-transfers/");
+    let url_token = URL_TOKEN_ROUTES.iter().any(|r| path.starts_with(r));
     let bearer = parts.headers.contains_key(header::AUTHORIZATION);
     let authorized = client_authorized(&m, &parts.headers);
     if (bearer || !url_token) && !authorized {
         return unauthorized();
     }
-    if authorized && parts.method == Method::POST {
+    if (authorized && parts.method == Method::POST) || is_session_transfer {
         m.user_action();
     }
-    let asset = (parts.method == Method::GET && parts.uri.path().starts_with(assets::ROUTE))
-        .then(|| assets::path(m.dir(), parts.uri.path()));
+    let asset = (parts.method == Method::GET && path.starts_with(assets::ROUTE))
+        .then(|| assets::path(m.dir(), path));
     if m.power() != Power::Running && let Some(kept) = asset.as_deref().and_then(assets::read) {
         return kept;
     }
@@ -361,43 +379,62 @@ async fn relay(m: &MachineRuntime, parts: Parts, body: Body, route: Relay) -> Re
             return res;
         }
     }
-    let Ok(body) = axum::body::to_bytes(body, MAX_BODY).await else {
-        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
-    };
-    let send = || {
+    let res = if is_streaming_route(parts.uri.path()) {
         let url = format!("{}{}", m.upstream_url(), route.target);
-        let mut rb = m.shared.http.request(parts.method.clone(), url).body(body.clone());
+        let mut rb = m
+            .shared
+            .http
+            .request(parts.method.clone(), url)
+            .body(reqwest::Body::wrap_stream(body.into_data_stream()));
         for (k, v) in &parts.headers {
-            // The credential is the route's, and the body's length is what is sent here.
-            let replaced = k == header::AUTHORIZATION || k == header::CONTENT_LENGTH;
-            if !replaced && !HOP_BY_HOP.contains(&k.as_str()) {
+            // Preserve Content-Length on streamed uploads so upstream routes can enforce exact sizes.
+            if k != header::AUTHORIZATION && !HOP_BY_HOP.contains(&k.as_str()) {
                 rb = rb.header(k, v);
             }
         }
         if let Some(authorization) = &route.authorization {
             rb = rb.header(header::AUTHORIZATION, authorization);
         }
-        rb.send()
-    };
-    let first = send().await;
-    // Maybe never reached the machine: Boat answers for a sandbox that does not run itself (a
-    // redirect to its fallback page, a gateway error). If it fell asleep since the last poll,
-    // wake it and send once more.
-    let unreached = match &first {
-        Ok(r) => {
-            let s = r.status();
-            (s.is_redirection() && s != StatusCode::NOT_MODIFIED)
-                || matches!(s, StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT)
-        }
-        Err(e) => e.is_connect(),
-    };
-    let res = if unreached && !matches!(m.refresh_power().await, Ok(Power::Running)) {
-        if let Err(res) = wake(m, route.wake, &route.target).await {
-            return res;
-        }
-        send().await
+        rb.send().await
     } else {
-        first
+        let Ok(body) = axum::body::to_bytes(body, MAX_BODY).await else {
+            return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+        };
+        let send = || {
+            let url = format!("{}{}", m.upstream_url(), route.target);
+            let mut rb = m.shared.http.request(parts.method.clone(), url).body(body.clone());
+            for (k, v) in &parts.headers {
+                // The credential is the route's, and the body's length is what is sent here.
+                let replaced = k == header::AUTHORIZATION || k == header::CONTENT_LENGTH;
+                if !replaced && !HOP_BY_HOP.contains(&k.as_str()) {
+                    rb = rb.header(k, v);
+                }
+            }
+            if let Some(authorization) = &route.authorization {
+                rb = rb.header(header::AUTHORIZATION, authorization);
+            }
+            rb.send()
+        };
+        let first = send().await;
+        // Maybe never reached the machine: Boat answers for a sandbox that does not run itself (a
+        // redirect to its fallback page, a gateway error). If it fell asleep since the last poll,
+        // wake it and send once more.
+        let unreached = match &first {
+            Ok(r) => {
+                let s = r.status();
+                (s.is_redirection() && s != StatusCode::NOT_MODIFIED)
+                    || matches!(s, StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT)
+            }
+            Err(e) => e.is_connect(),
+        };
+        if unreached && !matches!(m.refresh_power().await, Ok(Power::Running)) {
+            if let Err(res) = wake(m, route.wake, &route.target).await {
+                return res;
+            }
+            send().await
+        } else {
+            first
+        }
     };
     let res = match res {
         Ok(r) => r,

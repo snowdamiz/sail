@@ -268,6 +268,14 @@ pub fn is_user_action(tag: &str, payload: &Value) -> bool {
         "secrets.answerRequest",
         "secrets.saveProjectCredential",
         "secrets.syncProjectCredentials",
+        "sessionTransfer.prepareSource",
+        "sessionTransfer.stageImport",
+        "sessionTransfer.commitImport",
+        "sessionTransfer.finalizeSource",
+        "sessionTransfer.abort",
+        "sessionTransfer.start",
+        "sessionTransfer.cancel",
+        "sessionTransfer.retry",
     ];
     let passive = matches!(tag, "terminal.observe" | "provider.install.subscribe" | "device.detail")
         || tag.starts_with("scheduledTasks.subscribe")
@@ -491,6 +499,27 @@ mod tests {
         // A retry of a device host or a tool update: done now, never replayed.
         for payload in [json!({"retryHostId": "h"}), json!({"updateTool": "xcode"})] {
             assert!(is_user_action("device.list", &payload) && !recorded_unary("device.list", &payload), "{payload}");
+        }
+    }
+
+    #[test]
+    fn session_transfer_mutations_are_user_actions_and_reads_are_not() {
+        for tag in [
+            "sessionTransfer.prepareSource",
+            "sessionTransfer.stageImport",
+            "sessionTransfer.commitImport",
+            "sessionTransfer.finalizeSource",
+            "sessionTransfer.abort",
+            "sessionTransfer.start",
+            "sessionTransfer.cancel",
+            "sessionTransfer.retry",
+        ] {
+            assert!(is_user_action(tag, &json!({})), "{tag}");
+            assert!(!is_side_info(tag, &json!({})), "{tag}");
+            assert!(!recorded_unary(tag, &json!({})), "{tag}");
+        }
+        for tag in ["sessionTransfer.list", "sessionTransfer.preflight"] {
+            assert!(!is_user_action(tag, &json!({})), "{tag}");
         }
     }
 }

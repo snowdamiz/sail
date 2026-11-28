@@ -197,6 +197,7 @@ pub struct MachineRuntime {
     dir: PathBuf,
     pub cache: Mutex<Cache>,
     pub auth: Auth,
+    internal_proxy_token: String,
     power: watch::Sender<Power>,
     stopped_at: Mutex<Option<chrono::DateTime<chrono::Utc>>>,
     /// When Boat stops a trial machine on its own (`Sandbox::trial_deadline`).
@@ -236,6 +237,7 @@ impl MachineRuntime {
             dir,
             cache: Mutex::new(cache),
             auth: Auth::default(),
+            internal_proxy_token: crate::proxy::auth::random_token(),
             power: watch::channel(Power::Unknown).0,
             stopped_at: Mutex::new(None),
             lifetime_ends: Mutex::new(None),
@@ -272,6 +274,17 @@ impl MachineRuntime {
         self.record.read().unwrap().id.clone()
     }
 
+    /// Ephemeral per-daemon bearer token used by the local Sail server to call this machine's
+    /// localhost proxy without polluting paired browser `client_tokens`.
+    pub fn internal_proxy_token(&self) -> &str {
+        &self.internal_proxy_token
+    }
+
+    /// The localhost proxy URL for this machine.
+    pub fn local_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.record.read().unwrap().local_port)
+    }
+
     /// The Boat sandbox the machine runs on now.
     pub fn sandbox_id(&self) -> String {
         self.record.read().unwrap().sandbox_id.clone()
@@ -299,7 +312,7 @@ impl MachineRuntime {
 
     /// Missing is final: a Boat answer or a wake still in flight from before must not revive a
     /// deleted machine.
-    fn set_power(&self, p: Power) {
+    pub(crate) fn set_power(&self, p: Power) {
         let changed = self.power.send_if_modified(|cur| {
             if *cur == Power::Missing || *cur == p {
                 return false;

@@ -383,6 +383,47 @@ impl App {
             .ok_or_else(|| anyhow!("no machine {machine}"))
     }
 
+    /// By Boat environment id.
+    pub fn machine_by_environment_id(&self, environment_id: &str) -> Result<Arc<MachineRuntime>> {
+        self.machines()
+            .into_iter()
+            .find(|m| m.record().environment_id == environment_id)
+            .ok_or_else(|| anyhow!("no machine for environment {environment_id}"))
+    }
+
+    /// Returns loopback proxy connection details and the daemon's internal bearer token for a
+    /// machine identified by `id` (or name) and/or `environment_id`. Never wakes the machine.
+    pub fn machine_proxy_access(
+        &self,
+        id: Option<&str>,
+        environment_id: Option<&str>,
+    ) -> Result<MachineProxyAccess> {
+        let id = id.map(str::trim).filter(|s| !s.is_empty());
+        let env_id = environment_id.map(str::trim).filter(|s| !s.is_empty());
+        let machine = match (id, env_id) {
+            (Some(id), Some(env_id)) => {
+                let m = self.machine(id)?;
+                if m.record().environment_id != env_id {
+                    bail!("machine {id} does not match environment {env_id}");
+                }
+                m
+            }
+            (Some(id), None) => self.machine(id)?,
+            (None, Some(env_id)) => self.machine_by_environment_id(env_id)?,
+            (None, None) => bail!("either id or environmentId is required"),
+        };
+        let record = machine.record();
+        let state = view(&machine).state;
+        Ok(MachineProxyAccess {
+            machine_id: record.id,
+            machine_name: record.name,
+            environment_id: record.environment_id,
+            state,
+            local_url: machine.local_url(),
+            bearer_token: machine.internal_proxy_token().to_owned(),
+        })
+    }
+
     pub fn settings(&self) -> Settings {
         self.shared.settings.read().unwrap().clone()
     }
@@ -810,6 +851,17 @@ impl App {
 pub struct RemotePairingTarget {
     environment_id: String,
     url: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineProxyAccess {
+    pub machine_id: String,
+    pub machine_name: String,
+    pub environment_id: String,
+    pub state: MachineState,
+    pub local_url: String,
+    pub bearer_token: String,
 }
 
 fn view(m: &MachineRuntime) -> MachineView {
