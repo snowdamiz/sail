@@ -439,6 +439,10 @@
       "types": "./src/usageFormat.ts",
       "import": "./src/usageFormat.ts"
     },
+    "./usageFailover": {
+      "types": "./src/usageFailover.ts",
+      "import": "./src/usageFailover.ts"
+    },
     "./usageLimits": {
       "types": "./src/usageLimits.ts",
       "import": "./src/usageLimits.ts"

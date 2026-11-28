@@ -1148,6 +1148,14 @@ export const AntigravitySettings = makeProviderSettingsSchema(
 );
 export type AntigravitySettings = typeof AntigravitySettings.Type;
 
+export const UsageLimitPassOffRule = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  sourceDriver: ProviderDriverKind,
+  sourceModel: Schema.NullOr(TrimmedNonEmptyString),
+  target: ModelSelection,
+});
+export type UsageLimitPassOffRule = typeof UsageLimitPassOffRule.Type;
+
 export const UsageLimitSourceConfig = Schema.Struct({
   kind: Schema.Literals(["cliproxy", "http"]),
   label: Schema.optional(TrimmedNonEmptyString),
@@ -1708,6 +1716,10 @@ export const ServerSettings = Schema.Struct({
   idleCompaction: Schema.optionalKey(IdleCompactionMode),
   snoozeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   autoResumeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  autoFailoverOnUsageLimit: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  usageLimitPassOffRules: Schema.Array(UsageLimitPassOffRule).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   snoozePresets: SnoozePresetSettings.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SNOOZE_PRESETS)),
   ),
@@ -2181,6 +2193,8 @@ export const ServerSettingsPatch = Schema.Struct({
   sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
   autoResumeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   snoozeLimitedThreads: Schema.optionalKey(Schema.Boolean),
+  autoFailoverOnUsageLimit: Schema.optionalKey(Schema.Boolean),
+  usageLimitPassOffRules: Schema.optionalKey(Schema.Array(UsageLimitPassOffRule)),
   snoozePresets: Schema.optionalKey(SnoozePresetSettings),
   hiddenThreadTags: Schema.optionalKey(Schema.Array(Schema.String)),
   hideTaggedThreads: Schema.optionalKey(Schema.Boolean),
