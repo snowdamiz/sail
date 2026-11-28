@@ -144,7 +144,7 @@ export function ReadyBoatsView({
           onSignOut={session.signOut}
         />
       ) : state.machines.length === 0 ? (
-        <SettingsGroup divided={false}>
+        <SettingsGroup divided={false} className="bg-card">
           <Empty size="compact">
             <EmptyMedia variant="icon">
               <ServerIcon aria-hidden="true" />
@@ -180,7 +180,7 @@ export function ReadyBoatsView({
               <span className="font-mono tabular-nums">{state.machines.length}</span>
             </Badge>
           </div>
-          <SettingsGroup divided={false}>
+          <SettingsGroup divided={false} className="bg-card">
             <ul className="divide-y divide-border/50">
               {state.machines.map((machine) => (
                 <MachineRow

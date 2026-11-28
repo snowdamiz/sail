@@ -1,4 +1,4 @@
-import { useGT, useMessages } from "gt-react";
+import { T, Var, useGT, useMessages } from "gt-react";
 import { FolderPlusIcon, ServerIcon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
@@ -43,13 +43,7 @@ export function MachineRow({
     controls.deleteRefusal !== null || showSignedOut || showNeedsProject || cloning.length > 0;
 
   return (
-    <li
-      className={cn(
-        ITEM_ROW_CLASSNAME,
-        "space-y-2.5 transition-colors",
-        controls.canOpen && "hover:bg-accent/25",
-      )}
-    >
+    <li className={cn(ITEM_ROW_CLASSNAME, "space-y-2.5")}>
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 sm:flex-nowrap">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <div className="relative flex size-9 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">
@@ -119,10 +113,23 @@ export function MachineRow({
           <DeleteErrorAlert controls={controls} />
 
           {showSignedOut ? (
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning/30 bg-warning-surface/70 px-3 py-2 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning/30 bg-warning-surface px-3 py-2 text-xs">
               <span className="text-warning-foreground">
-                <AgentNames names={machine.signedOut} />{" "}
-                {machine.signedOut.length === 1 ? gt("needs a sign-in") : gt("need a sign-in")}
+                {machine.signedOut.length === 1 ? (
+                  <T>
+                    <Var>
+                      <AgentNames names={machine.signedOut} />
+                    </Var>{" "}
+                    needs a sign-in
+                  </T>
+                ) : (
+                  <T>
+                    <Var>
+                      <AgentNames names={machine.signedOut} />
+                    </Var>{" "}
+                    need a sign-in
+                  </T>
+                )}
               </span>
               <div className="flex flex-wrap items-center gap-1.5">
                 {machine.signedOut.map((agent) => {

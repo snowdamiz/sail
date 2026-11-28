@@ -8,8 +8,9 @@ import { CheckboxMark } from "../../ui/checkbox";
 import { Input } from "../../ui/input";
 import { Label } from "../../ui/label";
 import { useBoatAccess } from "../access";
-import { NAME_RE, cleanName, hourly, suggestName } from "../machine";
+import { NAME_RE, cleanName, suggestName } from "../machine";
 import type { UiState } from "../types";
+import { MachineSizePicker } from "./MachineSizePicker";
 import { ProjectList, useLocalProjects } from "./ProjectPicker";
 
 export interface CreateMachineInput {
@@ -29,14 +30,12 @@ function LocalProjectsSection({
   const projects = useLocalProjects();
 
   return (
-    <SettingsGroup divided={false}>
+    <SettingsGroup divided={false} className="bg-card">
       <fieldset className="space-y-3 p-4 sm:p-5">
-        <div className="space-y-0.5">
-          <legend className="text-sm font-medium text-foreground">{gt("Projects")}</legend>
-          <p className="text-xs text-muted-foreground">
-            {gt("Optional · cloned from git once it's up, .env files included")}
-          </p>
-        </div>
+        <legend className="text-sm font-medium text-foreground">{gt("Projects")}</legend>
+        <p className="text-xs text-muted-foreground">
+          {gt("Optional · cloned from git once it's up, .env files included")}
+        </p>
         <div
           role="group"
           aria-label={gt("Projects to add")}
@@ -137,7 +136,7 @@ export function NewMachine({
 
   return (
     <form onSubmit={submit} className="space-y-6">
-      <SettingsGroup divided={false}>
+      <SettingsGroup divided={false} className="bg-card">
         <div className="space-y-2 p-4 sm:p-5">
           <Label htmlFor="machine-name">{gt("Name")}</Label>
           <Input
@@ -163,43 +162,16 @@ export function NewMachine({
         </div>
       </SettingsGroup>
 
-      <SettingsGroup divided={false}>
+      <SettingsGroup divided={false} className="bg-card">
         <fieldset className="space-y-3 p-4 sm:p-5">
           <legend className="text-sm font-medium text-foreground">{gt("Size")}</legend>
-          <div
-            role="radiogroup"
-            aria-label={gt("Size")}
-            className="grid grid-cols-1 gap-2.5 sm:grid-cols-3"
-          >
-            {state.sizes.map((choice) => {
-              const selected = size === choice.id;
-              return (
-                <label
-                  key={choice.id}
-                  className={cn(
-                    "relative flex cursor-pointer flex-col gap-0.5 rounded-lg border px-3.5 py-3 transition-colors has-focus-visible:ring-2 has-focus-visible:ring-inset has-focus-visible:ring-ring",
-                    selected
-                      ? "border-ring bg-accent/60 text-foreground"
-                      : "border-border/70 bg-background/60 text-foreground hover:bg-accent/30",
-                  )}
-                >
-                  <input
-                    type="radio"
-                    name="size"
-                    value={choice.id}
-                    checked={selected}
-                    onChange={() => setSize(choice.id)}
-                    className="sr-only"
-                  />
-                  <span className="font-mono text-sm font-medium">{choice.id}</span>
-                  <span className="text-xs text-muted-foreground">{choice.spec}</span>
-                  <span className="font-mono text-xs text-muted-foreground tabular-nums">
-                    {hourly(choice.hourly)}
-                  </span>
-                </label>
-              );
-            })}
-          </div>
+          <MachineSizePicker
+            sizes={state.sizes}
+            value={size}
+            onChange={setSize}
+            name="size"
+            ariaLabel={gt("Size")}
+          />
           <p className="text-xs text-muted-foreground">
             {gt("Billed only while awake · sleeps 3 min after agents finish · resize anytime")}
           </p>

@@ -240,11 +240,13 @@ export function powerAction(m: MachineView): SimpleMachineAction | null {
   return null;
 }
 
-export function resizeHint(m: MachineView): string {
-  if (m.state === "asleep") return "Applies on next wake";
-  if (m.state === "working" || m.waiting) return "Applies after it next sleeps, never mid-turn";
-  if (m.state === "idle") return "Restarts onto the new size now";
-  return "Billed only while awake";
+export function resizeHint(m: MachineView) {
+  if (m.state === "asleep") return msg("Applies on next wake");
+  if (m.state === "working" || m.waiting) {
+    return msg("Applies after it next sleeps, never mid-turn");
+  }
+  if (m.state === "idle") return msg("Restarts onto the new size now");
+  return msg("Billed only while awake");
 }
 
 export function duration(secs: number): string {

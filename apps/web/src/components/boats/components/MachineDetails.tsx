@@ -35,6 +35,7 @@ import {
   type MachineControls,
   type PowerControls,
 } from "./MachineActions";
+import { MachineSizePicker } from "./MachineSizePicker";
 import { ProjectPicker } from "./ProjectPicker";
 import { useDetail, useSecsLeft } from "./common";
 
@@ -68,7 +69,7 @@ export function MachineDetails({
 
   return (
     <div className="space-y-6">
-      <SettingsGroup>
+      <SettingsGroup className="bg-card">
         <div className="flex flex-wrap items-start justify-between gap-4 px-4 py-4 sm:px-5">
           <div className="flex min-w-0 flex-1 items-start gap-3">
             <div className="relative mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">
@@ -79,7 +80,7 @@ export function MachineDetails({
             </div>
             <div className="min-w-0 flex-1 space-y-1">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="truncate text-base font-semibold text-foreground">{machine.name}</h2>
+                <h1 className="truncate text-base font-semibold text-foreground">{machine.name}</h1>
                 <Badge size="sm" variant={status.badgeVariant}>
                   {messages(status.label)}
                 </Badge>
@@ -165,7 +166,7 @@ function Section({
   return (
     <section className="space-y-2.5">
       <div className="flex items-center gap-2 px-1">
-        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
         {count !== undefined && count > 0 ? (
           <Badge size="sm" variant="secondary">
             <span className="font-mono tabular-nums">{count}</span>
@@ -212,7 +213,7 @@ function PowerSection({
 
   return (
     <Section title={gt("Power")}>
-      <SettingsGroup>
+      <SettingsGroup className="bg-card">
         <div className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-4")}>
           <div className="min-w-0 space-y-0.5">
             <div className="text-sm font-medium text-foreground">{gt("Auto sleep")}</div>
@@ -328,7 +329,7 @@ function AgentsSection({
 
   return (
     <Section title={gt("Agents")}>
-      <SettingsGroup>
+      <SettingsGroup className="bg-card">
         {details ? (
           details.agents.length > 0 ? (
             details.agents.map((agent) => {
@@ -398,7 +399,7 @@ function ConnectSection({
 
   return (
     <Section title={gt("Other devices")}>
-      <SettingsGroup>
+      <SettingsGroup className="bg-card">
         {details ? (
           <div className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-4")}>
             <div className="min-w-0 space-y-0.5">
@@ -459,7 +460,7 @@ function ProjectsSection({
 
   return (
     <Section title={gt("Projects")} count={machine.projects.length}>
-      <SettingsGroup>
+      <SettingsGroup className="bg-card">
         {machine.projects.map((project) => (
           <div
             key={project.id}
@@ -513,15 +514,21 @@ function MachineDangerSection({
   readonly controls: MachineControls;
 }) {
   const gt = useGT();
+  const messages = useMessages();
   const [expanded, setExpanded] = useState(false);
   const open = expanded || controls.deleteRefusal !== null;
   const gone = machine.state === "missing";
   const key = machineKey(machine);
 
   return (
-    <SettingsGroup divided={false}>
+    <SettingsGroup divided={false} className="bg-card">
       <Collapsible open={open} onOpenChange={setExpanded}>
-        <CollapsibleTrigger className="flex w-full items-center justify-between gap-3 rounded-xl px-4 py-3 text-left transition-colors hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-5">
+        <CollapsibleTrigger
+          className={cn(
+            "flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-5",
+            open ? "rounded-t-xl" : "rounded-xl",
+          )}
+        >
           <span className="text-sm font-medium text-foreground">{gt("Machine")}</span>
           <span className="flex items-center gap-2 font-mono text-xs text-muted-foreground tabular-nums">
             <span>
@@ -539,39 +546,26 @@ function MachineDangerSection({
             {gone ? null : (
               <div className="space-y-2">
                 <div className="text-xs font-medium text-muted-foreground">{gt("Size")}</div>
-                <div
-                  role="radiogroup"
-                  aria-label={gt("Size")}
-                  className="grid grid-cols-1 gap-2 sm:grid-cols-3"
-                >
-                  {controls.resizeChoices.map(({ size: choice, current, control }) => (
-                    <button
-                      key={choice.id}
-                      type="button"
-                      role="radio"
-                      aria-checked={current}
-                      disabled={!current && control.disabled}
-                      onClick={() => {
-                        if (!current) {
-                          controls.request({ kind: "run", action: control.action });
-                        }
-                      }}
-                      className={cn(
-                        "flex flex-col items-start gap-0.5 rounded-lg border px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                        current
-                          ? "border-ring bg-accent/60 text-foreground"
-                          : "cursor-pointer border-border/70 bg-background/60 text-foreground hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-55",
-                      )}
-                    >
-                      <span className="font-mono text-sm font-medium">{choice.id}</span>
-                      <span className="text-xs text-muted-foreground">{choice.spec}</span>
-                      <span className="font-mono text-xs text-muted-foreground tabular-nums">
-                        {hourly(choice.hourly)}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-                <p className="text-xs text-muted-foreground">{resizeHint(machine)}</p>
+                <MachineSizePicker
+                  sizes={controls.resizeChoices.map((choice) => choice.size)}
+                  value={machine.size}
+                  ariaLabel={gt("Size")}
+                  isOptionDisabled={(choice) => {
+                    const match = controls.resizeChoices.find(
+                      (candidate) => candidate.size.id === choice.id,
+                    );
+                    return match ? !match.current && match.control.disabled : true;
+                  }}
+                  onChange={(sizeId) => {
+                    const match = controls.resizeChoices.find(
+                      (candidate) => candidate.size.id === sizeId,
+                    );
+                    if (match && !match.current && !match.control.disabled) {
+                      controls.request({ kind: "run", action: match.control.action });
+                    }
+                  }}
+                />
+                <p className="text-xs text-muted-foreground">{messages(resizeHint(machine))}</p>
               </div>
             )}
 

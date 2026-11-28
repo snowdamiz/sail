@@ -79,7 +79,13 @@ export function SetupBody({
   };
 
   return (
-    <BoatsFrame back={null} server={server} notice={notice} dismissNotice={dismissNotice}>
+    <BoatsFrame
+      pageTitle={state.setup === "starting" || state.setup === "ready" ? gt("Boats") : undefined}
+      back={null}
+      server={server}
+      notice={notice}
+      dismissNotice={dismissNotice}
+    >
       <SetupView
         setup={state.setup}
         busy={state.setupBusy}
@@ -119,7 +125,7 @@ function SetupView({
 
   if (setup === "starting" || setup === "ready") {
     return (
-      <SettingsGroup divided={false}>
+      <SettingsGroup divided={false} className="bg-card">
         <div
           role="status"
           className="flex items-center justify-center gap-2.5 px-4 py-12 text-sm text-muted-foreground"
@@ -157,9 +163,9 @@ function SetupView({
   const current = setup === "installT3" ? steps.length : steps.findIndex((s) => s.id === setup);
 
   return (
-    <SettingsGroup>
+    <SettingsGroup className="bg-card">
       <div className="px-4 py-4 sm:px-5 sm:py-5">
-        <h2 className="text-base font-semibold text-foreground">{gt("Set sail in two steps")}</h2>
+        <h1 className="text-base font-semibold text-foreground">{gt("Set sail in two steps")}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           {gt("Launch cloud machines inside Sail that sleep for free when no agent is working.")}
         </p>
@@ -242,7 +248,7 @@ function SetupView({
         </div>
       ) : null}
 
-      <div className="flex items-center justify-end bg-muted/20 px-4 py-2.5 sm:px-5">
+      <div className="flex items-center justify-end rounded-b-xl bg-muted/20 px-4 py-2.5 sm:px-5">
         <Button
           size="xs"
           variant="ghost-muted"

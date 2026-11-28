@@ -12,7 +12,7 @@ export function Costs({ costs }: { readonly costs: UiState["costs"] }) {
 
   return (
     <footer aria-label={gt("Costs")}>
-      <SettingsGroup divided={false} className="overflow-hidden">
+      <SettingsGroup divided={false} className="overflow-hidden bg-card">
         <div className="grid grid-cols-1 divide-y divide-border/50 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
           <div className="flex flex-col gap-0.5 px-4 py-3">
             <span className="text-xs text-muted-foreground">{gt("Today")}</span>

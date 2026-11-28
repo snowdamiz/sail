@@ -34,7 +34,7 @@ import { errorText } from "./reply";
 function StartingSkeleton() {
   const gt = useGT();
   return (
-    <SettingsGroup divided={false}>
+    <SettingsGroup divided={false} className="bg-card">
       <div
         role="status"
         aria-label={gt("Starting Sail Boats")}
@@ -147,14 +147,14 @@ function BoatsForServer({ environmentId }: { readonly environmentId: Environment
         />
       ) : page.kind === "noServer" ? (
         <BoatsFrame back={null} server={server} notice={notice} dismissNotice={dismissNotice}>
-          <SettingsGroup divided={false}>
+          <SettingsGroup divided={false} className="bg-card">
             <Empty size="compact">
               <EmptyMedia variant="icon">
                 <ServerIcon aria-hidden="true" />
               </EmptyMedia>
               <EmptyHeader>
                 <EmptyTitle>
-                  <h2>{gt("Boats isn't available here")}</h2>
+                  <h1>{gt("Boats isn't available here")}</h1>
                 </EmptyTitle>
                 <EmptyDescription>
                   {gt(
@@ -167,12 +167,12 @@ function BoatsForServer({ environmentId }: { readonly environmentId: Environment
         </BoatsFrame>
       ) : page.kind === "offline" ? (
         <BoatsFrame back={null} server={server} notice={notice} dismissNotice={dismissNotice}>
-          <SettingsGroup divided={false}>
+          <SettingsGroup divided={false} className="bg-card">
             <div className="space-y-4 p-4 sm:p-5">
               <div className="space-y-1">
-                <h2 className="text-base font-semibold text-foreground">
+                <h1 className="text-base font-semibold text-foreground">
                   {gt("Boat daemon offline")}
-                </h2>
+                </h1>
                 <p className="text-xs text-muted-foreground">
                   {gt("Sail could not reach the Boat daemon on this server.")}
                 </p>
@@ -198,7 +198,13 @@ function BoatsForServer({ environmentId }: { readonly environmentId: Environment
           </SettingsGroup>
         </BoatsFrame>
       ) : (
-        <BoatsFrame back={null} server={server} notice={notice} dismissNotice={dismissNotice}>
+        <BoatsFrame
+          pageTitle={gt("Boats")}
+          back={null}
+          server={server}
+          notice={notice}
+          dismissNotice={dismissNotice}
+        >
           <StartingSkeleton />
         </BoatsFrame>
       )}

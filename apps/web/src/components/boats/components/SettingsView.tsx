@@ -1,4 +1,4 @@
-import { useGT } from "gt-react";
+import { T, Var, useGT } from "gt-react";
 import { CheckIcon, EyeIcon, EyeOffIcon } from "lucide-react";
 import { useState } from "react";
 
@@ -67,7 +67,7 @@ export function SettingsView({
     <div className="space-y-6">
       <section className="space-y-2.5">
         <h2 className="px-1 text-sm font-semibold text-foreground">{gt("General")}</h2>
-        <SettingsGroup>
+        <SettingsGroup className="bg-card">
           <div className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-4")}>
             <div className="min-w-0 space-y-0.5">
               <div className="text-sm font-medium text-foreground">
@@ -93,11 +93,16 @@ export function SettingsView({
         <div className="space-y-0.5 px-1">
           <h2 className="text-sm font-semibold text-foreground">{gt("MCP")}</h2>
           <p className="text-xs text-muted-foreground">
-            {gt("Let")} <AgentNames names={CLIENTS.map((client) => client.name)} />{" "}
-            {gt("control Sail Boats")}
+            <T>
+              Let{" "}
+              <Var>
+                <AgentNames names={CLIENTS.map((client) => client.name)} />
+              </Var>{" "}
+              control Sail Boats
+            </T>
           </p>
         </div>
-        <SettingsGroup>
+        <SettingsGroup className="bg-card">
           {CLIENTS.map((client) => {
             const status = state.mcp[client.id];
             const isAdding = adding === client.id;
@@ -133,14 +138,28 @@ export function SettingsView({
               </div>
             );
           })}
-          <div className={cn(ITEM_ROW_CLASSNAME, "bg-muted/20 text-xs text-muted-foreground")}>
+          <div
+            className={cn(
+              ITEM_ROW_CLASSNAME,
+              "rounded-b-xl bg-muted/20 text-xs text-muted-foreground",
+            )}
+          >
             {missing.length > 0 ? (
-              <>
-                <AgentNames names={missing} />{" "}
-                {missing.length === 1
-                  ? gt("isn't installed on this server")
-                  : gt("aren't installed on this server")}
-              </>
+              missing.length === 1 ? (
+                <T>
+                  <Var>
+                    <AgentNames names={missing} />
+                  </Var>{" "}
+                  isn't installed on this server
+                </T>
+              ) : (
+                <T>
+                  <Var>
+                    <AgentNames names={missing} />
+                  </Var>{" "}
+                  aren't installed on this server
+                </T>
+              )
             ) : (
               gt("Their agents can then create, wake and send work to machines.")
             )}
@@ -150,7 +169,7 @@ export function SettingsView({
 
       <section className="space-y-2.5">
         <h2 className="px-1 text-sm font-semibold text-foreground">{gt("Account")}</h2>
-        <SettingsGroup>
+        <SettingsGroup className="bg-card">
           <div
             className={cn(ITEM_ROW_CLASSNAME, "flex flex-wrap items-center justify-between gap-3")}
           >

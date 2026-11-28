@@ -1,5 +1,7 @@
 import { Fragment, type ComponentType } from "react";
 
+import { cn } from "~/lib/utils";
+
 function ClaudeCodeLogo() {
   return (
     <svg viewBox="0 0 24 24" className="size-3.5 shrink-0" aria-hidden="true">
@@ -15,7 +17,7 @@ function ClaudeCodeLogo() {
 
 function CodexLogo() {
   return (
-    <svg viewBox="0 0 24 24" className="size-3.5 shrink-0 text-foreground" aria-hidden="true">
+    <svg viewBox="0 0 24 24" className="size-3.5 shrink-0" aria-hidden="true">
       <path
         fill="currentColor"
         fillRule="evenodd"
@@ -32,21 +34,53 @@ const LOGOS: Record<string, ComponentType> = {
   Codex: CodexLogo,
 };
 
-export function AgentName({ name }: { readonly name: string }) {
+const LIST_FORMATTER = new Intl.ListFormat(undefined, { style: "long", type: "conjunction" });
+
+export function AgentName({
+  name,
+  className,
+}: {
+  readonly name: string;
+  readonly className?: string;
+}) {
   const Logo = LOGOS[name];
   return (
-    <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
+    <span className={cn("inline-flex items-center gap-1.5 font-medium", className)}>
       {Logo ? <Logo /> : null}
       <span>{name}</span>
     </span>
   );
 }
 
+function formatNameParts(names: readonly string[]) {
+  const items: Array<{
+    readonly key: string;
+    readonly type: "element" | "literal";
+    readonly value: string;
+  }> = [];
+  let literalCount = 0;
+  for (const part of LIST_FORMATTER.formatToParts(names)) {
+    if (part.type === "element") {
+      items.push({ key: `agent:${part.value}`, type: "element", value: part.value });
+    } else {
+      literalCount += 1;
+      items.push({ key: `sep:${literalCount}:${part.value}`, type: "literal", value: part.value });
+    }
+  }
+  return items;
+}
+
 export function AgentNames({ names }: { readonly names: readonly string[] }) {
-  return names.map((n, i) => (
-    <Fragment key={n}>
-      {i === 0 ? "" : i === names.length - 1 ? " and " : ", "}
-      <AgentName name={n} />
-    </Fragment>
-  ));
+  const parts = formatNameParts(names);
+  return (
+    <>
+      {parts.map((part) =>
+        part.type === "element" ? (
+          <AgentName key={part.key} name={part.value} />
+        ) : (
+          <Fragment key={part.key}>{part.value}</Fragment>
+        ),
+      )}
+    </>
+  );
 }
