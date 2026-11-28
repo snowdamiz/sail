@@ -1,0 +1,32 @@
+{
+  "incumbentRepeat": {
+    "fixtureId": "chat-turn",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "changedSteps": [],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/electron-macos-arm64/settled-hover/a/capture.png",
+      "candidate": "tests/migration/incumbent/observations/electron-macos-arm64/settled-hover/b/capture.png",
+      "diff": "tests/migration/incumbent/observations/electron-macos-arm64/settled-hover/repeat-diff.png",
+      "baselineSize": [2200, 1560],
+      "candidateSize": [2200, 1560],
+      "differentPixels": 0,
+      "bounds": null
+    }
+  },
+  "laterPublicRelease": {
+    "fixtureId": "chat-turn",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "8337252d5112501cc06bae39921b84c807c662fc",
+    "changedSteps": [],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/electron-macos-arm64/settled-hover/a/capture.png",
+      "candidate": "tests/migration/incumbent/observations/electron-macos-arm64/settled-hover/v018/capture.png",
+      "diff": "tests/migration/incumbent/observations/electron-macos-arm64/settled-hover/v018-diff.png",
+      "baselineSize": [2200, 1560],
+      "candidateSize": [2200, 1560],
+      "differentPixels": 0,
+      "bounds": null
+    }
+  }
+}

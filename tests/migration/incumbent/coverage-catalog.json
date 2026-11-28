@@ -1193,6 +1193,126 @@
           "sha256": "9798b65dc117cd3a6fd6e15046a2c2338a2b71e639ea13cf24c66d4ef29cafc8"
         }
       ]
+    },
+    {
+      "caseId": "chat-turn",
+      "platformId": "electron-macos-arm64",
+      "state": "settled",
+      "entrypoint": "chat",
+      "configurationId": "electron-44.10.1-macos-en-dark-1100x780-2x-hover",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-turn",
+          "environment": {
+            "osVersion": "27.0.1 (26A434)",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+            "origin": "desktop local",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 1100,
+              "viewportHeight": 780,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "dark",
+              "locale": "en",
+              "fonts": [
+                "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ],
+              "motion": "standard"
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/electron-macos-arm64/settled-hover/a/capture.png",
+              "sha256": "9bb16ba84e1ec54ed0facd0455bb4869b0893f1e2a833ff2e51a8499a71bbfd7"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/electron-macos-arm64/settled-hover/a/receipt.json",
+              "sha256": "9e7e94ad6093a38e7ff990dd9ddc15ce0327068d257ec56da65bfad99957fd81"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/electron-macos-arm64/settled-hover/capture-timings.json",
+              "sha256": "1cdcdd28ed509abfbf97cf62d756c997acd6d33e970e4266013f092d6a2c24cb"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-turn",
+          "environment": {
+            "osVersion": "27.0.1 (26A434)",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+            "origin": "desktop local",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 1100,
+              "viewportHeight": 780,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "dark",
+              "locale": "en",
+              "fonts": [
+                "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ],
+              "motion": "standard"
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/electron-macos-arm64/settled-hover/b/capture.png",
+              "sha256": "9bb16ba84e1ec54ed0facd0455bb4869b0893f1e2a833ff2e51a8499a71bbfd7"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/electron-macos-arm64/settled-hover/b/receipt.json",
+              "sha256": "9e7e94ad6093a38e7ff990dd9ddc15ce0327068d257ec56da65bfad99957fd81"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/electron-macos-arm64/settled-hover/capture-timings.json",
+              "sha256": "1cdcdd28ed509abfbf97cf62d756c997acd6d33e970e4266013f092d6a2c24cb"
+            }
+          ]
+        }
+      ],
+      "comparisonArtifacts": [
+        {
+          "kind": "pixel-diff",
+          "path": "observations/electron-macos-arm64/settled-hover/repeat-diff.png",
+          "sha256": "d3b10c7216bebee659527f9ffa8a0c763befab957d00bad4b8c7897e06aed653"
+        },
+        {
+          "kind": "action-and-state",
+          "path": "observations/electron-macos-arm64/settled-hover/comparisons.json",
+          "sha256": "97b0aca4c0232d3b9039a09cb384bed90961253a429a59dbf0a7e03f7c9792f4"
+        },
+        {
+          "kind": "action-traces",
+          "path": "observations/electron-macos-arm64/settled-hover/capture-traces.ndjson",
+          "sha256": "68b7aa0243736e8cf1bc9b3acc98cb706882880a4696ae7c0d90fe911dc13cea"
+        }
+      ]
     }
   ],
   "platformScope": {
