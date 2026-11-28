@@ -64,16 +64,18 @@ export function SettingsView({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <section className="space-y-2.5">
-        <h2 className="px-1 text-sm font-semibold text-foreground">{gt("General")}</h2>
-        <SettingsGroup className="bg-card">
-          <div className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-4")}>
+        <div className="px-3 sm:px-4">
+          <h2 className="text-base font-semibold text-foreground">{gt("General")}</h2>
+        </div>
+        <SettingsGroup>
+          <div className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-6")}>
             <div className="min-w-0 space-y-0.5">
-              <div className="text-sm font-medium text-foreground">
+              <h3 className="text-sm font-medium text-foreground">
                 {gt("Start background boats at login")}
-              </div>
-              <p className="text-xs text-muted-foreground">
+              </h3>
+              <p className="text-xs leading-normal text-muted-foreground">
                 {gt(
                   "Machines sleep 3 minutes after their agents finish and wake by themselves when you use them in Sail.",
                 )}
@@ -90,8 +92,8 @@ export function SettingsView({
       </section>
 
       <section className="space-y-2.5">
-        <div className="space-y-0.5 px-1">
-          <h2 className="text-sm font-semibold text-foreground">{gt("MCP")}</h2>
+        <div className="space-y-0.5 px-3 sm:px-4">
+          <h2 className="text-base font-semibold text-foreground">{gt("MCP")}</h2>
           <p className="text-xs text-muted-foreground">
             <T>
               Let{" "}
@@ -102,7 +104,7 @@ export function SettingsView({
             </T>
           </p>
         </div>
-        <SettingsGroup className="bg-card">
+        <SettingsGroup>
           {CLIENTS.map((client) => {
             const status = state.mcp[client.id];
             const isAdding = adding === client.id;
@@ -111,12 +113,12 @@ export function SettingsView({
                 key={client.id}
                 className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-3")}
               >
-                <AgentName name={client.name} />
+                <AgentName name={client.name} className="text-sm" />
                 {status ? (
-                  <Badge size="sm" variant="success">
-                    <CheckIcon aria-hidden="true" className="size-3" />
+                  <span className="inline-flex items-center gap-1.5 text-xs font-medium text-success-foreground">
+                    <CheckIcon aria-hidden="true" className="size-3.5" />
                     {gt("Added")}
-                  </Badge>
+                  </span>
                 ) : (
                   <Button
                     size="xs"
@@ -138,67 +140,74 @@ export function SettingsView({
               </div>
             );
           })}
-          <div
-            className={cn(
-              ITEM_ROW_CLASSNAME,
-              "rounded-b-xl bg-muted/20 text-xs text-muted-foreground",
-            )}
-          >
-            {missing.length > 0 ? (
-              missing.length === 1 ? (
-                <T>
-                  <Var>
-                    <AgentNames names={missing} />
-                  </Var>{" "}
-                  isn't installed on this server
-                </T>
-              ) : (
-                <T>
-                  <Var>
-                    <AgentNames names={missing} />
-                  </Var>{" "}
-                  aren't installed on this server
-                </T>
-              )
-            ) : (
-              gt("Their agents can then create, wake and send work to machines.")
-            )}
-          </div>
         </SettingsGroup>
+        <p className="px-3 text-xs text-muted-foreground sm:px-4">
+          {missing.length > 0 ? (
+            missing.length === 1 ? (
+              <T>
+                <Var>
+                  <AgentNames names={missing} />
+                </Var>{" "}
+                isn't installed on this server
+              </T>
+            ) : (
+              <T>
+                <Var>
+                  <AgentNames names={missing} />
+                </Var>{" "}
+                aren't installed on this server
+              </T>
+            )
+          ) : (
+            gt("Their agents can then create, wake and send work to machines.")
+          )}
+        </p>
       </section>
 
       <section className="space-y-2.5">
-        <h2 className="px-1 text-sm font-semibold text-foreground">{gt("Account")}</h2>
-        <SettingsGroup className="bg-card">
+        <div className="px-3 sm:px-4">
+          <h2 className="text-base font-semibold text-foreground">{gt("Account")}</h2>
+        </div>
+        <SettingsGroup>
           <div
-            className={cn(ITEM_ROW_CLASSNAME, "flex flex-wrap items-center justify-between gap-3")}
+            className={cn(
+              ITEM_ROW_CLASSNAME,
+              "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6",
+            )}
           >
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <div className="min-w-0 space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-medium text-foreground">{gt("Boat account")}</h3>
+                {plan ? (
+                  <Badge size="sm" variant="secondary">
+                    {plan}
+                  </Badge>
+                ) : null}
+              </div>
               {email ? (
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  onClick={() => setShowEmail((visible) => !visible)}
-                >
-                  {showEmail ? (
-                    <EyeOffIcon aria-hidden="true" className="size-3.5" />
-                  ) : (
-                    <EyeIcon aria-hidden="true" className="size-3.5" />
-                  )}
-                  <span className={showEmail ? "font-mono" : undefined}>
-                    {showEmail ? email : gt("Show email")}
-                  </span>
-                </Button>
-              ) : null}
-              {plan ? (
-                <Badge size="sm" variant="secondary">
-                  {plan}
-                </Badge>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    size="xs"
+                    variant="ghost-muted"
+                    className="-ms-2"
+                    onClick={() => setShowEmail((visible) => !visible)}
+                  >
+                    {showEmail ? (
+                      <EyeOffIcon aria-hidden="true" className="size-3.5" />
+                    ) : (
+                      <EyeIcon aria-hidden="true" className="size-3.5" />
+                    )}
+                    <span className={showEmail ? "font-mono text-foreground" : undefined}>
+                      {showEmail ? email : gt("Show email")}
+                    </span>
+                  </Button>
+                </div>
               ) : null}
             </div>
             <Button
               size="sm"
               variant="destructive-outline"
+              className="shrink-0"
               disabled={signingOut || !access.can("sign_out_boat")}
               aria-busy={signingOut}
               onClick={() => {

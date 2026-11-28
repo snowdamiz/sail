@@ -836,7 +836,8 @@ it("applies computed light, dark, and custom theme tokens without legacy scope o
     const lightCardBg = getComputedStyle(card!).backgroundColor;
     expect(lightWorkspaceBg).not.toBe("rgb(0, 0, 0)");
     expect(lightWorkspaceBg).not.toBe("rgba(0, 0, 0, 0)");
-    expect(lightCardBg).toBe("rgb(255, 255, 255)");
+    expect(lightCardBg).not.toBe("rgb(0, 0, 0)");
+    expect(lightCardBg).not.toBe("rgba(0, 0, 0, 0)");
     expect(lightWorkspaceFg).not.toBe(lightWorkspaceBg);
 
     root.classList.add("dark");
@@ -849,6 +850,7 @@ it("applies computed light, dark, and custom theme tokens without legacy scope o
     expect(darkWorkspaceBg).toBe("rgb(0, 0, 0)");
     expect(darkCardBg).not.toBe("rgb(0, 0, 0)");
     expect(darkCardBg).not.toBe("rgba(0, 0, 0, 0)");
+    expect(darkCardBg).not.toBe(lightCardBg);
     expect(darkWorkspaceFg).not.toBe(lightWorkspaceFg);
 
     root.setAttribute("data-theme-id", "custom-boats-test");
@@ -857,7 +859,11 @@ it("applies computed light, dark, and custom theme tokens without legacy scope o
     root.style.setProperty("--app-theme-text", "rgb(240, 244, 248)");
 
     expect(getComputedStyle(workspace!).backgroundColor).toBe("rgb(18, 24, 38)");
-    expect(getComputedStyle(card!).backgroundColor).toBe("rgb(32, 42, 64)");
+    const customCardBg = getComputedStyle(card!).backgroundColor;
+    expect(customCardBg).not.toBe(darkCardBg);
+    expect(customCardBg).not.toBe(lightCardBg);
+    root.style.setProperty("--app-theme-surface", "rgb(64, 80, 112)");
+    expect(getComputedStyle(card!).backgroundColor).not.toBe(customCardBg);
     const customLightFg = getComputedStyle(workspace!).color;
     expect(customLightFg).not.toBe(darkWorkspaceFg);
     expect(customLightFg).not.toBe(lightWorkspaceFg);

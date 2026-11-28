@@ -35,30 +35,35 @@ import { errorText } from "./reply";
 function StartingSkeleton() {
   const gt = useGT();
   return (
-    <SettingsGroup divided={false} className="bg-card">
-      <div
-        role="status"
-        aria-label={gt("Starting Sail Boats")}
-        className="divide-y divide-border/50"
-      >
-        {["first", "second"].map((slot) => (
-          <div
-            key={slot}
-            className={`${ITEM_ROW_CLASSNAME} flex items-center justify-between gap-4`}
-            aria-hidden="true"
-          >
-            <div className="flex items-center gap-3">
-              <Skeleton shape="card" className="size-9" />
-              <div className="space-y-1.5">
-                <Skeleton className="h-4 w-32" />
-                <Skeleton className="h-3 w-48" />
-              </div>
-            </div>
-            <Skeleton shape="card" className="h-6 w-20" />
-          </div>
-        ))}
+    <section className="space-y-2.5">
+      <div className="px-3 sm:px-4" aria-hidden="true">
+        <Skeleton className="h-5 w-24" />
       </div>
-    </SettingsGroup>
+      <SettingsGroup divided={false}>
+        <div
+          role="status"
+          aria-label={gt("Starting Sail Boats")}
+          className="divide-y divide-border/50"
+        >
+          {["first", "second"].map((slot) => (
+            <div
+              key={slot}
+              className={`${ITEM_ROW_CLASSNAME} flex items-center justify-between gap-4`}
+              aria-hidden="true"
+            >
+              <div className="flex items-center gap-3">
+                <Skeleton shape="pill" className="size-2.5" />
+                <div className="space-y-1.5">
+                  <Skeleton className="h-4 w-28" />
+                  <Skeleton className="h-3 w-44" />
+                </div>
+              </div>
+              <Skeleton shape="card" className="h-6 w-20" />
+            </div>
+          ))}
+        </div>
+      </SettingsGroup>
+    </section>
   );
 }
 
@@ -147,7 +152,7 @@ function BoatsForServer({ environmentId }: { readonly environmentId: Environment
         />
       ) : page.kind === "noServer" ? (
         <BoatsFrame back={null} server={server} notice={notice} dismissNotice={dismissNotice}>
-          <SettingsGroup divided={false} className="bg-card">
+          <SettingsGroup divided={false}>
             <Empty size="compact">
               <EmptyMedia variant="icon">
                 <ServerIcon aria-hidden="true" />
@@ -167,39 +172,41 @@ function BoatsForServer({ environmentId }: { readonly environmentId: Environment
         </BoatsFrame>
       ) : page.kind === "offline" ? (
         <BoatsFrame back={null} server={server} notice={notice} dismissNotice={dismissNotice}>
-          <SettingsGroup divided={false} className="bg-card">
-            <div className="space-y-4 p-4 sm:p-5">
-              <div className="space-y-1">
-                <h1 className="text-base font-semibold text-foreground">
-                  {gt("Boat daemon offline")}
-                </h1>
-                <p className="text-xs text-muted-foreground">
-                  {gt("Sail could not reach the Boat daemon on this server.")}
-                </p>
-              </div>
-              <Alert variant="error">
-                <AlertTriangleIcon aria-hidden="true" />
-                <AlertDescription>{page.message}</AlertDescription>
-              </Alert>
-              <div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    void retry().catch((error) => {
-                      if (mountedRef.current) notify(errorText(error));
-                    })
-                  }
-                >
-                  {gt("Retry")}
-                </Button>
-              </div>
+          <div className="mx-auto w-full max-w-xl space-y-4 pt-4 sm:pt-8">
+            <div className="space-y-1 px-1">
+              <h1 className="text-xl font-semibold tracking-tight text-foreground">
+                {gt("Boat daemon offline")}
+              </h1>
+              <p className="text-sm text-muted-foreground">
+                {gt("Sail could not reach the Boat daemon on this server.")}
+              </p>
             </div>
-          </SettingsGroup>
+            <SettingsGroup divided={false}>
+              <div className="space-y-4 p-4 sm:p-5">
+                <Alert variant="error">
+                  <AlertTriangleIcon aria-hidden="true" />
+                  <AlertDescription>{page.message}</AlertDescription>
+                </Alert>
+                <div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      void retry().catch((error) => {
+                        if (mountedRef.current) notify(errorText(error));
+                      })
+                    }
+                  >
+                    {gt("Retry")}
+                  </Button>
+                </div>
+              </div>
+            </SettingsGroup>
+          </div>
         </BoatsFrame>
       ) : (
         <BoatsFrame
-          pageTitle={gt("Boats")}
+          breadcrumbHeading
           back={null}
           server={server}
           notice={notice}

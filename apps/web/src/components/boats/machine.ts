@@ -6,11 +6,14 @@ import type { MachineState, MachineView, Size } from "./types";
 
 type StatusDotClassName = "bg-success" | "bg-warning" | "bg-destructive" | "bg-muted-foreground/40";
 
+type StatusPingClassName = "bg-success/60 duration-2000" | "bg-warning/60 duration-2000" | null;
+
 type StatusBadgeVariant = "success" | "warning" | "error" | "secondary" | "outline";
 
 interface StatusPresentation {
   readonly label: ReturnType<typeof msg>;
   readonly dotClassName: StatusDotClassName;
+  readonly pingClassName: StatusPingClassName;
   readonly badgeVariant: StatusBadgeVariant;
 }
 
@@ -18,46 +21,55 @@ export const MACHINE_STATUS = {
   working: {
     label: msg("Working"),
     dotClassName: "bg-success",
+    pingClassName: "bg-success/60 duration-2000",
     badgeVariant: "success",
   },
   idle: {
     label: msg("Idle"),
     dotClassName: "bg-success",
+    pingClassName: null,
     badgeVariant: "success",
   },
   sleeping: {
     label: msg("Going to sleep"),
     dotClassName: "bg-warning",
+    pingClassName: "bg-warning/60 duration-2000",
     badgeVariant: "warning",
   },
   asleep: {
     label: msg("Asleep"),
     dotClassName: "bg-muted-foreground/40",
+    pingClassName: null,
     badgeVariant: "secondary",
   },
   waking: {
     label: msg("Waking"),
     dotClassName: "bg-warning",
+    pingClassName: "bg-warning/60 duration-2000",
     badgeVariant: "warning",
   },
   creating: {
     label: msg("Creating"),
     dotClassName: "bg-warning",
+    pingClassName: "bg-warning/60 duration-2000",
     badgeVariant: "warning",
   },
   error: {
     label: msg("Error"),
     dotClassName: "bg-destructive",
+    pingClassName: null,
     badgeVariant: "error",
   },
   missing: {
     label: msg("Missing"),
     dotClassName: "bg-destructive",
+    pingClassName: null,
     badgeVariant: "error",
   },
   unknown: {
     label: msg("Unknown"),
     dotClassName: "bg-muted-foreground/40",
+    pingClassName: null,
     badgeVariant: "outline",
   },
 } satisfies Record<MachineState, StatusPresentation>;

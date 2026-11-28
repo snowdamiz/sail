@@ -1,10 +1,8 @@
 import { T, Var, useGT, useMessages } from "gt-react";
-import { FolderPlusIcon, ServerIcon } from "lucide-react";
+import { ChevronRightIcon, FolderPlusIcon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
 import { ConnectionStatusDot } from "../../ConnectionStatusDot";
-import { ITEM_ROW_CLASSNAME } from "../../settings/itemRows";
-import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
 import { Spinner } from "../../ui/spinner";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../ui/tooltip";
@@ -36,62 +34,103 @@ export function MachineRow({
   const messages = useMessages();
   const key = machineKey(machine);
   const status = MACHINE_STATUS[machine.state];
-  const detail = useDetail(machine);
+  const detail = useDetail(machine) || messages(status.label);
   const cloning = machine.projects.filter((project) => project.status);
   const showSignedOut = Boolean(machine.id && machine.signedOut.length > 0);
   const showNeedsProject = !showSignedOut && controls.needsProject;
   const hasSubRows =
     controls.deleteRefusal !== null || showSignedOut || showNeedsProject || cloning.length > 0;
+  const isError = machine.state === "error" || machine.state === "missing";
+  const isWorking = machine.state === "working";
+  const isDimmed = machine.state === "asleep" || machine.state === "missing";
+  const projectCount = machine.projects.length;
+
+  const identity = (
+    <>
+      <ConnectionStatusDot
+        dotClassName={status.dotClassName}
+        pingClassName={status.pingClassName}
+      />
+
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <div
+          className={cn(
+            "truncate text-sm font-medium",
+            isDimmed ? "text-foreground/80" : "text-foreground",
+          )}
+        >
+          {machine.name}
+        </div>
+
+        <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span
+                  className={cn(
+                    "min-w-0 truncate",
+                    isError && "text-destructive-foreground",
+                    isWorking && "text-success-foreground",
+                  )}
+                />
+              }
+            >
+              {detail}
+            </TooltipTrigger>
+            <TooltipPopup side="top">{detail}</TooltipPopup>
+          </Tooltip>
+          <span aria-hidden="true" className="shrink-0 text-muted-foreground/50">
+            ·
+          </span>
+          <span className="shrink-0 font-mono">{machine.size}</span>
+          {size ? (
+            <>
+              <span aria-hidden="true" className="shrink-0 text-muted-foreground/50">
+                ·
+              </span>
+              <span className="shrink-0 font-mono tabular-nums">{hourly(size.hourly)}</span>
+            </>
+          ) : null}
+          {projectCount > 0 ? (
+            <>
+              <span
+                aria-hidden="true"
+                className="hidden shrink-0 text-muted-foreground/50 sm:inline"
+              >
+                ·
+              </span>
+              <span className="hidden shrink-0 tabular-nums sm:inline">
+                {gt("{count, plural, one {# project} other {# projects}}", {
+                  count: projectCount,
+                })}
+              </span>
+            </>
+          ) : null}
+        </div>
+      </div>
+    </>
+  );
 
   return (
-    <li className={cn(ITEM_ROW_CLASSNAME, "space-y-2.5")}>
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 sm:flex-nowrap">
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          <div className="relative flex size-9 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">
-            <ServerIcon aria-hidden="true" className="size-4 text-muted-foreground" />
-            <span className="absolute -right-1 -bottom-1 rounded-full bg-card p-0.5">
-              <ConnectionStatusDot dotClassName={status.dotClassName} />
-            </span>
-          </div>
-
-          <div className="min-w-0 flex-1 space-y-0.5">
-            <div className="flex flex-wrap items-center gap-1.5">
-              {controls.canOpen ? (
-                <button
-                  type="button"
-                  aria-label={gt("Details for {name}", { name: machine.name })}
-                  onClick={onOpen}
-                  className="max-w-full cursor-pointer truncate rounded-xs text-left text-sm font-medium text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                >
-                  {machine.name}
-                </button>
-              ) : (
-                <span className="max-w-full truncate text-sm font-medium text-foreground">
-                  {machine.name}
-                </span>
-              )}
-              <Badge size="sm" variant={status.badgeVariant}>
-                {messages(status.label)}
-              </Badge>
-              <Badge size="sm" variant="secondary">
-                <span className="font-mono">{machine.size}</span>
-              </Badge>
-              {size ? (
-                <span className="font-mono text-xs text-muted-foreground tabular-nums">
-                  {hourly(size.hourly)}
-                </span>
-              ) : null}
-            </div>
-            {detail ? (
-              <Tooltip>
-                <TooltipTrigger render={<p className="truncate text-xs text-muted-foreground" />}>
-                  {detail}
-                </TooltipTrigger>
-                <TooltipPopup>{detail}</TooltipPopup>
-              </Tooltip>
-            ) : null}
-          </div>
-        </div>
+    <li className="overflow-hidden first:rounded-t-xl last:rounded-b-xl">
+      <div
+        className={cn(
+          "group/machine-row flex items-center gap-3 px-3 py-3 sm:px-4",
+          controls.canOpen && "transition-colors hover:bg-accent/35",
+        )}
+      >
+        {controls.canOpen ? (
+          <button
+            type="button"
+            aria-label={gt("Details for {name}", { name: machine.name })}
+            onClick={onOpen}
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          >
+            {identity}
+          </button>
+        ) : (
+          <div className="flex min-w-0 flex-1 items-center gap-3">{identity}</div>
+        )}
 
         <div className="flex shrink-0 items-center gap-1.5">
           <MachineActionButton
@@ -111,15 +150,21 @@ export function MachineRow({
               onPickProject={onPickProject}
             />
           ) : null}
+          {controls.canOpen ? (
+            <ChevronRightIcon
+              aria-hidden="true"
+              className="pointer-events-none size-4 text-muted-foreground/45 transition-all duration-150 group-hover/machine-row:translate-x-0.5 group-hover/machine-row:text-muted-foreground"
+            />
+          ) : null}
         </div>
       </div>
 
       {hasSubRows ? (
-        <div className="space-y-2 sm:pl-12">
+        <div className="space-y-2 px-3 pb-3 pl-9 sm:px-4 sm:pl-10">
           <DeleteErrorAlert controls={controls} />
 
           {showSignedOut ? (
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning/30 bg-warning-surface px-3 py-2 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning/25 bg-warning-surface/75 px-3 py-1.5 text-xs">
               <span className="text-warning-foreground">
                 {machine.signedOut.length === 1 ? (
                   <T>
@@ -157,9 +202,9 @@ export function MachineRow({
               </div>
             </div>
           ) : showNeedsProject ? (
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
               <span className="inline-flex items-center gap-1.5">
-                <FolderPlusIcon aria-hidden="true" className="size-3.5" />
+                <FolderPlusIcon aria-hidden="true" className="size-3.5 text-muted-foreground/70" />
                 {gt("No projects yet")}
               </span>
               <Button

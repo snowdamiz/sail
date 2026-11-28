@@ -49,7 +49,7 @@ export function ProjectPicker({
         <PlusIcon aria-hidden="true" className="size-3.5" />
         {gt("Add a project…")}
       </PopoverTrigger>
-      <PopoverPopup align="start" width="md" padding="compact">
+      <PopoverPopup align="end" width="md" padding="compact">
         {isOpen ? (
           <PickerBody
             m={m}

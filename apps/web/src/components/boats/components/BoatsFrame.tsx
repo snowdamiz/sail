@@ -52,21 +52,19 @@ function isUnmodifiedEscape(event: KeyboardEvent): boolean {
 
 export function BoatsFrame({
   breadcrumbTitle,
-  pageTitle,
-  pageSubtitle,
+  breadcrumbHeading = false,
   back,
   server,
-  toolbar,
+  headerActions,
   notice,
   dismissNotice,
   children,
 }: {
   readonly breadcrumbTitle?: string | undefined;
-  readonly pageTitle?: string | undefined;
-  readonly pageSubtitle?: string | undefined;
+  readonly breadcrumbHeading?: boolean;
   readonly back: (() => void) | null;
   readonly server: ServerSelection;
-  readonly toolbar?: ReactNode;
+  readonly headerActions?: ReactNode;
   readonly notice: Notice | null;
   readonly dismissNotice: () => void;
   readonly children: ReactNode;
@@ -76,7 +74,7 @@ export function BoatsFrame({
   const onBack = useEffectEvent(() => back?.());
   const showServerSelect =
     server.choices.length > 1 || (server.selected === null && server.choices.length > 0);
-  const showToolbarRow = Boolean(pageTitle || showServerSelect || toolbar);
+  const showHeaderControls = Boolean(showServerSelect || headerActions);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes window keydown listeners for Escape-to-go-back
   useEffect(() => {
@@ -108,7 +106,7 @@ export function BoatsFrame({
       data-testid="sail-boats-workspace"
       className="h-dvh min-h-0 flex-1 overflow-hidden overscroll-y-none"
     >
-      <WorkspacePageHeader electron={isElectron} className="border-b border-border/60">
+      <WorkspacePageHeader electron={isElectron} className="border-b">
         {back !== null ? (
           <Button
             size="icon-xs"
@@ -131,6 +129,11 @@ export function BoatsFrame({
                 <SailBrandMark aria-hidden="true" className="size-3.5 shrink-0" />
                 <WorkspaceBreadcrumbText>{gt("Boats")}</WorkspaceBreadcrumbText>
               </button>
+            ) : breadcrumbHeading ? (
+              <h1 className="inline-flex min-w-0 items-center gap-2">
+                <SailBrandMark aria-hidden="true" className="size-4 shrink-0" />
+                <WorkspaceBreadcrumbText>{gt("Boats")}</WorkspaceBreadcrumbText>
+              </h1>
             ) : (
               <span className="inline-flex min-w-0 items-center gap-2">
                 <SailBrandMark aria-hidden="true" className="size-4 shrink-0" />
@@ -142,53 +145,45 @@ export function BoatsFrame({
             <>
               <WorkspaceBreadcrumbSeparator />
               <WorkspaceBreadcrumbItem current>
-                <WorkspaceBreadcrumbText>{breadcrumbTitle}</WorkspaceBreadcrumbText>
+                {breadcrumbHeading ? (
+                  <h1 className="min-w-0 truncate">
+                    <WorkspaceBreadcrumbText>{breadcrumbTitle}</WorkspaceBreadcrumbText>
+                  </h1>
+                ) : (
+                  <WorkspaceBreadcrumbText>{breadcrumbTitle}</WorkspaceBreadcrumbText>
+                )}
               </WorkspaceBreadcrumbItem>
             </>
           ) : null}
         </WorkspaceBreadcrumb>
+
+        {showHeaderControls ? (
+          <div className="[-webkit-app-region:no-drag] flex shrink-0 items-center gap-2">
+            {showServerSelect ? (
+              <Select<EnvironmentId>
+                value={server.selected}
+                onValueChange={server.select}
+                items={server.choices}
+              >
+                <SelectTrigger size="sm" aria-label={gt("Boats server")}>
+                  <SelectValue placeholder={gt("Select a server")} />
+                </SelectTrigger>
+                <SelectPopup align="end">
+                  {server.choices.map((choice) => (
+                    <SelectItem key={choice.value} value={choice.value}>
+                      {choice.label}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            ) : null}
+            {headerActions}
+          </div>
+        ) : null}
       </WorkspacePageHeader>
 
       <div className="topbar-scroll-fade scrollbar-gutter-both min-h-0 flex-1 overflow-y-auto">
-        <WorkspacePageContainer width="readable" className="gap-6">
-          {showToolbarRow ? (
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              {pageTitle ? (
-                <div className="min-w-0 space-y-0.5">
-                  <h1 className="truncate text-lg font-semibold tracking-tight text-foreground">
-                    {pageTitle}
-                  </h1>
-                  {pageSubtitle ? (
-                    <p className="text-xs text-muted-foreground">{pageSubtitle}</p>
-                  ) : null}
-                </div>
-              ) : (
-                <div />
-              )}
-              <div className="flex flex-wrap items-center gap-2">
-                {showServerSelect ? (
-                  <Select<EnvironmentId>
-                    value={server.selected}
-                    onValueChange={server.select}
-                    items={server.choices}
-                  >
-                    <SelectTrigger size="sm" aria-label={gt("Boats server")}>
-                      <SelectValue placeholder={gt("Select a server")} />
-                    </SelectTrigger>
-                    <SelectPopup>
-                      {server.choices.map((choice) => (
-                        <SelectItem key={choice.value} value={choice.value}>
-                          {choice.label}
-                        </SelectItem>
-                      ))}
-                    </SelectPopup>
-                  </Select>
-                ) : null}
-                {toolbar}
-              </div>
-            </div>
-          ) : null}
-
+        <WorkspacePageContainer width="readable" className="gap-8">
           {notice !== null ? (
             <Alert variant={notice.tone === "error" ? "error" : "info"}>
               {notice.tone === "error" ? (

@@ -1,5 +1,11 @@
 import { useGT, useLocale, useMessages } from "gt-react";
-import { CheckIcon, ChevronDownIcon, ClockIcon, ServerIcon } from "lucide-react";
+import {
+  CheckIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  ClockIcon,
+  FolderGit2Icon,
+} from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
@@ -64,37 +70,51 @@ export function MachineDetails({
   const messages = useMessages();
   const details = useMachineDetails(machine.id, version, onError);
   const status = MACHINE_STATUS[machine.state];
+  const statusLabel = messages(status.label);
   const size = sizeOf(sizes, machine.size);
   const detail = useDetail(machine);
+  const showDetail = detail.trim().toLowerCase() !== statusLabel.trim().toLowerCase() && detail;
   const key = machineKey(machine);
   const gone = machine.state === "missing";
 
   return (
-    <div className="space-y-6">
-      <SettingsGroup className="bg-card">
-        <div className="flex flex-wrap items-start justify-between gap-4 px-4 py-4 sm:px-5">
-          <div className="flex min-w-0 flex-1 items-start gap-3">
-            <div className="relative mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">
-              <ServerIcon aria-hidden="true" className="size-4.5 text-muted-foreground" />
-              <span className="absolute -right-1 -bottom-1 rounded-full bg-card p-0.5">
-                <ConnectionStatusDot dotClassName={status.dotClassName} />
-              </span>
+    <div className="space-y-8">
+      <header className="space-y-5 px-3 sm:px-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <ConnectionStatusDot
+                dotClassName={status.dotClassName}
+                pingClassName={status.pingClassName}
+              />
+              <h1 className="truncate text-xl font-semibold tracking-tight text-foreground">
+                {machine.name}
+              </h1>
+              <Badge size="sm" variant={status.badgeVariant}>
+                {statusLabel}
+              </Badge>
             </div>
-            <div className="min-w-0 flex-1 space-y-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="truncate text-base font-semibold text-foreground">{machine.name}</h1>
-                <Badge size="sm" variant={status.badgeVariant}>
-                  {messages(status.label)}
-                </Badge>
-                <Badge size="sm" variant="secondary">
-                  <span className="font-mono">{machine.size}</span>
-                </Badge>
-              </div>
-              <p className="text-xs text-muted-foreground">{detail}</p>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+              {showDetail ? (
+                <>
+                  <span>{detail}</span>
+                  <span aria-hidden="true" className="text-muted-foreground/50">
+                    ·
+                  </span>
+                </>
+              ) : null}
+              <span className="font-mono">{machine.size}</span>
               {size ? (
-                <p className="font-mono text-xs text-muted-foreground tabular-nums">
-                  {size.spec} · {hourly(size.hourly)}
-                </p>
+                <>
+                  <span aria-hidden="true" className="text-muted-foreground/50">
+                    ·
+                  </span>
+                  <span>{size.spec}</span>
+                  <span aria-hidden="true" className="text-muted-foreground/50">
+                    ·
+                  </span>
+                  <span className="font-mono tabular-nums">{hourly(size.hourly)}</span>
+                </>
               ) : null}
             </div>
           </div>
@@ -110,7 +130,7 @@ export function MachineDetails({
           </div>
         </div>
 
-        <div className="grid grid-cols-1 divide-y divide-border/50 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+        <div className="grid grid-cols-3 gap-6 border-t border-border/50 pt-4">
           <StatCell label={gt("Today")} value={details ? money(details.costToday) : null} />
           <StatCell label={gt("This month")} value={details ? money(details.costMonth) : null} />
           <StatCell
@@ -118,7 +138,7 @@ export function MachineDetails({
             value={details ? duration(details.awakeSecsToday) : null}
           />
         </div>
-      </SettingsGroup>
+      </header>
 
       {controls.power !== null ? (
         <PowerSection machine={machine} power={controls.power} controls={controls} />
@@ -139,7 +159,7 @@ export function MachineDetails({
 
       <MachineDangerSection machine={machine} size={size} controls={controls} />
 
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-1 font-mono text-xs text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 font-mono text-2xs text-muted-foreground/80 sm:px-4">
         {details ? (
           <>
             <span>{gt("Sail {version}", { version: details.t3Version })}</span>
@@ -149,7 +169,7 @@ export function MachineDetails({
             <span className="select-all">{machine.id}</span>
           </>
         ) : (
-          <Skeleton className="h-4 w-56" />
+          <Skeleton className="h-3.5 w-56" />
         )}
       </div>
     </div>
@@ -159,20 +179,25 @@ export function MachineDetails({
 function Section({
   title,
   count,
+  headerAction,
   children,
 }: {
   readonly title: string;
   readonly count?: number;
+  readonly headerAction?: ReactNode;
   readonly children: ReactNode;
 }) {
   return (
     <section className="space-y-2.5">
-      <div className="flex items-center gap-2 px-1">
-        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-        {count !== undefined && count > 0 ? (
-          <Badge size="sm" variant="secondary">
-            <span className="font-mono tabular-nums">{count}</span>
-          </Badge>
+      <div className="flex min-h-7 flex-wrap items-center justify-between gap-x-4 gap-y-1 px-3 sm:px-4">
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h2 className="text-base font-semibold text-foreground">{title}</h2>
+          {count !== undefined && count > 0 ? (
+            <span className="font-mono text-xs text-muted-foreground tabular-nums">{count}</span>
+          ) : null}
+        </div>
+        {headerAction ? (
+          <div className="flex min-h-7 items-center justify-end">{headerAction}</div>
         ) : null}
       </div>
       {children}
@@ -182,12 +207,14 @@ function Section({
 
 function StatCell({ label, value }: { readonly label: string; readonly value: string | null }) {
   return (
-    <div className="flex flex-col gap-0.5 px-4 py-3 sm:px-5">
-      <span className="text-xs text-muted-foreground">{label}</span>
+    <div className="space-y-1">
+      <div className="text-xs text-muted-foreground">{label}</div>
       {value !== null ? (
-        <span className="font-mono text-sm font-medium text-foreground tabular-nums">{value}</span>
+        <div className="text-lg font-semibold tracking-tight text-foreground tabular-nums">
+          {value}
+        </div>
       ) : (
-        <Skeleton className="mt-0.5 h-4 w-16" />
+        <Skeleton className="mt-1 h-6 w-16" />
       )}
     </div>
   );
@@ -215,11 +242,11 @@ function PowerSection({
 
   return (
     <Section title={gt("Power")}>
-      <SettingsGroup className="bg-card">
-        <div className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-4")}>
+      <SettingsGroup>
+        <div className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-6")}>
           <div className="min-w-0 space-y-0.5">
-            <div className="text-sm font-medium text-foreground">{gt("Auto sleep")}</div>
-            <p className="text-xs text-muted-foreground">
+            <h3 className="text-sm font-medium text-foreground">{gt("Auto sleep")}</h3>
+            <p className="text-xs leading-normal text-muted-foreground">
               {autoSleepOn
                 ? gt("Sleeps 3 min after agents finish; asleep is free")
                 : gt("Stays up and bills until you turn this back on")}
@@ -235,22 +262,37 @@ function PowerSection({
           />
         </div>
 
-        <div className={cn(ITEM_ROW_CLASSNAME, "flex flex-wrap items-center gap-2")}>
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={powerControl === null || powerControl.disabled}
-            onClick={() => {
-              if (powerControl !== null) {
-                controls.request({ kind: "run", action: powerControl.action });
-              }
-            }}
-          >
-            {actionLabel(powerControl !== null ? powerControl.action : ACTIONS.sleep)}
-          </Button>
-          {autoSleepOn ? (
-            <StayAwakeControl machine={machine} power={power} controls={controls} />
-          ) : null}
+        <div
+          className={cn(
+            ITEM_ROW_CLASSNAME,
+            "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6",
+          )}
+        >
+          <div className="min-w-0 space-y-0.5">
+            <h3 className="text-sm font-medium text-foreground">{gt("Power state")}</h3>
+            <p className="text-xs leading-normal text-muted-foreground">
+              {autoSleepOn
+                ? gt("Sleep immediately or hold this machine awake for a set window.")
+                : gt("Put this machine to sleep immediately when you're done.")}
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={powerControl === null || powerControl.disabled}
+              onClick={() => {
+                if (powerControl !== null) {
+                  controls.request({ kind: "run", action: powerControl.action });
+                }
+              }}
+            >
+              {actionLabel(powerControl !== null ? powerControl.action : ACTIONS.sleep)}
+            </Button>
+            {autoSleepOn ? (
+              <StayAwakeControl machine={machine} power={power} controls={controls} />
+            ) : null}
+          </div>
         </div>
       </SettingsGroup>
     </Section>
@@ -298,7 +340,7 @@ function StayAwakeControl({
         {gt("Stay awake for…")}
         <ChevronDownIcon aria-hidden="true" className="size-3.5" />
       </MenuTrigger>
-      <MenuPopup align="start" width="content">
+      <MenuPopup align="end" width="content">
         {power.temporaryAwake.map((item) => {
           const minutes = item.action.minutes ?? 0;
           return (
@@ -331,7 +373,7 @@ function AgentsSection({
 
   return (
     <Section title={gt("Agents")}>
-      <SettingsGroup className="bg-card">
+      <SettingsGroup>
         {details ? (
           details.agents.length > 0 ? (
             details.agents.map((agent) => {
@@ -344,12 +386,12 @@ function AgentsSection({
                   key={agent.name}
                   className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-3")}
                 >
-                  <AgentName name={agent.name} />
+                  <AgentName name={agent.name} className="text-sm" />
                   {agent.signedIn ? (
-                    <Badge size="sm" variant="success">
-                      <CheckIcon aria-hidden="true" className="size-3" />
+                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-success-foreground">
+                      <CheckIcon aria-hidden="true" className="size-3.5" />
                       {gt("Signed in")}
-                    </Badge>
+                    </span>
                   ) : machine.signedOut.includes(agent.name) ? (
                     <Button
                       size="xs"
@@ -368,9 +410,7 @@ function AgentsSection({
                       )}
                     </Button>
                   ) : (
-                    <Badge size="sm" variant="secondary">
-                      {gt("Signed out")}
-                    </Badge>
+                    <span className="text-xs text-muted-foreground">{gt("Signed out")}</span>
                   )}
                 </div>
               );
@@ -401,22 +441,22 @@ function ConnectSection({
 
   return (
     <Section title={gt("Other devices")}>
-      <SettingsGroup className="bg-card">
+      <SettingsGroup>
         {details ? (
-          <div className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-4")}>
+          <div className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-6")}>
             <div className="min-w-0 space-y-0.5">
-              <div className="text-sm font-medium text-foreground">T3 Connect</div>
-              {details.connect ? null : (
-                <p className="text-xs text-muted-foreground">
-                  {gt("Sail on your phone or in a browser, with your Sail account")}
-                </p>
-              )}
+              <h3 className="text-sm font-medium text-foreground">T3 Connect</h3>
+              <p className="text-xs leading-normal text-muted-foreground">
+                {details.connect
+                  ? gt("Reachable from Sail on your phone or in a browser.")
+                  : gt("Sail on your phone or in a browser, with your Sail account")}
+              </p>
             </div>
             {details.connect ? (
-              <Badge size="sm" variant="success">
-                <CheckIcon aria-hidden="true" className="size-3" />
+              <span className="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-success-foreground">
+                <CheckIcon aria-hidden="true" className="size-3.5" />
                 {gt("On")}
-              </Badge>
+              </span>
             ) : (
               <Button
                 size="xs"
@@ -461,21 +501,40 @@ function ProjectsSection({
   const gone = machine.state === "missing";
 
   return (
-    <Section title={gt("Projects")} count={machine.projects.length}>
-      <SettingsGroup className="bg-card">
+    <Section
+      title={gt("Projects")}
+      count={machine.projects.length}
+      headerAction={
+        supportsLocalProjects && !gone ? (
+          <ProjectPicker
+            m={machine}
+            initialOpen={openProjectPicker}
+            disabled={!controls.canAddProject}
+            onAdd={controls.onAddProject}
+          />
+        ) : null
+      }
+    >
+      <SettingsGroup>
         {machine.projects.map((project) => (
           <div
             key={project.id}
             className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-3")}
           >
-            <Tooltip>
-              <TooltipTrigger
-                render={<span className="truncate text-sm font-medium text-foreground" />}
-              >
-                {project.title}
-              </TooltipTrigger>
-              <TooltipPopup>{project.title}</TooltipPopup>
-            </Tooltip>
+            <div className="flex min-w-0 items-center gap-2.5">
+              <FolderGit2Icon
+                aria-hidden="true"
+                className="size-4 shrink-0 text-muted-foreground"
+              />
+              <Tooltip>
+                <TooltipTrigger
+                  render={<span className="truncate text-sm font-medium text-foreground" />}
+                >
+                  {project.title}
+                </TooltipTrigger>
+                <TooltipPopup>{project.title}</TooltipPopup>
+              </Tooltip>
+            </div>
             {project.status ? (
               <Tooltip>
                 <TooltipTrigger
@@ -497,17 +556,6 @@ function ProjectsSection({
             {supportsLocalProjects
               ? gt("Cloned from its git remote, .env files included")
               : gt("Add projects after connecting to this Boat")}
-          </div>
-        ) : null}
-
-        {supportsLocalProjects && !gone ? (
-          <div className={ITEM_ROW_CLASSNAME}>
-            <ProjectPicker
-              m={machine}
-              initialOpen={openProjectPicker}
-              disabled={!controls.canAddProject}
-              onAdd={controls.onAddProject}
-            />
           </div>
         ) : null}
       </SettingsGroup>
@@ -542,33 +590,43 @@ function MachineDangerSection({
   const selectedChoice =
     controls.resizeChoices.find((choice) => choice.size.id === selectedSize) ?? null;
   const hasPendingSizeChange = selectedSize !== machine.size;
+  const summary = gone
+    ? gt("gone")
+    : size
+      ? `${machine.size} · ${hourly(size.hourly)}`
+      : machine.size;
 
   return (
-    <SettingsGroup divided={false} className="bg-card">
-      <Collapsible open={open} onOpenChange={setExpanded}>
-        <CollapsibleTrigger
-          className={cn(
-            "flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-5",
-            open ? "rounded-t-xl" : "rounded-xl",
-          )}
-        >
-          <span className="text-sm font-medium text-foreground">{gt("Machine")}</span>
-          <span className="flex items-center gap-2 font-mono text-xs text-muted-foreground tabular-nums">
-            <span>
-              {gone ? gt("gone") : size ? `${machine.size} · ${hourly(size.hourly)}` : machine.size}
-            </span>
-            <ChevronDownIcon
+    <section>
+      <Collapsible
+        open={open}
+        onOpenChange={setExpanded}
+        render={<SettingsGroup divided={false} />}
+      >
+        <div className="flex items-center px-3 sm:px-4">
+          <CollapsibleTrigger className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-md py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+            <ChevronRightIcon
               aria-hidden="true"
-              className={cn("size-4 transition-transform duration-150", open && "rotate-180")}
+              className={cn(
+                "size-4 shrink-0 text-muted-foreground transition-transform duration-150 motion-reduce:transition-none",
+                open && "rotate-90",
+              )}
             />
-          </span>
-        </CollapsibleTrigger>
+            <span className="shrink-0 text-sm font-medium text-foreground">{gt("Machine")}</span>
+            <span className="min-w-0 truncate font-mono text-xs text-muted-foreground tabular-nums">
+              {summary}
+            </span>
+          </CollapsibleTrigger>
+        </div>
 
         <CollapsiblePanel>
-          <div className="space-y-4 border-t border-border/50 px-4 py-4 sm:px-5">
+          <div className="divide-y divide-border/50 border-t border-border/50">
             {gone ? null : (
-              <div className="space-y-2.5">
-                <div className="text-xs font-medium text-muted-foreground">{gt("Size")}</div>
+              <div className="space-y-3 px-3 py-4 sm:px-4">
+                <div className="space-y-0.5">
+                  <h3 className="text-sm font-medium text-foreground">{gt("Size")}</h3>
+                  <p className="text-xs text-muted-foreground">{messages(resizeHint(machine))}</p>
+                </div>
                 <MachineSizePicker
                   sizes={controls.resizeChoices.map((choice) => choice.size)}
                   value={selectedSize}
@@ -577,7 +635,7 @@ function MachineDangerSection({
                   onChange={setSelectedSize}
                 />
                 {hasPendingSizeChange || pendingResize !== null ? (
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
                     <Button
                       size="xs"
                       variant="default"
@@ -615,24 +673,36 @@ function MachineDangerSection({
                     ) : null}
                   </div>
                 ) : null}
-                <p className="text-xs text-muted-foreground">{messages(resizeHint(machine))}</p>
               </div>
             )}
 
-            <div className={cn("space-y-3", !gone && "border-t border-border/50 pt-4")}>
-              <MachineActionButton
-                targetKey={key}
-                control={controls.deleteControl}
-                onRequest={controls.request}
-                size="sm"
-                surface="danger"
-              />
+            <div className="space-y-3 px-3 py-3.5 sm:px-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+                <div className="min-w-0 space-y-0.5">
+                  <h3 className="text-sm font-medium text-foreground">
+                    {gone ? gt("Remove machine") : gt("Delete machine")}
+                  </h3>
+                  <p className="text-xs leading-normal text-muted-foreground">
+                    {gone
+                      ? gt("Remove this missing machine from your Boat list.")
+                      : gt("Permanently destroy this machine and its local disk.")}
+                  </p>
+                </div>
+                <MachineActionButton
+                  targetKey={key}
+                  control={controls.deleteControl}
+                  onRequest={controls.request}
+                  size="sm"
+                  surface="danger"
+                  className="shrink-0"
+                />
+              </div>
               <DeleteErrorAlert controls={controls} />
             </div>
           </div>
         </CollapsiblePanel>
       </Collapsible>
-    </SettingsGroup>
+    </section>
   );
 }
 

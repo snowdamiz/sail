@@ -35,13 +35,13 @@ export function MachineSizePicker({
           <label
             key={choice.id}
             className={cn(
-              "relative flex flex-col gap-0.5 rounded-lg border px-3.5 py-3 transition-colors has-focus-visible:ring-2 has-focus-visible:ring-inset has-focus-visible:ring-ring",
+              "group relative flex flex-col justify-between gap-2.5 rounded-lg border p-3.5 transition-all has-focus-visible:ring-2 has-focus-visible:ring-inset has-focus-visible:ring-ring",
               disabled ? "cursor-not-allowed opacity-55" : "cursor-pointer",
               selected
-                ? "border-ring bg-accent/60 text-foreground"
+                ? "border-foreground/30 bg-accent/50 text-foreground shadow-xs/5"
                 : cn(
-                    "border-border/70 bg-background/60 text-foreground",
-                    !disabled && "hover:bg-accent/30",
+                    "border-border/60 bg-background/40 text-foreground",
+                    !disabled && "hover:border-border hover:bg-accent/25",
                   ),
             )}
           >
@@ -58,11 +58,26 @@ export function MachineSizePicker({
               }}
               className="sr-only"
             />
-            <span className="font-mono text-sm font-medium">{choice.id}</span>
-            <span className="text-xs text-muted-foreground">{choice.spec}</span>
-            <span className="font-mono text-xs text-muted-foreground tabular-nums">
-              {hourly(choice.hourly)}
-            </span>
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-mono text-sm font-semibold">{choice.id}</span>
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "flex size-4 shrink-0 items-center justify-center rounded-full border transition-colors",
+                  selected
+                    ? "border-foreground bg-foreground"
+                    : "border-border bg-transparent group-hover:border-muted-foreground/60",
+                )}
+              >
+                {selected ? <span className="size-1.5 rounded-full bg-background" /> : null}
+              </span>
+            </div>
+            <div className="space-y-0.5">
+              <span className="block text-xs text-muted-foreground">{choice.spec}</span>
+              <span className="block font-mono text-xs font-medium text-foreground tabular-nums">
+                {hourly(choice.hourly)}
+              </span>
+            </div>
           </label>
         );
       })}

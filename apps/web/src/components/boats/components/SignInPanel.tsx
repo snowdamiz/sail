@@ -102,8 +102,8 @@ export function SignInPanel({
   const showPaste = prompt?.kind === "paste" && action === null;
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border/60 bg-card shadow-xs/5">
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+    <div className="overflow-hidden rounded-xl border border-border/60 bg-background/60 shadow-xs/5">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-3">
         <div
           role="status"
           className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground"
@@ -138,12 +138,12 @@ export function SignInPanel({
       </div>
 
       {showDevice ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/50 bg-muted/40 px-4 py-3.5">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/50 bg-muted/30 px-3.5 py-3">
           <span className="text-xs text-muted-foreground">
             {gt("Enter this code on the sign-in page")}
           </span>
           <div className="flex items-center gap-1.5">
-            <code className="rounded-md border border-border bg-background px-2.5 py-1 font-mono text-sm font-semibold tracking-wider text-foreground select-all">
+            <code className="rounded-md border border-border/70 bg-background px-2.5 py-1 font-mono text-sm font-semibold tracking-wider text-foreground select-all">
               {prompt.code}
             </code>
             <Button
@@ -164,7 +164,7 @@ export function SignInPanel({
 
       {showPaste ? (
         <form
-          className="flex flex-col gap-2.5 border-t border-border/50 bg-muted/40 px-4 py-3.5 sm:flex-row sm:items-end"
+          className="flex flex-col gap-2.5 border-t border-border/50 bg-muted/30 px-3.5 py-3 sm:flex-row sm:items-end"
           onSubmit={(event) => {
             event.preventDefault();
             if (code.trim()) act({ action: "submit", attemptId, code });
@@ -190,7 +190,7 @@ export function SignInPanel({
       ) : null}
 
       {failed ? (
-        <div className="border-t border-border/50 px-4 py-3">
+        <div className="border-t border-border/50 px-3.5 py-3">
           <Alert variant="error">
             <AlertTriangleIcon aria-hidden="true" />
             <AlertDescription>{gt("The sign-in request failed. Try again.")}</AlertDescription>
@@ -201,7 +201,7 @@ export function SignInPanel({
       {submitted && !failed && action !== "cancel" ? (
         <p
           role="status"
-          className="border-t border-border/50 bg-muted/20 px-4 py-2 text-xs text-muted-foreground"
+          className="border-t border-border/50 bg-muted/20 px-3.5 py-2 text-xs text-muted-foreground"
         >
           {gt("Code sent. If sign-in stalls, try another code.")}
         </p>

@@ -2,7 +2,6 @@ import { useGT } from "gt-react";
 import { PlusIcon, ServerIcon, Settings2Icon } from "lucide-react";
 
 import { SettingsGroup } from "../../settings/SettingsGroup";
-import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
 import {
   Empty,
@@ -69,21 +68,11 @@ export function ReadyBoatsView({
           ? gt("Boat settings")
           : undefined;
 
-  const pageTitle =
-    view.kind === "list"
-      ? gt("Boats")
-      : view.kind === "new"
-        ? gt("New machine")
-        : view.kind === "settings"
-          ? gt("Boat settings")
-          : undefined;
+  const awakeCount = state.machines.filter(
+    (machine) => machine.state === "working" || machine.state === "idle",
+  ).length;
 
-  const pageSubtitle =
-    view.kind === "list"
-      ? gt("Cloud machines that sleep for free when no agent is working.")
-      : undefined;
-
-  const toolbar = (
+  const headerActions = (
     <>
       {view.kind !== "settings" ? (
         <Button size="sm" variant="outline" onClick={() => session.navigate({ kind: "settings" })}>
@@ -108,11 +97,10 @@ export function ReadyBoatsView({
   return (
     <BoatsFrame
       breadcrumbTitle={breadcrumbTitle}
-      pageTitle={pageTitle}
-      pageSubtitle={pageSubtitle}
+      breadcrumbHeading={view.kind !== "details"}
       back={view.kind === "list" ? null : session.back}
       server={server}
-      toolbar={toolbar}
+      headerActions={headerActions}
       notice={notice}
       dismissNotice={dismissNotice}
     >
@@ -144,7 +132,7 @@ export function ReadyBoatsView({
           onSignOut={session.signOut}
         />
       ) : state.machines.length === 0 ? (
-        <SettingsGroup divided={false} className="bg-card">
+        <SettingsGroup divided={false}>
           <Empty size="compact">
             <EmptyMedia variant="icon">
               <ServerIcon aria-hidden="true" />
@@ -174,13 +162,25 @@ export function ReadyBoatsView({
         </SettingsGroup>
       ) : (
         <section className="space-y-2.5">
-          <div className="flex items-center gap-2 px-1">
-            <h2 className="text-sm font-semibold text-foreground">{gt("Machines")}</h2>
-            <Badge size="sm" variant="secondary">
-              <span className="font-mono tabular-nums">{state.machines.length}</span>
-            </Badge>
+          <div className="flex min-h-7 flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-3 sm:px-4">
+            <div className="space-y-0.5">
+              <div className="flex items-baseline gap-2">
+                <h2 className="text-base font-semibold text-foreground">{gt("Machines")}</h2>
+                <span className="font-mono text-xs text-muted-foreground tabular-nums">
+                  {state.machines.length}
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {gt("Cloud machines that sleep for free when no agent is working.")}
+              </p>
+            </div>
+            {awakeCount > 0 ? (
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {gt("{count} awake", { count: awakeCount })}
+              </span>
+            ) : null}
           </div>
-          <SettingsGroup divided={false} className="bg-card">
+          <SettingsGroup divided={false}>
             <ul className="divide-y divide-border/50">
               {state.machines.map((machine) => (
                 <MachineRow

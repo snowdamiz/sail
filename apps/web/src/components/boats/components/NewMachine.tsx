@@ -30,60 +30,63 @@ function LocalProjectsSection({
   const projects = useLocalProjects();
 
   return (
-    <SettingsGroup divided={false} className="bg-card">
-      <div className="p-4 sm:p-5">
-        <fieldset className="space-y-3">
-          <legend className="text-sm font-medium text-foreground">{gt("Projects")}</legend>
-          <p className="text-xs text-muted-foreground">
-            {gt("Optional · cloned from git once it's up, .env files included")}
-          </p>
-          <div
-            role="group"
-            aria-label={gt("Projects to add")}
-            className="max-h-56 space-y-0.5 overflow-y-auto rounded-lg border border-border/60 bg-background/50 p-1"
-          >
-            <ProjectList
-              projects={projects}
-              shown={projects.list ?? []}
-              query=""
-              option={(project) => {
-                const on = picked.includes(project.id);
-                const sameRepo =
-                  !on &&
-                  (projects.list ?? []).some(
-                    (other) => other.repoKey === project.repoKey && picked.includes(other.id),
-                  );
-                const flip = () => {
-                  if (!sameRepo) onToggle(project.id);
-                };
-                return {
-                  role: "checkbox",
-                  tabIndex: 0,
-                  "aria-checked": on,
-                  "aria-disabled": sameRepo,
-                  className: cn(
-                    "flex items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                    sameRepo
-                      ? "cursor-not-allowed opacity-55"
-                      : on
-                        ? "cursor-pointer bg-accent/60"
-                        : "cursor-pointer hover:bg-accent/40",
-                  ),
-                  onClick: flip,
-                  onKeyDown: (event: KeyboardEvent) => {
-                    if (event.key === " " || event.key === "Enter") {
-                      event.preventDefault();
-                      flip();
-                    }
-                  },
-                  leading: <CheckboxMark checked={on} />,
-                };
-              }}
-            />
-          </div>
-        </fieldset>
+    <fieldset className="space-y-2.5">
+      <div className="space-y-0.5 px-3 sm:px-4">
+        <div className="flex items-baseline gap-2">
+          <legend className="text-base font-semibold text-foreground">{gt("Projects")}</legend>
+          <span className="text-xs text-muted-foreground">{gt("Optional")}</span>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {gt("Cloned from git once it's up, .env files included")}
+        </p>
       </div>
-    </SettingsGroup>
+      <SettingsGroup divided={false}>
+        <div
+          role="group"
+          aria-label={gt("Projects to add")}
+          className="max-h-64 space-y-0.5 overflow-y-auto p-1.5"
+        >
+          <ProjectList
+            projects={projects}
+            shown={projects.list ?? []}
+            query=""
+            option={(project) => {
+              const on = picked.includes(project.id);
+              const sameRepo =
+                !on &&
+                (projects.list ?? []).some(
+                  (other) => other.repoKey === project.repoKey && picked.includes(other.id),
+                );
+              const flip = () => {
+                if (!sameRepo) onToggle(project.id);
+              };
+              return {
+                role: "checkbox",
+                tabIndex: 0,
+                "aria-checked": on,
+                "aria-disabled": sameRepo,
+                className: cn(
+                  "flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  sameRepo
+                    ? "cursor-not-allowed opacity-55"
+                    : on
+                      ? "cursor-pointer bg-accent/60"
+                      : "cursor-pointer hover:bg-accent/35",
+                ),
+                onClick: flip,
+                onKeyDown: (event: KeyboardEvent) => {
+                  if (event.key === " " || event.key === "Enter") {
+                    event.preventDefault();
+                    flip();
+                  }
+                },
+                leading: <CheckboxMark checked={on} />,
+              };
+            }}
+          />
+        </div>
+      </SettingsGroup>
+    </fieldset>
   );
 }
 
@@ -138,48 +141,56 @@ export function NewMachine({
   };
 
   return (
-    <form onSubmit={submit} className="space-y-6">
-      <SettingsGroup divided={false} className="bg-card">
-        <div className="space-y-2 p-4 sm:p-5">
-          <Label htmlFor="machine-name">{gt("Name")}</Label>
-          <Input
-            id="machine-name"
-            ref={inputRef}
-            font="mono"
-            aria-describedby="machine-name-hint"
-            aria-invalid={!!problem}
-            value={name}
-            spellCheck={false}
-            autoComplete="off"
-            onChange={(event) => setName(cleanName(event.target.value))}
-          />
-          <p
-            id="machine-name-hint"
-            className={cn(
-              "text-xs",
-              problem && name ? "text-destructive-foreground" : "text-muted-foreground",
-            )}
-          >
-            {problem ?? gt("Shows up under this name in Sail")}
-          </p>
+    <form onSubmit={submit} className="space-y-8">
+      <section className="space-y-2.5">
+        <div className="px-3 sm:px-4">
+          <h2 className="text-base font-semibold text-foreground">{gt("Configuration")}</h2>
         </div>
-      </SettingsGroup>
-
-      <SettingsGroup divided={false} className="bg-card">
-        <div className="p-4 sm:p-5">
-          <fieldset className="space-y-3">
-            <legend className="text-sm font-medium text-foreground">{gt("Size")}</legend>
-            <MachineSizePicker sizes={state.sizes} value={size} onChange={setSize} name="size" />
-            <p className="text-xs text-muted-foreground">
-              {gt("Billed only while awake · sleeps 3 min after agents finish · resize anytime")}
+        <SettingsGroup>
+          <div className="space-y-2 px-3 py-4 sm:px-4">
+            <Label htmlFor="machine-name">{gt("Name")}</Label>
+            <Input
+              id="machine-name"
+              ref={inputRef}
+              font="mono"
+              className="max-w-sm"
+              aria-describedby="machine-name-hint"
+              aria-invalid={!!problem}
+              value={name}
+              spellCheck={false}
+              autoComplete="off"
+              onChange={(event) => setName(cleanName(event.target.value))}
+            />
+            <p
+              id="machine-name-hint"
+              className={cn(
+                "text-xs",
+                problem && name ? "text-destructive-foreground" : "text-muted-foreground",
+              )}
+            >
+              {problem ?? gt("Shows up under this name in Sail")}
             </p>
-          </fieldset>
-        </div>
-      </SettingsGroup>
+          </div>
+
+          <div className="px-3 py-4 sm:px-4">
+            <fieldset className="space-y-3">
+              <div className="space-y-0.5">
+                <legend className="text-sm font-medium text-foreground">{gt("Size")}</legend>
+                <p className="text-xs text-muted-foreground">
+                  {gt(
+                    "Billed only while awake · sleeps 3 min after agents finish · resize anytime",
+                  )}
+                </p>
+              </div>
+              <MachineSizePicker sizes={state.sizes} value={size} onChange={setSize} name="size" />
+            </fieldset>
+          </div>
+        </SettingsGroup>
+      </section>
 
       {supportsLocalProjects ? <LocalProjectsSection picked={picked} onToggle={toggle} /> : null}
 
-      <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/50 px-3 pt-5 sm:px-4">
         <p className="text-xs text-muted-foreground">
           {selectedProjects.length > 0
             ? selectedProjects.length === 1

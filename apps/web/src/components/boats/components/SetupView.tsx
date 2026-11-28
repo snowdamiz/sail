@@ -4,9 +4,9 @@ import { AlertTriangleIcon, CheckIcon, RefreshCwIcon } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
+import { SailBrandMark } from "../../SailBrandMark";
 import { SettingsGroup } from "../../settings/SettingsGroup";
 import { Alert, AlertDescription } from "../../ui/alert";
-import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
 import { Spinner } from "../../ui/spinner";
 import { useBoatAccess } from "../access";
@@ -72,9 +72,11 @@ export function SetupBody({
       });
   };
 
+  const isChecking = state.setup === "starting" || state.setup === "ready";
+
   return (
     <BoatsFrame
-      pageTitle={state.setup === "starting" || state.setup === "ready" ? gt("Boats") : undefined}
+      breadcrumbHeading={isChecking}
       back={null}
       server={server}
       notice={notice}
@@ -119,15 +121,13 @@ function SetupView({
 
   if (setup === "starting" || setup === "ready") {
     return (
-      <SettingsGroup divided={false} className="bg-card">
-        <div
-          role="status"
-          className="flex items-center justify-center gap-2.5 px-4 py-12 text-sm text-muted-foreground"
-        >
-          <Spinner aria-hidden="true" size="sm" tone="muted" />
-          <span>{gt("Checking your setup…")}</span>
-        </div>
-      </SettingsGroup>
+      <div
+        role="status"
+        className="flex items-center justify-center gap-2.5 py-20 text-sm text-muted-foreground"
+      >
+        <Spinner aria-hidden="true" size="sm" tone="muted" />
+        <span>{gt("Checking your setup…")}</span>
+      </div>
     );
   }
 
@@ -157,92 +157,97 @@ function SetupView({
   const current = setup === "installT3" ? steps.length : steps.findIndex((s) => s.id === setup);
 
   return (
-    <SettingsGroup className="bg-card">
-      <div className="px-4 py-4 sm:px-5 sm:py-5">
-        <h1 className="text-base font-semibold text-foreground">{gt("Set sail in two steps")}</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
+    <div className="mx-auto w-full max-w-xl space-y-6 pt-4 sm:pt-8">
+      <div className="space-y-2 px-1">
+        <SailBrandMark aria-hidden="true" className="size-6 text-foreground" />
+        <h1 className="text-xl font-semibold tracking-tight text-foreground">
+          {gt("Set sail in two steps")}
+        </h1>
+        <p className="text-sm leading-relaxed text-muted-foreground">
           {gt("Launch cloud machines inside Sail that sleep for free when no agent is working.")}
         </p>
       </div>
 
-      <ol className="divide-y divide-border/50">
-        {steps.map((step, index) => {
-          const status = index < current ? "done" : index === current ? "current" : "todo";
-          return (
-            <li
-              key={step.id}
-              aria-current={status === "current" ? "step" : undefined}
-              className={cn(
-                "flex items-start gap-3.5 px-4 py-4 sm:px-5",
-                status === "todo" && "opacity-60",
-              )}
-            >
-              <span
-                aria-hidden="true"
+      <SettingsGroup divided={false}>
+        <ol className="divide-y divide-border/50">
+          {steps.map((step, index) => {
+            const status = index < current ? "done" : index === current ? "current" : "todo";
+            return (
+              <li
+                key={step.id}
+                aria-current={status === "current" ? "step" : undefined}
                 className={cn(
-                  "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full font-mono text-xs font-medium",
-                  status === "done"
-                    ? "bg-success/15 text-success-foreground"
-                    : status === "current"
-                      ? "bg-primary text-primary-foreground"
-                      : "border border-border bg-muted/50 text-muted-foreground",
+                  "flex items-start gap-3.5 px-4 py-4 sm:px-5",
+                  status === "todo" && "opacity-55",
                 )}
               >
-                {status === "done" ? <CheckIcon className="size-3.5" /> : index + 1}
-              </span>
-              <div className="min-w-0 flex-1 space-y-2.5">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-sm font-medium text-foreground">{step.title}</span>
-                  {status === "done" ? (
-                    <Badge variant="success" size="sm">
-                      {gt("Done")}
-                    </Badge>
-                  ) : null}
-                </div>
-                {status === "current" ? (
-                  <p className="text-xs leading-relaxed text-muted-foreground">{step.body}</p>
-                ) : null}
-                {status === "current" && signIn === null ? (
-                  <div>
-                    <Button
-                      size="sm"
-                      variant="default"
-                      disabled={locked}
-                      aria-busy={busy}
-                      onClick={() => onAction(step.id)}
-                    >
-                      {busy ? (
-                        <>
-                          <Spinner aria-hidden="true" />
-                          {step.busyLabel}
-                        </>
-                      ) : (
-                        step.button
-                      )}
-                    </Button>
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full font-mono text-xs font-medium",
+                    status === "done"
+                      ? "bg-success/15 text-success-foreground"
+                      : status === "current"
+                        ? "bg-primary text-primary-foreground"
+                        : "border border-border bg-background/50 text-muted-foreground",
+                  )}
+                >
+                  {status === "done" ? <CheckIcon className="size-3.5" /> : index + 1}
+                </span>
+                <div className="min-w-0 flex-1 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-foreground">{step.title}</span>
+                    {status === "done" ? (
+                      <span className="text-xs font-medium text-success-foreground">
+                        {gt("Done")}
+                      </span>
+                    ) : null}
                   </div>
-                ) : null}
-                {status === "current" ? signIn : null}
-              </div>
-            </li>
-          );
-        })}
-      </ol>
+                  {status === "current" ? (
+                    <p className="text-xs leading-relaxed text-muted-foreground">{step.body}</p>
+                  ) : null}
+                  {status === "current" && signIn === null ? (
+                    <div>
+                      <Button
+                        size="sm"
+                        variant="default"
+                        disabled={locked}
+                        aria-busy={busy}
+                        onClick={() => onAction(step.id)}
+                      >
+                        {busy ? (
+                          <>
+                            <Spinner aria-hidden="true" />
+                            {step.busyLabel}
+                          </>
+                        ) : (
+                          step.button
+                        )}
+                      </Button>
+                    </div>
+                  ) : null}
+                  {status === "current" ? signIn : null}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
 
-      {setup === "installT3" ? (
-        <div className="px-4 py-3.5 sm:px-5">
-          <Alert variant="warning">
-            <AlertTriangleIcon aria-hidden="true" />
-            <AlertDescription>
-              {gt(
-                "This server could not run its own t3 command. Restart the server, then check again.",
-              )}
-            </AlertDescription>
-          </Alert>
-        </div>
-      ) : null}
+        {setup === "installT3" ? (
+          <div className="border-t border-border/50 px-4 py-3.5 sm:px-5">
+            <Alert variant="warning">
+              <AlertTriangleIcon aria-hidden="true" />
+              <AlertDescription>
+                {gt(
+                  "This server could not run its own t3 command. Restart the server, then check again.",
+                )}
+              </AlertDescription>
+            </Alert>
+          </div>
+        ) : null}
+      </SettingsGroup>
 
-      <div className="flex items-center justify-end rounded-b-xl bg-muted/20 px-4 py-2.5 sm:px-5">
+      <div className="flex justify-end px-1">
         <Button
           size="xs"
           variant="ghost-muted"
@@ -253,6 +258,6 @@ function SetupView({
           {gt("Done it already? Check again")}
         </Button>
       </div>
-    </SettingsGroup>
+    </div>
   );
 }
