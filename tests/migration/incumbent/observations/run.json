@@ -106,6 +106,16 @@
       "repeat": "served-firefox-linux/migration-head-03c866c2/repeat-receipt.json",
       "scope": "The first Firefox ESR capture matched the published pixels and action trace on both locally built installs. Later captures varied across builds and all three timed attempts ended early."
     },
+    "firefoxLinuxSynchronized": {
+      "result": "pass",
+      "sourceSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+      "package": "served-firefox-linux/migration-head-03c866c2/package-receipt.json",
+      "comparison": "served-firefox-linux/migration-head-03c866c2/synchronized/comparisons.json",
+      "timing": "served-firefox-linux/migration-head-03c866c2/synchronized/capture-timings.json",
+      "differentPixels": 0,
+      "changedSteps": [],
+      "scope": "Settled Firefox ESR on Debian arm64 with a synchronized subscription and the transcript at the end of its scroll range. The archived fixture has no configured provider. All four timing comparisons passed with 24 measured samples per install."
+    },
     "electronMigrationHead": {
       "result": "fail",
       "sourceSha": "4807bdae945354ade96b40ad7d5116483ff0d308",

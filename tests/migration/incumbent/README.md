@@ -37,7 +37,21 @@ The [packaged migration-head comparison](observations/served-chromium-macos/migr
 
 Run the published Linux arm64 CLI archive twice under separate scratch homes with copies of the seeded database. Pair a fresh Firefox ESR profile to each server under Xvfb. Use the same viewport, Tab action, and pointer position as the Chromium capture. Record the installed Firefox version from GeckoDriver. The [Linux Firefox receipts](observations/served-firefox-linux/settled) contain both matching captures and the installed package versions.
 
-Both installs of the Linux arm64 archive built at `03c866c2` matched the published reference on the first capture of the settled chat with no provider configured. Subsequent captures also showed a sync status, a scroll offset, or reply hover controls across the incumbent and candidate installs. The [package and capture receipts](observations/served-firefox-linux/migration-head-03c866c2) retain the first comparisons and the incomplete timing runs. Repeat parity and paired timing remain open.
+Both installs of the Linux arm64 archive built at `03c866c2` matched the published reference on the first capture of the settled chat with no provider configured. Subsequent captures also showed a sync status, a scroll offset, or reply hover controls across the incumbent and candidate installs. The [first comparisons](observations/served-firefox-linux/migration-head-03c866c2/first-round-comparisons.json) and [incomplete timing runs](observations/served-firefox-linux/migration-head-03c866c2/repeat-receipt.json) retain those outcomes.
+
+Use the paired runner in a disposable Debian arm64 environment with Firefox ESR 153.8.0, GeckoDriver 0.36.0, DejaVu fonts, Xvfb, xdotool, Pillow, and Python's `websocket-client`. Provide the published and locally built archives and the seed database and settings from a scratch fixture. The runner creates four independent server homes and pairs one fresh Firefox profile to each through separate loopback origins.
+
+```sh
+xvfb-run -a --server-args="-screen 0 1920x1400x24" \
+  python3 tests/migration/incumbent/firefox-capture.py \
+  --incumbent-archive "$published_archive" --candidate-archive "$candidate_archive" \
+  --candidate-sha "$candidate_commit" --seed "$seed_database" --settings "$seed_settings" \
+  --thread-id "$seed_thread_id" --out "$new_capture_dir"
+```
+
+The runner waits for the thread's v2 synchronization marker and highlighted transcript, then focuses **Attach files** and settles the transcript at the end of its scroll range before the screenshot. The timer starts at WebDriver navigation and ends when the screenshot arrives. Setup, pairing, and the recorded composer control check run outside that interval. Each install has two warmups and 24 measured rounds by default.
+
+The synchronized run captured 104 identical PNGs and action traces across the two published and two candidate installs. Incumbent p95 was 2.886 and 3.248 seconds. Candidate p95 was 2.910 and 2.655 seconds, within both limits against each incumbent. The four copies shared the light English 640 × 600 CSS-pixel profile at scale 2 and a saved conversation with no configured provider. [Comparisons and raw timing samples](observations/served-firefox-linux/migration-head-03c866c2/synchronized)
 
 ## Capture the settled Electron replay on macOS
 

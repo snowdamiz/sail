@@ -1,0 +1,115 @@
+{
+  "sourceSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+  "referenceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "procedure": "Use a synchronized thread subscription, explicit end-of-transcript scroll and stable geometry on all installs.",
+  "scope": "One saved Replay thread with no provider configured",
+  "captureCount": 104,
+  "distinctPngs": 1,
+  "distinctTraces": 1,
+  "differentPixels": 0,
+  "changedSteps": [],
+  "comparisons": [
+    {
+      "baseline": "a",
+      "candidate": "b",
+      "fixtureId": "chat-turn",
+      "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "changedSteps": [],
+      "pixels": {
+        "baseline": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/a/capture.png",
+        "candidate": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/b/capture.png",
+        "diff": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/diff.png",
+        "baselineSize": [1280, 1200],
+        "candidateSize": [1280, 1200],
+        "differentPixels": 0,
+        "bounds": null
+      }
+    },
+    {
+      "baseline": "head-a",
+      "candidate": "head-b",
+      "fixtureId": "chat-turn",
+      "baselineSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+      "candidateSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+      "changedSteps": [],
+      "pixels": {
+        "baseline": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/head-a/capture.png",
+        "candidate": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/head-b/capture.png",
+        "diff": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/diff.png",
+        "baselineSize": [1280, 1200],
+        "candidateSize": [1280, 1200],
+        "differentPixels": 0,
+        "bounds": null
+      }
+    },
+    {
+      "baseline": "a",
+      "candidate": "head-a",
+      "fixtureId": "chat-turn",
+      "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "candidateSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+      "changedSteps": [],
+      "pixels": {
+        "baseline": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/a/capture.png",
+        "candidate": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/head-a/capture.png",
+        "diff": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/diff.png",
+        "baselineSize": [1280, 1200],
+        "candidateSize": [1280, 1200],
+        "differentPixels": 0,
+        "bounds": null
+      }
+    },
+    {
+      "baseline": "a",
+      "candidate": "head-b",
+      "fixtureId": "chat-turn",
+      "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "candidateSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+      "changedSteps": [],
+      "pixels": {
+        "baseline": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/a/capture.png",
+        "candidate": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/head-b/capture.png",
+        "diff": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/diff.png",
+        "baselineSize": [1280, 1200],
+        "candidateSize": [1280, 1200],
+        "differentPixels": 0,
+        "bounds": null
+      }
+    },
+    {
+      "baseline": "b",
+      "candidate": "head-a",
+      "fixtureId": "chat-turn",
+      "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "candidateSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+      "changedSteps": [],
+      "pixels": {
+        "baseline": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/b/capture.png",
+        "candidate": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/head-a/capture.png",
+        "diff": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/diff.png",
+        "baselineSize": [1280, 1200],
+        "candidateSize": [1280, 1200],
+        "differentPixels": 0,
+        "bounds": null
+      }
+    },
+    {
+      "baseline": "b",
+      "candidate": "head-b",
+      "fixtureId": "chat-turn",
+      "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "candidateSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+      "changedSteps": [],
+      "pixels": {
+        "baseline": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/b/capture.png",
+        "candidate": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/head-b/capture.png",
+        "diff": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/synchronized/diff.png",
+        "baselineSize": [1280, 1200],
+        "candidateSize": [1280, 1200],
+        "differentPixels": 0,
+        "bounds": null
+      }
+    }
+  ]
+}

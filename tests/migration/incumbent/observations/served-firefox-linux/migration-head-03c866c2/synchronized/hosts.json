@@ -1,0 +1,70 @@
+{
+  "a": {
+    "name": "a",
+    "browser": "153.8.0",
+    "serverVersion": "0.1.17",
+    "migration": 118,
+    "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "controls": [
+      {
+        "name": "Attach files",
+        "pressed": null
+      },
+      {
+        "name": "Open provider settings",
+        "pressed": null
+      }
+    ]
+  },
+  "head-a": {
+    "name": "head-a",
+    "browser": "153.8.0",
+    "serverVersion": "0.1.18",
+    "migration": 119,
+    "sourceSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+    "controls": [
+      {
+        "name": "Attach files",
+        "pressed": null
+      },
+      {
+        "name": "Open provider settings",
+        "pressed": null
+      }
+    ]
+  },
+  "b": {
+    "name": "b",
+    "browser": "153.8.0",
+    "serverVersion": "0.1.17",
+    "migration": 118,
+    "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "controls": [
+      {
+        "name": "Attach files",
+        "pressed": null
+      },
+      {
+        "name": "Open provider settings",
+        "pressed": null
+      }
+    ]
+  },
+  "head-b": {
+    "name": "head-b",
+    "browser": "153.8.0",
+    "serverVersion": "0.1.18",
+    "migration": 119,
+    "sourceSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+    "controls": [
+      {
+        "name": "Attach files",
+        "pressed": null
+      },
+      {
+        "name": "Open provider settings",
+        "pressed": null
+      }
+    ]
+  }
+}
