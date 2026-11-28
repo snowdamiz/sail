@@ -59,9 +59,11 @@ node tests/migration/wire/replay.ts "$origin" "$fixture/project"
 The checker acknowledges each chunk. It disconnects the writing socket after the send
 receipt and disconnects the reading socket after the first streaming reply. A separate
 read-only subscription waits for completion before a new socket resumes at the saved
-cursor. The checker reconstructs the three conversation messages, verifies the completion
-marker and subscription cancellation, retries the original command, and checks the typed
-denial for a fresh read-only send. A final projection must contain one completed run
-and the same messages. The captured sample records preserve dynamic IDs, timestamps,
+cursor. The checker compares overlapping event cursors and payloads with the live witness
+after coalescing superseded running updates. It ties the send receipt to the delivered
+user item, reconstructs all three messages through cancellation, and verifies the visible
+transcript and run references. The original command can be retried with its original
+receipt. A fresh read-only send receives the typed denial. The checker compares the
+full settled projection before and after each action. The sample records preserve dynamic IDs, timestamps,
 and sequence values as examples. The checker compares stable fields and cursor
 relationships across runs. Credentials and download tickets stay out of the fixture.

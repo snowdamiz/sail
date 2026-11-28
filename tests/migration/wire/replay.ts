@@ -47,21 +47,20 @@ async function call(socket: WireSocket, id: string, tag: string, payload: unknow
   return object(result.value, tag);
 }
 
-async function* subscribeThread(
-  socket: WireSocket,
-  payload: { readonly threadId: string; readonly afterSequence?: number },
-) {
-  request(socket, "1", subscribe, { ...payload, requestCompletionMarker: true });
+function threadChunk(socket: WireSocket, frame: WireRecord) {
+  NodeAssert.equal(frame._tag, "Chunk");
+  NodeAssert.equal(frame.requestId, "1");
+  const values = array(frame.values, "Expected thread stream values");
+  NodeAssert.ok(values.length > 0, "Expected a nonempty thread stream chunk");
+  socket.send({ _tag: "Ack", requestId: "1" });
+  return values.map((value) => object(value, "Expected a thread stream record"));
+}
+
+async function* subscribeThread(socket: WireSocket, threadId: string) {
+  request(socket, "1", subscribe, { threadId, requestCompletionMarker: true });
   while (true) {
     const frame = object(await socket.receive(), "Thread stream closed before completion");
-    NodeAssert.equal(frame._tag, "Chunk");
-    NodeAssert.equal(frame.requestId, "1");
-    const values = array(frame.values, "Expected thread stream values");
-    NodeAssert.ok(values.length > 0, "Expected a nonempty thread stream chunk");
-    socket.send({ _tag: "Ack", requestId: "1" });
-    for (const value of values) {
-      yield object(value, "Expected a thread stream record");
-    }
+    yield* threadChunk(socket, frame);
   }
 }
 
@@ -114,6 +113,47 @@ function event(record: WireRecord, cursor: number, threadId: string) {
   };
 }
 
+function coalesced(records: ReadonlyArray<WireRecord>) {
+  // Live and replay batches can keep different superseded writes to the same running item.
+  const latest = new Map<string, WireRecord>();
+  const families = new Map<string, string>();
+  const superseded = new Set<WireRecord>();
+  for (const record of records) {
+    const update = object(record.event, "Expected an event while coalescing");
+    const item = object(update.payload, "Expected event data while coalescing");
+    let family: string | undefined;
+    if (update.type === "message.updated" && item.role === "assistant" && item.streaming === true) {
+      family = update.type;
+    }
+    if (
+      update.type === "turn-item.updated" &&
+      item.status === "running" &&
+      ((item.streaming === true &&
+        (item.type === "assistant_message" || item.type === "reasoning")) ||
+        item.type === "command_execution" ||
+        item.type === "file_change" ||
+        item.type === "file_search" ||
+        item.type === "web_search" ||
+        item.type === "dynamic_tool")
+    ) {
+      family = update.type;
+    }
+    if (family === undefined) {
+      latest.clear();
+      families.clear();
+      continue;
+    }
+    const key = JSON.stringify([update.threadId, update.runId, item.type, item.id]);
+    const familyKey = families.get(family);
+    if (familyKey !== undefined && familyKey !== key) latest.clear();
+    families.set(family, key);
+    const previous = latest.get(`${family}:${key}`);
+    if (previous) superseded.add(previous);
+    latest.set(`${family}:${key}`, record);
+  }
+  return records.filter((record) => !superseded.has(record));
+}
+
 export async function checkReplay(
   origin: URL,
   tokens: { readonly operate: string; readonly read: string },
@@ -138,30 +178,62 @@ export async function checkReplay(
   await using writer = await open(tokens.operate);
   const created = await call(writer, "1", dispatch, createThread);
   await using initial = await open(tokens.read);
-  const initialStream = subscribeThread(initial, { threadId });
+  const initialStream = subscribeThread(initial, threadId);
   const snapshotCursor = await start(initialStream, expected);
   NodeAssert.equal(created.sequence, snapshotCursor);
 
   await using witness = await open(tokens.read);
-  const witnessStream = subscribeThread(witness, { threadId });
+  const witnessStream = subscribeThread(witness, threadId);
   NodeAssert.equal(await start(witnessStream, expected), snapshotCursor);
 
   const accepted = await call(writer, "2", dispatch, sendMessage);
   const acceptedSequence = sequence(accepted.sequence, "Expected an accepted command receipt");
+  NodeAssert.deepEqual(accepted, { sequence: acceptedSequence }, "Unexpected send receipt fields");
   NodeAssert.ok(acceptedSequence > snapshotCursor, "The send must advance the thread's cursor");
   await writer.close();
 
-  const messages = new Map<string, ReturnType<typeof messageFields>>();
+  const messages = new Map<string, WireRecord>();
+  const turnItems = new Map<string, WireRecord>();
+  const streamedMessages = new Set<string>();
+  let acceptedEvent: WireRecord | undefined;
   let cursor = snapshotCursor;
   function apply(record: WireRecord) {
     const update = event(record, cursor, threadId);
     cursor = update.cursor;
-    if (update.type === "message.updated") {
+    if (cursor === acceptedSequence) {
+      NodeAssert.equal(
+        update.type,
+        "turn-item.updated",
+        "Expected the send's user item at its receipt cursor",
+      );
+      NodeAssert.equal(update.payload.type, "user_message");
+      NodeAssert.equal(update.payload.messageId, sendMessage.messageId);
+      acceptedEvent = update.payload;
+    }
+    if (update.type === "message.updated" || update.type === "turn-item.updated") {
       const id = update.payload.id;
-      NodeAssert.ok(typeof id === "string" && id.length > 0, "Expected a stable message ID");
-      messages.set(id, messageFields(update.payload));
+      NodeAssert.ok(typeof id === "string" && id.length > 0, "Expected a stable entity ID");
+      if (update.type === "message.updated") {
+        if (update.payload.streaming === true) streamedMessages.add(id);
+        messages.set(id, update.payload);
+      } else {
+        turnItems.set(id, update.payload);
+      }
     }
     return update;
+  }
+
+  function checkMessages() {
+    NodeAssert.deepEqual(
+      [...messages.values()].map(messageFields),
+      expected.messages,
+      "Replayed conversation messages",
+    );
+    NodeAssert.deepEqual(
+      [...messages.keys()].map((id) => streamedMessages.has(id)),
+      expected.messageStreamingObserved,
+      "Expected the captured streaming message transitions",
+    );
   }
 
   const publishedPartial = fixture.publishedExamples.assistantAtDisconnect.event.payload;
@@ -179,49 +251,67 @@ export async function checkReplay(
     }
   }
   const disconnectedAt = cursor;
+  NodeAssert.ok(acceptedEvent, "The live stream did not deliver the send receipt's event");
   await initial.close();
   await initialStream.return(undefined);
 
   let witnessCursor = snapshotCursor;
+  let completedRun: WireRecord | undefined;
+  let completedSequence: number | undefined;
+  const witnessed: WireRecord[] = [];
   const terminal = fixture.publishedExamples.resumedCompletion.event;
+  const idle = fixture.publishedExamples.resumedIdle.event;
   while (true) {
-    const update = event(await next(witnessStream), witnessCursor, threadId);
+    const record = await next(witnessStream);
+    const update = event(record, witnessCursor, threadId);
     witnessCursor = update.cursor;
-    if (update.type === terminal.type && update.payload.status === terminal.payload.status) break;
+    if (witnessCursor > disconnectedAt) witnessed.push(record);
+    if (update.type === terminal.type && update.payload.status === terminal.payload.status) {
+      completedRun = update.payload;
+      completedSequence = witnessCursor;
+    }
+    if (completedRun && update.type === idle.type && update.payload.status === idle.payload.status)
+      break;
   }
   NodeAssert.ok(
-    witnessCursor > disconnectedAt,
+    completedSequence !== undefined && completedSequence > disconnectedAt,
     "The turn must advance beyond the disconnected cursor",
   );
   await witness.close();
   await witnessStream.return(undefined);
 
   await using resumed = await open(tokens.read);
-  const resumedStream = subscribeThread(resumed, { threadId, afterSequence: disconnectedAt });
-  let sawCompletion = false;
-  while (true) {
-    const record = await next(resumedStream);
-    if (record.kind === "synchronized") {
-      NodeAssert.deepEqual(record, fixture.publishedExamples.synchronized);
-      break;
-    }
-    const update = apply(record);
-    if (update.type === terminal.type && update.payload.status === terminal.payload.status) {
-      NodeAssert.equal(update.cursor, witnessCursor, "Replay changed the terminal event's cursor");
-      sawCompletion = true;
+  request(resumed, "1", subscribe, {
+    threadId,
+    afterSequence: disconnectedAt,
+    requestCompletionMarker: true,
+  });
+  const replayOverlap: WireRecord[] = [];
+  let resumedThrough: number | undefined;
+  while (resumedThrough === undefined) {
+    const frame = object(await resumed.receive(), "Replay closed before synchronization");
+    for (const record of threadChunk(resumed, frame)) {
+      if (record.kind === "synchronized") {
+        NodeAssert.equal(resumedThrough, undefined, "Duplicate replay completion marker");
+        NodeAssert.deepEqual(record, fixture.publishedExamples.synchronized);
+        resumedThrough = cursor;
+      } else {
+        const update = apply(record);
+        if (resumedThrough === undefined && update.cursor <= witnessCursor)
+          replayOverlap.push(record);
+      }
     }
   }
-  NodeAssert.ok(sawCompletion, "The replay must deliver the completed run before synchronization");
-  NodeAssert.deepEqual([...messages.values()], expected.messages, "Replayed conversation messages");
-  await resumedStream.return(undefined);
+  NodeAssert.deepEqual(
+    coalesced(replayOverlap),
+    coalesced(witnessed),
+    "Replay changed or omitted witnessed events",
+  );
+  checkMessages();
   resumed.send({ _tag: "Interrupt", requestId: "1" });
   let interrupted = object(await resumed.receive(), "Expected the subscription to terminate");
   while (interrupted._tag === "Chunk") {
-    NodeAssert.equal(interrupted.requestId, "1");
-    const pending = array(interrupted.values, "Expected queued live events");
-    NodeAssert.ok(pending.length > 0, "Expected a nonempty queued chunk");
-    for (const record of pending) apply(object(record, "Expected a queued live event"));
-    resumed.send({ _tag: "Ack", requestId: "1" });
+    for (const record of threadChunk(resumed, interrupted)) apply(record);
     interrupted = object(await resumed.receive(), "Expected the subscription to terminate");
   }
   NodeAssert.deepEqual(
@@ -230,35 +320,110 @@ export async function checkReplay(
     "Subscription cancellation",
   );
 
+  checkMessages();
+
+  const settled = await call(resumed, "2", projection, { threadId });
+  NodeAssert.deepEqual(threadFields(settled.thread), expected.thread);
+  NodeAssert.deepEqual(
+    settled.messages,
+    [...messages.values()],
+    "Projection disagrees with replayed messages",
+  );
+  const runs = array(settled.runs, "Expected completed runs").map((run) =>
+    object(run, "Expected a run"),
+  );
+  NodeAssert.deepEqual(
+    runs.map((run) => run.status),
+    expected.runs,
+  );
+  NodeAssert.deepEqual(runs, [completedRun], "Projection disagrees with the witnessed run");
+  const run = runs[0];
+  NodeAssert.ok(run);
+  NodeAssert.equal(run.userMessageId, sendMessage.messageId);
+  for (const [id, message] of messages) {
+    NodeAssert.equal(message.runId, run.id);
+    NodeAssert.equal(message.threadId, threadId);
+    if (message.role === "user") NodeAssert.equal(id, sendMessage.messageId);
+  }
+  NodeAssert.equal(acceptedEvent.runId, run.id);
+  const attempts = array(settled.attempts, "Expected run attempts").map((attempt) =>
+    object(attempt, "Expected a run attempt"),
+  );
+  NodeAssert.deepEqual(
+    attempts.map((attempt) => attempt.status),
+    expected.attempts,
+  );
+  for (const attempt of attempts) {
+    NodeAssert.equal(attempt.id, run.activeAttemptId);
+    NodeAssert.equal(attempt.runId, run.id);
+  }
+
+  const items = array(settled.turnItems, "Expected turn items").map((item) =>
+    object(item, "Expected a turn item"),
+  );
+  NodeAssert.deepEqual(
+    items.map((item) => item.type),
+    expected.turnItemTypes,
+  );
+  NodeAssert.equal(
+    items.length,
+    turnItems.size,
+    "Projection has a different number of turn items than the stream",
+  );
+  for (const item of items) {
+    const id = item.id;
+    NodeAssert.ok(typeof id === "string");
+    NodeAssert.deepEqual(item, turnItems.get(id), "Projection changed a replayed turn item");
+    if (item.type === "user_message" || item.type === "assistant_message") {
+      const messageId = item.messageId;
+      NodeAssert.ok(typeof messageId === "string");
+      const message = messages.get(messageId);
+      NodeAssert.ok(message, "Turn item points to a missing message");
+      NodeAssert.equal(item.text, message.text);
+      NodeAssert.equal(item.runId, message.runId);
+    }
+  }
+  const visible = array(settled.visibleTurnItems, "Expected visible transcript items").map(
+    (entry) => object(entry, "Expected a visible turn item"),
+  );
+  NodeAssert.deepEqual(
+    visible.map((entry) => entry.item),
+    items,
+    "Visible transcript disagrees with the turn items",
+  );
+  for (const entry of visible) {
+    NodeAssert.equal(entry.visibility, "local");
+    NodeAssert.equal(entry.sourceThreadId, threadId);
+    NodeAssert.equal(entry.sourceItemId, object(entry.item, "Expected an item reference").id);
+  }
+
   await using retry = await open(tokens.operate);
   const duplicate = await call(retry, "1", dispatch, sendMessage);
   NodeAssert.deepEqual(duplicate, accepted, "Retrying the send must return the original receipt");
+  await retry.close();
+  NodeAssert.deepEqual(
+    await call(resumed, "3", projection, { threadId }),
+    settled,
+    "Retry changed the settled projection",
+  );
 
-  request(resumed, "2", dispatch, {
+  request(resumed, "4", dispatch, {
     ...sendMessage,
     commandId: "wire-replay-denied",
     messageId: "wire-replay-refused",
   });
-  NodeAssert.deepEqual(await exit(resumed, "2"), expected.deniedExit, "Read-only send denial");
-  const settled = await call(resumed, "3", projection, { threadId });
-  NodeAssert.deepEqual(threadFields(settled.thread), expected.thread);
+  NodeAssert.deepEqual(await exit(resumed, "4"), expected.deniedExit, "Read-only send denial");
   NodeAssert.deepEqual(
-    array(settled.runs, "Expected completed runs").map(
-      (run) => object(run, "Expected a run").status,
-    ),
-    expected.runs,
-  );
-  NodeAssert.deepEqual(
-    array(settled.messages, "Expected final messages").map(messageFields),
-    expected.messages,
-    "Final conversation messages after retry and denial",
+    await call(resumed, "5", projection, { threadId }),
+    settled,
+    "Denied send changed the settled projection",
   );
   resumed.send({ _tag: "Ping" });
   NodeAssert.deepEqual(await resumed.receive(), { _tag: "Pong" });
   await resumed.close();
   NodeAssert.equal(await resumed.receive(), undefined, "Unexpected frame after the final Pong");
 
-  return { snapshotCursor, acceptedSequence, disconnectedAt, resumedThrough: cursor };
+  return { snapshotCursor, acceptedSequence, disconnectedAt, resumedThrough };
 }
 
 if (import.meta.main) {

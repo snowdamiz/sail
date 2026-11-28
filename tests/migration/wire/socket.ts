@@ -60,6 +60,14 @@ export async function openWireSocket(
     await messages.return?.();
     throw error;
   }
+  async function close() {
+    if (socket.readyState === WebSocket.CLOSED) return;
+    const closed = NodeEvents.EventEmitter.once(socket, "close", {
+      signal: AbortSignal.timeout(3_000),
+    });
+    socket.close();
+    await closed;
+  }
   return {
     send(frame: unknown) {
       socket.send(JSON.stringify(frame));
@@ -88,13 +96,9 @@ export async function openWireSocket(
         },
       );
     },
-    async close() {
-      const closed = NodeEvents.EventEmitter.once(socket, "close", { signal: socketSignal });
-      socket.close();
-      await closed;
-    },
+    close,
     async [Symbol.asyncDispose]() {
-      socket.close();
+      await close().catch(() => undefined);
       await messages.return?.();
     },
   };
