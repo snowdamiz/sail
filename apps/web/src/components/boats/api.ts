@@ -112,20 +112,25 @@ export function useMachineDetails(
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- fetches machine details from the boat RPC endpoint when machine state changes
   useEffect(() => {
-    if (version === undefined) return;
+    let cancelled = false;
     const req = ++latest.current;
+    if (version === undefined) return;
     void invokeBoat(environmentId, "get_machine_details", { id }).then(
       ({ data }) => {
-        if (req !== latest.current) return;
+        if (cancelled || req !== latest.current) return;
         failing.current = false;
         setDetails(data);
       },
       (e) => {
-        if (req !== latest.current || failing.current) return;
+        if (cancelled || req !== latest.current || failing.current) return;
         failing.current = true;
         reportError(errorText(e));
       },
     );
+    return () => {
+      cancelled = true;
+      latest.current += 1;
+    };
   }, [environmentId, id, version]);
 
   return details?.id === id ? details : null;

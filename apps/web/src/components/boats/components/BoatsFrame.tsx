@@ -46,7 +46,9 @@ const OPEN_OVERLAY_SELECTOR = [
 ].join(",");
 
 function isUnmodifiedEscape(event: KeyboardEvent): boolean {
-  return event.key === "Escape" && !event.metaKey && !event.ctrlKey && !event.altKey;
+  return (
+    event.key === "Escape" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
+  );
 }
 
 export function BoatsFrame({

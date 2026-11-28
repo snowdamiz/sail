@@ -319,6 +319,10 @@ export function useReadyBoatsSession({
       });
   };
 
+  const isStartingSignIn = Array.from(pending.values()).some(
+    (op) => op.action.cmd === "sign_in_agent" || op.action.cmd === "turn_on_connect",
+  );
+
   const controlsFor = (machine: MachineView): MachineControls => {
     const key = machineKey(machine);
     const pendingOp = pending.get(key) ?? null;
@@ -329,7 +333,7 @@ export function useReadyBoatsSession({
       supportsLocalProjects,
       pending: pendingOp === null ? null : { action: pendingOp.action, label: pendingOp.label },
       deleteRefusal: refused.get(key) ?? null,
-      signingIn: signIn !== null,
+      signingIn: signIn !== null || isStartingSignIn,
     });
     return {
       ...presentation,

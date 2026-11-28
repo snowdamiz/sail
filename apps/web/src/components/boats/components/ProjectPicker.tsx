@@ -28,7 +28,10 @@ export function ProjectPicker({
   readonly onAdd: (project: LocalProject) => void;
 }) {
   const gt = useGT();
-  const [open, setOpen] = useState(initialOpen);
+  const [open, setOpen] = useState(initialOpen && !disabled);
+  if (disabled && open) {
+    setOpen(false);
+  }
   const isOpen = !disabled && open;
 
   return (
