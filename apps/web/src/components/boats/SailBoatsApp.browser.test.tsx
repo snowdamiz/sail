@@ -47,10 +47,16 @@ vi.mock(import("../../state/boats"), async (original) => ({
         _registry: unknown,
         { environmentId, input }: { environmentId: EnvironmentId; input: BoatInvokeInput },
       ) =>
-        Effect.sync(() => {
+        Effect.suspend(() => {
           state.invokedOn.push(environmentId);
           state.invoked.push(input);
-          return state.replies[input.command] ?? { data: null };
+          const reply = state.replies[input.command];
+          const resolved =
+            typeof reply === "function"
+              ? (reply as (input: BoatInvokeInput) => unknown)(input)
+              : reply;
+          if (resolved instanceof Error) return Effect.fail(resolved);
+          return Effect.succeed(resolved ?? { data: null });
         })) as never,
     } as never,
   },
@@ -659,4 +665,186 @@ it("re-enables a saved machine from Add to Sail and then offers Open", async () 
     .element(screen.getByRole("button", { name: "Open last thread in Sail" }))
     .toBeVisible();
   expect(state.invoked.map((input) => input.command)).not.toContain("pair_machine");
+});
+
+it("validates machine names, selects a size, and creates a machine from NewMachine", async () => {
+  setup({
+    state: uiState({
+      machines: [machine({ name: "dory" })],
+      sizes: [
+        { id: "default", spec: "2 CPU · 4 GB", hourly: 0.05 },
+        { id: "large", spec: "4 CPU · 8 GB", hourly: 0.1 },
+      ],
+    }),
+  });
+  await using screen = await mount();
+
+  await userEvent.click(screen.getByRole("button", { name: "New machine" }));
+  const nameInput = screen.getByLabelText("Name");
+  const launch = screen.getByRole("button", { name: "Launch machine" });
+  await expect.element(nameInput).toBeVisible();
+
+  await userEvent.clear(nameInput);
+  await expect.element(screen.getByText("Give it a name")).toBeVisible();
+  await expect.element(launch).toBeDisabled();
+
+  await userEvent.fill(nameInput, "dory");
+  await expect.element(screen.getByText("You already have a machine with this name")).toBeVisible();
+  await expect.element(launch).toBeDisabled();
+
+  await userEvent.fill(nameInput, "-bad");
+  await expect.element(screen.getByText("Start with a letter or number")).toBeVisible();
+  await expect.element(launch).toBeDisabled();
+
+  await userEvent.fill(nameInput, "ketch");
+  await expect.element(launch).toBeEnabled();
+
+  await userEvent.click(screen.getByText("large"));
+  await userEvent.click(launch);
+
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({
+      command: "create_machine",
+      args: { name: "ketch", size: "large", projects: [] },
+    }),
+  );
+  await expect.element(screen.getByRole("button", { name: "Details for dory" })).toBeVisible();
+});
+
+it("closes the Stay awake menu on first Escape before navigating back on second Escape", async () => {
+  setup({
+    state: uiState({
+      machines: [machine({ id: "m-1", name: "dory", state: "idle", detail: "Idle" })],
+    }),
+  });
+  await using screen = await mount();
+
+  await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+  await expect.element(screen.getByRole("heading", { name: "dory" })).toBeVisible();
+
+  const stayAwake = screen.getByRole("button", { name: "Stay awake for…" });
+  await userEvent.click(stayAwake);
+  const oneHour = page.getByRole("menuitem", { name: "1h" });
+  await expect.element(oneHour).toBeVisible();
+
+  await userEvent.keyboard("{Escape}");
+  await expect.element(oneHour).not.toBeInTheDocument();
+  await expect.element(screen.getByRole("heading", { name: "dory" })).toBeVisible();
+
+  await userEvent.click(stayAwake);
+  await userEvent.click(page.getByRole("menuitem", { name: "1h" }));
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({
+      command: "keep_awake",
+      args: { id: "m-1", minutes: 60 },
+    }),
+  );
+
+  await userEvent.keyboard("{Escape}");
+  await expect.element(screen.getByRole("button", { name: "Details for dory" })).toBeVisible();
+});
+
+it("arms delete confirmation in MachineDetails and handles refusal with Keep and Delete anyway", async () => {
+  setup({
+    state: uiState({
+      machines: [machine({ id: "m-1", name: "dory", state: "idle", detail: "Idle" })],
+    }),
+  });
+  state.replies.delete_machine = (input: BoatInvokeInput) => {
+    const args =
+      input.command === "delete_machine"
+        ? (input.args as { readonly discard?: boolean } | undefined)
+        : undefined;
+    if (args?.discard) return { data: null };
+    return new Error("Machine has uncommitted changes");
+  };
+  await using screen = await mount();
+
+  await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Machine/ }));
+
+  await userEvent.click(screen.getByRole("button", { name: "Delete machine…" }));
+  expect(state.invoked.map((input) => input.command)).not.toContain("delete_machine");
+
+  const confirmDelete = screen.getByRole("button", { name: "Click again to delete forever" });
+  await expect.element(confirmDelete).toBeVisible();
+  await userEvent.click(confirmDelete);
+
+  await expect.element(screen.getByText("Machine has uncommitted changes")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Keep" }));
+  await expect.element(screen.getByText("Machine has uncommitted changes")).not.toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole("button", { name: "Delete machine…" }));
+  await userEvent.click(screen.getByRole("button", { name: "Click again to delete forever" }));
+  await expect.element(screen.getByText("Machine has uncommitted changes")).toBeVisible();
+
+  await userEvent.click(screen.getByRole("button", { name: "Delete anyway" }));
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({
+      command: "delete_machine",
+      args: { id: "m-1", discard: true },
+    }),
+  );
+});
+
+it("renders without legacy scope or canvas across theme toggles and styles info notices as info", async () => {
+  setup({
+    state: uiState({
+      machines: [machine({ name: "dory", environmentId: DORY_ENVIRONMENT })],
+    }),
+    machineEnvironment: DORY_ENVIRONMENT,
+  });
+  state.replies.latest_thread = { data: null };
+  await using screen = await mount();
+
+  try {
+    expect(document.querySelector(".sail-boats-scope")).toBeNull();
+    expect(document.querySelector("canvas")).toBeNull();
+
+    document.documentElement.classList.add("dark");
+    expect(document.querySelector(".sail-boats-scope")).toBeNull();
+    expect(document.querySelector("canvas")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+    await userEvent.click(screen.getByRole("button", { name: "Open last thread in Sail" }));
+    const notice = screen.getByText("No thread available to open.");
+    await expect.element(notice).toBeVisible();
+    const alert = notice.element().closest("[role='alert']");
+    expect(alert?.getAttribute("data-variant")).toBe("info");
+  } finally {
+    document.documentElement.classList.remove("dark");
+  }
+});
+
+it("renders the SignInPanel paste-code input as a styled Sail Input and submits the code", async () => {
+  setup({
+    state: uiState({
+      setup: "signInBoat",
+    }),
+  });
+  state.replies.setup_action = {
+    data: null,
+    signIn: {
+      attemptId: "attempt-1",
+      onHost: false,
+      prompt: { kind: "paste", url: "https://example.com/auth" },
+    },
+  };
+  state.replies.manage_boat_sign_in = { data: "pending" };
+  await using screen = await mount();
+
+  await userEvent.click(screen.getByRole("button", { name: "Sign in to Boat" }));
+  const codeInput = screen.getByLabelText("Paste the sign-in code");
+  await expect.element(codeInput).toBeVisible();
+  expect(codeInput.element().getAttribute("data-slot")).toBe("input");
+  expect(codeInput.element().closest("[data-slot='input-control']")).not.toBeNull();
+
+  await userEvent.fill(codeInput, "boat-code-123");
+  await userEvent.click(screen.getByRole("button", { name: "Submit code" }));
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({
+      command: "manage_boat_sign_in",
+      args: { action: "submit", attemptId: "attempt-1", code: "boat-code-123" },
+    }),
+  );
 });

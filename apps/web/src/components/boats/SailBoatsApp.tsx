@@ -141,9 +141,9 @@ function BoatsFrame({
   dismissNotice,
   children,
 }: {
-  readonly breadcrumbTitle?: string;
-  readonly pageTitle?: string;
-  readonly pageSubtitle?: string;
+  readonly breadcrumbTitle?: string | undefined;
+  readonly pageTitle?: string | undefined;
+  readonly pageSubtitle?: string | undefined;
   readonly back: (() => void) | null;
   readonly server: ServerSelection;
   readonly toolbar?: ReactNode;

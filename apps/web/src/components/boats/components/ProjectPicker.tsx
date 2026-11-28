@@ -199,7 +199,7 @@ export function useLocalProjects(): LocalProjects {
 type OptionProps = HTMLAttributes<HTMLDivElement> & {
   badge?: ReactNode;
   leading?: ReactNode;
-  "data-active"?: string;
+  "data-active"?: string | undefined;
 };
 
 export function ProjectList({
