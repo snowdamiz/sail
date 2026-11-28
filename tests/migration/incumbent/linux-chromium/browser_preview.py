@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+import sys
 from threading import Thread
+import time
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -76,12 +78,40 @@ def provider_path(root):
     return f"/{env}/{quote(threads[0][0], safe='')}"
 
 
+def record_provider_reply(root):
+    path = root / "state.json"
+    state = json.loads(path.read_text())
+    database = root / "state/userdata/statev2.sqlite"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:
+            replies = db.execute(
+                """SELECT r.status, m.payload_json
+                   FROM orchestration_v2_projection_runs r
+                   JOIN orchestration_v2_projection_threads t USING (thread_id)
+                   JOIN orchestration_v2_projection_messages m USING (run_id, thread_id)
+                   WHERE t.title = 'Capture fixture' AND m.role = 'assistant' AND m.streaming = 0"""
+            ).fetchall()
+        if replies:
+            assert len(replies) == 1
+            status, payload = replies[0]
+            if status == "completed":
+                value = json.loads(json.loads(payload)["text"])
+                assert value == state["tool"]["value"]
+                state["providerRun"] = {"status": status, "reply": value}
+                path.write_text(json.dumps(state, indent=2) + "\n")
+                return
+        time.sleep(0.1)
+    raise RuntimeError("The packaged provider reply did not settle")
+
+
 def inner_status(call, outer, title):
     status = call("preview_status")
     tabs = [tab for tab in status["tabs"] if tab["url"] == URL]
     assert len(tabs) == 1 and tabs[0]["tabId"] != outer["tabId"]
     inner = {"tabId": tabs[0]["tabId"]}
     status = call("preview_status", **inner)
+    assert status["tabId"] == inner["tabId"]
     assert status["url"] == URL and status["title"] == title and not status["loading"]
     return inner, status
 
@@ -120,10 +150,13 @@ def capture_browser_preview(root, source, call, prepare):
         call("preview_act", **outer, action="click", selector='button:has-text("Release control")')
         call("preview_wait_for", **outer, text="Take control")
         rendered = capture_panel(root, call, outer, "preview-rendered")
-        _, released = inner_status(call, outer, "Updated title")
+        released_tab, released = inner_status(call, outer, "Updated title")
+        assert released_tab == inner, "Browser panel tab changed after releasing control"
         assert released["control"]["owner"] == "unclaimed"
-        value = call("preview_evaluate", **inner, expression=EXPRESSION)["value"]
+        value = call("preview_evaluate", **released_tab, expression=EXPRESSION)["value"]
         assert value == {"title": "Updated title", "body": "Click to rename"}
+        evaluated, _ = inner_status(call, outer, "Updated title")
+        assert evaluated == inner
         result = capture_panel(root, call, outer, "tool-result")
 
     runtime = json.loads((root / "state/userdata/server-runtime.json").read_text())
@@ -133,6 +166,11 @@ def capture_browser_preview(root, source, call, prepare):
         "browser": identity["browser"], "pairing": identity["pairing"],
         "runtimeOwnerSha256": sha256(runtime["ownerId"].encode()).hexdigest(),
         "pageSha256": page_sha,
+        "tabIdentity": {
+            phase: sha256(tab["tabId"].encode()).hexdigest()
+            for phase, tab in (("opened", inner), ("renamed", after), ("released", released_tab),
+                               ("evaluated", evaluated))
+        },
         "titleChange": {"before": "Original title", "after": "Updated title", "url": URL,
                         "sameInnerTab": True, "releasedByClient": True},
         "tool": {"name": "preview_evaluate", "expression": EXPRESSION, "value": value},
@@ -140,3 +178,7 @@ def capture_browser_preview(root, source, call, prepare):
     }
     (root / "state.json").write_text(json.dumps(receipt, indent=2) + "\n")
     return json.dumps(value, separators=(",", ":"))
+
+
+if __name__ == "__main__":
+    record_provider_reply(Path(sys.argv[1]))

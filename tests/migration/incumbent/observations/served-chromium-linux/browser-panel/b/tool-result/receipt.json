@@ -29,10 +29,10 @@
     "entrypoint": "chat",
     "configurationId": "chrome-158.0.8127.88-debian-arm64-en-light-640x600-2x"
   },
-  "captureRunId": "6cff1f27-4bb7-4c3a-8647-e1b0641fb13a",
+  "captureRunId": "1e86b8c1-f5a0-41e7-a580-e0a18d9601c4",
   "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
   "screenshotSha256": "abcad9ce1864c3a8157f09d34d302cdeae4f699995a6a5b3dbb599cc1c50a71a",
-  "stateReceiptSha256": "478f4f6c04b0773b058a63f6c1242065c2eb758d06751902abbafbdc0e326935",
+  "stateReceiptSha256": "6662a23041664762394d5dd48195c85bea026292b8c53e3d5c7464b72dbe7965",
   "trace": [
     {
       "action": "openFixturePage",

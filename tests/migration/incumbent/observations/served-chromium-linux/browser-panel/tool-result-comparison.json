@@ -6,15 +6,15 @@
   "pixels": {
     "baseline": "tests/migration/incumbent/observations/served-chromium-linux/browser-panel/a/tool-result/capture.png",
     "candidate": "tests/migration/incumbent/observations/served-chromium-linux/browser-panel/b/tool-result/capture.png",
-    "diff": "tests/migration/incumbent/observations/served-chromium-linux/browser-panel/tool-result-diff.png",
+    "diff": "/tmp/sail-p01-linux-browser-r58.xhOPAU/tool-result-diff.png",
     "baselineSize": [1280, 1200],
     "candidateSize": [1280, 1200],
     "differentPixels": 0,
     "bounds": null
   },
   "artifactSha256": {
-    "baselineReceipt": "a5e6173d0783cab6bf92e854a0ed71e20d488fe9f55fd50cb668b66d80d7bb5a",
-    "candidateReceipt": "dffde2d9b92bc05ed89a83b3b9ff3b25c16e412b22d4cfc396f5ea45c924c84d",
+    "baselineReceipt": "958d32823bd51e6100af0de36b9b661ac42ae1a52432d3e2efe2ff584977fe6e",
+    "candidateReceipt": "aed4191b8966d345331ff18803117ebe6298c583577cc40925b6c2b5918a12f2",
     "diff": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
   }
 }

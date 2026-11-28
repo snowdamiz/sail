@@ -1,14 +1,20 @@
 {
   "schemaVersion": 1,
-  "captureRunId": "6cff1f27-4bb7-4c3a-8647-e1b0641fb13a",
+  "captureRunId": "1e86b8c1-f5a0-41e7-a580-e0a18d9601c4",
   "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
   "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
   "arch": "arm64",
   "osVersion": "Debian 12.15",
   "browser": "Google Chrome for Testing 158.0.8127.88",
   "pairing": "browser-session-cookie",
-  "runtimeOwnerSha256": "c92657214ecbb4ffe5d40e175781f5a6e3274f559d25c22546a7b5b8c682b688",
+  "runtimeOwnerSha256": "56fc4eed0ed4c7b7befe0c1c5c4e1e8e780335f7782d715cce0c5a0952c9c02d",
   "pageSha256": "0bce63921bffbda9218078ad2f454ad850061bd492f01e9f26a80984503b3e7c",
+  "tabIdentity": {
+    "opened": "ffbb08971a4c5aeaf1c24c862fa8c6f07ea7dc5d6a0c2d251ee2ffd7de2388c8",
+    "renamed": "ffbb08971a4c5aeaf1c24c862fa8c6f07ea7dc5d6a0c2d251ee2ffd7de2388c8",
+    "released": "ffbb08971a4c5aeaf1c24c862fa8c6f07ea7dc5d6a0c2d251ee2ffd7de2388c8",
+    "evaluated": "ffbb08971a4c5aeaf1c24c862fa8c6f07ea7dc5d6a0c2d251ee2ffd7de2388c8"
+  },
   "titleChange": {
     "before": "Original title",
     "after": "Updated title",

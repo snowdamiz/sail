@@ -8056,12 +8056,12 @@
             {
               "kind": "capture-receipt",
               "path": "observations/served-chromium-linux/browser-panel/a/preview-rendered/receipt.json",
-              "sha256": "c7c9535753937242178765f4b093cbb0f694e0f94c45efb1f7660325dc61a368"
+              "sha256": "becd5ce60e2ee90d11dd75319dda59d4f0c831cb08c05e875f398a2e74224b06"
             },
             {
               "kind": "state-receipt",
               "path": "observations/served-chromium-linux/browser-panel/a/state.json",
-              "sha256": "e9b465f952dcb97ea597c4d1f76abfa0bead9fdb87b2017a6714f22eaad738a8"
+              "sha256": "a82641f7e51af3c3f742670bf4908cede9c932a23d85d5f19cd5da5ef4223e93"
             }
           ]
         },
@@ -8101,12 +8101,12 @@
             {
               "kind": "capture-receipt",
               "path": "observations/served-chromium-linux/browser-panel/b/preview-rendered/receipt.json",
-              "sha256": "d485bac5dde8cbf863b28cd04e51acdcdd933f05e11ea7afefd71a96d2f58214"
+              "sha256": "d6aee8f40b5ba026b23e910248e63835e0cc77ed4daddcc5ee5a1fbd05dd3d01"
             },
             {
               "kind": "state-receipt",
               "path": "observations/served-chromium-linux/browser-panel/b/state.json",
-              "sha256": "478f4f6c04b0773b058a63f6c1242065c2eb758d06751902abbafbdc0e326935"
+              "sha256": "6662a23041664762394d5dd48195c85bea026292b8c53e3d5c7464b72dbe7965"
             }
           ]
         }
@@ -8120,7 +8120,7 @@
         {
           "kind": "action-and-state",
           "path": "observations/served-chromium-linux/browser-panel/preview-rendered-comparison.json",
-          "sha256": "c7fa054265a6b6f2d2515f1e25df4e273d937e5003dec7909bdfc5ef2d6181b4"
+          "sha256": "d144d0c11c5d5b23963ed8828bd9594b2d3a6547b5ef265aae8ea49dcae71d7a"
         }
       ]
     },
@@ -8169,12 +8169,12 @@
             {
               "kind": "capture-receipt",
               "path": "observations/served-chromium-linux/browser-panel/a/tool-result/receipt.json",
-              "sha256": "a5e6173d0783cab6bf92e854a0ed71e20d488fe9f55fd50cb668b66d80d7bb5a"
+              "sha256": "958d32823bd51e6100af0de36b9b661ac42ae1a52432d3e2efe2ff584977fe6e"
             },
             {
               "kind": "state-receipt",
               "path": "observations/served-chromium-linux/browser-panel/a/state.json",
-              "sha256": "e9b465f952dcb97ea597c4d1f76abfa0bead9fdb87b2017a6714f22eaad738a8"
+              "sha256": "a82641f7e51af3c3f742670bf4908cede9c932a23d85d5f19cd5da5ef4223e93"
             }
           ]
         },
@@ -8214,12 +8214,12 @@
             {
               "kind": "capture-receipt",
               "path": "observations/served-chromium-linux/browser-panel/b/tool-result/receipt.json",
-              "sha256": "dffde2d9b92bc05ed89a83b3b9ff3b25c16e412b22d4cfc396f5ea45c924c84d"
+              "sha256": "aed4191b8966d345331ff18803117ebe6298c583577cc40925b6c2b5918a12f2"
             },
             {
               "kind": "state-receipt",
               "path": "observations/served-chromium-linux/browser-panel/b/state.json",
-              "sha256": "478f4f6c04b0773b058a63f6c1242065c2eb758d06751902abbafbdc0e326935"
+              "sha256": "6662a23041664762394d5dd48195c85bea026292b8c53e3d5c7464b72dbe7965"
             }
           ]
         }
@@ -8233,7 +8233,7 @@
         {
           "kind": "action-and-state",
           "path": "observations/served-chromium-linux/browser-panel/tool-result-comparison.json",
-          "sha256": "a0e1ecdc8cdcf4fe556a86e151cc2fa1853e4c144dff575ee47021cb040459c8"
+          "sha256": "090cde5ca63d62744bc782dd4fcfab625732f2715da4571ae6276fd7c22cd06d"
         }
       ]
     }

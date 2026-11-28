@@ -237,6 +237,17 @@ fn verify_browser_preview(
     capture: &Capture,
 ) -> Result<()> {
     const URL: &str = "http://127.0.0.1:47720/";
+    let identity = &state["tabIdentity"];
+    let opened = identity["opened"]
+        .as_str()
+        .context("missing opened Browser tab digest")?;
+    ensure!(
+        is_hex(opened, 64)
+            && ["renamed", "released", "evaluated"]
+                .iter()
+                .all(|phase| identity[*phase] == opened),
+        "the Browser panel tool did not evaluate the same tab after release"
+    );
     let panel = json!({
         "address": URL, "canvasVisible": true, "panelMaximized": true,
         "originalTitle": false, "updatedTitle": true, "focusedElement": "BODY",

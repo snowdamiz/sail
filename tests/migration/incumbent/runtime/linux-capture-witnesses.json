@@ -11,6 +11,10 @@
     "platformId": "electron-linux-arm64",
     "stateSha256": "8a453a262af2a0716346d0fba77ed9ef04f62a6d8f938019477459d326d18356"
   },
+  "1e86b8c1-f5a0-41e7-a580-e0a18d9601c4": {
+    "platformId": "served-chromium-linux",
+    "stateSha256": "6662a23041664762394d5dd48195c85bea026292b8c53e3d5c7464b72dbe7965"
+  },
   "37e78b24-4be4-4f84-87f8-664c00b5dda1": {
     "platformId": "served-chromium-linux",
     "stateSha256": "60aec9f521cbca20ec463b3ad6d7a7a6a3ef260a2c708542440294decb507cd8"
@@ -23,10 +27,6 @@
     "platformId": "electron-linux-x64",
     "stateSha256": "b1282021d5442c6ca214037741c1e69ae6b7008cefe22b162e05a3483ba6dd76"
   },
-  "6cff1f27-4bb7-4c3a-8647-e1b0641fb13a": {
-    "platformId": "served-chromium-linux",
-    "stateSha256": "478f4f6c04b0773b058a63f6c1242065c2eb758d06751902abbafbdc0e326935"
-  },
   "7b9a4c9f-dd77-4aa7-aca3-49d5823600cc": {
     "platformId": "electron-linux-x64",
     "stateSha256": "15f2e6ec84e44c6f0f7cd0b356951855381f97ef2ee80c1b6e3d997e0bb9086c"
@@ -34,10 +34,6 @@
   "9fa6f253-c97d-4dac-9112-5ca1b6cc058a": {
     "platformId": "electron-linux-arm64",
     "stateSha256": "f7edb43e85968b29ef9ca8e8bcdd0947b4c14c866a12c79198c3bf5bbc762bc1"
-  },
-  "aeab1fcf-3def-4f87-b95b-c52b718b4015": {
-    "platformId": "served-chromium-linux",
-    "stateSha256": "e9b465f952dcb97ea597c4d1f76abfa0bead9fdb87b2017a6714f22eaad738a8"
   },
   "b9e2927c-a895-4c5d-be1f-e36887f2be85": {
     "platformId": "electron-linux-arm64",
@@ -54,5 +50,9 @@
   "d460ad3d-b67c-4b6b-8072-3ef32991b55a": {
     "platformId": "served-chromium-linux",
     "stateSha256": "3e01e2cd6a82b7bcec8b4da0dd9fb26fd4bf3d3d7797129206053f5167b32e20"
+  },
+  "ff42cee5-5310-42c9-ab9c-0ba4aa1a724f": {
+    "platformId": "served-chromium-linux",
+    "stateSha256": "a82641f7e51af3c3f742670bf4908cede9c932a23d85d5f19cd5da5ef4223e93"
   }
 }
