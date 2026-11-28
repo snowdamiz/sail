@@ -594,4 +594,103 @@ describe("WorkspaceBundle", () => {
         }
       }).pipe(Effect.provide(makeTestLayer())),
   );
+
+  it.effect(
+    "passes validated strict-ancestor commit SHAs (not moving ref names) to git bundle create --not",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseVcsProcess = yield* VcsProcess.VcsProcess;
+
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-wb-sha-not-" });
+        const srcRepo = path.join(root, "src");
+        const dstRepo = path.join(root, "dst");
+        const bundlePath = path.join(root, "sha-not.bundle");
+
+        yield* fs.makeDirectory(srcRepo, { recursive: true });
+        yield* git(srcRepo, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(srcRepo, "file.txt"), "c1\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "c1"]);
+        const c1Sha = (yield* git(srcRepo, ["rev-parse", "HEAD"])).trim();
+
+        // Clone destination at c1 only.
+        yield* git(root, ["clone", srcRepo, dstRepo]);
+
+        // Set refs/remotes/origin/main to c1 in srcRepo, then create c2 ahead of it.
+        yield* git(srcRepo, ["update-ref", "refs/remotes/origin/main", c1Sha]);
+        yield* git(srcRepo, ["checkout", "-b", "feat/sha-race"]);
+        yield* fs.writeFileString(path.join(srcRepo, "file.txt"), "c2\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "c2"]);
+        const c2Sha = (yield* git(srcRepo, ["rev-parse", "HEAD"])).trim();
+        expect(c2Sha).not.toBe(c1Sha);
+
+        // Wrap VcsProcess to advance refs/remotes/origin/main -> c2 (HEAD) right after
+        // checkBaseRef validates c1, simulating a concurrent `git fetch` racing bundle creation.
+        const recordedBundleArgs: Array<ReadonlyArray<string>> = [];
+        let advancedRef = false;
+        const racingVcsLayer = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) =>
+            Effect.gen(function* () {
+              if (runInput.operation === "WorkspaceBundle.createIncrementalBundle") {
+                recordedBundleArgs.push(runInput.args);
+              }
+              const result = yield* baseVcsProcess.run(runInput);
+              if (runInput.operation === "WorkspaceBundle.checkBaseRef" && !advancedRef) {
+                advancedRef = true;
+                yield* baseVcsProcess.run({
+                  operation: "WorkspaceBundle.test.raceAdvanceRef",
+                  command: "git",
+                  args: ["update-ref", "refs/remotes/origin/main", c2Sha],
+                  cwd: srcRepo,
+                  env: GIT_TEST_ENV,
+                  timeoutMs: 15_000,
+                });
+              }
+              return result;
+            }),
+        });
+
+        const racingBundleLayer = Layer.fresh(WorkspaceBundle.layer).pipe(
+          Layer.provide(racingVcsLayer),
+        );
+
+        const exported = yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          return yield* svc.exportWorkspaceBundle({
+            transferId: "xfer-sha-race",
+            cwd: srcRepo,
+            outputPath: bundlePath,
+            sharedRemoteRefs: ["refs/remotes/origin/main"],
+          });
+        }).pipe(Effect.provide(racingBundleLayer));
+
+        expect(advancedRef).toBe(true);
+        expect(exported.incremental).toBe(true);
+        expect(exported.baseRef).toBe("refs/remotes/origin/main");
+        expect(exported.headSha).toBe(c2Sha);
+
+        // Verify git bundle create received the immutable validated commit SHA, not the moving ref name.
+        expect(recordedBundleArgs).toHaveLength(1);
+        const args = recordedBundleArgs[0]!;
+        const notIdx = args.indexOf("--not");
+        expect(notIdx).toBeGreaterThan(-1);
+        expect(args.slice(notIdx + 1)).toEqual([c1Sha]);
+        expect(args).not.toContain("refs/remotes/origin/main");
+
+        // Destination (at c1) imports the bundle cleanly and checks out c2.
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const imported = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-sha-race",
+          repoCwd: dstRepo,
+          bundlePath,
+          sourceBranch: exported.branch,
+          targetLabel: "boat",
+        });
+        expect(imported.headSha).toBe(c2Sha);
+        expect(yield* fs.readFileString(path.join(imported.worktreePath, "file.txt"))).toBe("c2\n");
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
 });

@@ -666,8 +666,7 @@ export const layerSessionTransferBundleDownloadRoute = HttpRouter.add(
       return HttpServerResponse.text(bundle.detail, { status: bundle.status });
     }
 
-    const fileSystem = yield* FileSystem.FileSystem;
-    return HttpServerResponse.stream(fileSystem.stream(bundle.filePath), {
+    return HttpServerResponse.stream(bundle.stream, {
       status: 200,
       contentType: "application/octet-stream",
       contentLength: bundle.sizeBytes,

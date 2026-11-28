@@ -15,6 +15,7 @@ import {
   MessageId,
   type ModelSelection,
   NodeId,
+  type OrchestrationMessageContext,
   type OrchestrationV2AppThread,
   type OrchestrationV2ContextHandoff,
   type OrchestrationV2ConversationMessage,
@@ -55,6 +56,7 @@ import {
   TurnItemId,
   type UserInputAttachmentAnswerPayload,
 } from "@t3tools/contracts";
+import { remapComposerContextAttachments } from "@t3tools/shared/composerContextReferences";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
@@ -115,7 +117,7 @@ const ACTIVE_SUBAGENT_STATUSES = new Set(["pending", "running", "waiting"]);
 interface SourceLockEntry {
   readonly transferId: SessionTransferId;
   readonly attemptId: string;
-  readonly phase: "preparing" | "prepared";
+  readonly phase: "preparing" | "prepared" | "cleaning";
 }
 
 interface StagedImportState {
@@ -223,16 +225,41 @@ function collectThreadAttachments(input: {
       byId.set(attachment.id, attachment);
     }
   };
+  const addContextAttachments = (context: OrchestrationMessageContext | undefined) => {
+    if (context === undefined) return;
+    for (const record of context.records) {
+      if (record.kind === "image" && "attachmentId" in record) {
+        addAttachment({
+          type: "image",
+          id: ChatAttachmentId.make(record.attachmentId),
+          name: record.name,
+          mimeType: record.mimeType,
+          sizeBytes: record.sizeBytes,
+          ...(record.source !== undefined ? { source: record.source } : {}),
+        });
+      } else if (record.kind === "file" && "attachmentId" in record) {
+        addAttachment({
+          type: "file",
+          id: ChatAttachmentId.make(record.attachmentId),
+          name: record.name,
+          mimeType: record.mimeType,
+          sizeBytes: record.sizeBytes,
+        });
+      }
+    }
+  };
   for (const message of input.messages) {
     for (const attachment of message.attachments) {
       addAttachment(attachment);
     }
+    addContextAttachments(message.context);
   }
   for (const item of input.turnItems) {
     if (item.type === "user_message") {
       for (const attachment of item.attachments) {
         addAttachment(attachment);
       }
+      addContextAttachments(item.context);
     } else if (item.type === "assistant_message" && item.attachments !== undefined) {
       for (const attachment of item.attachments) {
         addAttachment(attachment);
@@ -249,6 +276,7 @@ function collectThreadAttachments(input: {
     for (const attachment of run.attachments) {
       addAttachment(attachment);
     }
+    addContextAttachments(run.context);
   }
   return [...byId.values()];
 }
@@ -262,6 +290,20 @@ function rewriteAttachments(
     const mappedId = idMap.get(attachment.id);
     return mappedId === undefined ? attachment : { ...attachment, id: mappedId };
   });
+}
+
+function rewriteMessageContext(
+  context: OrchestrationMessageContext | undefined,
+  idMap: ReadonlyMap<ChatAttachmentId, ChatAttachmentId>,
+): OrchestrationMessageContext | undefined {
+  if (context === undefined || idMap.size === 0) return context;
+  const before: Array<{ readonly id: string }> = [];
+  const after: Array<{ readonly id: string }> = [];
+  for (const [sourceId, destinationId] of idMap) {
+    before.push({ id: sourceId });
+    after.push({ id: destinationId });
+  }
+  return remapComposerContextAttachments(context, before, after);
 }
 
 function rewriteQuestionAnswerAttachments(
@@ -290,10 +332,15 @@ function rewriteQuestionAnswerAttachments(
 function isProjectionLive(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "attempts" | "providerTurns">,
 ): boolean {
+  const queuedRunIds = new Set(
+    projection.runs.filter((run) => run.status === "queued").map((run) => run.id),
+  );
   return (
-    projection.runs.some((run) => WORKING_RUN_STATUSES.has(run.status)) ||
+    projection.runs.some((run) => ThreadManagementService.isActiveRun(run)) ||
     projection.attempts.some(
-      (attempt) => attempt.status === "pending" || attempt.status === "running",
+      (attempt) =>
+        !queuedRunIds.has(attempt.runId) &&
+        (attempt.status === "pending" || attempt.status === "running"),
     ) ||
     projection.providerTurns.some((turn) => turn.status === "running")
   );
@@ -380,11 +427,7 @@ function collectPendingRequestsFromProjection(
     const isPendingSecret = item.secretStatus === "pending";
     let isCancelledByStop = false;
     if (!isPendingSecret && item.secretStatus === "cancelled" && item.completedAt !== null) {
-      const associatedRun =
-        item.runId !== null
-          ? (stoppedRunsById.get(item.runId) ??
-            projection.runs.find((run) => run.id === item.runId && run.status === "interrupted"))
-          : undefined;
+      const associatedRun = item.runId !== null ? stoppedRunsById.get(item.runId) : undefined;
       if (
         associatedRun !== undefined &&
         associatedRun.completedAt !== null &&
@@ -521,40 +564,49 @@ const make = Effect.gen(function* () {
   );
   const stagedImports = yield* Ref.make(new Map<SessionTransferId, StagedImportState>());
 
-  // Per-transferId serialization queue for destination commitImport / abort.
-  const transferCommitLocks = new Map<
-    SessionTransferId,
+  // Canonical-order keyed serialization locks for destination stageImport / commitImport / abort.
+  const destinationLocks = new Map<
+    string,
     { readonly semaphore: Semaphore.Semaphore; activeCount: number }
   >();
 
-  const withTransferCommitLock = <A, E, R>(
-    transferId: SessionTransferId,
+  const transferLockKey = (transferId: SessionTransferId): string => `transfer:${transferId}`;
+  const threadLockKey = (threadId: ThreadId): string => `thread:${threadId}`;
+
+  const withKeyedLocks = <A, E, R>(
+    rawKeys: ReadonlyArray<string>,
     effect: Effect.Effect<A, E, R>,
-  ): Effect.Effect<A, E, R> =>
-    Effect.suspend(() => {
-      let entry = transferCommitLocks.get(transferId);
-      if (entry === undefined) {
-        entry = { semaphore: Semaphore.makeUnsafe(1), activeCount: 0 };
-        transferCommitLocks.set(transferId, entry);
-      }
-      entry.activeCount += 1;
-      const lockedEntry = entry;
-      return lockedEntry.semaphore
-        .withPermits(1)(effect)
-        .pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              lockedEntry.activeCount -= 1;
-              if (
-                lockedEntry.activeCount === 0 &&
-                transferCommitLocks.get(transferId) === lockedEntry
-              ) {
-                transferCommitLocks.delete(transferId);
-              }
-            }),
-          ),
-        );
-    });
+  ): Effect.Effect<A, E, R> => {
+    const sortedKeys = [...new Set(rawKeys)].toSorted();
+    return sortedKeys.reduceRight(
+      (inner, lockKey) =>
+        Effect.suspend(() => {
+          let entry = destinationLocks.get(lockKey);
+          if (entry === undefined) {
+            entry = { semaphore: Semaphore.makeUnsafe(1), activeCount: 0 };
+            destinationLocks.set(lockKey, entry);
+          }
+          entry.activeCount += 1;
+          const lockedEntry = entry;
+          return lockedEntry.semaphore
+            .withPermits(1)(inner)
+            .pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  lockedEntry.activeCount -= 1;
+                  if (
+                    lockedEntry.activeCount === 0 &&
+                    destinationLocks.get(lockKey) === lockedEntry
+                  ) {
+                    destinationLocks.delete(lockKey);
+                  }
+                }),
+              ),
+            );
+        }),
+      effect,
+    );
+  };
 
   const runWithAssetContext = <A, E>(
     effect: Effect.Effect<
@@ -811,17 +863,27 @@ const make = Effect.gen(function* () {
   )(function* (input) {
     const attemptId = yield* secureRandom.uuidV4();
 
-    // Atomically inspect and acquire/check per-thread source lock with phase & attemptId.
-    type SourceLockOutcome = "conflict_other" | "conflict_preparing" | "prepared" | "acquired";
+    // Atomically inspect and acquire/check source lock guarding BOTH threadId AND transferId.
+    type SourceLockOutcome =
+      | "conflict_other"
+      | "conflict_transfer_id"
+      | "conflict_preparing"
+      | "prepared"
+      | "acquired";
     const lockOutcome: SourceLockOutcome = yield* Ref.modify(
       sourceLocks,
       (current): readonly [SourceLockOutcome, Map<ThreadId, SourceLockEntry>] => {
+        for (const [lockedThreadId, entry] of current) {
+          if (lockedThreadId !== input.threadId && entry.transferId === input.transferId) {
+            return ["conflict_transfer_id", current];
+          }
+        }
         const holder = current.get(input.threadId);
         if (holder !== undefined) {
           if (holder.transferId !== input.transferId) {
             return ["conflict_other", current];
           }
-          if (holder.phase === "preparing") {
+          if (holder.phase === "preparing" || holder.phase === "cleaning") {
             return ["conflict_preparing", current];
           }
           return ["prepared", current];
@@ -835,6 +897,14 @@ const make = Effect.gen(function* () {
         return ["acquired", next];
       },
     );
+
+    if (lockOutcome === "conflict_transfer_id") {
+      return yield* new SessionTransferError({
+        code: "already_in_flight",
+        transferId: input.transferId,
+        message: `Session transfer '${input.transferId}' is already in flight for another source thread.`,
+      });
+    }
 
     if (lockOutcome === "conflict_other") {
       return yield* new SessionTransferError({
@@ -872,6 +942,11 @@ const make = Effect.gen(function* () {
 
       // Prepared staging bundle disappeared externally: atomically re-claim preparing phase.
       const reclaimed = yield* Ref.modify(sourceLocks, (current) => {
+        for (const [lockedThreadId, entry] of current) {
+          if (lockedThreadId !== input.threadId && entry.transferId === input.transferId) {
+            return [false, current] as const;
+          }
+        }
         const holder = current.get(input.threadId);
         if (
           holder !== undefined &&
@@ -896,6 +971,8 @@ const make = Effect.gen(function* () {
       }
     }
 
+    // Remove staging files and cache entries BEFORE releasing the source lock so an immediate
+    // retry cannot race with cleanup deleting files underneath it.
     const cleanupOnOwnError = Effect.gen(function* () {
       const owned = yield* Ref.modify(sourceLocks, (current) => {
         const holder = current.get(input.threadId);
@@ -903,12 +980,39 @@ const make = Effect.gen(function* () {
           return [false, current] as const;
         }
         const next = new Map(current);
-        next.delete(input.threadId);
+        next.set(input.threadId, {
+          ...holder,
+          phase: "cleaning",
+        });
         return [true, next] as const;
       });
-      if (owned) {
-        yield* runWithAssetContext(cleanupTransferStagingDir(input.transferId)).pipe(Effect.ignore);
-      }
+      if (!owned) return;
+
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          yield* Ref.update(preparedSources, (current) => {
+            const existing = current.get(input.transferId);
+            if (existing === undefined || existing.manifest.sourceThreadId !== input.threadId) {
+              return current;
+            }
+            const next = new Map(current);
+            next.delete(input.transferId);
+            return next;
+          });
+          yield* runWithAssetContext(cleanupTransferStagingDir(input.transferId)).pipe(
+            Effect.ignore,
+          );
+        }),
+        Ref.update(sourceLocks, (current) => {
+          const holder = current.get(input.threadId);
+          if (holder === undefined || holder.attemptId !== attemptId) {
+            return current;
+          }
+          const next = new Map(current);
+          next.delete(input.threadId);
+          return next;
+        }),
+      );
     });
 
     return yield* Effect.gen(function* () {
@@ -940,14 +1044,11 @@ const make = Effect.gen(function* () {
 
       const initialRunStatusById = new Map(projection.runs.map((run) => [run.id, run.status]));
       const initialActiveRunIds = new Set(
-        projection.runs.filter((run) => WORKING_RUN_STATUSES.has(run.status)).map((run) => run.id),
+        projection.runs
+          .filter((run) => ThreadManagementService.isActiveRun(run))
+          .map((run) => run.id),
       );
-      const wasRunning =
-        initialActiveRunIds.size > 0 ||
-        projection.attempts.some(
-          (attempt) => attempt.status === "pending" || attempt.status === "running",
-        ) ||
-        projection.providerTurns.some((turn) => turn.status === "running");
+      const wasRunning = isProjectionLive(projection);
       const initialPendingRequests = collectPendingRequestsFromProjection(
         projection,
         initialActiveRunIds,
@@ -1027,8 +1128,10 @@ const make = Effect.gen(function* () {
       for (const run of projection.runs) {
         const previousStatus = initialRunStatusById.get(run.id);
         if (
-          previousStatus === undefined ||
-          (WORKING_RUN_STATUSES.has(previousStatus) && run.status !== previousStatus)
+          (previousStatus === undefined && run.status !== "queued") ||
+          (previousStatus !== undefined &&
+            WORKING_RUN_STATUSES.has(previousStatus) &&
+            run.status !== previousStatus)
         ) {
           stoppedRunIds.add(run.id);
         }
@@ -1070,6 +1173,7 @@ const make = Effect.gen(function* () {
           return {
             runId: run.id,
             text: message?.text ?? "",
+            ...(message?.context !== undefined ? { context: message.context } : {}),
             attachments: message?.attachments ?? [],
             modelSelection: run.modelSelection,
             runtimeMode: projection.thread.runtimeMode,
@@ -1361,168 +1465,177 @@ const make = Effect.gen(function* () {
   const stageImport: SessionTransferEndpointServiceShape["stageImport"] = Effect.fn(
     "SessionTransferEndpointService.stageImport",
   )(function* (input) {
-    const targetProjectId = input.targetProjectId ?? input.manifest.sourceProjectId;
-    const projectOption = yield* projectService.getById(targetProjectId).pipe(
-      Effect.mapError(
-        (cause) =>
-          new SessionTransferError({
-            code: "internal",
+    return yield* withKeyedLocks(
+      [transferLockKey(input.transferId)],
+      Effect.gen(function* () {
+        const targetProjectId = input.targetProjectId ?? input.manifest.sourceProjectId;
+        const projectOption = yield* projectService.getById(targetProjectId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new SessionTransferError({
+                code: "internal",
+                transferId: input.transferId,
+                message: `Failed to inspect target project '${targetProjectId}'.`,
+                cause,
+              }),
+          ),
+        );
+        if (Option.isNone(projectOption)) {
+          return yield* new SessionTransferError({
+            code: "not_found",
             transferId: input.transferId,
-            message: `Failed to inspect target project '${targetProjectId}'.`,
-            cause,
-          }),
-      ),
-    );
-    if (Option.isNone(projectOption)) {
-      return yield* new SessionTransferError({
-        code: "not_found",
-        transferId: input.transferId,
-        message: `Target project '${targetProjectId}' was not found on destination.`,
-      });
-    }
-    const project = projectOption.value;
+            message: `Target project '${targetProjectId}' was not found on destination.`,
+          });
+        }
+        const project = projectOption.value;
 
-    const { resolvedModelSelection, warnings: modelWarnings } =
-      yield* resolveDestinationModelSelection({
-        transferId: input.transferId,
-        manifest: input.manifest,
-        ...(input.modelSelectionOverride !== undefined
-          ? { override: input.modelSelectionOverride }
-          : {}),
-      });
+        const { resolvedModelSelection, warnings: modelWarnings } =
+          yield* resolveDestinationModelSelection({
+            transferId: input.transferId,
+            manifest: input.manifest,
+            ...(input.modelSelectionOverride !== undefined
+              ? { override: input.modelSelectionOverride }
+              : {}),
+          });
 
-    // Idempotently reuse destinationThreadId keyed by transferId.
-    const existingStaged = (yield* Ref.get(stagedImports)).get(input.transferId);
-    const destinationThreadId =
-      existingStaged?.destinationThreadId ?? deterministicDestinationThreadId(input.transferId);
+        // Idempotently reuse destinationThreadId keyed by transferId.
+        const existingStaged = (yield* Ref.get(stagedImports)).get(input.transferId);
+        const destinationThreadId =
+          existingStaged?.destinationThreadId ?? deterministicDestinationThreadId(input.transferId);
 
-    // Ensure staging directory exists for bundle upload.
-    const stagingDir = resolveTransferStagingDir(serverConfig.stateDir, input.transferId, path);
-    if (stagingDir === null) {
-      return yield* new SessionTransferError({
-        code: "workspace_error",
-        transferId: input.transferId,
-        message: `Invalid transfer identifier '${input.transferId}'.`,
-      });
-    }
-    yield* fileSystem.makeDirectory(stagingDir, { recursive: true }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new SessionTransferError({
+        // Ensure staging directory exists for bundle upload.
+        const stagingDir = resolveTransferStagingDir(serverConfig.stateDir, input.transferId, path);
+        if (stagingDir === null) {
+          return yield* new SessionTransferError({
             code: "workspace_error",
             transferId: input.transferId,
-            message: `Failed to prepare transfer staging directory.`,
-            cause,
-          }),
-      ),
-    );
-
-    let bundleUploadRelativeUrl: TrimmedNonEmptyStringValue | null = null;
-    let bundleUploadExpiresAt: IsoDateTime | null = null;
-    if (input.manifest.workspace.mode === "git_bundle") {
-      // Verify destination project has a git repository before accepting a git bundle.
-      const gitMarkerExists = yield* fileSystem
-        .exists(path.join(project.workspaceRoot, ".git"))
-        .pipe(Effect.orElseSucceed(() => false));
-      if (!gitMarkerExists) {
-        return yield* new SessionTransferError({
-          code: "workspace_error",
-          transferId: input.transferId,
-          message: `Destination project '${project.title}' at '${project.workspaceRoot}' is not a Git repository.`,
-        });
-      }
-
-      const issuedUpload = yield* runWithAssetContext(
-        issueSessionTransferBundleUrl({
-          transferId: input.transferId,
-          operation: "upload",
-          ...(input.manifest.workspace.bundleSha256 !== null
-            ? { expectedSha256: input.manifest.workspace.bundleSha256 }
-            : {}),
-        }),
-      ).pipe(
-        Effect.mapError(
-          (cause) =>
-            new SessionTransferError({
-              code: "internal",
-              transferId: input.transferId,
-              message: cause.message,
-              cause,
-            }),
-        ),
-      );
-      bundleUploadRelativeUrl = TrimmedNonEmptyString.make(issuedUpload.relativeUrl);
-      bundleUploadExpiresAt = issuedUpload.expiresAt;
-    }
-
-    const warnings = [...modelWarnings];
-    const attachmentUploads: SessionTransferAttachmentUploadTarget[] = [];
-    for (const attachment of input.manifest.attachments) {
-      const uploadInput = buildAttachmentUploadInput(attachment);
-      if (uploadInput === null || attachment.downloadRelativeUrl === undefined) {
-        warnings.push(
-          `Attachment '${attachment.name}' has no downloadable payload; destination will preserve a metadata stub.`,
+            message: `Invalid transfer identifier '${input.transferId}'.`,
+          });
+        }
+        yield* fileSystem.makeDirectory(stagingDir, { recursive: true }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new SessionTransferError({
+                code: "workspace_error",
+                transferId: input.transferId,
+                message: `Failed to prepare transfer staging directory.`,
+                cause,
+              }),
+          ),
         );
-        continue;
-      }
 
-      const uploadTarget = yield* runWithAssetContext(issueAttachmentUploadUrl(uploadInput)).pipe(
-        Effect.mapError(
-          (cause) =>
-            new SessionTransferError({
-              code: "attachment_error",
+        let bundleUploadRelativeUrl: TrimmedNonEmptyStringValue | null = null;
+        let bundleUploadExpiresAt: IsoDateTime | null = null;
+        if (input.manifest.workspace.mode === "git_bundle") {
+          // Verify destination project has a git repository before accepting a git bundle.
+          const gitMarkerExists = yield* fileSystem
+            .exists(path.join(project.workspaceRoot, ".git"))
+            .pipe(Effect.orElseSucceed(() => false));
+          if (!gitMarkerExists) {
+            return yield* new SessionTransferError({
+              code: "workspace_error",
               transferId: input.transferId,
-              message: `Failed to mint attachment upload URL for '${attachment.name}': ${cause.message}`,
-              cause,
+              message: `Destination project '${project.title}' at '${project.workspaceRoot}' is not a Git repository.`,
+            });
+          }
+
+          const issuedUpload = yield* runWithAssetContext(
+            issueSessionTransferBundleUrl({
+              transferId: input.transferId,
+              operation: "upload",
+              ...(input.manifest.workspace.bundleSha256 !== null
+                ? { expectedSha256: input.manifest.workspace.bundleSha256 }
+                : {}),
             }),
-        ),
-      );
+          ).pipe(
+            Effect.mapError(
+              (cause) =>
+                new SessionTransferError({
+                  code: "internal",
+                  transferId: input.transferId,
+                  message: cause.message,
+                  cause,
+                }),
+            ),
+          );
+          bundleUploadRelativeUrl = TrimmedNonEmptyString.make(issuedUpload.relativeUrl);
+          bundleUploadExpiresAt = issuedUpload.expiresAt;
+        }
 
-      attachmentUploads.push({
-        sourceAttachmentId: attachment.attachmentId,
-        destinationAttachmentId: ChatAttachmentId.make(uploadTarget.attachmentId),
-        uploadRelativeUrl: TrimmedNonEmptyString.make(uploadTarget.relativeUrl),
-        expiresAt: IsoDateTime.make(
-          DateTime.formatIso(DateTime.makeUnsafe(uploadTarget.expiresAt)),
-        ),
-      });
-    }
+        const warnings = [...modelWarnings];
+        const attachmentUploads: SessionTransferAttachmentUploadTarget[] = [];
+        for (const attachment of input.manifest.attachments) {
+          const uploadInput = buildAttachmentUploadInput(attachment);
+          if (uploadInput === null || attachment.downloadRelativeUrl === undefined) {
+            warnings.push(
+              `Attachment '${attachment.name}' has no downloadable payload; destination will preserve a metadata stub.`,
+            );
+            continue;
+          }
 
-    yield* Ref.update(stagedImports, (map) => {
-      const next = new Map(map);
-      next.set(input.transferId, {
-        transferId: input.transferId,
-        destinationProjectId: project.id,
-        projectWorkspaceRoot: project.workspaceRoot,
-        destinationThreadId,
-        resolvedModelSelection,
-        attachmentUploads,
-        claimedAttachmentIds: existingStaged?.claimedAttachmentIds ?? {},
-        warnings,
-        worktreePath: existingStaged?.worktreePath ?? null,
-        branch: existingStaged?.branch ?? null,
-        createdBranch: existingStaged?.createdBranch ?? false,
-        committed: existingStaged?.committed ?? false,
-        handoffComplete: existingStaged?.handoffComplete ?? false,
-        committedResult: existingStaged?.committedResult ?? null,
-      });
-      return next;
-    });
+          const uploadTarget = yield* runWithAssetContext(
+            issueAttachmentUploadUrl(uploadInput),
+          ).pipe(
+            Effect.mapError(
+              (cause) =>
+                new SessionTransferError({
+                  code: "attachment_error",
+                  transferId: input.transferId,
+                  message: `Failed to mint attachment upload URL for '${attachment.name}': ${cause.message}`,
+                  cause,
+                }),
+            ),
+          );
 
-    return {
-      destinationProjectId: project.id,
-      destinationThreadId,
-      destinationBranch: existingStaged?.branch ?? null,
-      destinationWorktreePath:
-        existingStaged?.worktreePath !== null && existingStaged?.worktreePath !== undefined
-          ? TrimmedNonEmptyString.make(existingStaged.worktreePath)
-          : null,
-      resolvedModelSelection,
-      bundleUploadRelativeUrl,
-      bundleUploadExpiresAt,
-      attachmentUploads,
-      warnings,
-    } satisfies SessionTransferStageImportResult;
+          attachmentUploads.push({
+            sourceAttachmentId: attachment.attachmentId,
+            destinationAttachmentId: ChatAttachmentId.make(uploadTarget.attachmentId),
+            uploadRelativeUrl: TrimmedNonEmptyString.make(uploadTarget.relativeUrl),
+            expiresAt: IsoDateTime.make(
+              DateTime.formatIso(DateTime.makeUnsafe(uploadTarget.expiresAt)),
+            ),
+          });
+        }
+
+        const updatedStaged = yield* Ref.modify(stagedImports, (map) => {
+          const prev = map.get(input.transferId);
+          const nextState: StagedImportState = {
+            transferId: input.transferId,
+            destinationProjectId: project.id,
+            projectWorkspaceRoot: project.workspaceRoot,
+            destinationThreadId: prev?.destinationThreadId ?? destinationThreadId,
+            resolvedModelSelection,
+            attachmentUploads,
+            claimedAttachmentIds: prev?.claimedAttachmentIds ?? {},
+            warnings,
+            worktreePath: prev?.worktreePath ?? null,
+            branch: prev?.branch ?? null,
+            createdBranch: prev?.createdBranch ?? false,
+            committed: prev?.committed ?? false,
+            handoffComplete: prev?.handoffComplete ?? false,
+            committedResult: prev?.committedResult ?? null,
+          };
+          const next = new Map(map);
+          next.set(input.transferId, nextState);
+          return [nextState, next] as const;
+        });
+
+        return {
+          destinationProjectId: project.id,
+          destinationThreadId: updatedStaged.destinationThreadId,
+          destinationBranch: updatedStaged.branch,
+          destinationWorktreePath:
+            updatedStaged.worktreePath !== null
+              ? TrimmedNonEmptyString.make(updatedStaged.worktreePath)
+              : null,
+          resolvedModelSelection,
+          bundleUploadRelativeUrl,
+          bundleUploadExpiresAt,
+          attachmentUploads,
+          warnings,
+        } satisfies SessionTransferStageImportResult;
+      }),
+    );
   });
 
   const completePostCommitHandoff = Effect.fn(
@@ -1560,7 +1673,7 @@ const make = Effect.gen(function* () {
 
       const continuationAlreadyStarted =
         records.messages.some((message) => message.id === resumeMessageId) ||
-        records.runs.some((run) => run.status !== "queued");
+        records.runs.some((run) => run.userMessageId === resumeMessageId);
 
       if (continuationAlreadyStarted) {
         resumed = true;
@@ -1640,8 +1753,8 @@ const make = Effect.gen(function* () {
   const commitImport: SessionTransferEndpointServiceShape["commitImport"] = Effect.fn(
     "SessionTransferEndpointService.commitImport",
   )(function* (input) {
-    return yield* withTransferCommitLock(
-      input.transferId,
+    return yield* withKeyedLocks(
+      [transferLockKey(input.transferId), threadLockKey(input.destinationThreadId)],
       Effect.gen(function* () {
         const hasPendingSecretInManifest = input.manifest.turnItems.some(
           (item) => item.type === "secret_request" && item.secretStatus === "pending",
@@ -2059,12 +2172,14 @@ const make = Effect.gen(function* () {
           if (sourceMessage.runId !== null && heldQueuedRunIds.has(sourceMessage.runId)) {
             continue;
           }
+          const rewrittenContext = rewriteMessageContext(sourceMessage.context, claimedIdMap);
           const rewrittenMessage: OrchestrationV2ConversationMessage = {
             ...sourceMessage,
             id: remapMessageId(sourceMessage.id),
             threadId: input.destinationThreadId,
             runId: null,
             nodeId: sourceMessage.nodeId !== null ? remapNodeId(sourceMessage.nodeId) : null,
+            ...(rewrittenContext !== undefined ? { context: rewrittenContext } : {}),
             attachments: rewriteAttachments(sourceMessage.attachments, claimedIdMap),
           };
           events.push({
@@ -2097,9 +2212,11 @@ const make = Effect.gen(function* () {
 
           let rewrittenItem: OrchestrationV2TurnItem;
           if (sourceItem.type === "user_message") {
+            const rewrittenContext = rewriteMessageContext(sourceItem.context, claimedIdMap);
             rewrittenItem = {
               ...baseRewritten,
               messageId: remapMessageId(sourceItem.messageId),
+              ...(rewrittenContext !== undefined ? { context: rewrittenContext } : {}),
               attachments: rewriteAttachments(sourceItem.attachments, claimedIdMap),
             } as OrchestrationV2TurnItem;
           } else if (sourceItem.type === "assistant_message") {
@@ -2198,6 +2315,7 @@ const make = Effect.gen(function* () {
             const queuedAttemptId = RunAttemptId.make(`xfer-qatt:${key}:${i}`);
             const requestedAt = DateTime.makeUnsafe(queued.requestedAt);
             const queuedAttachments = rewriteAttachments(queued.attachments, claimedIdMap);
+            const queuedContext = rewriteMessageContext(queued.context, claimedIdMap);
             const queuedSelection: ModelSelection =
               queued.modelSelection === null || queued.modelSelection === undefined
                 ? resolvedModelSelection
@@ -2306,6 +2424,7 @@ const make = Effect.gen(function* () {
                   nodeId: queuedNodeId,
                   role: "user",
                   text: queued.text,
+                  ...(queuedContext !== undefined ? { context: queuedContext } : {}),
                   attachments: queuedAttachments,
                   streaming: false,
                   createdAt: requestedAt,
@@ -2499,20 +2618,36 @@ const make = Effect.gen(function* () {
       archived = true;
     }
 
-    // Release source transfer lock and delete temporary export bundle files.
+    // Delete temporary export bundle files & cache BEFORE releasing the source lock.
+    const finalizeAttemptId = yield* secureRandom.uuidV4();
     yield* Ref.update(sourceLocks, (current) => {
-      if (current.get(input.threadId)?.transferId !== input.transferId) return current;
+      const holder = current.get(input.threadId);
+      if (holder?.transferId !== input.transferId) return current;
       const next = new Map(current);
-      next.delete(input.threadId);
+      next.set(input.threadId, {
+        ...holder,
+        attemptId: finalizeAttemptId,
+        phase: "cleaning",
+      });
       return next;
     });
-    yield* Ref.update(preparedSources, (current) => {
-      if (!current.has(input.transferId)) return current;
-      const next = new Map(current);
-      next.delete(input.transferId);
-      return next;
-    });
-    yield* runWithAssetContext(cleanupTransferStagingDir(input.transferId)).pipe(Effect.ignore);
+    yield* Effect.ensuring(
+      Effect.gen(function* () {
+        yield* Ref.update(preparedSources, (current) => {
+          if (!current.has(input.transferId)) return current;
+          const next = new Map(current);
+          next.delete(input.transferId);
+          return next;
+        });
+        yield* runWithAssetContext(cleanupTransferStagingDir(input.transferId)).pipe(Effect.ignore);
+      }),
+      Ref.update(sourceLocks, (current) => {
+        if (current.get(input.threadId)?.attemptId !== finalizeAttemptId) return current;
+        const next = new Map(current);
+        next.delete(input.threadId);
+        return next;
+      }),
+    );
 
     return { archived } satisfies SessionTransferFinalizeSourceResult;
   });
@@ -2521,45 +2656,58 @@ const make = Effect.gen(function* () {
     "SessionTransferEndpointService.abort",
   )(function* (input) {
     if (input.role === "source") {
-      const releasedLock = yield* Ref.modify(sourceLocks, (current) => {
-        let removed = false;
+      const abortAttemptId = yield* secureRandom.uuidV4();
+      const claimedLock = yield* Ref.modify(sourceLocks, (current) => {
+        let claimed = false;
         const next = new Map(current);
-        if (
-          input.threadId !== undefined &&
-          next.get(input.threadId)?.transferId === input.transferId
-        ) {
-          next.delete(input.threadId);
-          removed = true;
-        }
         for (const [threadId, holder] of next) {
           if (holder.transferId === input.transferId) {
-            next.delete(threadId);
-            removed = true;
+            next.set(threadId, {
+              ...holder,
+              attemptId: abortAttemptId,
+              phase: "cleaning",
+            });
+            claimed = true;
           }
         }
-        return [removed, next] as const;
+        return [claimed, next] as const;
       });
 
-      const removedCache = yield* Ref.modify(preparedSources, (current) => {
-        if (!current.has(input.transferId)) return [false, current] as const;
-        const next = new Map(current);
-        next.delete(input.transferId);
-        return [true, next] as const;
-      });
-
-      const deletedStaging = yield* runWithAssetContext(
-        cleanupTransferStagingDir(input.transferId),
-      ).pipe(Effect.orElseSucceed(() => false));
+      const { removedCache, deletedStaging } = yield* Effect.ensuring(
+        Effect.gen(function* () {
+          const removedCache = yield* Ref.modify(preparedSources, (current) => {
+            if (!current.has(input.transferId)) return [false, current] as const;
+            const next = new Map(current);
+            next.delete(input.transferId);
+            return [true, next] as const;
+          });
+          const deletedStaging = yield* runWithAssetContext(
+            cleanupTransferStagingDir(input.transferId),
+          ).pipe(Effect.orElseSucceed(() => false));
+          return { removedCache, deletedStaging };
+        }),
+        Ref.update(sourceLocks, (current) => {
+          let changed = false;
+          const next = new Map(current);
+          for (const [threadId, holder] of next) {
+            if (holder.attemptId === abortAttemptId) {
+              next.delete(threadId);
+              changed = true;
+            }
+          }
+          return changed ? next : current;
+        }),
+      );
 
       return {
-        cleanedUp: releasedLock || removedCache || deletedStaging,
+        cleanedUp: claimedLock || removedCache || deletedStaging,
       } satisfies SessionTransferAbortResult;
     }
 
-    // Destination abort: serialized with commitImport per transferId, never deletes
+    // Destination abort: serialized with stageImport and commitImport per transferId, never deletes
     // an already-committed thread/worktree or a pre-existing branch not created by the transfer.
-    return yield* withTransferCommitLock(
-      input.transferId,
+    return yield* withKeyedLocks(
+      [transferLockKey(input.transferId)],
       Effect.gen(function* () {
         const staged = (yield* Ref.get(stagedImports)).get(input.transferId);
         const candidateThreadId =

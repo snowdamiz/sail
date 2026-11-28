@@ -15,6 +15,7 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ChatAttachment, ChatAttachmentId } from "./chatAttachment.ts";
+import { OrchestrationMessageContext } from "./composerContext.ts";
 import { RepositoryIdentity } from "./environment.ts";
 import { ThreadIssueLink } from "./issue.ts";
 import { ModelSelection } from "./modelSelection.ts";
@@ -132,6 +133,7 @@ export type SessionTransferAttachmentRef = typeof SessionTransferAttachmentRef.T
 export const SessionTransferQueuedRun = Schema.Struct({
   runId: RunId,
   text: Schema.String,
+  context: Schema.optional(OrchestrationMessageContext),
   attachments: Schema.Array(ChatAttachment),
   modelSelection: Schema.optional(ModelSelection),
   runtimeMode: Schema.optional(RuntimeMode),

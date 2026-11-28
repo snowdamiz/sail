@@ -674,10 +674,11 @@ const make = Effect.gen(function* () {
         createdRefs.push(worktreeRef);
       }
 
-      // Only exclude refs explicitly supplied by the caller in sharedRemoteRefs, filtered to
-      // strict ancestors of HEAD (never HEAD itself or non-ancestors) so refs/t3-transfer/.../head
-      // is always bundled and stale destination remotes never fail when sharedRemoteRefs is omitted.
-      const excludeRefs: string[] = [];
+      // Exclude only caller-supplied sharedRemoteRefs that are strict ancestors of HEAD so
+      // refs/t3-transfer/.../head is always bundled. Pass validated commit SHAs (not moving ref
+      // names) so a concurrent `git fetch` advancing a ref to HEAD cannot race with `--not`.
+      const excludeCommitShas: string[] = [];
+      const seenExcludeShas = new Set<string>();
       let baseRef: string | null = null;
       if (input.sharedRemoteRefs !== undefined && input.sharedRemoteRefs.length > 0) {
         for (const candidate of input.sharedRemoteRefs) {
@@ -701,7 +702,10 @@ const make = Effect.gen(function* () {
           if (isAncestor.exitCode !== 0) {
             continue;
           }
-          excludeRefs.push(candidate);
+          if (!seenExcludeShas.has(candidateSha)) {
+            seenExcludeShas.add(candidateSha);
+            excludeCommitShas.push(candidateSha);
+          }
           if (baseRef === null) {
             baseRef = candidate;
           }
@@ -722,11 +726,11 @@ const make = Effect.gen(function* () {
       const positiveRefs = [...createdRefs];
       let incremental = false;
 
-      if (excludeRefs.length > 0) {
+      if (excludeCommitShas.length > 0) {
         const countResult = yield* runReadOnlyGit(
           "WorkspaceBundle.countIncrementalCommits",
           repoTopLevel,
-          ["rev-list", "--count", ...positiveRefs, "--not", ...excludeRefs],
+          ["rev-list", "--count", ...positiveRefs, "--not", ...excludeCommitShas],
           { allowNonZeroExit: true },
         );
         const incrementalCount =
@@ -736,7 +740,7 @@ const make = Effect.gen(function* () {
           const incBundle = yield* runReadOnlyGit(
             "WorkspaceBundle.createIncrementalBundle",
             repoTopLevel,
-            ["bundle", "create", input.outputPath, ...positiveRefs, "--not", ...excludeRefs],
+            ["bundle", "create", input.outputPath, ...positiveRefs, "--not", ...excludeCommitShas],
             { allowNonZeroExit: true, timeoutMs: BUNDLE_TIMEOUT_MS },
           );
           if (incBundle.exitCode === 0) {

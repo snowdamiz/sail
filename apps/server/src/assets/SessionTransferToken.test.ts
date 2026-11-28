@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- utimesSync sets deterministic old mtimes for stale-file sweep tests and createHash verifies sha256.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
 import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
@@ -25,6 +26,7 @@ import * as AssetSigner from "./AssetSigner.ts";
 import {
   cleanupTransferStagingDir,
   issueSessionTransferBundleUrl,
+  resolveExportBundleForDownload,
   resolveExportBundlePath,
   resolveImportBundlePath,
   resolveTransferStagingDir,
@@ -523,6 +525,125 @@ describe("SessionTransferToken", () => {
         expect(swept.deletedDirs).toBe(1);
         expect(yield* fs.exists(staleDir)).toBe(false);
         expect(yield* fs.exists(freshPart)).toBe(true);
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "streams from the single verified FileHandle with zero TOCTOU on file replacement and closes descriptors on error/cancel",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const routeContext = yield* Effect.context<
+          | ServerConfig.ServerConfig
+          | FileSystem.FileSystem
+          | Path.Path
+          | AssetSigner.AssetSigner
+          | SecureRandom.SecureRandom
+        >();
+
+        const openedHandles: Array<NodeFSP.FileHandle> = [];
+        const trackHandle = (handle: NodeFSP.FileHandle) => {
+          openedHandles.push(handle);
+        };
+
+        const routesLayer = layerSessionTransferBundleDownloadRoute.pipe(
+          Layer.provideMerge(Layer.succeedContext(routeContext)),
+        );
+        const { handler, dispose } = HttpRouter.toWebHandler(routesLayer, { disableLogger: true });
+
+        try {
+          const transferId = "xfer-toctou-check";
+          const originalBytes = new Uint8Array(128 * 1024);
+          for (let i = 0; i < originalBytes.byteLength; i += 1) {
+            originalBytes[i] = i % 251;
+          }
+          const originalSha = NodeCrypto.createHash("sha256").update(originalBytes).digest("hex");
+
+          const exportPath = resolveExportBundlePath(config.stateDir, transferId, path)!;
+          yield* fs.makeDirectory(path.dirname(exportPath), { recursive: true });
+          yield* fs.writeFile(exportPath, originalBytes);
+
+          const issued = yield* issueSessionTransferBundleUrl({
+            transferId,
+            operation: "download",
+            expectedSizeBytes: originalBytes.byteLength,
+            expectedSha256: originalSha,
+          });
+          const claims = (yield* validateSessionTransferBundleToken(issued.token, "download"))!;
+
+          // 1. Verify open handle -> replace path atomically on disk BEFORE consuming stream.
+          const resolved = yield* resolveExportBundleForDownload(claims, {
+            onFileOpen: trackHandle,
+          });
+          expect(resolved.ok).toBe(true);
+          if (!resolved.ok) return;
+
+          const replacementPath = `${exportPath}.replacement`;
+          const tamperedBytes = new TextEncoder().encode("tampered-after-verification!");
+          NodeFS.writeFileSync(replacementPath, tamperedBytes);
+          NodeFS.renameSync(replacementPath, exportPath);
+
+          // Consuming the stream still yields the exact verified original bytes, never tampered bytes.
+          const chunks = yield* Stream.runCollect(resolved.stream);
+          const totalLen = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+          const collected = new Uint8Array(totalLen);
+          let cursor = 0;
+          for (const chunk of chunks) {
+            collected.set(chunk, cursor);
+            cursor += chunk.byteLength;
+          }
+          expect(collected).toEqual(originalBytes);
+
+          // 2. Replacing with wrong bytes (409 size mismatch and 409 SHA mismatch) closes descriptor immediately.
+          const sizeMismatch = yield* resolveExportBundleForDownload(claims, {
+            onFileOpen: trackHandle,
+          });
+          expect(sizeMismatch.ok).toBe(false);
+          if (!sizeMismatch.ok) {
+            expect(sizeMismatch.status).toBe(409);
+          }
+
+          const sameLenTampered = new Uint8Array(originalBytes);
+          sameLenTampered[0] = (sameLenTampered[0]! + 1) % 256;
+          yield* fs.writeFile(exportPath, sameLenTampered);
+          const shaMismatch = yield* resolveExportBundleForDownload(claims, {
+            onFileOpen: trackHandle,
+          });
+          expect(shaMismatch.ok).toBe(false);
+          if (!shaMismatch.ok) {
+            expect(shaMismatch.status).toBe(409);
+          }
+
+          // 3. Early stream interruption/cancellation also closes descriptor cleanly (no FD leak).
+          yield* fs.writeFile(exportPath, originalBytes);
+          const resolvedForCancel = yield* resolveExportBundleForDownload(claims, {
+            onFileOpen: trackHandle,
+          });
+          expect(resolvedForCancel.ok).toBe(true);
+          if (!resolvedForCancel.ok) return;
+          const partialChunks = yield* Stream.runCollect(Stream.take(resolvedForCancel.stream, 1));
+          expect(partialChunks.length).toBe(1);
+
+          // 4. HTTP route serves 200 and handles early web reader cancellation cleanly.
+          const cancelRes = yield* Effect.promise(() =>
+            handler(new Request(`http://127.0.0.1${issued.relativeUrl}`, { method: "GET" })),
+          );
+          expect(cancelRes.status).toBe(200);
+          const reader = cancelRes.body!.getReader();
+          const firstChunk = yield* Effect.promise(() => reader.read());
+          expect(firstChunk.done).toBe(false);
+          yield* Effect.promise(() => reader.cancel());
+
+          // Stream finalizers and error paths have already completed; assert ZERO leaked FDs.
+          expect(openedHandles).toHaveLength(4);
+          for (const handle of openedHandles) {
+            expect(handle.fd).toBe(-1);
+          }
+        } finally {
+          yield* Effect.promise(() => dispose());
+        }
       }).pipe(Effect.provide(makeTestLayer())),
   );
 });
