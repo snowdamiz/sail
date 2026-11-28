@@ -97,7 +97,7 @@ jobs:
       - name: Run web unit tests
         if: matrix.suite == 'web'
         working-directory: apps/web
-        run: vp test run --project unit src/components/desktopUpdate.logic.test.ts src/components/boats/ src/routes/welcomePage.logic.test.ts src/components/settings/providerReadiness.logic.test.ts
+        run: vp test run --project unit src/components/desktopUpdate.logic.test.ts src/components/boats/ src/onboarding/welcomePage.logic.test.ts src/onboarding/providerReadiness.logic.test.ts
 
   server-image-changes:
     name: Detect server image changes

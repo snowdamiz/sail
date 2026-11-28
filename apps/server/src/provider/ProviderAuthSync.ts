@@ -547,6 +547,16 @@ const make = Effect.gen(function* () {
     return path.resolve(path.join(piDir, "auth.json"));
   });
 
+  const hasInstanceEnvironmentVar = (
+    instance: ProviderInstanceConfig | undefined,
+    name: string,
+  ): boolean =>
+    instance?.environment?.some(
+      (entry) =>
+        entry.name.trim() === name &&
+        (typeof entry.value !== "string" || entry.value.trim().length > 0),
+    ) === true;
+
   const resolveClaudePathsForInstance = Effect.fn("ProviderAuthSync.resolveClaudePathsForInstance")(
     function* (
       instanceId: ProviderInstanceId,
@@ -554,29 +564,34 @@ const make = Effect.gen(function* () {
       createIsolatedIfNonDefault: boolean,
     ) {
       const env = yield* HostProcess.Environment;
+      const instanceEnv = yield* mergeProviderInstanceEnvironment(instance?.environment, env);
       const configuredHome = getStringField(instance?.config, "homePath").trim();
+      const explicitEnvHome = hasInstanceEnvironmentVar(instance, "CLAUDE_CONFIG_DIR")
+        ? (instanceEnv.CLAUDE_CONFIG_DIR?.trim() ?? "")
+        : "";
       const isDefault =
         instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make("claudeAgent"));
       let effectiveHomePath = configuredHome;
-      if (!effectiveHomePath && !isDefault && createIsolatedIfNonDefault) {
+      const shouldIsolate =
+        !configuredHome && !explicitEnvHome && !isDefault && createIsolatedIfNonDefault;
+      if (shouldIsolate) {
         effectiveHomePath = resolveIsolatedClaudeHomePath({
           stateDir: serverConfig.stateDir,
           instanceId,
           path,
         });
       }
-      const configDir = yield* resolveClaudeHomePath({ homePath: effectiveHomePath }, env);
+      const configDir = yield* resolveClaudeHomePath({ homePath: effectiveHomePath }, instanceEnv);
       const accountPath = yield* claudeAccountConfigPath(
-        effectiveHomePath.length > 0 ? configDir : env.CLAUDE_CONFIG_DIR?.trim() || undefined,
+        effectiveHomePath.length > 0
+          ? configDir
+          : instanceEnv.CLAUDE_CONFIG_DIR?.trim() || undefined,
       );
       return {
         configDir,
         credentialsPath: path.join(configDir, ".credentials.json"),
         accountPath,
-        isolatedHomePath:
-          !configuredHome && !isDefault && createIsolatedIfNonDefault
-            ? effectiveHomePath
-            : undefined,
+        isolatedHomePath: shouldIsolate ? effectiveHomePath : undefined,
       };
     },
   );
@@ -588,9 +603,21 @@ const make = Effect.gen(function* () {
     instance: ProviderInstanceConfig | undefined,
     createIsolatedIfNonDefault: boolean,
   ) {
+    const env = yield* HostProcess.Environment;
+    const home = yield* HostProcess.HomeDirectory;
+    const instanceEnv = yield* mergeProviderInstanceEnvironment(instance?.environment, env);
     const configuredHome = getStringField(instance?.config, "homePath").trim();
     const configuredShadow = getStringField(instance?.config, "shadowHomePath").trim();
+    const explicitEnvHome = hasInstanceEnvironmentVar(instance, "CODEX_HOME")
+      ? (instanceEnv.CODEX_HOME?.trim() ?? "")
+      : "";
     const isDefault = instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make("codex"));
+    if (!configuredHome && !configuredShadow && explicitEnvHome.length > 0) {
+      return {
+        authPath: path.join(path.resolve(expandHomePath(explicitEnvHome, home)), "auth.json"),
+        isolatedShadowHomePath: undefined,
+      };
+    }
     if (!configuredHome && !configuredShadow && !isDefault && createIsolatedIfNonDefault) {
       const isolatedShadow = resolveIsolatedCodexShadowHomePath({
         stateDir: serverConfig.stateDir,

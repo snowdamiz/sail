@@ -118,9 +118,14 @@ it.layer(NodeServices.layer)("build-cli-archive contents", (it) => {
         path.join(server, "builtin-skills/pstack/LICENSE"),
         "MIT License\n",
       );
+      const watchPrDir = path.join(builtinPstackSkillDir, "scripts/watch-pr");
+      yield* fs.makeDirectory(watchPrDir, { recursive: true });
       const helperScript = path.join(builtinPstackScriptDir, "statechart");
       yield* fs.writeFileString(helperScript, "#!/bin/sh\nexit 0\n");
       yield* fs.chmod(helperScript, 0o755);
+      const watchPrScript = path.join(watchPrDir, "watch-pr");
+      yield* fs.writeFileString(watchPrScript, "#!/bin/sh\nexit 0\n");
+      yield* fs.chmod(watchPrScript, 0o755);
       yield* fs.writeFileString(path.join(monitor, "t3-resource-monitor"), "Monitor fixture");
       yield* fs.writeFileString(boatd, "Boat fixture");
       for (const entry of ["pnpm-workspace.yaml", "patches"]) {
@@ -159,6 +164,7 @@ it.layer(NodeServices.layer)("build-cli-archive contents", (it) => {
         `${stem}/builtin-skills/pstack/.claude-plugin/plugin.json`,
         `${stem}/builtin-skills/pstack/LICENSE`,
         `${stem}/builtin-skills/pstack/skills/statechart/scripts/statechart`,
+        `${stem}/builtin-skills/pstack/skills/poteto-mode/scripts/watch-pr/watch-pr`,
         `${stem}/resource-monitor/t3-resource-monitor`,
       ]);
       const extracted = yield* realSpawner.exitCode(
@@ -169,12 +175,13 @@ it.layer(NodeServices.layer)("build-cli-archive contents", (it) => {
       assert.equal(yield* fs.readFileString(path.join(root, stem, ".sail-product")), "sail\n");
       assert.equal(yield* fs.readFileString(sidecar), "Boat fixture");
       assert.equal((yield* fs.stat(sidecar)).mode & 0o777, 0o755);
-      const extractedHelper = path.join(
-        root,
-        stem,
+      for (const relHelper of [
         "builtin-skills/pstack/skills/statechart/scripts/statechart",
-      );
-      assert.equal((yield* fs.stat(extractedHelper)).mode & 0o777, 0o755);
+        "builtin-skills/pstack/skills/poteto-mode/scripts/watch-pr/watch-pr",
+      ]) {
+        const extractedHelper = path.join(root, stem, relHelper);
+        assert.equal((yield* fs.stat(extractedHelper)).mode & 0o777, 0o755);
+      }
     }),
   );
 });

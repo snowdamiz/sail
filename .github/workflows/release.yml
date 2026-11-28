@@ -350,6 +350,7 @@ jobs:
           test -f apps/server/dist/builtin-skills/pstack/.claude-plugin/plugin.json
           test -f apps/server/dist/builtin-skills/pstack/LICENSE
           test -x apps/server/dist/builtin-skills/pstack/skills/statechart/scripts/statechart
+          test -x apps/server/dist/builtin-skills/pstack/skills/poteto-mode/scripts/watch-pr/watch-pr
       - name: Build the CLI and package it with both Rust sidecars
         env:
           ARCH: ${{ matrix.arch }}

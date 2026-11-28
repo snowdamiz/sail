@@ -755,4 +755,96 @@ describe("ProviderAuthSync", () => {
         }).pipe(Effect.provide(Layer.merge(NodeCrypto.layer, NodeServices.layer))),
       ),
   );
+
+  it.effect(
+    "preserves explicit CLAUDE_CONFIG_DIR and CODEX_HOME environment overrides without injecting homePath or shadowHomePath on import",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const nowMs = yield* Clock.currentTimeMillis;
+          const root = yield* fs.makeTempDirectoryScoped({ prefix: "sail-env-auth-sync-" });
+          const dstHome = path.join(root, "dst-home");
+          const dstState = path.join(root, "dst-state");
+          const customClaudeDir = path.join(dstHome, "custom-claude-env");
+          const customCodexDir = path.join(dstHome, "custom-codex-env");
+
+          const claudeEnvId = ProviderInstanceId.make("claudeAgent_env");
+          const codexEnvId = ProviderInstanceId.make("codex_env");
+
+          const dstNode = makeServerNode({
+            homeDir: dstHome,
+            stateDir: dstState,
+            settingsOverrides: {
+              providerInstances: {
+                [claudeEnvId]: {
+                  driver: ProviderDriverKind.make("claudeAgent"),
+                  displayName: "Claude Env",
+                  enabled: true,
+                  environment: [
+                    { name: "CLAUDE_CONFIG_DIR", value: customClaudeDir, sensitive: false },
+                  ],
+                },
+                [codexEnvId]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  displayName: "Codex Env",
+                  enabled: true,
+                  environment: [{ name: "CODEX_HOME", value: customCodexDir, sensitive: false }],
+                },
+              },
+            },
+          });
+
+          const claudeCreds = JSON.stringify({
+            claudeAiOauth: {
+              accessToken: "claude-env-token",
+              refreshToken: "claude-env-refresh",
+              expiresAt: nowMs + 3_600_000,
+            },
+          });
+          const codexAuth = JSON.stringify({
+            tokens: { access_token: "codex-env-token" },
+            last_refresh: "2026-11-27T12:10:00.000Z",
+          });
+
+          yield* Effect.gen(function* () {
+            const sync = yield* ProviderAuthSync.ProviderAuthSync;
+            const settings = yield* ServerSettingsService;
+
+            const result = yield* sync.importBundle({
+              bundle: {
+                version: 1,
+                instances: [],
+                storeBlobs: [],
+                antigravityFiles: [],
+                cliAuth: [
+                  { kind: "claude", instanceId: claudeEnvId, credentialsJson: claudeCreds },
+                  { kind: "codex", instanceId: codexEnvId, authJson: codexAuth },
+                ],
+              },
+            });
+            assert.isTrue(result.changed);
+
+            const nextSettings = yield* settings.getSettings;
+            assert.isUndefined(
+              (nextSettings.providerInstances[claudeEnvId]?.config as { homePath?: string })
+                ?.homePath,
+            );
+            assert.isUndefined(
+              (nextSettings.providerInstances[codexEnvId]?.config as { shadowHomePath?: string })
+                ?.shadowHomePath,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(customClaudeDir, ".credentials.json")),
+              claudeCreds,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(customCodexDir, "auth.json")),
+              codexAuth,
+            );
+          }).pipe(Effect.provide(dstNode.fullLayer));
+        }).pipe(Effect.provide(Layer.merge(NodeCrypto.layer, NodeServices.layer))),
+      ),
+  );
 });

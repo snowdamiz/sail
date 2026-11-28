@@ -1809,7 +1809,11 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
   if (isolatedDirectoryToEnsure && input.fileSystem) {
     yield* input.fileSystem
       .makeDirectory(isolatedDirectoryToEnsure, { recursive: true })
-      .pipe(Effect.ignore);
+      .pipe(
+        Effect.mapError(
+          (cause) => new TerminalProviderEnvironmentError({ providerInstanceId, cause }),
+        ),
+      );
   }
 
   return Object.fromEntries(
