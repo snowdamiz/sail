@@ -12,7 +12,7 @@ RUN --mount=type=cache,id=sail-cargo-registry,target=/usr/local/cargo/registry,s
 
 # The bundle and web client are the same on every platform, so this stage runs natively when
 # cross-building. Only the staged runtime externals pick packages for the target.
-FROM --platform=$BUILDPLATFORM node:26.13.1-bookworm@sha256:893ea48106e988a5f31e69629d6472600daa9d0494adf7db87eb0b886ce82255 AS build
+FROM --platform=$BUILDPLATFORM node:26.13.1-bookworm@sha256:893ea48106e988a5f91e69629d6472600daa9d0494adf7db87eb0b886ce82255 AS build
 ENV CI=true \
     VP_NODE_MANAGER=no \
     VP_BIN_DIR=/opt/vp/bin \
