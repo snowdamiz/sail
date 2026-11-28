@@ -661,13 +661,17 @@ export const layerSessionTransferBundleDownloadRoute = HttpRouter.add(
       return HttpServerResponse.text("Not Found", { status: 404 });
     }
 
-    // Bind the verified FileHandle lifetime to the HTTP request Scope so NodeHttpServer
-    // pre-stream GET disconnects (nodeResponse.destroyed / writableEnded), synchronous writeHead
-    // errors, middleware failures, and HEAD requests all close the FileHandle even when the
-    // responder never starts consuming `bundle.stream`.
-    const bundle = yield* Effect.acquireRelease(
-      resolveExportBundleForDownload(claims),
-      (resolved) => (resolved.ok ? resolved.close : Effect.void),
+    // Keep checksum verification interruptible so client disconnects abort hashing immediately,
+    // then uninterruptibly bind the verified FileHandle to the request Scope so pre-stream
+    // disconnects, HEAD requests, and responder errors always close it.
+    const bundle = yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const resolved = yield* restore(resolveExportBundleForDownload(claims));
+        if (resolved.ok) {
+          yield* Effect.addFinalizer(() => resolved.close);
+        }
+        return resolved;
+      }),
     );
     if (!bundle.ok) {
       return HttpServerResponse.text(bundle.detail, { status: bundle.status });

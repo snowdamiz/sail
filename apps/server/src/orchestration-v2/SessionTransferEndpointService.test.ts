@@ -4871,4 +4871,196 @@ describe("SessionTransferEndpointService", () => {
         }
       }),
   );
+
+  it.effect(
+    "continues destination worktree, created branch, and pending attachment cleanup when staging removal fails with PermissionDenied",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-dst-abort-eacces-"),
+        );
+        const srcRepo = NodePath.join(tmpRoot, "src");
+        const dstRepo = NodePath.join(tmpRoot, "dst");
+        initGitRepo(srcRepo);
+        git(tmpRoot, ["clone", srcRepo, dstRepo]);
+        git(srcRepo, ["checkout", "-b", "feat/dst-abort-eacces"]);
+        NodeFS.writeFileSync(NodePath.join(srcRepo, "feature.txt"), "feature change\n");
+        git(srcRepo, ["add", "feature.txt"]);
+        git(srcRepo, ["commit", "-m", "feature commit"]);
+
+        const srcProjectId = ProjectId.make("proj-dst-abort-src");
+        const dstProjectId = ProjectId.make("proj-dst-abort-dst");
+        const modelSelection: ModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+        const recorder: MockRecorder = {
+          dispatches: [],
+          forceStops: [],
+          detachedSessions: [],
+          sentMessages: [],
+        };
+
+        let failNextCommitEventWrite = false;
+        let failStagingRemove = false;
+        let stagingTargetPrefix = "";
+
+        const layer = makeEndpointTestLayer({
+          environmentId: "env-dst-abort-eacces",
+          environmentLabel: "Destination Abort EACCES Env",
+          projects: [
+            { id: srcProjectId, title: "Src", workspaceRoot: srcRepo },
+            { id: dstProjectId, title: "Dst", workspaceRoot: dstRepo },
+          ],
+          providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+          recorder,
+          hooks: {
+            onEventSinkWrite: (events) => {
+              if (failNextCommitEventWrite && events.some((e) => e.type === "thread.created")) {
+                failNextCommitEventWrite = false;
+                return Effect.fail(new TestHookError({ message: "fail commit after worktree" }));
+              }
+              return Effect.void;
+            },
+            onFileSystemRemove: ({ targetPath, next }) =>
+              Effect.gen(function* () {
+                if (
+                  failStagingRemove &&
+                  stagingTargetPrefix.length > 0 &&
+                  targetPath.includes(stagingTargetPrefix)
+                ) {
+                  return yield* PlatformError.systemError({
+                    _tag: "PermissionDenied",
+                    module: "FileSystem",
+                    method: "remove",
+                    pathOrDescriptor: targetPath,
+                  });
+                }
+                return yield* next;
+              }),
+          },
+        });
+
+        try {
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const srcThreadId = ThreadId.make("thread-dst-abort-eacces");
+            const transferId = SessionTransferId.make("xfer-dst-abort-eacces");
+            const srcAttachmentId = ChatAttachmentId.make(createAttachmentId(srcThreadId)!);
+            const attachmentBytes = new Uint8Array([
+              0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+            ]);
+            NodeFS.mkdirSync(config.attachmentsDir, { recursive: true });
+            NodeFS.writeFileSync(
+              NodePath.join(config.attachmentsDir, `${srcAttachmentId}.png`),
+              attachmentBytes,
+            );
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: "feat/dst-abort-eacces",
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+                presentAttachmentId: srcAttachmentId,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: srcThreadId,
+              direction: "local_to_boat",
+            });
+            const initialStaged = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            expect(initialStaged.attachmentUploads).toHaveLength(1);
+
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferId, path)!,
+              resolveImportBundlePath(config.stateDir, transferId, path)!,
+            );
+
+            // Trigger commitImport so it creates the destination worktree + branch (`createdBranch: true`),
+            // then fails before committing the thread events.
+            failNextCommitEventWrite = true;
+            const commitRes = yield* Effect.result(
+              svc.commitImport({
+                transferId,
+                destinationProjectId: initialStaged.destinationProjectId,
+                destinationThreadId: initialStaged.destinationThreadId,
+                manifest: prep.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitRes)).toBe(true);
+
+            // Re-read staged metadata via idempotent stageImport to obtain the created worktreePath
+            // and current pending attachment target, then write the pending attachment file on disk.
+            const stagedWithWorktree = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            expect(stagedWithWorktree.attachmentUploads).toHaveLength(1);
+            const pendingDestId = stagedWithWorktree.attachmentUploads[0]!.destinationAttachmentId;
+            const pendingAttachmentPath = NodePath.join(
+              config.attachmentsDir,
+              `${pendingDestId}.png`,
+            );
+            NodeFS.writeFileSync(pendingAttachmentPath, attachmentBytes);
+            expect(NodeFS.existsSync(pendingAttachmentPath)).toBe(true);
+            expect(stagedWithWorktree.destinationWorktreePath).not.toBeNull();
+            expect(stagedWithWorktree.destinationBranch).toBe("feat/dst-abort-eacces");
+            const worktreePath = stagedWithWorktree.destinationWorktreePath!;
+            expect(NodeFS.existsSync(worktreePath)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", "feat/dst-abort-eacces"]).trim()).not.toBe("");
+
+            const stagingDir = resolveTransferStagingDir(config.stateDir, transferId, path)!;
+            expect(NodeFS.existsSync(stagingDir)).toBe(true);
+
+            // Inject EACCES (PermissionDenied) on staging directory removal during destination abort.
+            stagingTargetPrefix = NodePath.basename(stagingDir);
+            failStagingRemove = true;
+
+            const abortRes = yield* Effect.result(
+              svc.abort({
+                transferId,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(abortRes)).toBe(true);
+            if (Result.isFailure(abortRes)) {
+              expect(abortRes.failure.code).toBe("internal");
+            }
+
+            // Staging dir still exists due to injected EACCES, BUT all independent cleanup steps
+            // (worktree removal, created branch deletion, and pending attachment deletion) MUST have run!
+            expect(NodeFS.existsSync(stagingDir)).toBe(true);
+            expect(NodeFS.existsSync(worktreePath)).toBe(false);
+            expect(git(dstRepo, ["branch", "--list", "feat/dst-abort-eacces"]).trim()).toBe("");
+            expect(NodeFS.existsSync(pendingAttachmentPath)).toBe(false);
+
+            // Once permissions recover, a subsequent destination abort cleans up staging cleanly.
+            failStagingRemove = false;
+            const retryAbort = yield* svc.abort({
+              transferId,
+              role: "destination",
+            });
+            expect(retryAbort.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(stagingDir)).toBe(false);
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
 });

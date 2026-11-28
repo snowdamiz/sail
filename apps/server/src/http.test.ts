@@ -25,6 +25,7 @@ import {
   HttpClientRequest,
   HttpRouter,
   HttpServer,
+  HttpServerRequest,
   HttpServerResponse,
 } from "effect/http";
 import { openMediaFile } from "./assets/MediaFile.ts";
@@ -1070,17 +1071,21 @@ describe("session transfer bundle download HEAD handling", () => {
         }).pipe(Effect.provide(services));
 
         const openedHandles: Array<NodeFSP.FileHandle> = [];
+        const closeSpies: Array<ReturnType<typeof vi.spyOn>> = [];
+        const createReadStreamSpies: Array<ReturnType<typeof vi.spyOn>> = [];
         const realOpen = NodeFS.promises.open;
         const openSpy = vi.spyOn(NodeFS.promises, "open").mockImplementation(async (...args) => {
           const handle = await realOpen(...args);
           if (String(args[0]) === exportPath) {
             openedHandles.push(handle);
+            closeSpies.push(vi.spyOn(handle, "close"));
+            createReadStreamSpies.push(vi.spyOn(handle, "createReadStream"));
           }
           return handle;
         });
 
         try {
-          // 1. HEAD on nonempty bundle returns 200, matching headers, empty body, and zero leaked FDs.
+          // 1. HEAD on nonempty bundle returns 200, matching headers, empty body, and closes FD once.
           const headResponse = yield* client.execute(
             HttpClientRequest.head(downloadUrl.relativeUrl),
           );
@@ -1093,8 +1098,10 @@ describe("session transfer bundle download HEAD handling", () => {
 
           expect(openedHandles).toHaveLength(1);
           expect(openedHandles[0]?.fd).toBe(-1);
+          expect(closeSpies[0]).toHaveBeenCalledTimes(1);
+          expect(createReadStreamSpies[0]).not.toHaveBeenCalled();
 
-          // 2. GET immediately afterward streams the full verified payload and closes its FD too.
+          // 2. GET immediately afterward streams the full verified payload and closes its FD once.
           const getResponse = yield* client.execute(HttpClientRequest.get(downloadUrl.relativeUrl));
           expect(getResponse.status).toBe(200);
           expect(getResponse.headers["content-length"]).toBe(String(payload.byteLength));
@@ -1105,8 +1112,10 @@ describe("session transfer bundle download HEAD handling", () => {
           for (const handle of openedHandles) {
             expect(handle.fd).toBe(-1);
           }
+          expect(closeSpies[1]).toHaveBeenCalledTimes(1);
+          expect(createReadStreamSpies[1]).not.toHaveBeenCalled();
 
-          // 3. HEAD on a tampered bundle still rejects with 409 and closes its FD immediately.
+          // 3. HEAD on a tampered bundle still rejects with 409 and closes its FD once.
           const tampered = new Uint8Array(payload);
           tampered[0] = (tampered[0]! + 1) % 256;
           yield* fs.writeFile(exportPath, tampered);
@@ -1120,6 +1129,8 @@ describe("session transfer bundle download HEAD handling", () => {
           for (const handle of openedHandles) {
             expect(handle.fd).toBe(-1);
           }
+          expect(closeSpies[2]).toHaveBeenCalledTimes(1);
+          expect(createReadStreamSpies[2]).not.toHaveBeenCalled();
         } finally {
           openSpy.mockRestore();
         }
@@ -1127,7 +1138,7 @@ describe("session transfer bundle download HEAD handling", () => {
   );
 
   it.live(
-    "closes the verified bundle FileHandle on pre-stream GET client disconnect without starting the stream",
+    "closes the verified bundle FileHandle once on pre-stream GET client disconnect without starting the stream",
     () =>
       Effect.gen(function* () {
         const assetLayer = AssetSigner.layer.pipe(
@@ -1153,11 +1164,36 @@ describe("session transfer bundle download HEAD handling", () => {
           }
         });
 
+        let routeReturnedResolve: (() => void) | null = null;
+        const routeReturned = new Promise<void>((resolve) => {
+          routeReturnedResolve = resolve;
+        });
+        let pauseAfterRoute = true;
+        const pauseBeforeStreamMiddleware = HttpRouter.middleware(
+          (httpEffect) =>
+            Effect.gen(function* () {
+              const response = yield* httpEffect;
+              if (pauseAfterRoute) {
+                pauseAfterRoute = false;
+                routeReturnedResolve?.();
+                yield* Effect.promise(() => serverResClosed);
+              }
+              return response;
+            }),
+          { global: true },
+        );
+
         const services = yield* Layer.build(
-          HttpRouter.serve(ServerHttp.layerSessionTransferBundleDownloadRoute, {
-            disableListenLog: true,
-            disableLogger: true,
-          }).pipe(
+          HttpRouter.serve(
+            Layer.mergeAll(
+              ServerHttp.layerSessionTransferBundleDownloadRoute,
+              pauseBeforeStreamMiddleware,
+            ),
+            {
+              disableListenLog: true,
+              disableLogger: true,
+            },
+          ).pipe(
             Layer.provideMerge(
               NodeHttpServer.layer(() => nodeServer, { port: 0, host: "127.0.0.1" }),
             ),
@@ -1192,53 +1228,47 @@ describe("session transfer bundle download HEAD handling", () => {
         }).pipe(Effect.provide(services));
 
         const openedHandles: Array<NodeFSP.FileHandle> = [];
-        let createReadStreamCalls = 0;
-        let openEnteredResolve: (() => void) | null = null;
-        const openEntered = new Promise<void>((resolve) => {
-          openEnteredResolve = resolve;
-        });
+        const closeSpies: Array<ReturnType<typeof vi.spyOn>> = [];
+        const createReadStreamSpies: Array<ReturnType<typeof vi.spyOn>> = [];
+        const readCallCounts: Array<number> = [];
         let firstHandleClosedResolve: (() => void) | null = null;
         const firstHandleClosed = new Promise<void>((resolve) => {
           firstHandleClosedResolve = resolve;
         });
-        let pauseFirstStat = true;
 
         const realOpen = NodeFS.promises.open;
         const openSpy = vi.spyOn(NodeFS.promises, "open").mockImplementation(async (...args) => {
           const handle = await realOpen(...args);
           if (String(args[0]) === exportPath) {
+            const handleIndex = openedHandles.length;
             openedHandles.push(handle);
-            const realCreateReadStream = handle.createReadStream.bind(handle);
-            handle.createReadStream = ((...streamArgs: Parameters<typeof realCreateReadStream>) => {
-              createReadStreamCalls += 1;
-              return realCreateReadStream(...streamArgs);
-            }) as typeof handle.createReadStream;
+            readCallCounts.push(0);
+            createReadStreamSpies.push(vi.spyOn(handle, "createReadStream"));
 
-            if (pauseFirstStat) {
-              pauseFirstStat = false;
-              const realStat = handle.stat.bind(handle);
-              handle.stat = (async (...statArgs: Parameters<typeof realStat>) => {
-                openEnteredResolve?.();
-                await serverResClosed;
-                return realStat(...statArgs);
-              }) as typeof handle.stat;
+            const realRead = handle.read.bind(handle);
+            handle.read = (async (...readArgs: Parameters<typeof realRead>) => {
+              readCallCounts[handleIndex] = (readCallCounts[handleIndex] ?? 0) + 1;
+              return realRead(...readArgs);
+            }) as typeof handle.read;
 
-              const realClose = handle.close.bind(handle);
-              handle.close = (async () => {
-                try {
-                  return await realClose();
-                } finally {
+            const realClose = handle.close.bind(handle);
+            const closeSpy = vi.spyOn(handle, "close").mockImplementation(async () => {
+              try {
+                return await realClose();
+              } finally {
+                if (handleIndex === 0) {
                   firstHandleClosedResolve?.();
                 }
-              }) as typeof handle.close;
-            }
+              }
+            });
+            closeSpies.push(closeSpy);
           }
           return handle;
         });
 
         try {
-          // 1. Client starts GET, then destroys the socket while verification is in flight so
-          //    nodeResponse.destroyed is true BEFORE NodeHttpServer starts consuming bundle.stream.
+          // 1. Verification succeeds and route registers the Scope finalizer, then the client
+          //    destroys the socket BEFORE NodeHttpServer starts consuming bundle.stream.
           const abortedReq = NodeHttp.request({
             host: "127.0.0.1",
             port,
@@ -1249,16 +1279,20 @@ describe("session transfer bundle download HEAD handling", () => {
           abortedReq.on("error", () => undefined);
           abortedReq.end();
 
-          yield* Effect.promise(() => openEntered);
+          yield* Effect.promise(() => routeReturned);
           abortedReq.destroy();
 
-          // Await deterministic FileHandle closure via request Scope finalizer.
+          // Await deterministic FileHandle closure via request Scope finalizer (exactly once).
           yield* Effect.promise(() => firstHandleClosed);
           expect(openedHandles).toHaveLength(1);
-          expect(createReadStreamCalls).toBe(0);
+          // Only the single 64 KiB SHA-256 verification read ran; streaming never pulled from handle.
+          expect(readCallCounts[0]).toBe(1);
+          expect(createReadStreamSpies[0]).not.toHaveBeenCalled();
+          expect(closeSpies[0]).toHaveBeenCalledTimes(1);
           expect(openedHandles[0]?.fd).toBe(-1);
 
-          // 2. Subsequent normal GET streams the full verified payload and closes its handle cleanly.
+          // 2. Subsequent normal GET streams the full verified payload directly from FileHandle
+          //    and closes its handle deterministically once.
           const normalBody = yield* Effect.promise(
             () =>
               new Promise<{ readonly status: number; readonly body: Uint8Array }>(
@@ -1283,12 +1317,135 @@ describe("session transfer bundle download HEAD handling", () => {
           );
           expect(normalBody.status).toBe(200);
           expect(normalBody.body).toEqual(payload);
-          expect(createReadStreamCalls).toBe(1);
+          // 1 verification read + 1 stream read.
+          expect(readCallCounts[1]).toBe(2);
+          expect(createReadStreamSpies[1]).not.toHaveBeenCalled();
+          expect(closeSpies[1]).toHaveBeenCalledTimes(1);
           expect(openedHandles).toHaveLength(2);
           for (const handle of openedHandles) {
             expect(handle.fd).toBe(-1);
           }
         } finally {
+          openSpy.mockRestore();
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "interrupts bundle checksum verification mid-hashing on request fiber interrupt and closes the FileHandle once",
+    () =>
+      Effect.gen(function* () {
+        const assetLayer = AssetSigner.layer.pipe(
+          Layer.provideMerge(ServerSecretStore.layer),
+          Layer.provideMerge(
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3-http-xfer-interrupt-hash-" }),
+          ),
+          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer)),
+        );
+
+        const services = yield* Layer.build(assetLayer);
+        const config = Context.get(services, ServerConfig.ServerConfig);
+        const fs = Context.get(services, FileSystem.FileSystem);
+        const path = Context.get(services, Path.Path);
+
+        const transferId = "xfer-http-interrupt-hash";
+        // 4 x 64 KiB chunks so aborting after chunk 1 proves remaining chunks are never read/hashed.
+        const payload = new Uint8Array(4 * 64 * 1024);
+        for (let i = 0; i < payload.byteLength; i += 1) {
+          payload[i] = (i * 31) % 251;
+        }
+        const payloadSha256 = NodeCrypto.createHash("sha256").update(payload).digest("hex");
+
+        const exportPath = resolveExportBundlePath(config.stateDir, transferId, path)!;
+        yield* fs.makeDirectory(path.dirname(exportPath), { recursive: true });
+        yield* fs.writeFile(exportPath, payload);
+
+        const downloadUrl = yield* issueSessionTransferBundleUrl({
+          transferId,
+          operation: "download",
+          expectedSizeBytes: payload.byteLength,
+          expectedSha256: payloadSha256,
+        }).pipe(Effect.provide(services));
+
+        const httpEffect = yield* HttpRouter.toHttpEffect(
+          ServerHttp.layerSessionTransferBundleDownloadRoute.pipe(
+            Layer.provideMerge(Layer.succeedContext(services)),
+          ),
+        );
+
+        let readCalls = 0;
+        let firstReadEnteredResolve: (() => void) | null = null;
+        const firstReadEntered = new Promise<void>((resolve) => {
+          firstReadEnteredResolve = resolve;
+        });
+        let allowFirstReadResolve!: () => void;
+        const allowFirstRead = new Promise<void>((resolve) => {
+          allowFirstReadResolve = resolve;
+        });
+        let handleClosedResolve: (() => void) | null = null;
+        const handleClosed = new Promise<void>((resolve) => {
+          handleClosedResolve = resolve;
+        });
+        const openedHandles: Array<NodeFSP.FileHandle> = [];
+        const closeSpies: Array<ReturnType<typeof vi.spyOn>> = [];
+
+        const realOpen = NodeFS.promises.open;
+        const openSpy = vi.spyOn(NodeFS.promises, "open").mockImplementation(async (...args) => {
+          const handle = await realOpen(...args);
+          if (String(args[0]) === exportPath) {
+            openedHandles.push(handle);
+            const realRead = handle.read.bind(handle);
+            handle.read = (async (...readArgs: Parameters<typeof realRead>) => {
+              readCalls += 1;
+              if (readCalls === 1) {
+                firstReadEnteredResolve?.();
+                await allowFirstRead;
+              }
+              return realRead(...readArgs);
+            }) as typeof handle.read;
+
+            const realClose = handle.close.bind(handle);
+            const closeSpy = vi.spyOn(handle, "close").mockImplementation(async () => {
+              try {
+                return await realClose();
+              } finally {
+                handleClosedResolve?.();
+              }
+            });
+            closeSpies.push(closeSpy);
+          }
+          return handle;
+        });
+
+        try {
+          const request = HttpServerRequest.fromWeb(
+            new Request(`http://127.0.0.1${downloadUrl.relativeUrl}`, { method: "GET" }),
+          );
+          const requestFiber = yield* Effect.forkChild(
+            httpEffect.pipe(
+              Effect.provide(services),
+              Effect.provideService(HttpServerRequest.HttpServerRequest, request),
+              Effect.scoped,
+            ),
+          );
+
+          yield* Effect.promise(() => firstReadEntered);
+
+          // Interrupt the request fiber BEFORE releasing chunk 1's read: this MUST complete
+          // immediately (proving resolveExportBundleForDownload is interruptible and AbortSignal fired).
+          yield* Fiber.interrupt(requestFiber);
+
+          // Release chunk 1's in-flight read -> verification sees signal.aborted, stops hashing,
+          // and closes the FileHandle in finally without reading chunks 2..4.
+          allowFirstReadResolve();
+          yield* Effect.promise(() => handleClosed);
+
+          expect(openedHandles).toHaveLength(1);
+          expect(readCalls).toBe(1);
+          expect(closeSpies[0]).toHaveBeenCalledTimes(1);
+          expect(openedHandles[0]?.fd).toBe(-1);
+        } finally {
+          allowFirstReadResolve();
           openSpy.mockRestore();
         }
       }).pipe(Effect.scoped),

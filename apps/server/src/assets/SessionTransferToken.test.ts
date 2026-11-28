@@ -5,6 +5,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import * as Clock from "effect/Clock";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Duration from "effect/Duration";
@@ -544,8 +545,12 @@ describe("SessionTransferToken", () => {
         >();
 
         const openedHandles: Array<NodeFSP.FileHandle> = [];
+        const closeSpies: Array<ReturnType<typeof vi.spyOn>> = [];
+        const createReadStreamSpies: Array<ReturnType<typeof vi.spyOn>> = [];
         const trackHandle = (handle: NodeFSP.FileHandle) => {
           openedHandles.push(handle);
+          closeSpies.push(vi.spyOn(handle, "close"));
+          createReadStreamSpies.push(vi.spyOn(handle, "createReadStream"));
         };
 
         const routesLayer = layerSessionTransferBundleDownloadRoute.pipe(
@@ -636,10 +641,18 @@ describe("SessionTransferToken", () => {
           expect(firstChunk.done).toBe(false);
           yield* Effect.promise(() => reader.cancel());
 
-          // Stream finalizers and error paths have already completed; assert ZERO leaked FDs.
+          // Stream finalizers and error paths have already completed; assert ZERO leaked FDs
+          // and that each FileHandle.close() was invoked deterministically once (no ReadStream double-close).
           expect(openedHandles).toHaveLength(4);
           for (const handle of openedHandles) {
             expect(handle.fd).toBe(-1);
+          }
+          expect(closeSpies).toHaveLength(4);
+          for (const spy of closeSpies) {
+            expect(spy).toHaveBeenCalledTimes(1);
+          }
+          for (const spy of createReadStreamSpies) {
+            expect(spy).not.toHaveBeenCalled();
           }
         } finally {
           yield* Effect.promise(() => dispose());

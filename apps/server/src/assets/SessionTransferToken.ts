@@ -2,7 +2,6 @@
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import type * as NodeFSP from "node:fs/promises";
-import * as NodeStream from "@effect/platform-node/NodeStream";
 import { IsoDateTime } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -462,7 +461,21 @@ export const resolveExportBundleForDownload = Effect.fn(
           let handedOff = false;
           try {
             options?.onFileOpen?.(handle);
+            if (signal.aborted) {
+              return {
+                ok: false,
+                status: 500,
+                detail: "Exported session transfer bundle verification was aborted.",
+              } as const;
+            }
             const stat = await handle.stat();
+            if (signal.aborted) {
+              return {
+                ok: false,
+                status: 500,
+                detail: "Exported session transfer bundle verification was aborted.",
+              } as const;
+            }
             if (!stat.isFile()) {
               return { ok: false, status: 404, detail: "Not Found" } as const;
             }
@@ -496,6 +509,13 @@ export const resolveExportBundleForDownload = Effect.fn(
                 }
                 const toRead = Math.min(chunk.byteLength, sizeBytes - offset);
                 const { bytesRead } = await handle.read(chunk, 0, toRead, offset);
+                if (signal.aborted) {
+                  return {
+                    ok: false,
+                    status: 500,
+                    detail: "Exported session transfer bundle verification was aborted.",
+                  } as const;
+                }
                 if (bytesRead === 0) break;
                 hash.update(chunk.subarray(0, bytesRead));
                 offset += bytesRead;
@@ -581,18 +601,27 @@ export const resolveExportBundleForDownload = Effect.fn(
     return closePromise;
   });
 
+  const streamChunkBytes = 64 * 1024;
   const stream: Stream.Stream<Uint8Array, SessionTransferBundleStreamError> =
     openResult.handle === null || openResult.sizeBytes === 0
       ? Stream.empty
-      : NodeStream.fromReadable<Uint8Array, SessionTransferBundleStreamError>({
-          evaluate: () =>
-            openResult.handle!.createReadStream({
-              start: 0,
-              end: openResult.sizeBytes - 1,
-              autoClose: false,
-            }),
-          onError: (cause) => new SessionTransferBundleStreamError({ cause }),
-        }).pipe(Stream.ensuring(close));
+      : Stream.unfold(0, (offset: number) =>
+          Effect.gen(function* () {
+            if (offset >= openResult.sizeBytes) {
+              return undefined;
+            }
+            const toRead = Math.min(streamChunkBytes, openResult.sizeBytes - offset);
+            const buf = Buffer.allocUnsafe(toRead);
+            const { bytesRead } = yield* Effect.tryPromise({
+              try: () => openResult.handle!.read(buf, 0, toRead, offset),
+              catch: (cause) => new SessionTransferBundleStreamError({ cause }),
+            });
+            if (bytesRead === 0) {
+              return undefined;
+            }
+            return [buf.subarray(0, bytesRead), offset + bytesRead] as const;
+          }),
+        ).pipe(Stream.ensuring(close));
 
   return {
     ok: true,

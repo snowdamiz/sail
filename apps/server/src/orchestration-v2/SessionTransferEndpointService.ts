@@ -2922,22 +2922,47 @@ const make = Effect.gen(function* () {
           return { cleanedUp: false } satisfies SessionTransferAbortResult;
         }
 
-        const deletedStaging = yield* cleanupSourceStagingDir(input.transferId);
+        const cleanupFailures: Array<Cause.Cause<SessionTransferError>> = [];
+
+        const stagingExit = yield* Effect.exit(cleanupSourceStagingDir(input.transferId));
+        const deletedStaging = Exit.isSuccess(stagingExit) ? stagingExit.value : false;
+        if (Exit.isFailure(stagingExit)) {
+          cleanupFailures.push(stagingExit.cause);
+        }
 
         let cleanedWorktree = false;
         if (staged?.worktreePath !== null && staged?.worktreePath !== undefined) {
-          yield* workspaceBundle.removeWorktree({
-            repoCwd: staged.projectWorkspaceRoot,
-            worktreePath: staged.worktreePath,
-            ...(staged.createdBranch && staged.branch !== null ? { branch: staged.branch } : {}),
-          });
-          cleanedWorktree = true;
+          const worktreeExit = yield* Effect.exit(
+            workspaceBundle.removeWorktree({
+              repoCwd: staged.projectWorkspaceRoot,
+              worktreePath: staged.worktreePath,
+              ...(staged.createdBranch && staged.branch !== null ? { branch: staged.branch } : {}),
+            }),
+          );
+          if (Exit.isSuccess(worktreeExit)) {
+            cleanedWorktree = true;
+          } else {
+            cleanupFailures.push(worktreeExit.cause);
+          }
         }
 
         for (const upload of staged?.attachmentUploads ?? []) {
-          yield* runWithAssetContext(deletePendingAttachment(upload.destinationAttachmentId)).pipe(
-            Effect.ignore,
+          const attachmentExit = yield* Effect.exit(
+            runWithAssetContext(deletePendingAttachment(upload.destinationAttachmentId)).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new SessionTransferError({
+                    code: "internal",
+                    transferId: input.transferId,
+                    message: `Failed to delete pending session transfer attachment '${upload.destinationAttachmentId}': ${String(cause)}`,
+                    cause,
+                  }),
+              ),
+            ),
           );
+          if (Exit.isFailure(attachmentExit)) {
+            cleanupFailures.push(attachmentExit.cause);
+          }
         }
 
         const removedStaged = yield* Ref.modify(stagedImports, (current) => {
@@ -2946,6 +2971,17 @@ const make = Effect.gen(function* () {
           next.delete(input.transferId);
           return [true, next] as const;
         });
+
+        if (cleanupFailures.length > 0) {
+          const [firstFailure, ...restFailures] = cleanupFailures;
+          for (const extraCause of restFailures) {
+            yield* Effect.logWarning(
+              "Additional destination cleanup failure during session transfer abort.",
+              { transferId: input.transferId, cause: Cause.pretty(extraCause) },
+            );
+          }
+          return yield* Effect.failCause(firstFailure!);
+        }
 
         return {
           cleanedUp: cleanedWorktree || removedStaged || deletedStaging,
