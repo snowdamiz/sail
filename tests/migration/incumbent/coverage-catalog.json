@@ -645,7 +645,8 @@
       "evidenceProfile": "process",
       "supplementalReceipts": [
         "runtime/v0.1.17-to-v0.1.18-cli.json",
-        "runtime/v0.1.17-to-v0.1.18-service.json"
+        "runtime/v0.1.17-to-v0.1.18-service.json",
+        "runtime/v0.1.17-to-v0.1.18-rollback.json"
       ],
       "sourceReferences": ["apps/server/src/cli/update.ts", "docs/user/self-host-fly.md"]
     },

@@ -192,6 +192,10 @@
     "receipt": "../runtime/v0.1.17-to-v0.1.18-service.json",
     "scope": "Published Linux arm64 service launcher under Docker init. The update RPC denied a read-only token and rejected a corrupt checksum. A retry with the published manifest activated v0.1.18 under the original launcher. An explicit restart retained the new selection, environment, both scoped bearer tokens, and the saved Replay payloads."
   },
+  "serviceLauncherRollback": {
+    "receipt": "../runtime/v0.1.17-to-v0.1.18-rollback.json",
+    "scope": "Published Linux arm64 launcher under Docker init. A Rust gate paused the trial after snapshot publication. The probe changed the saved reply and added a marker to the copied database, then released the published candidate with an unbindable address. The launcher restored the snapshot, selected v0.1.17 across restart, and accepted a clean retry to v0.1.18."
+  },
   "macosArm64ArchiveUpdate": {
     "result": "observed",
     "receipt": "electron-macos-arm64/archive-update/receipt.json",

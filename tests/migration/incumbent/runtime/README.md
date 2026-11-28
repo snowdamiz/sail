@@ -67,7 +67,24 @@ python3 tests/migration/incumbent/runtime/check-service.py \
 
 The probe starts the packaged `__service-launcher` under Docker init with a scratch version selection and a copied database. The read-only session receives the typed update denial. The maintain session first checks a zeroed archive checksum, then retries against the published manifest. Watch the launcher keep its original process, activate a new child, and retain the committed selection when restarted. The probe compares the full saved Replay payloads and checks that both original bearer tokens still work after activation and restart.
 
-The [receipt](v0.1.17-to-v0.1.18-service.json) covers the Linux arm64 launcher protocol and update RPC with a loopback release mirror. Systemd installation, service unit repointing, and recovery from a failed trial after handoff need separate runs.
+The [receipt](v0.1.17-to-v0.1.18-service.json) covers the Linux arm64 launcher protocol and update RPC with a loopback release mirror. Systemd installation and service unit repointing need separate runs.
+
+## Published Linux service trial rollback
+
+Build the [Rust trial gate](service-trial-gate.rs) for Linux arm64. Use the same release assets, seed, and Docker image as the launcher update probe.
+
+```sh
+gate_src="$PWD/tests/migration/incumbent/runtime/service-trial-gate.rs"
+docker run --rm --network none --platform linux/arm64 \
+  --user "$(id -u):$(id -g)" -v "$gate_src:/trial.rs:ro" -v "$scratch:/out" \
+  rust:1.100.0-bookworm rustc --edition=2024 -D warnings /trial.rs -o /out/trial-gate
+python3 tests/migration/incumbent/runtime/check-service.py \
+  "$releases" "$seed" "$thread" "$image" "$scratch/rollback" \
+  --trial-gate "$scratch/trial-gate" \
+  --expect tests/migration/incumbent/runtime/v0.1.17-to-v0.1.18-rollback.json
+```
+
+The probe stages the published target and places the gate at its executable entry point in scratch. Preflight still runs the published binary. The gate pauses the trial startup. Once the probe verifies the pending update ID and the launcher's snapshot, it changes the saved reply payload, adds a marker table to the copied database, and releases the gate. The published trial server exits before activation when it fails to bind. The v0.1.17 launcher restores the saved payloads and removes the marker through snapshot restoration. The probe restarts the launcher on the rolled-back selection, verifies both bearer grants, then retries with the unchanged published target executable. [Rollback receipt](v0.1.17-to-v0.1.18-rollback.json)
 
 ## Published arm64 macOS archive update
 

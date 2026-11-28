@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -94,6 +95,19 @@ def await_version(origin, container, version, runtime_file):
     raise RuntimeError(f"The service launcher did not select {version}")
 
 
+def await_json(path, matches):
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            value = json.loads(path.read_text())
+            if matches(value):
+                return value
+        except FileNotFoundError:
+            pass
+        time.sleep(0.05)
+    raise RuntimeError(f"The expected record did not appear in {path.name}")
+
+
 def origin_for(container):
     address = docker("port", container, f"{PORT}/tcp")
     assert address.startswith("127.0.0.1:")
@@ -130,7 +144,7 @@ def stop(container, origin, runtime_file):
     raise AssertionError("The service listener survived shutdown")
 
 
-def verify(releases, seed, thread, image, scratch):
+def verify(releases, seed, thread, image, scratch, trial_gate=None):
     pinned = json.loads((HERE / "v0.1.17-to-v0.1.18-cli.json").read_text())
     expected = pinned["platforms"]["arm64"]["archives"]
     archives = {
@@ -164,7 +178,7 @@ def verify(releases, seed, thread, image, scratch):
         image, "sh", "-ec", START,
     )
     try:
-        observed = exercise(container, selection, runtime_file, database, thread, saved, scratch)
+        observed = exercise(container, selection, runtime_file, database, thread, saved, scratch, trial_gate)
         return {
             "schemaVersion": 1,
             "from": pinned["from"],
@@ -183,17 +197,29 @@ def verify(releases, seed, thread, image, scratch):
             docker("rm", container)
 
 
-def exercise(container, selection, runtime_file, database, thread, saved, scratch):
+def exercise(container, selection, runtime_file, database, thread, saved, scratch, trial_gate=None):
     def issue(scope):
         return docker(
             "exec", container, LAUNCHER, "auth", "session", "issue",
             "--base-dir", HOME, "--token-only", "--scope", scope,
         )
 
-    def update(token):
+    def update(token, *options):
         return json.loads(run(
-            "node", str(HERE / "request-service-update.mjs"), origin, NEW, input=token + "\n"
+            "node", str(HERE / "request-service-update.mjs"), origin, NEW, *options,
+            input=token + "\n"
         ))
+
+    def request_activation(token):
+        reply = update(token)
+        assert reply["_tag"] == "Success"
+        result = reply["value"]
+        assert result["method"] == "boot-service" and result["targetVersion"] == NEW
+        update_id = result["updateId"]
+        assert (
+            isinstance(update_id, str) and update_id and update_id == update_id.strip()
+        ), "Invalid update ID"
+        return update_id
 
     def read_selection():
         return json.loads(selection.read_text())
@@ -219,15 +245,18 @@ def exercise(container, selection, runtime_file, database, thread, saved, scratc
         ), "Unexpected bearer grants"
         return {field: auth[field] for field in ("expiresAt", "scopes", "permissions")}
 
+    def start_mirror():
+        docker("exec", "-d", "-w", "/release", container, "python3", "/probe/mirror.py")
+        docker(
+            "exec", container, "curl", "--retry", "4", "--retry-connrefused", "--max-time", "5",
+            "-fsS", f"http://127.0.0.1:8877/v{NEW}/SHA256SUMS",
+        )
+
     origin = origin_for(container)
     environment_id, (launcher_pid, server_pid) = snapshot(OLD)
     before = read_selection()
     assert before == {"protocol": 4, "activeVersion": OLD}
-    docker("exec", "-d", "-w", "/release", container, "python3", "/probe/mirror.py")
-    docker(
-        "exec", container, "curl", "--retry", "4", "--retry-connrefused", "--max-time", "5",
-        "-fsS", f"http://127.0.0.1:8877/v{NEW}/SHA256SUMS",
-    )
+    start_mirror()
     read_token, maintain_token = issue("orchestration:read"), issue("environment:maintain")
     bearer_sessions = [
         (read_token, ["orchestration:read"], ["orchestration:read"]),
@@ -249,14 +278,85 @@ def exercise(container, selection, runtime_file, database, thread, saved, scratc
     assert not (selection.parent / f"versions/{NEW}/.install-complete").exists()
 
     (scratch / "checksum-valid").touch()
-    accepted = update(maintain_token)
-    assert accepted["_tag"] == "Success"
-    result = accepted["value"]
-    assert result["method"] == "boot-service" and result["targetVersion"] == NEW
-    update_id = result["updateId"]
-    assert (
-        isinstance(update_id, str) and update_id and update_id == update_id.strip()
-    ), "Invalid update ID"
+    rollback = None
+    if trial_gate is not None:
+        staged = update(maintain_token, "--stage-only")
+        assert staged == {"_tag": "Success", "value": {"method": "boot-service", "targetVersion": NEW}}
+        assert read_selection() == before
+        assert snapshot(OLD) == (environment_id, (launcher_pid, server_pid))
+
+        candidate = selection.parent / "versions" / NEW / "t3"
+        published = candidate.with_name("t3.published")
+        published_digest = digest(candidate)
+        candidate.rename(published)
+        shutil.copy2(trial_gate, candidate)
+        docker("exec", container, "mkfifo", "/tmp/sail-trial-release")
+        fault_id = request_activation(maintain_token)
+        context = await_json(scratch / "trial-context.json", lambda _: True)
+        pending = {
+            "id": fault_id,
+            "fromVersion": OLD,
+            "targetVersion": NEW,
+            "dbPath": f"{HOME}/userdata/statev2.sqlite",
+            "status": "pending",
+        }
+        assert context == {"protocol": 4, "childVersion": NEW, "update": pending}
+        assert read_selection() == {**before, "update": pending}
+        docker("exec", container, "test", "!", "-d", f"/proc/{server_pid}")
+        backup = selection.parent / "db-backup" / fault_id / "database"
+        assert backup.is_file() and recorded_state(backup, thread) == saved
+        reply = next(row for row in reversed(saved["messages"]) if row[-1]["role"] == "assistant")
+        write_trial_marker(database, thread, reply[0], fault_id)
+        assert not contains_trial_write(backup)
+        assert recorded_state(backup, thread) == saved
+        docker("exec", container, "sh", "-c", "printf x > /tmp/sail-trial-release")
+        failed = await_json(
+            selection,
+            lambda value: value.get("update", {}).get("status") in ("committed", "failed", "rolled-back"),
+        )
+        assert failed == {
+            **before,
+            "update": {
+                "id": fault_id, "fromVersion": OLD, "targetVersion": NEW,
+                "status": "rolled-back", "reason": "candidate-exited:1",
+            },
+        }, "The failed trial did not roll back to the incumbent selection"
+        recovered_identity, (same_launcher, recovered_child) = snapshot(OLD)
+        assert recovered_identity == environment_id and same_launcher == launcher_pid
+        assert recovered_child != server_pid
+        assert not contains_trial_write(database)
+        assert [session(*bearer) for bearer in bearer_sessions] == original_sessions
+        logs = run("docker", "logs", container, stderr=subprocess.STDOUT)
+        assert "EADDRNOTAVAIL" in logs and "192.0.2.1" in logs
+        assert digest(published) == published_digest
+        published.replace(candidate)
+
+        stop(container, origin, runtime_file)
+        docker("start", container)
+        origin = origin_for(container)
+        restarted_identity, (launcher_pid, server_pid) = snapshot(OLD)
+        assert restarted_identity == environment_id and read_selection() == failed
+        assert not contains_trial_write(database)
+        assert [session(*bearer) for bearer in bearer_sessions] == original_sessions
+        start_mirror()
+        rollback = {
+            "stageOnlyKeptOriginalChild": True,
+            "publishedCandidateSha256": published_digest,
+            "fault": {
+                "host": "192.0.2.1",
+                "startupError": "EADDRNOTAVAIL",
+                "wroteTrialOnlyTable": True,
+                "changedSavedReplyPayload": True,
+            },
+            "selection": {**failed, "update": {key: value for key, value in failed["update"].items() if key != "id"}},
+            "acceptedIdMatchedTrialAndRollback": True,
+            "snapshotRestored": True,
+            "restartRetainedOriginalVersion": True,
+        }
+
+    update_id = request_activation(maintain_token)
+    if rollback is not None:
+        assert update_id != fault_id
     resumed_identity, (same_launcher, new_server) = snapshot(NEW)
     assert resumed_identity == environment_id and same_launcher == launcher_pid and new_server != server_pid
     committed = read_selection()
@@ -287,7 +387,8 @@ def exercise(container, selection, runtime_file, database, thread, saved, scratc
         "scopeDenial": denial["error"],
         "checksumRejection": failure["error"],
         "selectionAfterRejection": before,
-        "acceptance": {"targetVersion": NEW, "method": result["method"], "idMatchesCommit": True},
+        "acceptance": {"targetVersion": NEW, "method": "boot-service", "idMatchesCommit": True},
+        **({"rollback": rollback} if rollback is not None else {}),
         "committedSelection": {**committed, "update": {key: value for key, value in committed["update"].items() if key != "id"}},
         "activation": {"originalLauncherStayedAlive": True, "newChildServed": True},
         "restart": {"originalLauncherSelectedCommittedVersion": True, "sameEnvironment": True, "sessionsPreserved": 2},
@@ -303,6 +404,41 @@ def exercise(container, selection, runtime_file, database, thread, saved, scratc
     }
 
 
+def write_trial_marker(database, thread, message, update_id):
+    locator = (thread, message)
+    marker = f"Trial-only reply {update_id}"
+    with closing(sqlite3.connect(database.as_uri() + "?mode=rw", uri=True)) as db:
+        db.execute("CREATE TABLE migration_fixture_trial (update_id TEXT NOT NULL)")
+        db.execute("INSERT INTO migration_fixture_trial VALUES (?)", (update_id,))
+        changed = db.execute(
+            """
+            UPDATE orchestration_v2_projection_messages
+            SET payload_json = json_set(payload_json, '$.text', ?)
+            WHERE thread_id = ? AND message_id = ?
+            """,
+            (marker, *locator),
+        )
+        assert changed.rowcount == 1
+        db.commit()
+    with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:
+        assert db.execute("SELECT update_id FROM migration_fixture_trial").fetchall() == [(update_id,)]
+        assert db.execute(
+            """
+            SELECT json_extract(payload_json, '$.text')
+            FROM orchestration_v2_projection_messages
+            WHERE thread_id = ? AND message_id = ?
+            """,
+            locator,
+        ).fetchall() == [(marker,)]
+
+
+def contains_trial_write(database):
+    with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:
+        return db.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'migration_fixture_trial'"
+        ).fetchone() is not None
+
+
 if __name__ == "__main__":
     if not __debug__:
         raise SystemExit("Run the launcher probe with assertions enabled")
@@ -312,10 +448,12 @@ if __name__ == "__main__":
     parser.add_argument("thread")
     parser.add_argument("image")
     parser.add_argument("scratch", type=Path)
+    parser.add_argument("--trial-gate", type=Path)
     parser.add_argument("--expect", type=Path)
     args = parser.parse_args()
     actual = verify(
-        args.releases.resolve(), args.seed.resolve(), args.thread, args.image, args.scratch.resolve()
+        args.releases.resolve(), args.seed.resolve(), args.thread, args.image, args.scratch.resolve(),
+        args.trial_gate.resolve() if args.trial_gate else None,
     )
     if args.expect:
         assert actual == json.loads(args.expect.read_text()), "The live receipt disagrees with the reference"

@@ -2,7 +2,8 @@ import * as NodeAssert from "node:assert/strict";
 import * as NodeFS from "node:fs";
 import { openWireSocket } from "../../wire/socket.ts";
 
-const [address, targetVersion] = process.argv.slice(2);
+const [address, targetVersion, option] = process.argv.slice(2);
+NodeAssert.ok(option === undefined || option === "--stage-only");
 const origin = new URL(address);
 NodeAssert.equal(origin.hostname, "127.0.0.1");
 const { socket: endpoint } = JSON.parse(
@@ -14,10 +15,14 @@ socket.send({
   _tag: "Request",
   id: "0",
   tag: "server.updateServer",
-  payload: { targetVersion },
+  payload: option === "--stage-only" ? { targetVersion, stageOnly: true } : { targetVersion },
   headers: [],
 });
-const reply = await socket.receive();
+let reply = await socket.receive();
+while (reply?._tag === "Pong") {
+  NodeAssert.deepEqual(reply, { _tag: "Pong" });
+  reply = await socket.receive();
+}
 NodeAssert.equal(reply?._tag, "Exit");
 NodeAssert.equal(reply.requestId, "0");
 console.log(JSON.stringify(reply.exit));
