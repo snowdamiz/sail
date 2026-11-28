@@ -52,7 +52,7 @@
       }
     },
     "scope": "Direct navigation through screenshot return for one saved Replay thread in the packaged Browser panel. The timer excludes setup, pairing, screenshot copy, and the final composer-control read.",
-    "qualification": "inconclusive",
+    "qualification": "fail",
     "timingVariation": "All three paired p95s were the maximum of 12 measured samples and occurred in the first measured round. The p95 on each published install rose from about 4 seconds to more than 16 seconds in the paired run.",
     "machine": "macOS arm64 host with a 15-vCPU Linux arm64 Docker VM",
     "hostLoadAverages": {

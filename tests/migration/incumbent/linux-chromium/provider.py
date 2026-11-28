@@ -234,7 +234,7 @@ def prepare(call, source):
     }
 
 
-def settled(call, tab, path, probe, output):
+def settled(call, tab, path, probe, output, include_composer=False):
     started = time.perf_counter_ns()
     call("preview_navigate", **tab, url=ORIGIN + path)
     navigated = time.perf_counter_ns()
@@ -269,6 +269,15 @@ def settled(call, tab, path, probe, output):
         ["Edit", "edit", "+4 lines"],
         ["Test", "execute", "12 passed"],
     ]
+    if include_composer:
+        evidence["trace"][0]["observed"].update({
+            "availableModel": observed["availableModel"],
+            "table": observed["table"],
+        })
+        evidence["trace"].append({
+            "action": "readComposerControls",
+            "observed": {"controls": compare_composer(call, tab)},
+        })
     traced = time.perf_counter_ns()
     image = call("preview_snapshot", **tab, save=True)
     captured = time.perf_counter_ns()
@@ -316,18 +325,11 @@ def sample_series(call, source, probe):
         request = json.loads(grant.read_text())
         assert request["round"] == index and request["host"] == ROOT.name
         image = samples / f"{index:02}.png"
-        evidence, observed, durations, navigation = settled(call, tab, path, probe, image)
+        evidence, observed, durations, navigation = settled(
+            call, tab, path, probe, image, include_composer=True
+        )
         assert navigation != previous_navigation
         previous_navigation = navigation
-        evidence["trace"][0]["observed"].update({
-            "availableModel": observed["availableModel"],
-            "table": observed["table"],
-        })
-        controls = compare_composer(call, tab)
-        evidence["trace"].append({
-            "action": "readComposerControls",
-            "observed": {"controls": controls},
-        })
         with image.open("rb") as screenshot:
             digest = file_digest(screenshot, "sha256").hexdigest()
         if request["representative"]:

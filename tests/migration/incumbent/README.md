@@ -58,16 +58,17 @@ Each server gets its own installed package, home, paired Chrome profile, and cap
 
 Both Debian 12.15 arm64 captures matched pixel for pixel and had identical action traces at 640 × 600 CSS pixels and 2× scale. Chrome reports `Linux x86_64` through `navigator.platform`. The probe identifies the running browser from its AArch64 executable. [Linux Chromium reference](observations/served-chromium-linux/settled)
 
-To measure capture time, put the same inputs in one directory as `published.tar.gz`, `chrome.zip`, `seed.sqlite`, `thread-id`, and `replay.tar`. For the candidate run, add `head.tar.gz` and `head-source.json` with the build's `version`, `sourceSha`, `archiveSha256`, and `databaseMigration`.
+To measure capture time, put the same inputs in one directory as `published.tar.gz`, `chrome.zip`, `seed.sqlite`, `thread-id`, and `replay.tar`. For the candidate run, add `head.tar.gz`, the Git archive used to build it as `head-source.tar`, and the build receipt as `head-source.json`. The receipt supplies `version`, `sourceSha`, `sourceTarSha256`, `archiveSha256`, and `databaseMigration`.
 
 ```sh
 bash "$fixture/linux-chromium/run-timings.sh" "$inputs" "$scratch/incumbents" sail-migration-chromium 2 12
-bash "$fixture/linux-chromium/run-timings.sh" "$inputs" "$scratch/paired" sail-migration-chromium 2 12 --candidate
+bash "$fixture/linux-chromium/run-timings.sh" "$inputs" "$scratch/paired" sail-migration-chromium 2 12 \
+  --candidate "$scratch/incumbents/timings.json"
 ```
 
-The Rust runner rotates which host starts each round and allows one capture at a time. Timing starts at direct navigation and ends when the Browser panel returns the screenshot. Package startup, pairing, and the final composer-control read take place outside that interval. The output contains `timings.json`, per-capture PNGs, and a representative receipt for each install. Both the 15% and 2 s limits apply against each published install.
+The Rust runner rotates which host starts each round and allows one capture at a time. Timing starts at direct navigation and includes all trace steps through screenshot return. Startup and pairing happen before timing. Keep `timings.json` beside its `runs/` directory. The candidate run checks the earlier report against its samples and screenshots. The result passes only when the candidate meets both the 15% and 2 s limits against each published install in both series.
 
-The [comparison for `87ca7814`](observations/served-chromium-linux/migration-head-87ca7814/receipt.json) records 5,560 changed composer pixels from the Poteto control and the Showcase shift. Both published installs matched each other. The candidate passed the paired timing comparisons and exceeded both limits against the earlier incumbent-only series. All three paired p95s came from the same round, so timing qualification remains open for this profile.
+The [comparison for `87ca7814`](observations/served-chromium-linux/migration-head-87ca7814/receipt.json) records 5,560 changed composer pixels from the Poteto control and the Showcase shift. Both published installs matched each other. The historical runner read the final composer controls after timing. The candidate passed the paired timing comparisons and exceeded both limits against the earlier incumbent-only series. All three paired p95s came from the same round, so timing qualification remains open for this profile.
 
 ## Capture the settled Firefox replay
 

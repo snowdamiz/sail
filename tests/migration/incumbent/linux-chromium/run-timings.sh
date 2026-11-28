@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-if (( $# < 5 || $# > 6 )); then
-  printf 'Usage: %s INPUTS OUT IMAGE WARMUPS MEASURED [--candidate]\n' "$0" >&2
+if [[ $# != 5 && ( $# != 7 || $6 != --candidate ) ]]; then
+  printf 'Usage: %s INPUTS OUT IMAGE WARMUPS MEASURED [--candidate EARLIER_TIMINGS]\n' "$0" >&2
   exit 2
 fi
 inputs=$1
@@ -11,15 +11,18 @@ image=$3
 warmups=$4
 measured=$5
 candidate=${6:-}
+earlier=${7:-}
 fixture=$(cd "$(dirname "$0")/.." && pwd)
 [[ $inputs = /* && $out = /* ]]
-test -z "$candidate" || test "$candidate" = --candidate
+[[ -z $candidate || ( -f $earlier && $earlier = /* ) ]]
 umask 077
 mkdir "$out"
 mkdir "$out/runs" "$out/sources"
 python3 - "$fixture/release-inventory.json" "$inputs" "$out/sources" "$warmups" "$measured" "$candidate" <<'PY'
 import json
+from hashlib import file_digest
 from pathlib import Path
+import subprocess
 import sys
 
 inventory = json.loads(Path(sys.argv[1]).read_text())
@@ -41,7 +44,15 @@ published = {
 (out / "published.json").write_text(json.dumps(published))
 if sys.argv[6]:
     head = json.loads((inputs / "head-source.json").read_text())
-    assert head["sourceSha"] != published["sourceSha"]
+    assert head["sourceSha"] != published["sourceSha"], "candidate source matches published source"
+    assert head["archiveSha256"] != published["archiveSha256"], "candidate archive matches published archive"
+    with (inputs / "head.tar.gz").open("rb") as archive:
+        assert file_digest(archive, "sha256").hexdigest() == head["archiveSha256"], "candidate archive digest mismatch"
+    with (inputs / "head-source.tar").open("rb") as source:
+        assert file_digest(source, "sha256").hexdigest() == head["sourceTarSha256"], "candidate source archive digest mismatch"
+        source.seek(0)
+        commit = subprocess.check_output(["git", "get-tar-commit-id"], stdin=source, text=True).strip()
+        assert commit == head["sourceSha"], "candidate source archive commit mismatch"
     head["captureRounds"] = warmups + measured
     (out / "head.json").write_text(json.dumps(head))
 PY
@@ -74,7 +85,7 @@ if test -n "$candidate"; then
   start head head
 fi
 cargo run --locked --manifest-path "$fixture/../coverage-check/Cargo.toml" --bin capture-timings -- \
-  "$out/runs" "$warmups" "$measured" ${candidate:+"$candidate"} > "$out/timings.json"
+  "$out/runs" "$warmups" "$measured" ${candidate:+"$candidate" "$earlier"} > "$out/timings.json"
 for container in "${containers[@]}"; do
   test "$(docker wait "$container")" = 0
 done

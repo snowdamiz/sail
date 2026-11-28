@@ -98,7 +98,7 @@
       "changedSteps": [3],
       "pairedTimingResult": "pass",
       "incumbentFirstTimingResult": "fail",
-      "timingQualification": "inconclusive",
+      "timingQualification": "fail",
       "scope": "Saved Replay thread in separate Linux arm64 Chromium profiles, with two warmups and 12 measured captures per install in each series. The Poteto control and shifted Showcase account for the visual difference. The candidate met both limits in the paired run and exceeded them against the earlier incumbent-only series."
     },
     "electronSettledHover": {
