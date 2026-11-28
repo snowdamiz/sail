@@ -1944,17 +1944,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-first/process.json",
-              "sha256": "f4422b4e362cf7facf4c7ee09cd97518a6a9a170342dcc52811099b828da519f"
+              "sha256": "259291f92d23d4921d4754d6ccde0192e2e8f39006f8cd9c6327a28596de1b6b"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-first/state.json",
-              "sha256": "ea482cf9354feb557d5ad036256f5a739b2b13dca99e2c389f56768e11cf1d15"
+              "sha256": "be5d2bf6abf242d70749bfd2b2d37c73ae195cddbf5ed97ac38bb403517084fd"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-first/terminal.png",
-              "sha256": "afa801aca219b18be78adb97ecd27f3eedeb38a29ccc08127ba6c103d2876b65"
+              "sha256": "6942cd92f052d74ede36463d4dc71f4c1a5339e497f40f71a820872cebe6a517"
             }
           ]
         },
@@ -1978,17 +1978,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/process.json",
-              "sha256": "8efcfb7d78a12f0ecc49ea8d37e3b408f30b0cfb7856f67743275950e5e45c9a"
+              "sha256": "382c93a8937fe2e26b50484f5b71badbc2436bb4cf7581f73a7c9269a06d6ca9"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/state.json",
-              "sha256": "e6b35a98f5ba77b304b3d4e1a2193a2dab15a0cc6b069f6694584cc1ccbce06d"
+              "sha256": "5720d4826386276a552740c43d893b1fe578cd69758afe6fea3ed676da44d23c"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/terminal.png",
-              "sha256": "b4a955d7c62fc6660b398ff5ad59cb64290d5d760deedddf199922b0d3037b35"
+              "sha256": "71c8ec2a4901bc7c1c3319cb4e76a204ed14d6d9fe8a3518613a8ed86386fdd5"
             }
           ]
         }
@@ -2023,17 +2023,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-first/process.json",
-              "sha256": "f4422b4e362cf7facf4c7ee09cd97518a6a9a170342dcc52811099b828da519f"
+              "sha256": "259291f92d23d4921d4754d6ccde0192e2e8f39006f8cd9c6327a28596de1b6b"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-first/state.json",
-              "sha256": "ea482cf9354feb557d5ad036256f5a739b2b13dca99e2c389f56768e11cf1d15"
+              "sha256": "be5d2bf6abf242d70749bfd2b2d37c73ae195cddbf5ed97ac38bb403517084fd"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-first/terminal.png",
-              "sha256": "afa801aca219b18be78adb97ecd27f3eedeb38a29ccc08127ba6c103d2876b65"
+              "sha256": "6942cd92f052d74ede36463d4dc71f4c1a5339e497f40f71a820872cebe6a517"
             }
           ]
         },
@@ -2057,17 +2057,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/process.json",
-              "sha256": "8efcfb7d78a12f0ecc49ea8d37e3b408f30b0cfb7856f67743275950e5e45c9a"
+              "sha256": "382c93a8937fe2e26b50484f5b71badbc2436bb4cf7581f73a7c9269a06d6ca9"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/state.json",
-              "sha256": "e6b35a98f5ba77b304b3d4e1a2193a2dab15a0cc6b069f6694584cc1ccbce06d"
+              "sha256": "5720d4826386276a552740c43d893b1fe578cd69758afe6fea3ed676da44d23c"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/terminal.png",
-              "sha256": "b4a955d7c62fc6660b398ff5ad59cb64290d5d760deedddf199922b0d3037b35"
+              "sha256": "71c8ec2a4901bc7c1c3319cb4e76a204ed14d6d9fe8a3518613a8ed86386fdd5"
             }
           ]
         }
@@ -2102,17 +2102,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-first/process.json",
-              "sha256": "f4422b4e362cf7facf4c7ee09cd97518a6a9a170342dcc52811099b828da519f"
+              "sha256": "259291f92d23d4921d4754d6ccde0192e2e8f39006f8cd9c6327a28596de1b6b"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-first/state.json",
-              "sha256": "ea482cf9354feb557d5ad036256f5a739b2b13dca99e2c389f56768e11cf1d15"
+              "sha256": "be5d2bf6abf242d70749bfd2b2d37c73ae195cddbf5ed97ac38bb403517084fd"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-first/terminal.png",
-              "sha256": "afa801aca219b18be78adb97ecd27f3eedeb38a29ccc08127ba6c103d2876b65"
+              "sha256": "6942cd92f052d74ede36463d4dc71f4c1a5339e497f40f71a820872cebe6a517"
             }
           ]
         },
@@ -2136,17 +2136,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/process.json",
-              "sha256": "8efcfb7d78a12f0ecc49ea8d37e3b408f30b0cfb7856f67743275950e5e45c9a"
+              "sha256": "382c93a8937fe2e26b50484f5b71badbc2436bb4cf7581f73a7c9269a06d6ca9"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/state.json",
-              "sha256": "e6b35a98f5ba77b304b3d4e1a2193a2dab15a0cc6b069f6694584cc1ccbce06d"
+              "sha256": "5720d4826386276a552740c43d893b1fe578cd69758afe6fea3ed676da44d23c"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/terminal.png",
-              "sha256": "b4a955d7c62fc6660b398ff5ad59cb64290d5d760deedddf199922b0d3037b35"
+              "sha256": "71c8ec2a4901bc7c1c3319cb4e76a204ed14d6d9fe8a3518613a8ed86386fdd5"
             }
           ]
         }
@@ -2181,17 +2181,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-first/process.json",
-              "sha256": "f4422b4e362cf7facf4c7ee09cd97518a6a9a170342dcc52811099b828da519f"
+              "sha256": "259291f92d23d4921d4754d6ccde0192e2e8f39006f8cd9c6327a28596de1b6b"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-first/state.json",
-              "sha256": "ea482cf9354feb557d5ad036256f5a739b2b13dca99e2c389f56768e11cf1d15"
+              "sha256": "be5d2bf6abf242d70749bfd2b2d37c73ae195cddbf5ed97ac38bb403517084fd"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-first/terminal.png",
-              "sha256": "afa801aca219b18be78adb97ecd27f3eedeb38a29ccc08127ba6c103d2876b65"
+              "sha256": "6942cd92f052d74ede36463d4dc71f4c1a5339e497f40f71a820872cebe6a517"
             }
           ]
         },
@@ -2215,17 +2215,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/process.json",
-              "sha256": "8efcfb7d78a12f0ecc49ea8d37e3b408f30b0cfb7856f67743275950e5e45c9a"
+              "sha256": "382c93a8937fe2e26b50484f5b71badbc2436bb4cf7581f73a7c9269a06d6ca9"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/state.json",
-              "sha256": "e6b35a98f5ba77b304b3d4e1a2193a2dab15a0cc6b069f6694584cc1ccbce06d"
+              "sha256": "5720d4826386276a552740c43d893b1fe578cd69758afe6fea3ed676da44d23c"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/fresh-repeat/terminal.png",
-              "sha256": "b4a955d7c62fc6660b398ff5ad59cb64290d5d760deedddf199922b0d3037b35"
+              "sha256": "71c8ec2a4901bc7c1c3319cb4e76a204ed14d6d9fe8a3518613a8ed86386fdd5"
             }
           ]
         }
@@ -2260,17 +2260,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/copied-first/process.json",
-              "sha256": "a116929393a1bf528dda08df2b862036b20dff8aa53b9fd3ef996926542b52c0"
+              "sha256": "3d98ecefde3688eceddeaaa082a84fd1f8d6701186487446316929c0aac00a78"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/copied-first/state.json",
-              "sha256": "c5a6fdf72776b128dce775622a5680f394f9c94b127a72082db2444157d58311"
+              "sha256": "d171f18014850d4fd9cecc01c9096ba75d8330d8813aaf420cdde67fe434e407"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/copied-first/terminal.png",
-              "sha256": "a5e8bf0c92628a97fe6c8d28e17ce6f148bacc7bad05c385ff1ae51d597f69b8"
+              "sha256": "4a7413ef57128fb608778b280b1f48ffc756c187a1dcd702ce12578fe4e6555b"
             }
           ]
         },
@@ -2294,17 +2294,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/process.json",
-              "sha256": "30e3d0073b65e971a9e370cdcfff78dcbea8a6332073c967d0a956505f042f5e"
+              "sha256": "eb2fe44bdef4e17576150aeacb3758f2d44ec3bd9580879899a67507db557454"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/state.json",
-              "sha256": "9ef43bfff35d4202121cdfe635fa14b3433d86d84e453a09a9543d780a3befaa"
+              "sha256": "8b5a0dbc18db1b3be755216af8478778b6158b2ab29784515a55c2b81b914d88"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "44c7e160fd51099b363c9daa498be9905dad19707ff80b1b8652d9512003a9ed"
+              "sha256": "e426deaec44bbb749d813e11e862cfd337d4698fcc532124da1a75f71cad3762"
             }
           ]
         }
@@ -2339,17 +2339,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/copied-first/process.json",
-              "sha256": "a116929393a1bf528dda08df2b862036b20dff8aa53b9fd3ef996926542b52c0"
+              "sha256": "3d98ecefde3688eceddeaaa082a84fd1f8d6701186487446316929c0aac00a78"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/copied-first/state.json",
-              "sha256": "c5a6fdf72776b128dce775622a5680f394f9c94b127a72082db2444157d58311"
+              "sha256": "d171f18014850d4fd9cecc01c9096ba75d8330d8813aaf420cdde67fe434e407"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/copied-first/terminal.png",
-              "sha256": "a5e8bf0c92628a97fe6c8d28e17ce6f148bacc7bad05c385ff1ae51d597f69b8"
+              "sha256": "4a7413ef57128fb608778b280b1f48ffc756c187a1dcd702ce12578fe4e6555b"
             }
           ]
         },
@@ -2373,17 +2373,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/process.json",
-              "sha256": "30e3d0073b65e971a9e370cdcfff78dcbea8a6332073c967d0a956505f042f5e"
+              "sha256": "eb2fe44bdef4e17576150aeacb3758f2d44ec3bd9580879899a67507db557454"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/state.json",
-              "sha256": "9ef43bfff35d4202121cdfe635fa14b3433d86d84e453a09a9543d780a3befaa"
+              "sha256": "8b5a0dbc18db1b3be755216af8478778b6158b2ab29784515a55c2b81b914d88"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "44c7e160fd51099b363c9daa498be9905dad19707ff80b1b8652d9512003a9ed"
+              "sha256": "e426deaec44bbb749d813e11e862cfd337d4698fcc532124da1a75f71cad3762"
             }
           ]
         }
@@ -2418,17 +2418,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/copied-first/process.json",
-              "sha256": "a116929393a1bf528dda08df2b862036b20dff8aa53b9fd3ef996926542b52c0"
+              "sha256": "3d98ecefde3688eceddeaaa082a84fd1f8d6701186487446316929c0aac00a78"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/copied-first/state.json",
-              "sha256": "c5a6fdf72776b128dce775622a5680f394f9c94b127a72082db2444157d58311"
+              "sha256": "d171f18014850d4fd9cecc01c9096ba75d8330d8813aaf420cdde67fe434e407"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/copied-first/terminal.png",
-              "sha256": "a5e8bf0c92628a97fe6c8d28e17ce6f148bacc7bad05c385ff1ae51d597f69b8"
+              "sha256": "4a7413ef57128fb608778b280b1f48ffc756c187a1dcd702ce12578fe4e6555b"
             }
           ]
         },
@@ -2452,17 +2452,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/process.json",
-              "sha256": "30e3d0073b65e971a9e370cdcfff78dcbea8a6332073c967d0a956505f042f5e"
+              "sha256": "eb2fe44bdef4e17576150aeacb3758f2d44ec3bd9580879899a67507db557454"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/state.json",
-              "sha256": "9ef43bfff35d4202121cdfe635fa14b3433d86d84e453a09a9543d780a3befaa"
+              "sha256": "8b5a0dbc18db1b3be755216af8478778b6158b2ab29784515a55c2b81b914d88"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "44c7e160fd51099b363c9daa498be9905dad19707ff80b1b8652d9512003a9ed"
+              "sha256": "e426deaec44bbb749d813e11e862cfd337d4698fcc532124da1a75f71cad3762"
             }
           ]
         }
@@ -2497,17 +2497,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/copied-first/process.json",
-              "sha256": "a116929393a1bf528dda08df2b862036b20dff8aa53b9fd3ef996926542b52c0"
+              "sha256": "3d98ecefde3688eceddeaaa082a84fd1f8d6701186487446316929c0aac00a78"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/copied-first/state.json",
-              "sha256": "c5a6fdf72776b128dce775622a5680f394f9c94b127a72082db2444157d58311"
+              "sha256": "d171f18014850d4fd9cecc01c9096ba75d8330d8813aaf420cdde67fe434e407"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/copied-first/terminal.png",
-              "sha256": "a5e8bf0c92628a97fe6c8d28e17ce6f148bacc7bad05c385ff1ae51d597f69b8"
+              "sha256": "4a7413ef57128fb608778b280b1f48ffc756c187a1dcd702ce12578fe4e6555b"
             }
           ]
         },
@@ -2531,17 +2531,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/process.json",
-              "sha256": "30e3d0073b65e971a9e370cdcfff78dcbea8a6332073c967d0a956505f042f5e"
+              "sha256": "eb2fe44bdef4e17576150aeacb3758f2d44ec3bd9580879899a67507db557454"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/state.json",
-              "sha256": "9ef43bfff35d4202121cdfe635fa14b3433d86d84e453a09a9543d780a3befaa"
+              "sha256": "8b5a0dbc18db1b3be755216af8478778b6158b2ab29784515a55c2b81b914d88"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "44c7e160fd51099b363c9daa498be9905dad19707ff80b1b8652d9512003a9ed"
+              "sha256": "e426deaec44bbb749d813e11e862cfd337d4698fcc532124da1a75f71cad3762"
             }
           ]
         }
@@ -2576,17 +2576,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/copied-first/process.json",
-              "sha256": "a116929393a1bf528dda08df2b862036b20dff8aa53b9fd3ef996926542b52c0"
+              "sha256": "3d98ecefde3688eceddeaaa082a84fd1f8d6701186487446316929c0aac00a78"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/copied-first/state.json",
-              "sha256": "c5a6fdf72776b128dce775622a5680f394f9c94b127a72082db2444157d58311"
+              "sha256": "d171f18014850d4fd9cecc01c9096ba75d8330d8813aaf420cdde67fe434e407"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/copied-first/terminal.png",
-              "sha256": "a5e8bf0c92628a97fe6c8d28e17ce6f148bacc7bad05c385ff1ae51d597f69b8"
+              "sha256": "4a7413ef57128fb608778b280b1f48ffc756c187a1dcd702ce12578fe4e6555b"
             }
           ]
         },
@@ -2610,17 +2610,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/process.json",
-              "sha256": "30e3d0073b65e971a9e370cdcfff78dcbea8a6332073c967d0a956505f042f5e"
+              "sha256": "eb2fe44bdef4e17576150aeacb3758f2d44ec3bd9580879899a67507db557454"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/state.json",
-              "sha256": "9ef43bfff35d4202121cdfe635fa14b3433d86d84e453a09a9543d780a3befaa"
+              "sha256": "8b5a0dbc18db1b3be755216af8478778b6158b2ab29784515a55c2b81b914d88"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-arm64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "44c7e160fd51099b363c9daa498be9905dad19707ff80b1b8652d9512003a9ed"
+              "sha256": "e426deaec44bbb749d813e11e862cfd337d4698fcc532124da1a75f71cad3762"
             }
           ]
         }
@@ -2655,17 +2655,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/fresh-first/process.json",
-              "sha256": "994486ee4d7692857807080a7e6e0fa9dcaf450f2f1bee1e92061e499e6b6cd9"
+              "sha256": "4e06cfe458f95465e5a4918d3d2a9db209b5082f1696cfb469a1f1fe60587fef"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/fresh-first/state.json",
-              "sha256": "b151897d0f2da971f084b62bf3ea59221e545b561d9d50fe1b2d638cd431ab3b"
+              "sha256": "a592df69700790ad4f843ffeaed9e26f5fde85bc5369549379da343101fea278"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/fresh-first/terminal.png",
-              "sha256": "6824844c00d7f2782f5a61de72dddca092b858133291482181af6c3cfb136baf"
+              "sha256": "8f12346592c070611e644c48f025fa595efdaa5d4e63b69c4257f8660fe74d89"
             }
           ]
         },
@@ -2689,17 +2689,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/process.json",
-              "sha256": "bb31238eff732faf0dff9a26b91917290292096e9364fcbe007e312324fcd52c"
+              "sha256": "e164ed53eab47833b1cd440ee248e825d100d3e2b7c4d287dbf0819ecea528b2"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/state.json",
-              "sha256": "05016feec70a1a88b975e15f4f6bc7d01a03c42f0f57472ea492dde32e6f7875"
+              "sha256": "6f9ae7a2e2abe0a5a252c9daf7d54f7eb2513adf58d818ccdfcabf4507d51345"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/terminal.png",
-              "sha256": "d4abdcf1b236bb72ed9486bad50b5c2630f0ad5277ddbce35da98258876e10f1"
+              "sha256": "c5e96ca4518ac616c655be1476212870c2fe2538fc9e73269c29ca58f495b18f"
             }
           ]
         }
@@ -2734,17 +2734,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/fresh-first/process.json",
-              "sha256": "994486ee4d7692857807080a7e6e0fa9dcaf450f2f1bee1e92061e499e6b6cd9"
+              "sha256": "4e06cfe458f95465e5a4918d3d2a9db209b5082f1696cfb469a1f1fe60587fef"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/fresh-first/state.json",
-              "sha256": "b151897d0f2da971f084b62bf3ea59221e545b561d9d50fe1b2d638cd431ab3b"
+              "sha256": "a592df69700790ad4f843ffeaed9e26f5fde85bc5369549379da343101fea278"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/fresh-first/terminal.png",
-              "sha256": "6824844c00d7f2782f5a61de72dddca092b858133291482181af6c3cfb136baf"
+              "sha256": "8f12346592c070611e644c48f025fa595efdaa5d4e63b69c4257f8660fe74d89"
             }
           ]
         },
@@ -2768,17 +2768,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/process.json",
-              "sha256": "bb31238eff732faf0dff9a26b91917290292096e9364fcbe007e312324fcd52c"
+              "sha256": "e164ed53eab47833b1cd440ee248e825d100d3e2b7c4d287dbf0819ecea528b2"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/state.json",
-              "sha256": "05016feec70a1a88b975e15f4f6bc7d01a03c42f0f57472ea492dde32e6f7875"
+              "sha256": "6f9ae7a2e2abe0a5a252c9daf7d54f7eb2513adf58d818ccdfcabf4507d51345"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/terminal.png",
-              "sha256": "d4abdcf1b236bb72ed9486bad50b5c2630f0ad5277ddbce35da98258876e10f1"
+              "sha256": "c5e96ca4518ac616c655be1476212870c2fe2538fc9e73269c29ca58f495b18f"
             }
           ]
         }
@@ -2813,17 +2813,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/fresh-first/process.json",
-              "sha256": "994486ee4d7692857807080a7e6e0fa9dcaf450f2f1bee1e92061e499e6b6cd9"
+              "sha256": "4e06cfe458f95465e5a4918d3d2a9db209b5082f1696cfb469a1f1fe60587fef"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/fresh-first/state.json",
-              "sha256": "b151897d0f2da971f084b62bf3ea59221e545b561d9d50fe1b2d638cd431ab3b"
+              "sha256": "a592df69700790ad4f843ffeaed9e26f5fde85bc5369549379da343101fea278"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/fresh-first/terminal.png",
-              "sha256": "6824844c00d7f2782f5a61de72dddca092b858133291482181af6c3cfb136baf"
+              "sha256": "8f12346592c070611e644c48f025fa595efdaa5d4e63b69c4257f8660fe74d89"
             }
           ]
         },
@@ -2847,17 +2847,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/process.json",
-              "sha256": "bb31238eff732faf0dff9a26b91917290292096e9364fcbe007e312324fcd52c"
+              "sha256": "e164ed53eab47833b1cd440ee248e825d100d3e2b7c4d287dbf0819ecea528b2"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/state.json",
-              "sha256": "05016feec70a1a88b975e15f4f6bc7d01a03c42f0f57472ea492dde32e6f7875"
+              "sha256": "6f9ae7a2e2abe0a5a252c9daf7d54f7eb2513adf58d818ccdfcabf4507d51345"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/terminal.png",
-              "sha256": "d4abdcf1b236bb72ed9486bad50b5c2630f0ad5277ddbce35da98258876e10f1"
+              "sha256": "c5e96ca4518ac616c655be1476212870c2fe2538fc9e73269c29ca58f495b18f"
             }
           ]
         }
@@ -2892,17 +2892,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/fresh-first/process.json",
-              "sha256": "994486ee4d7692857807080a7e6e0fa9dcaf450f2f1bee1e92061e499e6b6cd9"
+              "sha256": "4e06cfe458f95465e5a4918d3d2a9db209b5082f1696cfb469a1f1fe60587fef"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/fresh-first/state.json",
-              "sha256": "b151897d0f2da971f084b62bf3ea59221e545b561d9d50fe1b2d638cd431ab3b"
+              "sha256": "a592df69700790ad4f843ffeaed9e26f5fde85bc5369549379da343101fea278"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/fresh-first/terminal.png",
-              "sha256": "6824844c00d7f2782f5a61de72dddca092b858133291482181af6c3cfb136baf"
+              "sha256": "8f12346592c070611e644c48f025fa595efdaa5d4e63b69c4257f8660fe74d89"
             }
           ]
         },
@@ -2926,17 +2926,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/process.json",
-              "sha256": "bb31238eff732faf0dff9a26b91917290292096e9364fcbe007e312324fcd52c"
+              "sha256": "e164ed53eab47833b1cd440ee248e825d100d3e2b7c4d287dbf0819ecea528b2"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/state.json",
-              "sha256": "05016feec70a1a88b975e15f4f6bc7d01a03c42f0f57472ea492dde32e6f7875"
+              "sha256": "6f9ae7a2e2abe0a5a252c9daf7d54f7eb2513adf58d818ccdfcabf4507d51345"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/fresh-repeat/terminal.png",
-              "sha256": "d4abdcf1b236bb72ed9486bad50b5c2630f0ad5277ddbce35da98258876e10f1"
+              "sha256": "c5e96ca4518ac616c655be1476212870c2fe2538fc9e73269c29ca58f495b18f"
             }
           ]
         }
@@ -2971,17 +2971,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/copied-first/process.json",
-              "sha256": "6c2b5c0d14cc11d0e7987300be43cab87de2e457704916f77b70d5524e771e07"
+              "sha256": "d0f2407045f9e5f52e397871098faca8fffd781d913c3cb6ae14eae08f548a45"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/copied-first/state.json",
-              "sha256": "5ff130d4f71312afaafb1f9feb01d6b6e3614f007615be7eb555d7acd22d8908"
+              "sha256": "ecf9a0e6e8376804ee3fd6dc49eac39527d9a64d8c0a102a98b6d625809d229f"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/copied-first/terminal.png",
-              "sha256": "9f70980089d3f5d0a2e3372b2bd05ed86f8751a2332d0c84235c16faf259d0c0"
+              "sha256": "021c0a6af9c865e9513830e0d188cf720c02803041b335e62ec791470f9e87cf"
             }
           ]
         },
@@ -3005,17 +3005,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/copied-repeat/process.json",
-              "sha256": "1d079e87d2cacd7a669b8d4a2027b5b531c50d9e966b896fe5ba413795c49861"
+              "sha256": "37773d2e85c754234853e04ac281591e0c99296e2bd6dc9a9abfea7ffaf5f553"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/copied-repeat/state.json",
-              "sha256": "b4f1407e063e2d18f33afe29be26ef6b4f4d8d52597edd86da853e88b1878776"
+              "sha256": "23344125bf73753ac943c845915eaeb830fdc7d3200fc808398781f7269a3e7b"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "6b9cbd649b248079b37c9bc9c069db283e70b17526732354f3a74c299fce590b"
+              "sha256": "509c9490ac173f2bede5e1f0cc8a7b64c9603ab2155d486662a573bd3c925895"
             }
           ]
         }
@@ -3050,17 +3050,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/copied-first/process.json",
-              "sha256": "6c2b5c0d14cc11d0e7987300be43cab87de2e457704916f77b70d5524e771e07"
+              "sha256": "d0f2407045f9e5f52e397871098faca8fffd781d913c3cb6ae14eae08f548a45"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/copied-first/state.json",
-              "sha256": "5ff130d4f71312afaafb1f9feb01d6b6e3614f007615be7eb555d7acd22d8908"
+              "sha256": "ecf9a0e6e8376804ee3fd6dc49eac39527d9a64d8c0a102a98b6d625809d229f"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/copied-first/terminal.png",
-              "sha256": "9f70980089d3f5d0a2e3372b2bd05ed86f8751a2332d0c84235c16faf259d0c0"
+              "sha256": "021c0a6af9c865e9513830e0d188cf720c02803041b335e62ec791470f9e87cf"
             }
           ]
         },
@@ -3084,17 +3084,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/copied-repeat/process.json",
-              "sha256": "1d079e87d2cacd7a669b8d4a2027b5b531c50d9e966b896fe5ba413795c49861"
+              "sha256": "37773d2e85c754234853e04ac281591e0c99296e2bd6dc9a9abfea7ffaf5f553"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/copied-repeat/state.json",
-              "sha256": "b4f1407e063e2d18f33afe29be26ef6b4f4d8d52597edd86da853e88b1878776"
+              "sha256": "23344125bf73753ac943c845915eaeb830fdc7d3200fc808398781f7269a3e7b"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "6b9cbd649b248079b37c9bc9c069db283e70b17526732354f3a74c299fce590b"
+              "sha256": "509c9490ac173f2bede5e1f0cc8a7b64c9603ab2155d486662a573bd3c925895"
             }
           ]
         }
@@ -3129,17 +3129,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/copied-first/process.json",
-              "sha256": "6c2b5c0d14cc11d0e7987300be43cab87de2e457704916f77b70d5524e771e07"
+              "sha256": "d0f2407045f9e5f52e397871098faca8fffd781d913c3cb6ae14eae08f548a45"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/copied-first/state.json",
-              "sha256": "5ff130d4f71312afaafb1f9feb01d6b6e3614f007615be7eb555d7acd22d8908"
+              "sha256": "ecf9a0e6e8376804ee3fd6dc49eac39527d9a64d8c0a102a98b6d625809d229f"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/copied-first/terminal.png",
-              "sha256": "9f70980089d3f5d0a2e3372b2bd05ed86f8751a2332d0c84235c16faf259d0c0"
+              "sha256": "021c0a6af9c865e9513830e0d188cf720c02803041b335e62ec791470f9e87cf"
             }
           ]
         },
@@ -3163,17 +3163,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/copied-repeat/process.json",
-              "sha256": "1d079e87d2cacd7a669b8d4a2027b5b531c50d9e966b896fe5ba413795c49861"
+              "sha256": "37773d2e85c754234853e04ac281591e0c99296e2bd6dc9a9abfea7ffaf5f553"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/copied-repeat/state.json",
-              "sha256": "b4f1407e063e2d18f33afe29be26ef6b4f4d8d52597edd86da853e88b1878776"
+              "sha256": "23344125bf73753ac943c845915eaeb830fdc7d3200fc808398781f7269a3e7b"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "6b9cbd649b248079b37c9bc9c069db283e70b17526732354f3a74c299fce590b"
+              "sha256": "509c9490ac173f2bede5e1f0cc8a7b64c9603ab2155d486662a573bd3c925895"
             }
           ]
         }
@@ -3208,17 +3208,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/copied-first/process.json",
-              "sha256": "6c2b5c0d14cc11d0e7987300be43cab87de2e457704916f77b70d5524e771e07"
+              "sha256": "d0f2407045f9e5f52e397871098faca8fffd781d913c3cb6ae14eae08f548a45"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/copied-first/state.json",
-              "sha256": "5ff130d4f71312afaafb1f9feb01d6b6e3614f007615be7eb555d7acd22d8908"
+              "sha256": "ecf9a0e6e8376804ee3fd6dc49eac39527d9a64d8c0a102a98b6d625809d229f"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/copied-first/terminal.png",
-              "sha256": "9f70980089d3f5d0a2e3372b2bd05ed86f8751a2332d0c84235c16faf259d0c0"
+              "sha256": "021c0a6af9c865e9513830e0d188cf720c02803041b335e62ec791470f9e87cf"
             }
           ]
         },
@@ -3242,17 +3242,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/copied-repeat/process.json",
-              "sha256": "1d079e87d2cacd7a669b8d4a2027b5b531c50d9e966b896fe5ba413795c49861"
+              "sha256": "37773d2e85c754234853e04ac281591e0c99296e2bd6dc9a9abfea7ffaf5f553"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/copied-repeat/state.json",
-              "sha256": "b4f1407e063e2d18f33afe29be26ef6b4f4d8d52597edd86da853e88b1878776"
+              "sha256": "23344125bf73753ac943c845915eaeb830fdc7d3200fc808398781f7269a3e7b"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "6b9cbd649b248079b37c9bc9c069db283e70b17526732354f3a74c299fce590b"
+              "sha256": "509c9490ac173f2bede5e1f0cc8a7b64c9603ab2155d486662a573bd3c925895"
             }
           ]
         }
@@ -3287,17 +3287,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/copied-first/process.json",
-              "sha256": "6c2b5c0d14cc11d0e7987300be43cab87de2e457704916f77b70d5524e771e07"
+              "sha256": "d0f2407045f9e5f52e397871098faca8fffd781d913c3cb6ae14eae08f548a45"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/copied-first/state.json",
-              "sha256": "5ff130d4f71312afaafb1f9feb01d6b6e3614f007615be7eb555d7acd22d8908"
+              "sha256": "ecf9a0e6e8376804ee3fd6dc49eac39527d9a64d8c0a102a98b6d625809d229f"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/copied-first/terminal.png",
-              "sha256": "9f70980089d3f5d0a2e3372b2bd05ed86f8751a2332d0c84235c16faf259d0c0"
+              "sha256": "021c0a6af9c865e9513830e0d188cf720c02803041b335e62ec791470f9e87cf"
             }
           ]
         },
@@ -3321,17 +3321,17 @@
             {
               "kind": "process-transcript",
               "path": "observations/cli-linux-x64/lifecycle/copied-repeat/process.json",
-              "sha256": "1d079e87d2cacd7a669b8d4a2027b5b531c50d9e966b896fe5ba413795c49861"
+              "sha256": "37773d2e85c754234853e04ac281591e0c99296e2bd6dc9a9abfea7ffaf5f553"
             },
             {
               "kind": "state-receipt",
               "path": "observations/cli-linux-x64/lifecycle/copied-repeat/state.json",
-              "sha256": "b4f1407e063e2d18f33afe29be26ef6b4f4d8d52597edd86da853e88b1878776"
+              "sha256": "23344125bf73753ac943c845915eaeb830fdc7d3200fc808398781f7269a3e7b"
             },
             {
               "kind": "terminal-screenshot",
               "path": "observations/cli-linux-x64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "6b9cbd649b248079b37c9bc9c069db283e70b17526732354f3a74c299fce590b"
+              "sha256": "509c9490ac173f2bede5e1f0cc8a7b64c9603ab2155d486662a573bd3c925895"
             }
           ]
         }

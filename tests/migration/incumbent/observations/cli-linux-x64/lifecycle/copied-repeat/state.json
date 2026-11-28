@@ -1,5 +1,5 @@
 {
-  "bootId": "389539c6-199c-43f3-b24d-85fd81dee0d2",
+  "bootId": "faac0d84-94ff-46c2-83a8-656729d507b6",
   "homeMode": "copied",
   "fixtureId": "linux-cli-lifecycle",
   "database": "userdata/statev2.sqlite",
@@ -8,6 +8,7 @@
     "messages": "575ae62e5027b648775dcb0ab7eada7005d996a4c71223daff6948d104b6d4d6",
     "runs": "a543ae94a7af7d28ce23d8149c516a62fd9fb4e1da3ce6ebfe152550aac6ef47"
   },
+  "runtimeOwnerSha256": "9fd28baa050646edede814dc2d1552cd51fbceadcb6e730617b4904de1fa8225",
   "threadRead": {
     "command": ["t3", "thread", "show", "--base-dir", "$BASE", "--json", "$THREAD"],
     "exitCode": 0,

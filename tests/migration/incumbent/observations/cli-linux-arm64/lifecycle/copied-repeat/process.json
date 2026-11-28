@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bootId": "f29ec834-aa46-4cdd-b0a2-2d193cccf678",
+  "bootId": "131b20d3-4919-4eea-a7af-b2beb0dd9287",
   "homeMode": "copied",
   "fixtureId": "linux-cli-lifecycle",
   "package": {
@@ -43,6 +43,10 @@
     "startupPairingUrlPrinted": false,
     "runtimeRecord": "userdata/server-runtime.json",
     "runtimeRecordVersion": 1,
+    "runtimeIdentity": {
+      "ownerSha256": "c744551326501f555aeabccae2d490e35331ff094958288e491abf02f481e519",
+      "startedAt": "2026-11-28T15:22:28.848Z"
+    },
     "runtimeMatchesOwnedChild": true,
     "runtimeExecutable": {
       "kind": "proc-exe"

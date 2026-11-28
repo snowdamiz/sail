@@ -11,7 +11,10 @@ use std::{
 };
 
 use catalog::{Catalog, Cell, Inventory, OpenItem};
-use evidence::{Evidence, is_hex, read_json, verify_linux_cli_lifecycle, verify_reference_pair};
+use evidence::{
+    Evidence, is_hex, read_json, render_cli_terminal, verify_linux_cli_lifecycle,
+    verify_reference_pair,
+};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -395,9 +398,19 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
 }
 
 fn main() -> Result<()> {
+    let mut args = env::args_os().skip(1).peekable();
+    if args.peek().is_some_and(|arg| arg == "--render-cli") {
+        args.next();
+        let directory = args.next().context("missing CLI capture directory")?;
+        ensure!(
+            args.next().is_none(),
+            "usage: sail-migration-coverage --render-cli CAPTURE_DIRECTORY"
+        );
+        return render_cli_terminal(Path::new(&directory));
+    }
     let mut path = None;
     let mut list_missing = false;
-    for arg in env::args_os().skip(1) {
+    for arg in args {
         if arg == "--list-missing" {
             list_missing = true;
         } else {

@@ -62,7 +62,7 @@ python3 /fixture/incumbent/runtime/capture-cli.py \
 
 Add `--emulated` for the x64 Rosetta run, which allows up to 90 seconds for readiness. The capture checks the archive and installed entries, the executable linked from the owned process or mapped by Rosetta, and selection of the explicit home. It records readiness, the descriptor, a one-use read-only browser session with the requested grants, and cleanup after Ctrl-C. Pairing credentials and cookies stay in memory.
 
-Run [render-cli.py](render-cli.py) with Pillow on each output directory after formatting its JSON. It renders the sanitized terminal transcript and binds the PNG to the process and state receipts. The Rust coverage audit checks both boots for each claimed configuration and compares the copied state to the [pinned seed](cli-lifecycle-seed.json).
+After formatting the JSON, render each capture directory with `cargo run --locked --manifest-path tests/migration/coverage-check/Cargo.toml -- --render-cli "$capture"`. The Rust audit regenerates the terminal pixels from both receipts, checks that the runtime owner and start time identify two boots, and compares each copied home to the [pinned seed](cli-lifecycle-seed.json).
 
 ## Published foreground CLI upgrade
 

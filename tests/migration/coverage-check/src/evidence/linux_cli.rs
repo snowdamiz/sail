@@ -1,4 +1,4 @@
-use std::{fs, io::Cursor, path::Path};
+use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
@@ -7,6 +7,10 @@ use serde_json::{Value, json};
 use super::{Evidence, is_hex, one_artifact, read_json};
 use crate::catalog::{Inventory, Observation, Platform, Run};
 
+mod terminal;
+pub(crate) use terminal::render_cli_terminal;
+use terminal::verify_image;
+
 #[derive(Clone, Copy, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 enum HomeMode {
@@ -14,6 +18,14 @@ enum HomeMode {
     Copied,
 }
 
+impl HomeMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Copied => "copied",
+        }
+    }
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Boot {
@@ -61,6 +73,7 @@ struct Start {
     startup_pairing_url_printed: bool,
     runtime_record: String,
     runtime_record_version: u64,
+    runtime_identity: RuntimeIdentity,
     runtime_matches_owned_child: bool,
     runtime_executable: Value,
     environment_matches_selected_home: bool,
@@ -71,10 +84,18 @@ struct Start {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct RuntimeIdentity {
+    owner_sha256: String,
+    started_at: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SavedState {
     boot_id: String,
     fixture_id: String,
     database: String,
+    runtime_owner_sha256: String,
     #[serde(flatten)]
     home: StateHome,
 }
@@ -223,14 +244,15 @@ fn verify_probes(boot: &Boot) -> Result<()> {
     Ok(())
 }
 
-fn verify_state(evidence: &Evidence, state: SavedState, boot: &Boot) -> Result<()> {
+fn verify_state(evidence: &Evidence, state: &SavedState, boot: &Boot) -> Result<()> {
     ensure!(
         state.boot_id == boot.boot_id
             && state.fixture_id == boot.fixture_id
-            && state.database == "userdata/statev2.sqlite",
+            && state.database == "userdata/statev2.sqlite"
+            && state.runtime_owner_sha256 == boot.start.runtime_identity.owner_sha256,
         "state receipt disagrees with the CLI boot"
     );
-    match (state.home, boot.home_mode) {
+    match (&state.home, boot.home_mode) {
         (
             StateHome::Fresh {
                 database_absent_before_start: true,
@@ -249,14 +271,14 @@ fn verify_state(evidence: &Evidence, state: SavedState, boot: &Boot) -> Result<(
             let seed: Seed =
                 read_json(&evidence.resolve(Path::new("runtime/cli-lifecycle-seed.json"))?)?;
             ensure!(
-                seed_database_sha256 == seed.seed_database_sha256
-                    && before_start == seed.fingerprint
-                    && after_stop == seed.fingerprint,
+                seed_database_sha256 == &seed.seed_database_sha256
+                    && before_start == &seed.fingerprint
+                    && after_stop == &seed.fingerprint,
                 "copied CLI home did not preserve the pinned fixture payloads"
             );
             ensure!(
                 thread_read
-                    == json!({
+                    == &json!({
                         "command": ["t3", "thread", "show", "--base-dir", "$BASE", "--json", "$THREAD"],
                         "exitCode": 0, "threadTitle": seed.thread_title, "roles": seed.roles,
                         "messageCount": 3, "runCount": 1, "messagesMatchSeed": true,
@@ -269,49 +291,13 @@ fn verify_state(evidence: &Evidence, state: SavedState, boot: &Boot) -> Result<(
     }
 }
 
-fn verify_image(evidence: &Evidence, run: &Run, boot_id: &str) -> Result<()> {
-    let transcript = one_artifact(&run.artifacts, "process-transcript")?;
-    let state = one_artifact(&run.artifacts, "state-receipt")?;
-    let image = one_artifact(&run.artifacts, "terminal-screenshot")?;
-    let mut decoder =
-        png::Decoder::new(Cursor::new(fs::read(evidence.resolve(&image.path)?)?)).read_info()?;
-    let info = decoder.info();
-    ensure!(
-        info.width == 1024 && info.height == 318 && info.animation_control.is_none(),
-        "unexpected CLI terminal image geometry"
-    );
-    for (key, expected) in [
-        ("SailBoot", boot_id),
-        ("SailTranscriptSha256", transcript.sha256.as_str()),
-        ("SailStateSha256", state.sha256.as_str()),
-    ] {
-        let mut values = info
-            .uncompressed_latin1_text
-            .iter()
-            .filter(|value| value.keyword == key);
-        ensure!(
-            values.next().is_some_and(|value| value.text == expected) && values.next().is_none(),
-            "terminal image is not bound to the CLI receipts"
-        );
-    }
-    let mut pixels = vec![
-        0;
-        decoder
-            .output_buffer_size()
-            .context("terminal image too large")?
-    ];
-    decoder.next_frame(&mut pixels)?;
-    decoder.finish()?;
-    Ok(())
-}
-
 fn verify_run(
     evidence: &Evidence,
     inventory: &Inventory,
     platform: &Platform,
     observation: &Observation,
     run: &Run,
-) -> Result<(String, Value, Value)> {
+) -> Result<(String, RuntimeIdentity, Value, Value)> {
     let transcript = one_artifact(&run.artifacts, "process-transcript")?;
     let state = one_artifact(&run.artifacts, "state-receipt")?;
     let mut process: Value = read_json(&evidence.resolve(&transcript.path)?)?;
@@ -339,10 +325,7 @@ fn verify_run(
             && matches!(host.execution.as_str(), "native" | "emulated"),
         "CLI receipt provenance contradicts the observation"
     );
-    let mode = match boot.home_mode {
-        HomeMode::Fresh => "fresh",
-        HomeMode::Copied => "copied",
-    };
+    let mode = boot.home_mode.label();
     let configuration = format!(
         "{}-{}-{}-{mode}",
         host.os_version.to_lowercase().replace(' ', "-"),
@@ -366,8 +349,16 @@ fn verify_run(
     );
     verify_package(&boot, inventory, run)?;
     verify_probes(&boot)?;
-    verify_state(evidence, serde_json::from_value(state.clone())?, &boot)?;
-    verify_image(evidence, run, id)?;
+    let identity = &boot.start.runtime_identity;
+    ensure!(
+        is_hex(&identity.owner_sha256, 64)
+            && identity.started_at.len() == 24
+            && identity.started_at.ends_with('Z'),
+        "missing observed CLI runtime identity"
+    );
+    let saved = serde_json::from_value(state.clone())?;
+    verify_state(evidence, &saved, &boot)?;
+    verify_image(evidence, run, &boot, &saved)?;
     process
         .as_object_mut()
         .context("expected a process object")?
@@ -376,7 +367,15 @@ fn verify_run(
         .as_object_mut()
         .context("expected a state object")?
         .remove("bootId");
-    Ok((boot.boot_id, process, state))
+    state
+        .as_object_mut()
+        .context("expected a state object")?
+        .remove("runtimeOwnerSha256");
+    process["start"]
+        .as_object_mut()
+        .context("expected a start object")?
+        .remove("runtimeIdentity");
+    Ok((boot.boot_id, boot.start.runtime_identity, process, state))
 }
 
 pub(crate) fn verify_linux_cli_lifecycle(
@@ -392,12 +391,16 @@ pub(crate) fn verify_linux_cli_lifecycle(
         first.role == "incumbent-first" && repeat.role == "incumbent-repeat",
         "CLI release reference must use the first and repeat incumbent roles"
     );
-    let (first_id, first_process, first_state) =
+    let (first_id, first_runtime, first_process, first_state) =
         verify_run(evidence, inventory, platform, observation, first)?;
-    let (repeat_id, repeat_process, repeat_state) =
+    let (repeat_id, repeat_runtime, repeat_process, repeat_state) =
         verify_run(evidence, inventory, platform, observation, repeat)?;
     ensure!(
-        first_id != repeat_id && first_process == repeat_process && first_state == repeat_state,
+        first_id != repeat_id
+            && first_runtime.owner_sha256 != repeat_runtime.owner_sha256
+            && first_runtime.started_at < repeat_runtime.started_at
+            && first_process == repeat_process
+            && first_state == repeat_state,
         "CLI release reference lacks two matching independent boots"
     );
     Ok(())

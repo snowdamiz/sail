@@ -3,6 +3,7 @@
 
 import argparse
 import errno
+from hashlib import sha256 as hash_value
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -177,6 +178,10 @@ def boot(executable, package, host, seed_path, thread_id, mode):
                 require(record["pid"] == process.pid
                         and (record["host"], record["port"], record["origin"])
                         == (HOST, port, f"http://{HOST}:{port}"), "Runtime does not identify owned listener")
+                require(isinstance(record["ownerId"], str) and record["ownerId"], "Missing runtime owner identity")
+                runtime_owner = hash_value(record["ownerId"].encode()).hexdigest()
+                state["runtimeOwnerSha256"] = runtime_owner
+                runtime_identity = {"ownerSha256": runtime_owner, "startedAt": record["startedAt"]}
                 runtime_executable = executable_proof(process, executable, host["execution"])
                 require(b"Pairing URL:" not in startup and database.is_file(), "Unexpected startup behavior")
                 require(not any((other / "userdata/server-runtime.json").exists() for other in (
@@ -228,6 +233,7 @@ def boot(executable, package, host, seed_path, thread_id, mode):
                 "startupPairingUrlPrinted": False,
                 "runtimeRecord": "userdata/server-runtime.json",
                 "runtimeRecordVersion": record["version"],
+                "runtimeIdentity": runtime_identity,
                 "runtimeMatchesOwnedChild": True,
                 "runtimeExecutable": runtime_executable,
                 "environmentMatchesSelectedHome": True,

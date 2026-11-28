@@ -228,6 +228,96 @@ fn rejects_a_terminal_screenshot_from_another_boot() {
 }
 
 #[test]
+fn rejects_a_blank_terminal_png_with_matching_metadata() {
+    let mut fixture = Fixture::cli("cli-open", "start", "arm64");
+    let image = fixture.catalog["observations"][0]["runs"][0]["artifacts"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|artifact| artifact["kind"] == "terminal-screenshot")
+        .unwrap();
+    let path = fixture
+        .directory
+        .path()
+        .join(image["path"].as_str().unwrap());
+    let png = png::Decoder::new(std::io::Cursor::new(fs::read(&path).unwrap()))
+        .read_info()
+        .unwrap();
+    let info = png.info();
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, info.width, info.height);
+    encoder.set_color(png::ColorType::Rgb);
+    for entry in &info.uncompressed_latin1_text {
+        encoder
+            .add_text_chunk(entry.keyword.clone(), entry.text.clone())
+            .unwrap();
+    }
+    let mut writer = encoder.write_header().unwrap();
+    writer
+        .write_image_data(&vec![0; (info.width * info.height * 3) as usize])
+        .unwrap();
+    writer.finish().unwrap();
+    fs::write(path, &bytes).unwrap();
+    image["sha256"] = json!(format!("{:x}", Sha256::digest(bytes)));
+    fixture.rejects("terminal image does not render the CLI receipts");
+}
+
+#[test]
+fn rejects_a_relabeled_cli_boot_with_regenerated_terminal_pixels() {
+    let mut fixture = Fixture::cli("cli-open", "stop", "arm64");
+    let runs = fixture.catalog["observations"][0]["runs"]
+        .as_array_mut()
+        .unwrap();
+    let first = runs[0]["artifacts"].as_array().unwrap().clone();
+    let repeat = runs[1]["artifacts"].as_array_mut().unwrap();
+    let directory = fixture.directory.path().join("relabeled");
+    fs::create_dir(&directory).unwrap();
+    for (kind, filename) in [
+        ("process-transcript", "process.json"),
+        ("state-receipt", "state.json"),
+    ] {
+        let receipt = first
+            .iter()
+            .find(|artifact| artifact["kind"] == kind)
+            .unwrap();
+        let original = fixture
+            .directory
+            .path()
+            .join(receipt["path"].as_str().unwrap());
+        let mut editable: Value = serde_json::from_slice(&fs::read(original).unwrap()).unwrap();
+        editable["bootId"] = json!("a0000000-0000-4000-8000-000000000000");
+        let bytes = serde_json::to_vec(&editable).unwrap();
+        fs::write(directory.join(filename), &bytes).unwrap();
+        let target = repeat
+            .iter_mut()
+            .find(|artifact| artifact["kind"] == kind)
+            .unwrap();
+        target["path"] = json!(format!("relabeled/{filename}"));
+        target["sha256"] = json!(format!("{:x}", Sha256::digest(bytes)));
+    }
+    let result = Command::new(env!("CARGO_BIN_EXE_sail-migration-coverage"))
+        .arg("--render-cli")
+        .arg(&directory)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let image = repeat
+        .iter_mut()
+        .find(|artifact| artifact["kind"] == "terminal-screenshot")
+        .unwrap();
+    image["path"] = json!("relabeled/terminal.png");
+    image["sha256"] = json!(format!(
+        "{:x}",
+        Sha256::digest(fs::read(directory.join("terminal.png")).unwrap())
+    ));
+    fixture.rejects("CLI release reference lacks two matching independent boots");
+}
+
+#[test]
 fn reports_each_unobserved_state_and_keeps_supplemental_receipts_separate() {
     let fixture = Fixture::new();
     let result = fixture.run();
