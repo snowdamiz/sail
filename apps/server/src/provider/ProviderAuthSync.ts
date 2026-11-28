@@ -22,6 +22,8 @@ import {
   type SyncedProviderStoreDriver,
 } from "@t3tools/contracts";
 import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStreamText";
+import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -48,6 +50,10 @@ import { claudeAccountConfigPath } from "./claudeResetCredits.ts";
 import { resolveClaudeHomePath } from "./Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "./Drivers/CodexHomeLayout.ts";
 import * as ProviderCredentialStore from "./ProviderCredentialStore.ts";
+import {
+  resolveIsolatedClaudeHomePath,
+  resolveIsolatedCodexShadowHomePath,
+} from "./ProviderIsolatedHomes.ts";
 import * as ProviderRegistry from "./ProviderRegistry.ts";
 
 const MAX_AUTH_FILE_BYTES = 512 * 1024;
@@ -516,24 +522,29 @@ const make = Effect.gen(function* () {
     env: NodeJS.ProcessEnv,
   ) {
     const home = yield* HostProcess.HomeDirectory;
-    const dataHome = env.XDG_DATA_HOME?.trim() || path.join(home, ".local", "share");
-    return path.join(dataHome, "opencode", "auth.json");
+    const configured = env.XDG_DATA_HOME?.trim();
+    const dataHome = configured
+      ? expandHomePath(configured, home)
+      : path.join(home, ".local", "share");
+    return path.resolve(path.join(dataHome, "opencode", "auth.json"));
   });
 
   const resolveGrokAuthPath = Effect.fn("ProviderAuthSync.resolveGrokAuthPath")(function* (
     env: NodeJS.ProcessEnv,
   ) {
     const home = yield* HostProcess.HomeDirectory;
-    const grokHome = env.GROK_HOME?.trim() || path.join(home, ".grok");
-    return path.join(grokHome, "auth.json");
+    const configured = env.GROK_HOME?.trim();
+    const grokHome = configured ? expandHomePath(configured, home) : path.join(home, ".grok");
+    return path.resolve(path.join(grokHome, "auth.json"));
   });
 
   const resolvePiAuthPath = Effect.fn("ProviderAuthSync.resolvePiAuthPath")(function* (
     env: NodeJS.ProcessEnv,
   ) {
     const home = yield* HostProcess.HomeDirectory;
-    const piDir = env.PI_CODING_AGENT_DIR?.trim() || path.join(home, ".pi", "agent");
-    return path.join(piDir, "auth.json");
+    const configured = env.PI_CODING_AGENT_DIR?.trim();
+    const piDir = configured ? expandHomePath(configured, home) : path.join(home, ".pi", "agent");
+    return path.resolve(path.join(piDir, "auth.json"));
   });
 
   const resolveClaudePathsForInstance = Effect.fn("ProviderAuthSync.resolveClaudePathsForInstance")(
@@ -548,8 +559,11 @@ const make = Effect.gen(function* () {
         instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make("claudeAgent"));
       let effectiveHomePath = configuredHome;
       if (!effectiveHomePath && !isDefault && createIsolatedIfNonDefault) {
-        const hash = yield* sha256Hex(instanceId);
-        effectiveHomePath = path.join(serverConfig.stateDir, "providers", "claude", hash);
+        effectiveHomePath = resolveIsolatedClaudeHomePath({
+          stateDir: serverConfig.stateDir,
+          instanceId,
+          path,
+        });
       }
       const configDir = yield* resolveClaudeHomePath({ homePath: effectiveHomePath }, env);
       const accountPath = yield* claudeAccountConfigPath(
@@ -578,8 +592,11 @@ const make = Effect.gen(function* () {
     const configuredShadow = getStringField(instance?.config, "shadowHomePath").trim();
     const isDefault = instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make("codex"));
     if (!configuredHome && !configuredShadow && !isDefault && createIsolatedIfNonDefault) {
-      const hash = yield* sha256Hex(instanceId);
-      const isolatedShadow = path.join(serverConfig.stateDir, "providers", "codex", hash);
+      const isolatedShadow = resolveIsolatedCodexShadowHomePath({
+        stateDir: serverConfig.stateDir,
+        instanceId,
+        path,
+      });
       return {
         authPath: path.join(isolatedShadow, "auth.json"),
         isolatedShadowHomePath: isolatedShadow,
@@ -793,39 +810,48 @@ const make = Effect.gen(function* () {
       }
     }
 
-    {
-      const authPath = yield* resolveOpenCodeAuthPath(env);
+    const seenOpenCodePaths = new Set<string>();
+    for (const { instanceId, instance } of collectInstancesForDriver(
+      settings,
+      ProviderDriverKind.make("opencode"),
+    )) {
+      const instanceEnv = yield* mergeProviderInstanceEnvironment(instance?.environment, env);
+      const authPath = yield* resolveOpenCodeAuthPath(instanceEnv);
+      if (seenOpenCodePaths.has(authPath)) continue;
+      seenOpenCodePaths.add(authPath);
       const authJson = yield* readSmallTextFile(authPath);
       if (authJson !== undefined && isNonEmptyAuthJsonObject(authJson)) {
-        cliAuth.push({
-          kind: "opencode",
-          instanceId: defaultInstanceIdForDriver(ProviderDriverKind.make("opencode")),
-          authJson,
-        });
+        cliAuth.push({ kind: "opencode", instanceId, authJson });
       }
     }
 
-    {
-      const authPath = yield* resolveGrokAuthPath(env);
+    const seenGrokPaths = new Set<string>();
+    for (const { instanceId, instance } of collectInstancesForDriver(
+      settings,
+      ProviderDriverKind.make("grok"),
+    )) {
+      const instanceEnv = yield* mergeProviderInstanceEnvironment(instance?.environment, env);
+      const authPath = yield* resolveGrokAuthPath(instanceEnv);
+      if (seenGrokPaths.has(authPath)) continue;
+      seenGrokPaths.add(authPath);
       const authJson = yield* readSmallTextFile(authPath);
       if (authJson !== undefined && isNonEmptyAuthJsonObject(authJson)) {
-        cliAuth.push({
-          kind: "grok",
-          instanceId: defaultInstanceIdForDriver(ProviderDriverKind.make("grok")),
-          authJson,
-        });
+        cliAuth.push({ kind: "grok", instanceId, authJson });
       }
     }
 
-    {
-      const authPath = yield* resolvePiAuthPath(env);
+    const seenPiPaths = new Set<string>();
+    for (const { instanceId, instance } of collectInstancesForDriver(
+      settings,
+      ProviderDriverKind.make("pi"),
+    )) {
+      const instanceEnv = yield* mergeProviderInstanceEnvironment(instance?.environment, env);
+      const authPath = yield* resolvePiAuthPath(instanceEnv);
+      if (seenPiPaths.has(authPath)) continue;
+      seenPiPaths.add(authPath);
       const authJson = yield* readSmallTextFile(authPath);
       if (authJson !== undefined && isNonEmptyAuthJsonObject(authJson)) {
-        cliAuth.push({
-          kind: "pi",
-          instanceId: defaultInstanceIdForDriver(ProviderDriverKind.make("pi")),
-          authJson,
-        });
+        cliAuth.push({ kind: "pi", instanceId, authJson });
       }
     }
 
@@ -1148,12 +1174,14 @@ const make = Effect.gen(function* () {
         }
 
         if (entry.kind === "opencode" || entry.kind === "grok" || entry.kind === "pi") {
+          const instance = nextInstances[entry.instanceId];
+          const instanceEnv = yield* mergeProviderInstanceEnvironment(instance?.environment, env);
           const authPath =
             entry.kind === "opencode"
-              ? yield* resolveOpenCodeAuthPath(env)
+              ? yield* resolveOpenCodeAuthPath(instanceEnv)
               : entry.kind === "grok"
-                ? yield* resolveGrokAuthPath(env)
-                : yield* resolvePiAuthPath(env);
+                ? yield* resolveGrokAuthPath(instanceEnv)
+                : yield* resolvePiAuthPath(instanceEnv);
           const existingRaw = yield* readSmallTextFile(authPath);
           const { merged, changed: fileChanged } = mergeJsonKeyMaps({
             existingRaw,

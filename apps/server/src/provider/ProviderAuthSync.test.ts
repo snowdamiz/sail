@@ -26,6 +26,10 @@ import { ServerSettingsService } from "../serverSettings.ts";
 import { resolveAntigravityInstanceDirectories } from "./antigravityAuthSupport.ts";
 import * as ProviderAuthSync from "./ProviderAuthSync.ts";
 import * as ProviderCredentialStore from "./ProviderCredentialStore.ts";
+import {
+  resolveIsolatedClaudeHomePath,
+  resolveIsolatedCodexShadowHomePath,
+} from "./ProviderIsolatedHomes.ts";
 
 const ONE_PASSWORD_KIND = SecretProviderKind.make("one_password");
 const PORTABLE_VAULT_ID = SecretProviderId.make("portable-1p");
@@ -492,6 +496,260 @@ describe("ProviderAuthSync", () => {
             assert.strictEqual(
               yield* fs.readFileString(path.join(dstHome, ".claude", ".credentials.json")),
               olderCreds,
+            );
+          }).pipe(Effect.provide(dstNode.fullLayer));
+        }).pipe(Effect.provide(Layer.merge(NodeCrypto.layer, NodeServices.layer))),
+      ),
+  );
+
+  it.effect(
+    "exports and imports secondary Claude, Codex, OpenCode, Grok, and Pi accounts in isolated directories",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const nowMs = yield* Clock.currentTimeMillis;
+          const root = yield* fs.makeTempDirectoryScoped({ prefix: "sail-multi-account-sync-" });
+          const srcHome = path.join(root, "src-home");
+          const srcState = path.join(root, "src-state");
+          const dstHome = path.join(root, "dst-home");
+          const dstState = path.join(root, "dst-state");
+
+          const claudeWorkId = ProviderInstanceId.make("claudeAgent_work");
+          const codexWorkId = ProviderInstanceId.make("codex_work");
+          const opencodeWorkId = ProviderInstanceId.make("opencode_work");
+          const grokWorkId = ProviderInstanceId.make("grok_work");
+          const piWorkId = ProviderInstanceId.make("pi_work");
+
+          const srcClaudeWorkHome = resolveIsolatedClaudeHomePath({
+            stateDir: srcState,
+            instanceId: claudeWorkId,
+            path,
+          });
+          const srcCodexWorkShadow = resolveIsolatedCodexShadowHomePath({
+            stateDir: srcState,
+            instanceId: codexWorkId,
+            path,
+          });
+
+          const srcNode = makeServerNode({
+            homeDir: srcHome,
+            stateDir: srcState,
+            settingsOverrides: {
+              providerInstances: {
+                [claudeWorkId]: {
+                  driver: ProviderDriverKind.make("claudeAgent"),
+                  displayName: "Claude Work",
+                  enabled: true,
+                  config: { homePath: srcClaudeWorkHome },
+                },
+                [codexWorkId]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  displayName: "Codex Work",
+                  enabled: true,
+                  config: { setupMode: "existing", shadowHomePath: srcCodexWorkShadow },
+                },
+                [opencodeWorkId]: {
+                  driver: ProviderDriverKind.make("opencode"),
+                  displayName: "OpenCode Work",
+                  enabled: true,
+                  environment: [
+                    { name: "XDG_DATA_HOME", value: "~/opencode-work-data", sensitive: false },
+                  ],
+                },
+                [grokWorkId]: {
+                  driver: ProviderDriverKind.make("grok"),
+                  displayName: "Grok Work",
+                  enabled: true,
+                  environment: [{ name: "GROK_HOME", value: "~/grok-work-home", sensitive: false }],
+                },
+                [piWorkId]: {
+                  driver: ProviderDriverKind.make("pi"),
+                  displayName: "Pi Work",
+                  enabled: true,
+                  environment: [
+                    { name: "PI_CODING_AGENT_DIR", value: "~/pi-work-agent", sensitive: false },
+                  ],
+                },
+              },
+            },
+          });
+
+          const dstNode = makeServerNode({ homeDir: dstHome, stateDir: dstState });
+
+          // Seed default + secondary credentials on source.
+          const defaultClaudeCreds = JSON.stringify({
+            claudeAiOauth: {
+              accessToken: "claude-default",
+              refreshToken: "claude-default-r",
+              expiresAt: nowMs + 3_600_000,
+            },
+          });
+          const workClaudeCreds = JSON.stringify({
+            claudeAiOauth: {
+              accessToken: "claude-work",
+              refreshToken: "claude-work-r",
+              expiresAt: nowMs + 3_600_000,
+            },
+          });
+          yield* fs.makeDirectory(path.join(srcHome, ".claude"), { recursive: true });
+          yield* fs.writeFileString(
+            path.join(srcHome, ".claude", ".credentials.json"),
+            defaultClaudeCreds,
+          );
+          yield* fs.makeDirectory(srcClaudeWorkHome, { recursive: true });
+          yield* fs.writeFileString(
+            path.join(srcClaudeWorkHome, ".credentials.json"),
+            workClaudeCreds,
+          );
+
+          const defaultCodexAuth = JSON.stringify({
+            tokens: { access_token: "codex-default" },
+            last_refresh: "2026-11-27T12:00:00.000Z",
+          });
+          const workCodexAuth = JSON.stringify({
+            tokens: { access_token: "codex-work" },
+            last_refresh: "2026-11-27T12:05:00.000Z",
+          });
+          yield* fs.makeDirectory(path.join(srcHome, ".codex"), { recursive: true });
+          yield* fs.writeFileString(path.join(srcHome, ".codex", "auth.json"), defaultCodexAuth);
+          yield* fs.makeDirectory(srcCodexWorkShadow, { recursive: true });
+          yield* fs.writeFileString(path.join(srcCodexWorkShadow, "auth.json"), workCodexAuth);
+
+          yield* fs.makeDirectory(path.join(srcHome, ".local", "share", "opencode"), {
+            recursive: true,
+          });
+          yield* fs.writeFileString(
+            path.join(srcHome, ".local", "share", "opencode", "auth.json"),
+            JSON.stringify({ defaultKey: { type: "api", key: "oc-default" } }),
+          );
+          yield* fs.makeDirectory(path.join(srcHome, "opencode-work-data", "opencode"), {
+            recursive: true,
+          });
+          yield* fs.writeFileString(
+            path.join(srcHome, "opencode-work-data", "opencode", "auth.json"),
+            JSON.stringify({ workKey: { type: "api", key: "oc-work" } }),
+          );
+
+          yield* fs.makeDirectory(path.join(srcHome, ".grok"), { recursive: true });
+          yield* fs.writeFileString(
+            path.join(srcHome, ".grok", "auth.json"),
+            JSON.stringify({ default: { key: "grok-default" } }),
+          );
+          yield* fs.makeDirectory(path.join(srcHome, "grok-work-home"), { recursive: true });
+          yield* fs.writeFileString(
+            path.join(srcHome, "grok-work-home", "auth.json"),
+            JSON.stringify({ work: { key: "grok-work" } }),
+          );
+
+          yield* fs.makeDirectory(path.join(srcHome, ".pi", "agent"), { recursive: true });
+          yield* fs.writeFileString(
+            path.join(srcHome, ".pi", "agent", "auth.json"),
+            JSON.stringify({ default: { type: "api_key", key: "pi-default" } }),
+          );
+          yield* fs.makeDirectory(path.join(srcHome, "pi-work-agent"), { recursive: true });
+          yield* fs.writeFileString(
+            path.join(srcHome, "pi-work-agent", "auth.json"),
+            JSON.stringify({ work: { type: "api_key", key: "pi-work" } }),
+          );
+
+          const exported = yield* Effect.gen(function* () {
+            const sync = yield* ProviderAuthSync.ProviderAuthSync;
+            return yield* sync.exportBundle({ resolveSecretReferences: true });
+          }).pipe(Effect.provide(srcNode.fullLayer));
+
+          assert.isTrue(
+            exported.bundle.cliAuth.some(
+              (entry) => entry.kind === "opencode" && entry.instanceId === opencodeWorkId,
+            ),
+          );
+          assert.isTrue(
+            exported.bundle.cliAuth.some(
+              (entry) => entry.kind === "grok" && entry.instanceId === grokWorkId,
+            ),
+          );
+          assert.isTrue(
+            exported.bundle.cliAuth.some(
+              (entry) => entry.kind === "pi" && entry.instanceId === piWorkId,
+            ),
+          );
+
+          yield* Effect.gen(function* () {
+            const sync = yield* ProviderAuthSync.ProviderAuthSync;
+            const settings = yield* ServerSettingsService;
+            const dstConfig = yield* ServerConfig.ServerConfig;
+
+            const imported = yield* sync.importBundle({ bundle: exported.bundle });
+            assert.isTrue(imported.changed);
+
+            const nextSettings = yield* settings.getSettings;
+            const expectedDstClaudeWorkHome = resolveIsolatedClaudeHomePath({
+              stateDir: dstConfig.stateDir,
+              instanceId: claudeWorkId,
+              path,
+            });
+            const expectedDstCodexWorkShadow = resolveIsolatedCodexShadowHomePath({
+              stateDir: dstConfig.stateDir,
+              instanceId: codexWorkId,
+              path,
+            });
+
+            assert.strictEqual(
+              (nextSettings.providerInstances[claudeWorkId]?.config as { homePath?: string })
+                ?.homePath,
+              expectedDstClaudeWorkHome,
+            );
+            assert.strictEqual(
+              (nextSettings.providerInstances[codexWorkId]?.config as { shadowHomePath?: string })
+                ?.shadowHomePath,
+              expectedDstCodexWorkShadow,
+            );
+
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(dstHome, ".claude", ".credentials.json")),
+              defaultClaudeCreds,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(expectedDstClaudeWorkHome, ".credentials.json")),
+              workClaudeCreds,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(dstHome, ".codex", "auth.json")),
+              defaultCodexAuth,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(expectedDstCodexWorkShadow, "auth.json")),
+              workCodexAuth,
+            );
+
+            assert.include(
+              yield* fs.readFileString(
+                path.join(dstHome, ".local", "share", "opencode", "auth.json"),
+              ),
+              "oc-default",
+            );
+            assert.include(
+              yield* fs.readFileString(
+                path.join(dstHome, "opencode-work-data", "opencode", "auth.json"),
+              ),
+              "oc-work",
+            );
+            assert.include(
+              yield* fs.readFileString(path.join(dstHome, ".grok", "auth.json")),
+              "grok-default",
+            );
+            assert.include(
+              yield* fs.readFileString(path.join(dstHome, "grok-work-home", "auth.json")),
+              "grok-work",
+            );
+            assert.include(
+              yield* fs.readFileString(path.join(dstHome, ".pi", "agent", "auth.json")),
+              "pi-default",
+            );
+            assert.include(
+              yield* fs.readFileString(path.join(dstHome, "pi-work-agent", "auth.json")),
+              "pi-work",
             );
           }).pipe(Effect.provide(dstNode.fullLayer));
         }).pipe(Effect.provide(Layer.merge(NodeCrypto.layer, NodeServices.layer))),
