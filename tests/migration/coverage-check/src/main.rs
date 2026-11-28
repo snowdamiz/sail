@@ -161,6 +161,16 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
             !case.id.trim().is_empty() && !case.states.is_empty(),
             "empty case ID or states"
         );
+        if matches!(
+            case.id.as_str(),
+            "cli-open" | "installer-home" | "installer-formats" | "updater" | "host-upgrade"
+        ) {
+            ensure!(
+                case.evidence_profile == "process",
+                "schema-v1 case {} requires the process evidence profile",
+                case.id
+            );
+        }
         let profile = contract
             .evidence_profiles
             .get(&case.evidence_profile)
@@ -382,6 +392,17 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
                         electron_target.is_none() || desktop_asset,
                         "Electron reference requires a published desktop installer: {label}"
                     );
+                    if pass
+                        && cell.case_id == "chat-display"
+                        && let Some(arch) =
+                            electron_target.and_then(|target| target.strip_prefix("linux-"))
+                    {
+                        let version = inventory.github_release.tag_name.trim_start_matches('v');
+                        ensure!(
+                            asset == format!("Sail-{version}-{arch}.deb"),
+                            "Linux Electron display reference requires the matching Debian installer: {label}"
+                        );
+                    }
                 }
             }
             if let Some(arch) = &platform.arch {
@@ -406,35 +427,33 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
         for artifact in &observation.comparison_artifacts {
             evidence.verify(artifact).with_context(|| label.clone())?;
         }
-        if pass
-            && release_reference
-            && matches!(
-                cell.platform_id.as_str(),
-                "cli-linux-arm64" | "cli-linux-x64"
-            )
-            && matches!(cell.case_id.as_str(), "cli-open" | "installer-home")
-        {
-            verify_linux_cli_lifecycle(&evidence, &inventory, platform, observation)
-                .with_context(|| label.clone())?;
-            verified_cli_references += 1;
-        }
-        if let Some(arch) = oci_arch
-            && pass
-            && release_reference
-            && matches!(cell.case_id.as_str(), "cli-open" | "installer-home")
-        {
-            verify_oci_lifecycle(&evidence, &inventory, arch, observation)
-                .with_context(|| label.clone())?;
-            verified_oci_references += 1;
-        }
-        if pass
-            && release_reference
-            && cell.platform_id == "cli-linux-arm64"
-            && cell.case_id == "host-upgrade"
-        {
-            verify_service_upgrade(&evidence, &inventory, platform, observation)
-                .with_context(|| label.clone())?;
-            verified_service_upgrades += 1;
+        let has_process_evidence = evidence_profiles[&cell.case_id]
+            .iter()
+            .any(|kind| kind == "process-transcript")
+            || observation
+                .runs
+                .iter()
+                .flat_map(|run| &run.artifacts)
+                .any(|artifact| artifact.kind == "process-transcript");
+        if pass && release_reference && has_process_evidence {
+            match (cell.case_id.as_str(), cell.platform_id.as_str(), oci_arch) {
+                ("cli-open" | "installer-home", "cli-linux-arm64" | "cli-linux-x64", _) => {
+                    verify_linux_cli_lifecycle(&evidence, &inventory, platform, observation)
+                        .with_context(|| label.clone())?;
+                    verified_cli_references += 1;
+                }
+                ("cli-open" | "installer-home", _, Some(arch)) => {
+                    verify_oci_lifecycle(&evidence, &inventory, arch, observation)
+                        .with_context(|| label.clone())?;
+                    verified_oci_references += 1;
+                }
+                ("host-upgrade", "cli-linux-arm64", _) => {
+                    verify_service_upgrade(&evidence, &inventory, platform, observation)
+                        .with_context(|| label.clone())?;
+                    verified_service_upgrades += 1;
+                }
+                _ => anyhow::bail!("no process verifier for passing release reference: {label}"),
+            }
         }
         let has_visual_reference = evidence_profiles[&cell.case_id]
             .iter()

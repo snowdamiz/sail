@@ -10,6 +10,7 @@ use std::{
 
 use crate::catalog::{Artifact, Cell, Observation, Run};
 
+mod display;
 mod linux_cli;
 mod oci;
 mod process_terminal;
@@ -143,6 +144,7 @@ struct Capture {
     screenshot_sha256: String,
     capture_run_id: String,
     package_sha256: Option<String>,
+    state_receipt_sha256: Option<String>,
     coverage: CaptureCoverage,
     profile: serde_json::Value,
     trace: Vec<TraceStep>,
@@ -268,7 +270,16 @@ fn load_capture(
             receipt.path.display()
         );
     }
-    Ok((capture, evidence.resolve(&image.path)?, receipt_path))
+    let image_path = evidence.resolve(&image.path)?;
+    if observation.cell.case_id == "chat-display"
+        && matches!(
+            observation.cell.platform_id.as_str(),
+            "electron-linux-arm64" | "electron-linux-x64"
+        )
+    {
+        display::verify(evidence, observation, run, &capture, &image_path)?;
+    }
+    Ok((capture, image_path, receipt_path))
 }
 
 pub fn verify_reference_pair(evidence: &Evidence, observation: &Observation) -> Result<()> {

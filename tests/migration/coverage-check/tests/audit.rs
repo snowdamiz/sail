@@ -14,6 +14,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::visual("chat-turn", "settled", "served-chromium-macos")
+    }
+
+    fn visual(case_id: &str, state: &str, platform: &str) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
@@ -29,23 +33,24 @@ impl Fixture {
             .unwrap()
             .iter()
             .find(|record| {
-                record["caseId"] == "chat-turn"
-                    && record["platformId"] == "served-chromium-macos"
+                record["caseId"] == case_id
+                    && record["state"] == state
+                    && record["platformId"] == platform
                     && record["stage"] == "p01-release-reference"
             })
             .unwrap()
             .clone();
-        let mut chat = catalog["cases"]
+        let mut case = catalog["cases"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|case| case["id"] == "chat-turn")
+            .find(|case| case["id"] == case_id)
             .unwrap()
             .clone();
-        chat["supplementalReceipts"] = json!(["supplemental.json"]);
-        catalog["cases"] = json!([chat]);
+        case["supplementalReceipts"] = json!(["supplemental.json"]);
+        catalog["cases"] = json!([case]);
         catalog["observations"] = json!([observation]);
-        catalog["platformSets"]["app"] = json!(["served-chromium-macos"]);
+        catalog["platformSets"]["app"] = json!([platform]);
         fs::write(directory.path().join("supplemental.json"), "{}").unwrap();
         let fixture = Self {
             directory,
@@ -285,6 +290,56 @@ fn rejects_reusing_the_first_service_trial_as_the_repeat() {
         .unwrap();
     runs[1]["artifacts"] = runs[0]["artifacts"].clone();
     fixture.rejects("expected two distinct service trials and retries");
+}
+
+#[test]
+fn rejects_relabeling_a_service_trial_to_a_platform_without_a_verifier() {
+    let mut fixture = Fixture::cli("host-upgrade", "installed", "arm64");
+    let x64 = Fixture::cli("cli-open", "start", "x64");
+    let observation = &mut fixture.catalog["observations"][0];
+    observation["platformId"] = json!("cli-linux-x64");
+    for run in observation["runs"].as_array_mut().unwrap() {
+        run["environment"]["arch"] = json!("x64");
+        run["environment"]["installerAssetDigest"] =
+            x64.catalog["observations"][0]["runs"][0]["environment"]["installerAssetDigest"]
+                .clone();
+    }
+    fixture
+        .rejects("no process verifier for passing release reference: host-upgrade/cli-linux-x64");
+    fixture.catalog["cases"][0]["evidenceProfile"] = json!("negative");
+    fixture.rejects("schema-v1 case host-upgrade requires the process evidence profile");
+}
+
+#[test]
+fn verifies_the_linux_display_receipt_against_the_live_state() {
+    let fixture = Fixture::visual("chat-display", "translated", "electron-linux-arm64");
+    let output = fixture.run();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["verifiedVisualReferenceObservations"], 1);
+}
+
+#[test]
+fn rejects_a_display_receipt_with_a_rehashed_fabricated_locale_observation() {
+    let mut fixture = Fixture::visual("chat-display", "translated", "electron-linux-arm64");
+    fixture.edit_process_json(0, "state-receipt", |state| {
+        state["displayCaptures"]["translated"]["attachmentControl"] = json!("Attach files");
+    });
+    let digest = fixture.catalog["observations"][0]["runs"][0]["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|artifact| artifact["kind"] == "state-receipt")
+        .unwrap()["sha256"]
+        .clone();
+    fixture.edit_process_json(0, "capture-receipt", |capture| {
+        capture["stateReceiptSha256"] = digest;
+    });
+    fixture.rejects("observed Linux Electron behavior does not match display state translated");
 }
 
 #[test]

@@ -95,6 +95,11 @@ pub(crate) fn verify_service_upgrade(
             && platform.os.as_deref() == Some("linux")
             && platform.arch.as_deref() == Some("arm64")
             && platform.inventory_target.as_deref() == Some("linux-arm64")
+            && observation.cell.entrypoint == "cli"
+            && matches!(
+                observation.cell.state.as_str(),
+                "available" | "installed" | "failed-recovery"
+            )
             && observation.configuration_id == CONFIGURATION
             && first.role == "incumbent-first"
             && repeat.role == "incumbent-repeat"

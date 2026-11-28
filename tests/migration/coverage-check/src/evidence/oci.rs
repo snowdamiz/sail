@@ -330,6 +330,18 @@ pub(crate) fn verify_oci_lifecycle(
     arch: &str,
     observation: &Observation,
 ) -> Result<()> {
+    ensure!(
+        matches!(
+            (
+                observation.cell.case_id.as_str(),
+                observation.cell.state.as_str(),
+                observation.cell.entrypoint.as_str()
+            ),
+            ("cli-open", "version" | "start" | "pair" | "stop", "cli")
+                | ("installer-home", "copied-home-boots", "installer")
+        ),
+        "OCI receipts do not verify the claimed case or state"
+    );
     let [first, repeat] = observation.runs.as_slice() else {
         anyhow::bail!("expected two independently captured OCI boots");
     };

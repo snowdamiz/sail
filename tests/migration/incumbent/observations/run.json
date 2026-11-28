@@ -354,5 +354,76 @@
     "result": "pass",
     "captures": "cli-linux-arm64/service-upgrade-trial",
     "scope": "Two independent published v0.1.17 to v0.1.18 service launcher trials beneath Docker init on Debian 12.15 arm64. Both staged the target while v0.1.17 kept serving, rejected the corrupt checksum, rolled back the failed activation with restored Replay payloads, and committed the unchanged target on retry. The original two bearer grants and environment identity survived restart."
+  },
+  "linuxDebChatDisplay": {
+    "comparisons": {
+      "arm64": {
+        "light": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "dark": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "zoomed": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "translated": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "compact": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "wide": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        }
+      },
+      "x64": {
+        "light": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "dark": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "zoomed": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "translated": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "compact": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "wide": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        }
+      }
+    },
+    "arm64": "electron-linux-arm64/display",
+    "x64": "electron-linux-x64/display",
+    "scope": "Two independent installs of each published v0.1.17 Debian package, with x64 under Rosetta. The runs exercised the real light and dark settings, window zoom shortcuts, German language option, and the compact and wide sidebar controls. Each image covers the whole 1\u00d7 X11 window. Candidate and performance comparisons remain open."
   }
 }

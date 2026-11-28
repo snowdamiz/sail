@@ -194,6 +194,10 @@ Use `linux/amd64` for the x64 package. The archived x64 runs use Rosetta in Dock
 
 Use `capture.png` and the sanitized `state.json` in the comparison. Keep `desktop.private.log` in scratch. The [arm64](observations/electron-linux-arm64/deb-settled/) and [x64](observations/electron-linux-x64/deb-settled/) receipts cover settled Replay and bundled-server activation for this profile.
 
+Append `--display` to the capture command to repeat the six chat display states. The probe selects light and dark in Appearance, applies native zoom with Ctrl+0 and two Ctrl+= presses, and selects Deutsch in General. It also opens and closes the mobile sidebar sheet at 640 × 780 and the docked sidebar at 1280 × 780. The latter captures keep both panels closed. Each state has its own full-window PNG. The run receipt records physical window dimensions and the renderer's CSS dimensions separately.
+
+The [arm64](observations/electron-linux-arm64/display/) and [x64](observations/electron-linux-x64/display/) comparison receipts use separate desktop installations and scratch homes. Compare repeat runs within the same architecture and profile.
+
 ## Capture chat loading and reconnect
 
 Run the packaged server with the seeded home. Put [the loopback gate](thread-load-gate.mjs) in front of it and pair the browser at the gate's port. Use a fresh origin or browser profile so the client has no saved transcript for the thread.

@@ -1,0 +1,20 @@
+{
+  "fixtureId": "chat-display",
+  "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "changedSteps": [],
+  "pixels": {
+    "baseline": "tests/migration/incumbent/observations/electron-linux-arm64/display/a/translated/capture.png",
+    "candidate": "tests/migration/incumbent/observations/electron-linux-arm64/display/b/translated/capture.png",
+    "diff": "tests/migration/incumbent/observations/electron-linux-arm64/display/translated-diff.png",
+    "baselineSize": [1100, 780],
+    "candidateSize": [1100, 780],
+    "differentPixels": 0,
+    "bounds": null
+  },
+  "artifactSha256": {
+    "baselineReceipt": "e0524aeff7a6b95766b3cdabd33c8bbbab956ff9a7ea7a1a52d72b6468493d1b",
+    "candidateReceipt": "0460ad5ffe602a614c5f7cfc5d82e6f6bdc0b09c789f6e0721757493b2b14fd8",
+    "diff": "4e8c2851cc2a639b9f0f06efb15296b25722bbddd41e6bb7c0270f20f0e04a1c"
+  }
+}

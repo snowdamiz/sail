@@ -181,14 +181,43 @@ def x11_window(page):
     return windows[0]
 
 
-def capture_window(window, expected):
-    png = OUT / "capture.png"
+def capture_window(window, expected, png=OUT / "capture.png"):
     require(not png.exists(), "Capture output already exists")
     command("scrot", "--window", window, str(png))
     with png.open("rb") as stream:
         header = stream.read(24)
     require(header[:8] == b"\x89PNG\r\n\x1a\n" and struct.unpack(">II", header[16:24]) == expected, "Physical screenshot dimensions changed")
     return digest(png)
+
+
+def resize_window(page, child, window, width, height):
+    command("xdotool", "windowsize", window, str(width), str(height))
+    wait_for(lambda: page.evaluate(f"""
+      Math.abs(innerWidth * devicePixelRatio - {width}) < devicePixelRatio &&
+      Math.abs(innerHeight * devicePixelRatio - {height}) < devicePixelRatio
+    """), child, "X11 resize", seconds=15)
+
+
+def settle_layout(page):
+    page.evaluate("""(async () => {
+      await document.fonts.ready;
+      let lastLayout;
+      let stableFrames = 0;
+      const deadline = performance.now() + 5000;
+      while (stableFrames < 8 && performance.now() < deadline) {
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        const elements = [document.querySelector("main .chat-markdown-shiki pre")];
+        for (let el = document.querySelector("main [contenteditable=true]"); el && el.tagName !== "MAIN"; el = el.parentElement) {
+          elements.push(el);
+        }
+        const layout = JSON.stringify(elements.map(el => el.getBoundingClientRect()));
+        const moving = document.getAnimations().some(animation =>
+          animation.playState === "running" && animation.effect?.getTiming().iterations !== Infinity);
+        stableFrames = !moving && layout === lastLayout ? stableFrames + 1 : 0;
+        lastLayout = layout;
+      }
+      if (stableFrames < 8) throw new Error("Transcript and composer did not settle");
+    })()""")
 
 
 def observe(page, child, browser, route):
@@ -215,26 +244,8 @@ def observe(page, child, browser, route):
     window = x11_window(page)
     # X11 can retain different shadow pixels from the initial layout paint.
     for width in (1101, 1100):
-        command("xdotool", "windowsize", window, str(width), "780")
-        wait_for(lambda: page.evaluate(f"innerWidth === {width}"), child, "X11 resize", seconds=15)
-    page.evaluate("""(async () => {
-      let lastLayout;
-      let stableFrames = 0;
-      const deadline = performance.now() + 5000;
-      while (stableFrames < 8 && performance.now() < deadline) {
-        await new Promise(resolve => requestAnimationFrame(resolve));
-        const elements = [document.querySelector("main .chat-markdown-shiki pre")];
-        for (let el = document.querySelector("main [contenteditable=true]"); el && el.tagName !== "MAIN"; el = el.parentElement) {
-          elements.push(el);
-        }
-        const layout = JSON.stringify(elements.map(el => el.getBoundingClientRect()));
-        const moving = document.getAnimations().some(animation =>
-          animation.playState === "running" && animation.effect?.getTiming().iterations !== Infinity);
-        stableFrames = !moving && layout === lastLayout ? stableFrames + 1 : 0;
-        lastLayout = layout;
-      }
-      if (stableFrames < 8) throw new Error("Transcript and composer did not settle");
-    })()""")
+        resize_window(page, child, window, width, 780)
+    settle_layout(page)
     settled = page.evaluate(OBSERVE)
     require(
         settled["route"] == route and settled["reply"] and settled["table"] == TABLE
@@ -247,7 +258,7 @@ def observe(page, child, browser, route):
     return opened, settled, window
 
 
-def run(arch, package_sha):
+def run(arch, package_sha, capture_variants=None):
     launcher = installed_launcher(arch)
     backend_port, debug_port = port(), port()
     require(backend_port != debug_port, "Backend and CDP ports collide")
@@ -288,6 +299,7 @@ def run(arch, package_sha):
                     scopes = json.loads(sessions[0][1])
                     require({"orchestration:read", "orchestration:operate"} <= set(scopes), "Bootstrap bearer cannot operate the thread")
                     screenshot_sha = capture_window(window, (1100, 780))
+                    variants = capture_variants(page, child, route, window) if capture_variants else None
                 finally:
                     page.socket.close()
                 browser_page = Page(read_json(debugger + "/json/version")["webSocketDebuggerUrl"], debug_port)
@@ -326,6 +338,8 @@ def run(arch, package_sha):
         "chat": {key: value for key, value in settled.items() if key not in {"route", "userAgent", "resourceOrigins"}},
         "screenshotSha256": screenshot_sha,
     }
+    if variants is not None:
+        result["displayCaptures"] = variants
     (OUT / "state.json").write_text(json.dumps(result, indent=2) + "\n")
     print(f"Sail v0.1.17 {arch} desktop bootstrap and saved Replay capture verified")
 
