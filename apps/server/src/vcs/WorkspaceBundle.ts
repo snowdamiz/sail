@@ -394,6 +394,56 @@ function parseLocalBranchHeads(stdout: string): ParsedLocalBranches {
   return { branchHeads, symbolicBranches };
 }
 
+const ACTIVE_WORKTREE_GIT_OPERATIONS: ReadonlyArray<{
+  readonly relativePath: string;
+  readonly label: string;
+}> = [
+  { relativePath: "BISECT_START", label: "bisect" },
+  { relativePath: "rebase-merge", label: "rebase" },
+  { relativePath: "rebase-apply", label: "rebase" },
+  { relativePath: "MERGE_HEAD", label: "merge" },
+  { relativePath: "CHERRY_PICK_HEAD", label: "cherry-pick" },
+  { relativePath: "REVERT_HEAD", label: "revert" },
+];
+
+function stripSingleRefsHeadsPrefix(refName: string): string | null {
+  if (!refName.startsWith("refs/heads/")) {
+    return null;
+  }
+  const branch = refName.slice("refs/heads/".length);
+  return branch.length > 0 ? branch : null;
+}
+
+function parseRebaseUpdateRefsBranches(content: string): ReadonlyArray<string> {
+  const branches: Array<string> = [];
+  for (const token of content.split(/[\0\r\n\t ]+/)) {
+    const branch = stripSingleRefsHeadsPrefix(token);
+    if (branch !== null) {
+      branches.push(branch);
+    }
+  }
+  return branches;
+}
+
+function parseRebaseTodoUpdateRefBranches(content: string): ReadonlyArray<string> {
+  const branches: Array<string> = [];
+  for (const rawLine of content.split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    if (trimmed.length === 0 || trimmed.startsWith("#")) {
+      continue;
+    }
+    const match = /^(?:update-ref|u)[ \t]+(\S+)/.exec(trimmed);
+    if (match?.[1] === undefined) {
+      continue;
+    }
+    const branch = stripSingleRefsHeadsPrefix(match[1]);
+    if (branch !== null) {
+      branches.push(branch);
+    }
+  }
+  return branches;
+}
+
 function allocateDestinationBranch(input: {
   readonly sourceBranch: string | null;
   readonly headSha: string;
@@ -1319,12 +1369,9 @@ const make = Effect.gen(function* () {
           path.join(wtGitDir, "rebase-merge", "head-name"),
         );
         if (rebaseMergeHeadName !== null) {
-          const trimmed = rebaseMergeHeadName.trim();
-          if (trimmed.startsWith("refs/heads/")) {
-            const branch = trimmed.slice("refs/heads/".length);
-            if (branch.length > 0 && !inUseBranches.has(branch)) {
-              inUseBranches.set(branch, `held by an active rebase in '${wtGitDir}'`);
-            }
+          const branch = stripSingleRefsHeadsPrefix(rebaseMergeHeadName.trim());
+          if (branch !== null && !inUseBranches.has(branch)) {
+            inUseBranches.set(branch, `held by an active rebase in '${wtGitDir}'`);
           }
         }
 
@@ -1332,21 +1379,60 @@ const make = Effect.gen(function* () {
           path.join(wtGitDir, "rebase-apply", "head-name"),
         );
         if (rebaseApplyHeadName !== null) {
-          const trimmed = rebaseApplyHeadName.trim();
-          if (trimmed.startsWith("refs/heads/")) {
-            const branch = trimmed.slice("refs/heads/".length);
-            if (branch.length > 0 && !inUseBranches.has(branch)) {
-              inUseBranches.set(branch, `held by an active rebase in '${wtGitDir}'`);
+          const branch = stripSingleRefsHeadsPrefix(rebaseApplyHeadName.trim());
+          if (branch !== null && !inUseBranches.has(branch)) {
+            inUseBranches.set(branch, `held by an active rebase in '${wtGitDir}'`);
+          }
+        }
+
+        const rebaseUpdateRefs = yield* readOptionalGitStateFile(
+          path.join(wtGitDir, "rebase-merge", "update-refs"),
+        );
+        if (rebaseUpdateRefs !== null) {
+          for (const branch of parseRebaseUpdateRefsBranches(rebaseUpdateRefs)) {
+            if (!inUseBranches.has(branch)) {
+              inUseBranches.set(
+                branch,
+                `held by an active rebase (--update-refs) in '${wtGitDir}'`,
+              );
+            }
+          }
+        }
+
+        const rebaseTodo = yield* readOptionalGitStateFile(
+          path.join(wtGitDir, "rebase-merge", "git-rebase-todo"),
+        );
+        if (rebaseTodo !== null) {
+          for (const branch of parseRebaseTodoUpdateRefBranches(rebaseTodo)) {
+            if (!inUseBranches.has(branch)) {
+              inUseBranches.set(
+                branch,
+                `held by an active rebase (--update-refs) in '${wtGitDir}'`,
+              );
+            }
+          }
+        }
+
+        const rebaseDone = yield* readOptionalGitStateFile(
+          path.join(wtGitDir, "rebase-merge", "done"),
+        );
+        if (rebaseDone !== null) {
+          for (const branch of parseRebaseTodoUpdateRefBranches(rebaseDone)) {
+            if (!inUseBranches.has(branch)) {
+              inUseBranches.set(
+                branch,
+                `held by an active rebase (--update-refs) in '${wtGitDir}'`,
+              );
             }
           }
         }
 
         const bisectStart = yield* readOptionalGitStateFile(path.join(wtGitDir, "BISECT_START"));
         if (bisectStart !== null) {
-          const trimmed = bisectStart.trim();
-          const branch = trimmed.startsWith("refs/heads/")
-            ? trimmed.slice("refs/heads/".length)
-            : trimmed;
+          // Git writes the literal branch short name (never a full refs/heads/ refname) into
+          // BISECT_START, so preserve it verbatim (a branch literally named
+          // `refs/heads/bisect-topic` is stored as `refs/heads/bisect-topic`).
+          const branch = bisectStart.trim();
           if (branch.length > 0 && !inUseBranches.has(branch)) {
             inUseBranches.set(branch, `held by an active bisect in '${wtGitDir}'`);
           }
@@ -1356,6 +1442,86 @@ const make = Effect.gen(function* () {
       return inUseBranches;
     },
   );
+
+  const resolveRegisteredWorktreeGitDir = Effect.fn(
+    "WorkspaceBundle.resolveRegisteredWorktreeGitDir",
+  )(function* (
+    gitCommonDir: string,
+    repoCwd: string,
+    worktreePath: string,
+    registeredPath: string,
+  ): Effect.fn.Return<string | null, WorkspaceBundleError> {
+    const normalizedTarget = yield* normalizePathForComparison(path.resolve(repoCwd, worktreePath));
+    const normalizedRegistered = yield* normalizePathForComparison(
+      path.resolve(repoCwd, registeredPath),
+    );
+    const linkedWorktreeGitDirs = yield* listLinkedWorktreeGitDirs(gitCommonDir);
+    for (const wtGitDir of linkedWorktreeGitDirs) {
+      const gitdirFile = yield* readOptionalGitStateFile(path.join(wtGitDir, "gitdir"));
+      if (gitdirFile === null) {
+        continue;
+      }
+      const trimmed = gitdirFile.trim();
+      if (trimmed.length === 0) {
+        continue;
+      }
+      const resolvedGitFile = path.resolve(wtGitDir, trimmed);
+      const candidateWorktreePath = yield* normalizePathForComparison(
+        path.dirname(resolvedGitFile),
+      );
+      if (
+        candidateWorktreePath === normalizedTarget ||
+        candidateWorktreePath === normalizedRegistered
+      ) {
+        return wtGitDir;
+      }
+    }
+
+    const pathState = yield* inspectPathWithLstat(worktreePath);
+    if (pathState === "enoent") {
+      return null;
+    }
+
+    const revParseResult = yield* runReadOnlyGit(
+      "WorkspaceBundle.resolveWorktreeGitDir",
+      worktreePath,
+      ["rev-parse", "--path-format=absolute", "--git-dir"],
+    );
+    const resolvedGitDir = revParseResult.stdout.trim();
+    if (resolvedGitDir.length === 0) {
+      return yield* new WorkspaceBundleError({
+        code: "git_error",
+        message: `Failed to resolve git dir for worktree '${worktreePath}'.`,
+      });
+    }
+    return path.resolve(worktreePath, resolvedGitDir);
+  });
+
+  const detectActiveWorktreeOperation = (
+    wtGitDir: string,
+  ): Effect.Effect<string | null, WorkspaceBundleError> =>
+    Effect.tryPromise({
+      try: async () => {
+        for (const entry of ACTIVE_WORKTREE_GIT_OPERATIONS) {
+          const indicatorPath = path.join(wtGitDir, entry.relativePath);
+          try {
+            await NodeFSP.lstat(indicatorPath);
+            return `${entry.label} (${entry.relativePath})`;
+          } catch (cause) {
+            if (!isEnoentError(cause)) {
+              throw cause;
+            }
+          }
+        }
+        return null;
+      },
+      catch: (cause) =>
+        new WorkspaceBundleError({
+          code: "git_error",
+          message: `Failed to inspect active Git operations in '${wtGitDir}': ${cause instanceof Error ? cause.message : String(cause)}`,
+          cause,
+        }),
+    });
 
   const verifyExpectedGitCommonDir = Effect.fn("WorkspaceBundle.verifyExpectedGitCommonDir")(
     function* (input: {
@@ -1457,69 +1623,92 @@ const make = Effect.gen(function* () {
                 : `Cannot remove locked worktree '${worktreePath}'. Unlock the worktree before retrying cleanup.`,
           });
         } else {
-          const gitRemoveResult = yield* Effect.result(
-            runGit(
-              "WorkspaceBundle.removeWorktree",
-              input.repoCwd,
-              ["worktree", "remove", "--force", worktreePath],
-              { allowNonZeroExit: true },
-            ),
-          );
-          let gitRemoveDetail: string | null = null;
-          if (Result.isFailure(gitRemoveResult)) {
-            gitRemoveDetail = gitRemoveResult.failure.message;
-          } else if (gitRemoveResult.success.exitCode !== 0) {
-            const stderr = gitRemoveResult.success.stderr.trim();
-            const stdout = gitRemoveResult.success.stdout.trim();
-            gitRemoveDetail =
-              stderr.length > 0
-                ? stderr
-                : stdout.length > 0
-                  ? stdout
-                  : `exit code ${gitRemoveResult.success.exitCode}`;
-          }
-
-          if (gitRemoveDetail !== null) {
-            const pathStateResult = yield* Effect.result(inspectPathWithLstat(worktreePath));
-            if (Result.isFailure(pathStateResult)) {
-              worktreeError = pathStateResult.failure;
-            } else if (pathStateResult.success === "exists") {
-              worktreeError = new WorkspaceBundleError({
-                code: "git_error",
-                message: `Failed to remove worktree '${worktreePath}' in '${input.repoCwd}': ${gitRemoveDetail}`,
-              });
-            } else {
-              // Directory is already ENOENT on disk; prune the stale Git worktree admin entry and
-              // confirm the worktree is no longer registered.
-              const pruneResult = yield* Effect.result(
-                runGit("WorkspaceBundle.pruneWorktrees", input.repoCwd, ["worktree", "prune"], {
-                  allowNonZeroExit: true,
-                }),
+          const activeOperationResult = yield* Effect.result(
+            Effect.gen(function* () {
+              const wtGitDir = yield* resolveRegisteredWorktreeGitDir(
+                expectedNormalized,
+                input.repoCwd,
+                worktreePath,
+                registered.path,
               );
-              if (Result.isFailure(pruneResult)) {
-                worktreeError = pruneResult.failure;
-              } else if (pruneResult.success.exitCode !== 0) {
-                const detail =
-                  pruneResult.success.stderr.trim() ||
-                  pruneResult.success.stdout.trim() ||
-                  `exit code ${pruneResult.success.exitCode}`;
+              if (wtGitDir === null) {
+                return null;
+              }
+              return yield* detectActiveWorktreeOperation(wtGitDir);
+            }),
+          );
+          if (Result.isFailure(activeOperationResult)) {
+            worktreeError = activeOperationResult.failure;
+          } else if (activeOperationResult.success !== null) {
+            worktreeError = new WorkspaceBundleError({
+              code: "git_error",
+              message: `Refusing to remove worktree '${worktreePath}' in '${input.repoCwd}' because it has an active git operation (${activeOperationResult.success}).`,
+            });
+          } else {
+            const gitRemoveResult = yield* Effect.result(
+              runGit(
+                "WorkspaceBundle.removeWorktree",
+                input.repoCwd,
+                ["worktree", "remove", "--force", worktreePath],
+                { allowNonZeroExit: true },
+              ),
+            );
+            let gitRemoveDetail: string | null = null;
+            if (Result.isFailure(gitRemoveResult)) {
+              gitRemoveDetail = gitRemoveResult.failure.message;
+            } else if (gitRemoveResult.success.exitCode !== 0) {
+              const stderr = gitRemoveResult.success.stderr.trim();
+              const stdout = gitRemoveResult.success.stdout.trim();
+              gitRemoveDetail =
+                stderr.length > 0
+                  ? stderr
+                  : stdout.length > 0
+                    ? stdout
+                    : `exit code ${gitRemoveResult.success.exitCode}`;
+            }
+
+            if (gitRemoveDetail !== null) {
+              const pathStateResult = yield* Effect.result(inspectPathWithLstat(worktreePath));
+              if (Result.isFailure(pathStateResult)) {
+                worktreeError = pathStateResult.failure;
+              } else if (pathStateResult.success === "exists") {
                 worktreeError = new WorkspaceBundleError({
                   code: "git_error",
-                  message: `Failed to prune worktrees in '${input.repoCwd}': ${detail}`,
+                  message: `Failed to remove worktree '${worktreePath}' in '${input.repoCwd}': ${gitRemoveDetail}`,
                 });
               } else {
-                const verifyUnregisteredResult = yield* Effect.result(
-                  findRegisteredWorktree(input.repoCwd, worktreePath),
+                // Directory is already ENOENT on disk; prune the stale Git worktree admin entry and
+                // confirm the worktree is no longer registered.
+                const pruneResult = yield* Effect.result(
+                  runGit("WorkspaceBundle.pruneWorktrees", input.repoCwd, ["worktree", "prune"], {
+                    allowNonZeroExit: true,
+                  }),
                 );
-                if (Result.isFailure(verifyUnregisteredResult)) {
-                  worktreeError = verifyUnregisteredResult.failure;
-                } else if (verifyUnregisteredResult.success !== null) {
+                if (Result.isFailure(pruneResult)) {
+                  worktreeError = pruneResult.failure;
+                } else if (pruneResult.success.exitCode !== 0) {
+                  const detail =
+                    pruneResult.success.stderr.trim() ||
+                    pruneResult.success.stdout.trim() ||
+                    `exit code ${pruneResult.success.exitCode}`;
                   worktreeError = new WorkspaceBundleError({
                     code: "git_error",
-                    message: verifyUnregisteredResult.success.locked
-                      ? `Worktree '${worktreePath}' is locked and still registered in '${input.repoCwd}'.`
-                      : `Worktree '${worktreePath}' is still registered in '${input.repoCwd}' after prune (${gitRemoveDetail}).`,
+                    message: `Failed to prune worktrees in '${input.repoCwd}': ${detail}`,
                   });
+                } else {
+                  const verifyUnregisteredResult = yield* Effect.result(
+                    findRegisteredWorktree(input.repoCwd, worktreePath),
+                  );
+                  if (Result.isFailure(verifyUnregisteredResult)) {
+                    worktreeError = verifyUnregisteredResult.failure;
+                  } else if (verifyUnregisteredResult.success !== null) {
+                    worktreeError = new WorkspaceBundleError({
+                      code: "git_error",
+                      message: verifyUnregisteredResult.success.locked
+                        ? `Worktree '${worktreePath}' is locked and still registered in '${input.repoCwd}'.`
+                        : `Worktree '${worktreePath}' is still registered in '${input.repoCwd}' after prune (${gitRemoveDetail}).`,
+                    });
+                  }
                 }
               }
             }
@@ -2127,6 +2316,54 @@ const make = Effect.gen(function* () {
               });
             }
 
+            // Re-verify immediately after onWorktreeAllocated and immediately before
+            // `git worktree add` that refs/heads/<branch> was not turned into a symbolic ref
+            // (pointing to another branch or dangling) while paused in the callback.
+            const allocatedRefName = `refs/heads/${branchAllocation.branch}`;
+            const symrefCheckBeforeAdd = yield* Effect.result(
+              runReadOnlyGit(
+                "WorkspaceBundle.verifyAllocatedBranchNotSymbolicRefBeforeAdd",
+                input.repoCwd,
+                ["--git-dir", gitCommonDir, "symbolic-ref", "-q", allocatedRefName],
+                { allowNonZeroExit: true },
+              ),
+            );
+            if (Result.isFailure(symrefCheckBeforeAdd)) {
+              yield* cleanupIncompleteAdd(allocation, {
+                gitWorktreeAddInvoked: false,
+                worktreePathPreExisted: false,
+              });
+              allocatedInLock = null;
+              return yield* symrefCheckBeforeAdd.failure;
+            }
+            if (symrefCheckBeforeAdd.success.exitCode === 0) {
+              const targetRef = symrefCheckBeforeAdd.success.stdout.trim();
+              yield* cleanupIncompleteAdd(allocation, {
+                gitWorktreeAddInvoked: false,
+                worktreePathPreExisted: false,
+              });
+              allocatedInLock = null;
+              return yield* new WorkspaceBundleError({
+                code: "git_error",
+                message: `Refusing to add worktree for destination branch '${branchAllocation.branch}' in '${input.repoCwd}' because '${allocatedRefName}' is a symbolic ref targeting '${targetRef}'.`,
+              });
+            }
+            if (symrefCheckBeforeAdd.success.exitCode !== 1) {
+              const detail =
+                symrefCheckBeforeAdd.success.stderr.trim() ||
+                symrefCheckBeforeAdd.success.stdout.trim() ||
+                `exit code ${symrefCheckBeforeAdd.success.exitCode}`;
+              yield* cleanupIncompleteAdd(allocation, {
+                gitWorktreeAddInvoked: false,
+                worktreePathPreExisted: false,
+              });
+              allocatedInLock = null;
+              return yield* new WorkspaceBundleError({
+                code: "git_error",
+                message: `Failed to verify symbolic-ref status for destination branch '${branchAllocation.branch}' in '${input.repoCwd}' before git worktree add: ${detail}`,
+              });
+            }
+
             const addArgs = branchAllocation.useExistingBranch
               ? ["worktree", "add", "--", worktreePath, branchAllocation.branch]
               : ["worktree", "add", "-b", branchAllocation.branch, "--", worktreePath, headSha];
@@ -2149,6 +2386,99 @@ const make = Effect.gen(function* () {
               });
               allocatedInLock = null;
               return yield* addResult.failure;
+            }
+
+            // Immediately after `git worktree add` exits 0 (still under the allocation lock),
+            // confirm the newly registered worktree is a non-main worktree on the expected branch
+            // AND `refs/heads/<branch>` is not a symbolic ref. If not, remove ONLY the newly added
+            // worktree (never touching any foreign branch), clear ownership, and fail with git_error.
+            const [registeredAfterAddResult, symrefCheckAfterAddResult] = yield* Effect.all([
+              Effect.result(findRegisteredWorktree(input.repoCwd, worktreePath)),
+              Effect.result(
+                runReadOnlyGit(
+                  "WorkspaceBundle.verifyAllocatedBranchNotSymbolicRefAfterAdd",
+                  input.repoCwd,
+                  ["--git-dir", gitCommonDir, "symbolic-ref", "-q", allocatedRefName],
+                  { allowNonZeroExit: true },
+                ),
+              ),
+            ]);
+            const registeredAfterAdd = Result.isSuccess(registeredAfterAddResult)
+              ? registeredAfterAddResult.success
+              : null;
+            const postAddRegisteredValid =
+              registeredAfterAdd !== null &&
+              !registeredAfterAdd.isMain &&
+              registeredAfterAdd.branch === branchAllocation.branch;
+            const postAddNotSymbolic =
+              Result.isSuccess(symrefCheckAfterAddResult) &&
+              symrefCheckAfterAddResult.success.exitCode === 1;
+
+            if (!postAddRegisteredValid || !postAddNotSymbolic) {
+              const clearOwnership =
+                input.onWorktreeAllocationCleared !== undefined
+                  ? input.onWorktreeAllocationCleared(allocation)
+                  : Effect.void;
+              if (Result.isSuccess(registeredAfterAddResult)) {
+                if (registeredAfterAdd !== null && !registeredAfterAdd.isMain) {
+                  const removePostAddResult = yield* Effect.result(
+                    removeWorktree({
+                      repoCwd: input.repoCwd,
+                      expectedGitCommonDir: gitCommonDir,
+                      expectedGitCommonDirIdentity: gitCommonDirIdentity,
+                      worktreePath,
+                      branch: null,
+                      expectedBranch: registeredAfterAdd.branch,
+                      expectedBranchHeadSha: registeredAfterAdd.headSha,
+                    }),
+                  );
+                  if (Result.isSuccess(removePostAddResult)) {
+                    yield* clearOwnership;
+                  } else {
+                    yield* Effect.logWarning(
+                      "Failed to remove newly added worktree after post-add verification failure.",
+                      {
+                        repoCwd: input.repoCwd,
+                        worktreePath,
+                        branch: branchAllocation.branch,
+                        registeredBranch: registeredAfterAdd.branch,
+                        cause: removePostAddResult.failure,
+                      },
+                    );
+                  }
+                } else {
+                  yield* clearOwnership;
+                }
+              } else {
+                yield* Effect.logWarning(
+                  "Failed to inspect newly added worktree after post-add verification failure.",
+                  {
+                    repoCwd: input.repoCwd,
+                    worktreePath,
+                    branch: branchAllocation.branch,
+                    cause: registeredAfterAddResult.failure,
+                  },
+                );
+              }
+              allocatedInLock = null;
+
+              const postAddFailureReason = Result.isFailure(registeredAfterAddResult)
+                ? `failed to verify registered worktree: ${registeredAfterAddResult.failure.message}`
+                : Result.isFailure(symrefCheckAfterAddResult)
+                  ? `failed to verify symbolic-ref status for '${allocatedRefName}': ${symrefCheckAfterAddResult.failure.message}`
+                  : symrefCheckAfterAddResult.success.exitCode === 0
+                    ? `'${allocatedRefName}' is a symbolic ref targeting '${symrefCheckAfterAddResult.success.stdout.trim()}'`
+                    : symrefCheckAfterAddResult.success.exitCode !== 1
+                      ? `symbolic-ref check for '${allocatedRefName}' failed with exit code ${symrefCheckAfterAddResult.success.exitCode}`
+                      : registeredAfterAdd === null
+                        ? `worktree '${worktreePath}' is not registered after git worktree add`
+                        : registeredAfterAdd.isMain
+                          ? `worktree '${worktreePath}' resolved to the main worktree`
+                          : `worktree '${worktreePath}' attached to branch '${registeredAfterAdd.branch ?? "(detached)"}' instead of expected '${branchAllocation.branch}'`;
+              return yield* new WorkspaceBundleError({
+                code: "git_error",
+                message: `Post-add verification failed for destination branch '${branchAllocation.branch}' in '${input.repoCwd}': ${postAddFailureReason}.`,
+              });
             }
 
             const createdAllocation: AllocatedWorkspaceWorktree = {
