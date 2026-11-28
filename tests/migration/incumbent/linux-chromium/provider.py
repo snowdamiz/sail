@@ -269,6 +269,7 @@ def settled(call, tab, path, probe, output, include_composer=False):
         ["Edit", "edit", "+4 lines"],
         ["Test", "execute", "12 passed"],
     ]
+    traced = time.perf_counter_ns()
     if include_composer:
         evidence["trace"][0]["observed"].update({
             "availableModel": observed["availableModel"],
@@ -278,7 +279,7 @@ def settled(call, tab, path, probe, output, include_composer=False):
             "action": "readComposerControls",
             "observed": {"controls": compare_composer(call, tab)},
         })
-    traced = time.perf_counter_ns()
+    composer_read = time.perf_counter_ns() if include_composer else traced
     image = call("preview_snapshot", **tab, save=True)
     captured = time.perf_counter_ns()
     shutil.copyfile(image["screenshotPath"], output)
@@ -289,9 +290,11 @@ def settled(call, tab, path, probe, output, include_composer=False):
             "highlight": highlighted - navigated,
             "focus": focused - highlighted,
             "trace": traced - focused,
-            "screenshot": captured - traced,
+            "screenshot": captured - composer_read,
         },
     }
+    if include_composer:
+        durations["stagesNs"]["composer"] = composer_read - traced
     return evidence, {"openedExpectedThread": True, **observed}, durations, navigation
 
 

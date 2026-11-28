@@ -113,6 +113,7 @@ fn validate_sample(
     ensure!(
         sample.elapsed_ns > 0
             && sample.stages_ns.keys().map(String::as_str).eq([
+                "composer",
                 "focus",
                 "highlight",
                 "navigate",
@@ -487,13 +488,20 @@ mod tests {
         Ok(serde_json::from_value(report["timings"].clone())?)
     }
 
-    fn sample_for_validation() -> Result<Sample> {
+    fn relabeled_historical_row() -> Result<Sample> {
         let mut report: Value = serde_json::from_str(PAIRED)?;
         let row = &mut report["samples"][0];
         row["timingScope"] = json!("fullTraceAndScreenshot");
         row["runtimeSha256"] =
             json!("7da1cd42672d5e4fbb83c50179cf694441e3eef2d1cf6cf2e98f359c94bdec8e");
         Ok(serde_json::from_value(row.take())?)
+    }
+
+    fn sample_for_validation() -> Result<Sample> {
+        let mut sample = relabeled_historical_row()?;
+        *sample.stages_ns.get_mut("trace").unwrap() -= 1;
+        sample.stages_ns.insert("composer".into(), 1);
+        Ok(sample)
     }
 
     #[test]
@@ -536,6 +544,23 @@ mod tests {
             .err()
             .unwrap();
         assert!(error.to_string().contains("timingScope"));
+        Ok(())
+    }
+
+    #[test]
+    fn relabeling_a_historical_row_cannot_supply_a_composer_measurement() -> Result<()> {
+        let old = relabeled_historical_row()?;
+        let source = CaptureSource {
+            source_sha: old.source_sha.clone(),
+            archive_sha256: old.package_sha256.clone(),
+            runtime_sha256: old.runtime_sha256.clone(),
+        };
+        let error = validate_sample(&old, &old.request, &source).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid capture stage durations")
+        );
         Ok(())
     }
 
