@@ -1,0 +1,39 @@
+{
+  "thread": "latency-16",
+  "promptToVisibleTextMs": 1779.800000011921,
+  "restoreRequestToCurrentTranscriptMs": 5644,
+  "firstText": "T3 CodeThe project has a single math module. I will add a clamp helper beside sum.",
+  "cut": {
+    "openSockets": 1,
+    "before": [
+      { "role": "user", "text": "Give me a short tour", "streaming": false },
+      {
+        "role": "assistant",
+        "text": "The project has a single math module. I will add a `clamp` helper beside `sum`.\n\n",
+        "streaming": true
+      }
+    ]
+  },
+  "offline": "Compatibility host is reconnecting\nT3 Code on Compatibility host did not answer\nRetry now",
+  "settled": {
+    "runCount": 1,
+    "settled": [
+      { "role": "user", "text": "Give me a short tour", "streaming": false },
+      {
+        "role": "assistant",
+        "text": "The project has a single math module. I will add a `clamp` helper beside `sum`.\n\n",
+        "streaming": false
+      },
+      {
+        "role": "assistant",
+        "text": "## Done\n\nI added `clamp` next to `sum` and the tests pass.\n\n- Reads the manifest first\n- Asks before it writes\n- Streams a terminal result\n\n```ts\nclamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0\n```\n\n| Step | Tool | Result |\n| --- | --- | --- |\n| Read | `read` | 1 file |\n| Edit | `edit` | +4 lines |\n| Test | `execute` | 12 passed |\n\nThis turn is a replay. It costs nothing, so send it again as often as you need.",
+        "streaming": false
+      }
+    ],
+    "blockedAttempts": 2
+  },
+  "restored": { "blockedAttempts": 2 },
+  "view": [1280, 800, 2],
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+  "observed": { "userRows": 1, "replyRows": 1, "tableRows": 4 }
+}

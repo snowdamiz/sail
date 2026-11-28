@@ -193,6 +193,11 @@
     "x64Receipt": "electron-linux-x64/deb-update/receipt.json",
     "scope": "Published v0.1.17 to v0.1.18 on Debian 13.8 arm64 and emulated amd64 under Xvfb. Both packaged updaters rejected the bad SHA-512, then installed and relaunched through sudo and dpkg with the published manifest. The same environment and Replay payloads survived. The fixture used a loopback feed and passwordless sudo."
   },
+  "chatLatencyReference": {
+    "result": "observed",
+    "receipt": "served-chromium-macos/chat-latency/receipt.json",
+    "scope": "Published v0.1.17 in the macOS Chromium Browser panel with a controlled mid-turn WebSocket cut. Twelve measured turns produced one complete replay each. The reconnect timing includes the client's automatic retry delay."
+  },
   "negativeControls": {
     "result": "pass",
     "receipt": "harness-controls/receipt.json"

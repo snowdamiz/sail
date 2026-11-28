@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "replay-resume",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "artifact": {
+    "name": "Sail-0.1.17-arm64.zip",
+    "sha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372"
+  },
+  "host": {
+    "version": "0.1.17",
+    "protocol": 2,
+    "databaseMigration": 118,
+    "transport": "plain loopback HTTP and WebSocket"
+  },
+  "client": {
+    "surface": "server-served web in the T3 Browser panel",
+    "platform": "macOS 27.0.1 (26A434) arm64",
+    "browser": "Chrome/154.0.0.0",
+    "viewportCssPixels": [1280, 800],
+    "deviceScale": 2,
+    "locale": "en",
+    "theme": "light",
+    "motion": "standard"
+  },
+  "timer": {
+    "promptToVisibleText": "Submit button click through the first visible text in an assistant row.",
+    "restoreRequestToCurrentTranscript": "Browser restore request through the settled reply, with Stop and the reconnect notice cleared. Includes the next automatic reconnect attempt.",
+    "scope": "One installed server and one warm browser profile with independent, initially empty threads. Startup, pairing, navigation, and the offline hold are outside the timers.",
+    "percentile": "Nearest rank. With twelve measured samples, p95 is the maximum."
+  },
+  "warmups": 2,
+  "measured": 12,
+  "failedMeasuredSamples": 0,
+  "pilotAttempts": [
+    {
+      "thread": "latency-00",
+      "result": "excluded",
+      "detail": "The first probe waited for a thread-sync badge. The reconnect notice appeared as a separate alert. The server completed, and the proxy was restored."
+    },
+    {
+      "thread": "latency-01",
+      "result": "passed",
+      "detail": "The corrected probe observed the actual reconnect alert."
+    }
+  ],
+  "timings": {
+    "promptToVisibleTextMs": {
+      "minMs": 1618.2,
+      "medianMs": 1631.6,
+      "p95Ms": 2019.7,
+      "maxMs": 2019.7
+    },
+    "restoreRequestToCurrentTranscriptMs": {
+      "minMs": 390.3,
+      "medianMs": 3118.45,
+      "p95Ms": 7641.3,
+      "maxMs": 7641.3
+    }
+  },
+  "samples": {
+    "path": "samples.ndjson",
+    "sha256": "5cf9b46c8b36df04a5388955599bc06881cb486b59ae40c29b66476339a760ad"
+  },
+  "probeRecheck": {
+    "path": "probe-recheck.json",
+    "sha256": "ad19ef370b2483e2105dce5ccdcad7e2b95ad1e0b95b4e795b53324114a65376",
+    "detail": "The checked-in seeder, proxy, and browser probe repeated the same assertions on a separate thread. The screenshot records its recovered state."
+  },
+  "screenshot": {
+    "file": "chat-resume.png",
+    "thread": "latency-16",
+    "pixelDimensions": [1280, 800],
+    "sha256": "23f23e56364d8d1e28abe7aa46a61274f428eb706513c635d5b29869fc6aab63"
+  }
+}

@@ -724,6 +724,7 @@
       "states": ["disconnected-between-chunks", "cursor-replayed"],
       "check": "Resume across a deliberate disconnect between chunks. Check ordered text, cursor progression and absence of duplication or loss.",
       "evidenceProfile": "interaction",
+      "supplementalReceipts": ["observations/served-chromium-macos/chat-latency/receipt.json"],
       "sourceReferences": [
         "scripts/scenarios/replay-turn-streams.e2e.ts",
         "packages/client-runtime/src/rpc/session.test.ts"
