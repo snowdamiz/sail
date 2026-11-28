@@ -18,12 +18,13 @@ fixture=$(cd "$(dirname "$0")/.." && pwd)
 umask 077
 mkdir "$out"
 mkdir "$out/runs" "$out/sources"
-python3 - "$fixture/release-inventory.json" "$inputs" "$out/sources" "$warmups" "$measured" "$candidate" <<'PY'
+python3 -I - "$fixture/release-inventory.json" "$inputs" "$out/sources" "$warmups" "$measured" "$candidate" <<'PY'
 import json
 from hashlib import file_digest
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 
 inventory = json.loads(Path(sys.argv[1]).read_text())
 inputs = Path(sys.argv[2])
@@ -34,6 +35,15 @@ asset = next(
     item for item in inventory["githubRelease"]["assets"]
     if item["name"] == "t3-0.1.17-linux-arm64.tar.gz"
 )
+
+def runtime_sha(archive, version):
+    with tarfile.open(archive, "r:gz") as package:
+        member = package.getmember(f"t3-{version}-linux-arm64/t3")
+        assert member.isfile(), "package t3 must be a regular file"
+        with package.extractfile(member) as runtime:
+            return file_digest(runtime, "sha256").hexdigest()
+
+
 published = {
     "version": "0.1.17",
     "sourceSha": inventory["incumbentSourceSha"],
@@ -41,6 +51,9 @@ published = {
     "databaseMigration": 118,
     "captureRounds": warmups + measured,
 }
+with (inputs / "published.tar.gz").open("rb") as archive:
+    assert file_digest(archive, "sha256").hexdigest() == published["archiveSha256"], "published archive digest mismatch"
+published["runtimeSha256"] = runtime_sha(inputs / "published.tar.gz", published["version"])
 (out / "published.json").write_text(json.dumps(published))
 if sys.argv[6]:
     head = json.loads((inputs / "head-source.json").read_text())
@@ -48,6 +61,9 @@ if sys.argv[6]:
     assert head["archiveSha256"] != published["archiveSha256"], "candidate archive matches published archive"
     with (inputs / "head.tar.gz").open("rb") as archive:
         assert file_digest(archive, "sha256").hexdigest() == head["archiveSha256"], "candidate archive digest mismatch"
+    candidate_runtime = runtime_sha(inputs / "head.tar.gz", head["version"])
+    assert candidate_runtime != published["runtimeSha256"], "candidate runtime matches published runtime"
+    assert candidate_runtime == head["runtimeSha256"], "candidate runtime digest mismatch"
     with (inputs / "head-source.tar").open("rb") as source:
         assert file_digest(source, "sha256").hexdigest() == head["sourceTarSha256"], "candidate source archive digest mismatch"
         source.seek(0)

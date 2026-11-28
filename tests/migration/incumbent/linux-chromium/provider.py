@@ -339,9 +339,11 @@ def sample_series(call, source, probe):
             **request,
             **durations,
             **evidence,
+            "timingScope": "fullTraceAndScreenshot",
             "screenshotSha256": digest,
             "sourceSha": source["sourceSha"],
             "packageSha256": source["archiveSha256"],
+            "runtimeSha256": source["runtimeSha256"],
         }
         temporary = samples / f"{index:02}.pending"
         temporary.write_text(json.dumps(sample) + "\n")

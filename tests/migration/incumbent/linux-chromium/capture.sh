@@ -9,7 +9,7 @@ mkdir -p "$root"/{runtime,home,state/userdata,project,replay}
 edition=0.1.17
 archive_sha=207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df
 if test -f /capture-source.json; then
-  read -r edition archive_sha < <(python3 - <<'PY'
+  read -r edition archive_sha runtime_sha < <(python3 -I - <<'PY'
 import json
 from pathlib import Path
 import re
@@ -17,7 +17,8 @@ import re
 source = json.loads(Path("/capture-source.json").read_text())
 assert re.fullmatch(r"\d+\.\d+\.\d+", source["version"])
 assert re.fullmatch(r"[0-9a-f]{64}", source["archiveSha256"])
-print(source["version"], source["archiveSha256"])
+assert re.fullmatch(r"[0-9a-f]{64}", source["runtimeSha256"])
+print(source["version"], source["archiveSha256"], source["runtimeSha256"])
 PY
   )
 fi
@@ -27,6 +28,9 @@ printf '%s  %s\n' \
   | sha256sum -c -
 test "$(uname -m)" = aarch64
 tar -xzf /release.tar.gz --strip-components=1 -C "$root/runtime"
+if test -f /capture-source.json; then
+  printf '%s  %s\n' "$runtime_sha" "$root/runtime/t3" | sha256sum -c -
+fi
 tar -xf /replay-source.tar -C "$root/replay"
 git init --quiet --initial-branch=main "$root/project"
 

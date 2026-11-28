@@ -23,16 +23,24 @@ struct CaptureRequest {
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+enum TimingScope {
+    FullTraceAndScreenshot,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 struct Sample {
     #[serde(flatten)]
     request: CaptureRequest,
     elapsed_ns: u64,
+    timing_scope: TimingScope,
     stages_ns: BTreeMap<String, u64>,
     profile: Value,
     trace: Value,
     screenshot_sha256: String,
     source_sha: String,
     package_sha256: String,
+    runtime_sha256: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -66,6 +74,7 @@ struct EarlierReport {
 struct CaptureSource {
     source_sha: String,
     archive_sha256: String,
+    runtime_sha256: String,
 }
 
 fn await_file(host: &Path, expected: &Path, budget: Duration) -> Result<()> {
@@ -96,7 +105,9 @@ fn validate_sample(
         "sample does not match its capture request"
     );
     ensure!(
-        sample.source_sha == source.source_sha && sample.package_sha256 == source.archive_sha256,
+        sample.source_sha == source.source_sha
+            && sample.package_sha256 == source.archive_sha256
+            && sample.runtime_sha256 == source.runtime_sha256,
         "sample does not match the declared source and package"
     );
     ensure!(
@@ -295,8 +306,9 @@ fn earlier_baselines(
     source: &CaptureSource,
     warmups: usize,
     measured: usize,
-) -> Result<BTreeMap<String, Timing>> {
-    let report: EarlierReport = serde_json::from_reader(fs::File::open(path)?)?;
+) -> Result<(BTreeMap<String, Timing>, String)> {
+    let bytes = fs::read(path)?;
+    let report: EarlierReport = serde_json::from_slice(&bytes)?;
     let hosts = ["a", "b"];
     ensure!(
         report.schema_version == 2
@@ -329,7 +341,7 @@ fn earlier_baselines(
         timings == report.timings,
         "earlier report summary disagrees with its samples"
     );
-    Ok(timings)
+    Ok((timings, format!("{:x}", Sha256::digest(bytes))))
 }
 
 fn compare(baselines: &BTreeMap<String, Timing>, head: u64) -> BTreeMap<&str, Value> {
@@ -358,14 +370,18 @@ fn qualify(
     paired: &BTreeMap<String, Timing>,
     earlier: &BTreeMap<String, Timing>,
     digest: &str,
+    warmups: usize,
+    measured: usize,
 ) -> Value {
     let candidate = paired["head"].p95_ns;
     let paired = compare(paired, candidate);
     let incumbent_first = compare(earlier, candidate);
-    let pass = paired
-        .values()
-        .chain(incumbent_first.values())
-        .all(|result| result["pass"] == true);
+    let pass = (warmups > 0 && measured >= 12).then(|| {
+        paired
+            .values()
+            .chain(incumbent_first.values())
+            .all(|result| result["pass"] == true)
+    });
     json!({"earlierReportSha256": digest, "paired": paired, "incumbentFirst": incumbent_first, "pass": pass})
 }
 
@@ -409,15 +425,12 @@ fn main() -> Result<()> {
         let head = load_source("head")?;
         ensure!(
             head.source_sha != published.source_sha
-                && head.archive_sha256 != published.archive_sha256,
-            "candidate source and archive must differ from the published package"
+                && head.archive_sha256 != published.archive_sha256
+                && head.runtime_sha256 != published.runtime_sha256,
+            "candidate source, archive and runtime must differ from the published package"
         );
         let earlier = earlier_baselines(&path, &published, warmups, measured)?;
-        (
-            &["a", "head", "b"],
-            Some(head),
-            Some((earlier, format!("{:x}", Sha256::digest(fs::read(path)?)))),
-        )
+        (&["a", "head", "b"], Some(head), Some(earlier))
     } else {
         (&["a", "b"], None, None)
     };
@@ -439,7 +452,8 @@ fn main() -> Result<()> {
         eprintln!("Captured round {} of {}", round + 1, warmups + measured);
     }
     let timings = by_host(hosts, &samples)?;
-    let qualification = earlier.map(|(earlier, digest)| qualify(&timings, &earlier, &digest));
+    let qualification =
+        earlier.map(|(earlier, digest)| qualify(&timings, &earlier, &digest, warmups, measured));
     let mut stdout = io::stdout().lock();
     serde_json::to_writer_pretty(
         &mut stdout,
@@ -468,11 +482,29 @@ mod tests {
         "../../../incumbent/observations/served-chromium-linux/migration-head-87ca7814/incumbent-timings.json"
     );
 
+    fn timings(report: &str) -> Result<BTreeMap<String, Timing>> {
+        let report: Value = serde_json::from_str(report)?;
+        Ok(serde_json::from_value(report["timings"].clone())?)
+    }
+
+    fn sample_for_validation() -> Result<Sample> {
+        let mut report: Value = serde_json::from_str(PAIRED)?;
+        let row = &mut report["samples"][0];
+        row["timingScope"] = json!("fullTraceAndScreenshot");
+        row["runtimeSha256"] =
+            json!("7da1cd42672d5e4fbb83c50179cf694441e3eef2d1cf6cf2e98f359c94bdec8e");
+        Ok(serde_json::from_value(row.take())?)
+    }
+
     #[test]
     fn a_paired_pass_cannot_override_the_incumbent_first_failure() -> Result<()> {
-        let paired: EarlierReport = serde_json::from_str(PAIRED)?;
-        let earlier: EarlierReport = serde_json::from_str(INCUMBENT)?;
-        let result = qualify(&paired.timings, &earlier.timings, "example-digest");
+        let result = qualify(
+            &timings(PAIRED)?,
+            &timings(INCUMBENT)?,
+            "example-digest",
+            2,
+            12,
+        );
         for host in ["a", "b"] {
             assert_eq!(result["paired"][host]["pass"], true);
             assert_eq!(result["incumbentFirst"][host]["pass"], false);
@@ -482,12 +514,38 @@ mod tests {
     }
 
     #[test]
+    fn smoke_and_unwarmed_samples_have_no_qualification_verdict() -> Result<()> {
+        let mut paired = timings(PAIRED)?;
+        let earlier = timings(INCUMBENT)?;
+        paired.get_mut("head").unwrap().p95_ns = earlier["a"].p95_ns;
+        let value = qualify(&paired, &earlier, "example-digest", 2, 12);
+        assert_eq!(value["pass"], true);
+        for (warmups, measured) in [(0, 12), (2, 11), (0, 1)] {
+            assert!(
+                qualify(&paired, &earlier, "example-digest", warmups, measured)["pass"].is_null()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_edited_report_version_cannot_qualify_historical_sample_rows() -> Result<()> {
+        let mut historical: Value = serde_json::from_str(INCUMBENT)?;
+        historical["schemaVersion"] = json!(2);
+        let error = serde_json::from_value::<EarlierReport>(historical)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("timingScope"));
+        Ok(())
+    }
+
+    #[test]
     fn rejects_missing_profile_or_composer_observation() -> Result<()> {
-        let report: EarlierReport = serde_json::from_str(PAIRED)?;
-        let original = &report.samples[0];
+        let original = &sample_for_validation()?;
         let source = CaptureSource {
             source_sha: original.source_sha.clone(),
             archive_sha256: original.package_sha256.clone(),
+            runtime_sha256: original.runtime_sha256.clone(),
         };
         validate_sample(original, &original.request, &source)?;
         let mut missing_profile: Sample = serde_json::from_value(serde_json::to_value(original)?)?;
@@ -506,8 +564,7 @@ mod tests {
 
     #[test]
     fn rejects_a_checksummed_truncated_png() -> Result<()> {
-        let mut report: EarlierReport = serde_json::from_str(PAIRED)?;
-        let sample = &mut report.samples[0];
+        let sample = &mut sample_for_validation()?;
         let png = include_bytes!(
             "../../../incumbent/observations/served-chromium-linux/migration-head-87ca7814/a/capture.png"
         );

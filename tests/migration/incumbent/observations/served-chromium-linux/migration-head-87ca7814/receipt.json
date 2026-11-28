@@ -6,6 +6,7 @@
     "version": "0.1.18",
     "sourceSha": "87ca7814f721cfa04540fd76ead915745ffd064f",
     "archiveSha256": "3270b86e24343d47c9c0cb39e91e918a5acfb1f797811305c49dd5dbc1576392",
+    "runtimeSha256": "79b858e41155d7cd8a446eb042365e77b3b5e9588b503ce239a377f677e7180a",
     "databaseMigration": 119,
     "trunkSha": "2ea2e7a8941a48c2499f29c139a516eadc876ae1",
     "sourceTarSha256": "f5f997639ee87eb112148fe2e048b7f126146f08596fcecbf2ce7ff85ca20151",
