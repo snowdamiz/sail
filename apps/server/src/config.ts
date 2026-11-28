@@ -52,6 +52,7 @@ export interface ServerDerivedPaths {
   readonly worktreeCheckoutCacheDir: string;
   readonly attachmentsDir: string;
   readonly browserArtifactsDir: string;
+  readonly builtinSkillsDir?: string;
   readonly logsDir: string;
   readonly serverTracePath: string;
   readonly providerLogsDir: string;
@@ -65,6 +66,10 @@ export interface ServerDerivedPaths {
 
 export interface DeriveServerPathsOptions {
   readonly baseDirIsExplicit?: boolean;
+}
+
+export interface ServerConfigTestOptions {
+  readonly builtinSkillsEnabled?: boolean;
 }
 
 export class ServerConfig extends Context.Service<
@@ -106,6 +111,8 @@ export class ServerConfig extends Context.Service<
     readonly startupPairing?: StartupPairing | undefined;
     /** When false, this server is control-plane only and rejects local sessions, projects, and terminals. */
     readonly localSessionsEnabled?: boolean | undefined;
+    /** Defaults to true in production; tests disable built-in skill injection unless explicitly opted in. */
+    readonly builtinSkillsEnabled?: boolean | undefined;
     readonly ownerPasswordEnabled?: boolean;
     readonly initialOwnerPassword?: Redacted.Redacted<string>;
     readonly desktopBootstrapToken: string | undefined;
@@ -127,7 +134,8 @@ export class ServerConfig extends Context.Service<
   static readonly layerTest = (
     cwd: string,
     baseDirOrPrefix: string | { readonly prefix: string },
-  ) => layerTest(cwd, baseDirOrPrefix);
+    options?: ServerConfigTestOptions,
+  ) => layerTest(cwd, baseDirOrPrefix, options);
 }
 
 export const isLocalSessionsEnabled = (
@@ -182,6 +190,7 @@ export const deriveServerPaths = Effect.fn(function* (
     worktreeCheckoutCacheDir: join(providerStatusCacheDir, "worktree-checkouts"),
     attachmentsDir,
     browserArtifactsDir: join(stateDir, "browser-artifacts"),
+    builtinSkillsDir: join(stateDir, "builtin-skills"),
     logsDir,
     serverTracePath: join(logsDir, "server.trace.ndjson"),
     providerLogsDir,
@@ -211,6 +220,9 @@ export const ensureServerDirectories = Effect.fn(function* (derivedPaths: Server
       fs.makeDirectory(derivedPaths.terminalLogsDir, { recursive: true }),
       fs.makeDirectory(derivedPaths.attachmentsDir, { recursive: true }),
       fs.makeDirectory(derivedPaths.worktreesDir, { recursive: true }),
+      ...(derivedPaths.builtinSkillsDir
+        ? [fs.makeDirectory(derivedPaths.builtinSkillsDir, { recursive: true })]
+        : []),
       fs.makeDirectory(path.dirname(derivedPaths.keybindingsConfigPath), { recursive: true }),
       fs.makeDirectory(path.dirname(derivedPaths.settingsPath), { recursive: true }),
       fs.makeDirectory(derivedPaths.providerStatusCacheDir, { recursive: true }),
@@ -232,6 +244,7 @@ export const ensureServerDirectories = Effect.fn(function* (derivedPaths: Server
 const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
   cwd: string,
   baseDirOrPrefix: string | { readonly prefix: string },
+  options: ServerConfigTestOptions = {},
 ) {
   const devUrl = undefined;
   const fs = yield* FileSystem.FileSystem;
@@ -261,6 +274,7 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
     cwd,
     baseDir,
     ...derivedPaths,
+    builtinSkillsEnabled: options.builtinSkillsEnabled ?? false,
     mode: "web",
     autoBootstrapProjectFromCwd: false,
     logWebSocketEvents: false,
@@ -282,8 +296,11 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
   });
 });
 
-export const layerTest = (cwd: string, baseDirOrPrefix: string | { readonly prefix: string }) =>
-  Layer.effect(ServerConfig, makeTest(cwd, baseDirOrPrefix));
+export const layerTest = (
+  cwd: string,
+  baseDirOrPrefix: string | { readonly prefix: string },
+  options?: ServerConfigTestOptions,
+) => Layer.effect(ServerConfig, makeTest(cwd, baseDirOrPrefix, options));
 
 export const resolveStaticDir = Effect.fn(function* () {
   const { join, resolve } = yield* Path.Path;

@@ -99,6 +99,18 @@ const buildCmd = Command.make(
       } else {
         yield* Effect.logWarning("[cli] Web dist not found. Skipping client bundle.");
       }
+
+      const builtinSkillsSource = path.join(serverDir, "builtin-skills");
+      const builtinSkillsTarget = path.join(serverDir, "dist/builtin-skills");
+      if (yield* fs.exists(builtinSkillsSource)) {
+        yield* fs.remove(builtinSkillsTarget, { recursive: true, force: true });
+        yield* fs.copy(builtinSkillsSource, builtinSkillsTarget);
+        yield* Effect.log("[cli] Bundled built-in skills into dist/builtin-skills");
+      } else {
+        yield* Effect.logWarning(
+          "[cli] Built-in skills source not found. Skipping builtin-skills bundle.",
+        );
+      }
     }),
 ).pipe(Command.withDescription("Build the server package (tsdown + bundle web client)."));
 

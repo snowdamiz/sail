@@ -463,6 +463,10 @@ export const buildCliArchive = Effect.fn("buildCliArchive")(function* (
       ? path.join(serverDir, "dist-exe", executableName)
       : targetExecutable;
   const webClient = path.join(serverDir, "dist/client");
+  const distBuiltinSkillsDir = path.join(serverDir, "dist/builtin-skills");
+  const builtinSkillsDir = (yield* fs.exists(distBuiltinSkillsDir))
+    ? distBuiltinSkillsDir
+    : path.join(serverDir, "builtin-skills");
   const resourceMonitorDir = Option.getOrElse(input.resourceMonitorDir, () =>
     path.join(serverDir, "dist/resource-monitor"),
   );
@@ -472,6 +476,10 @@ export const buildCliArchive = Effect.fn("buildCliArchive")(function* (
     `Run \`node apps/server/scripts/cli.ts build-exe${targetKey === hostKey ? "" : ` --target ${targetKey}`}\` first.`,
   );
   yield* requireInput(path.join(webClient, "index.html"), "Run `vp run --filter t3 build` first.");
+  yield* requireInput(
+    path.join(builtinSkillsDir, "pstack/skills/poteto-mode/SKILL.md"),
+    "Run `vp run --filter t3 build` or ensure apps/server/builtin-skills/pstack exists.",
+  );
   yield* requireInput(
     resourceMonitorDir,
     "Build the resource monitor or pass --resource-monitor-dir.",
@@ -485,6 +493,7 @@ export const buildCliArchive = Effect.fn("buildCliArchive")(function* (
   yield* Effect.log(`[cli-archive] Staging ${stem}...`);
   yield* fs.copyFile(builtExecutable, path.join(contentDir, executableName));
   yield* stageWebClient(webClient, path.join(contentDir, "client"));
+  yield* fs.copy(builtinSkillsDir, path.join(contentDir, "builtin-skills"));
   yield* fs.copy(resourceMonitorDir, path.join(contentDir, "resource-monitor"));
   if (Option.isSome(input.boatdPath)) {
     const boatd = path.join(contentDir, input.platform === "win" ? "sail-boatd.exe" : "sail-boatd");

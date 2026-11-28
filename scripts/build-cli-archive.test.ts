@@ -86,13 +86,18 @@ it.layer(NodeServices.layer)("build-cli-archive contents", (it) => {
       const server = path.join(root, "apps/server");
       const distExe = path.join(server, "dist-exe");
       const client = path.join(server, "dist/client");
+      const builtinPstackSkillDir = path.join(server, "builtin-skills/pstack/skills/poteto-mode");
       const monitor = path.join(server, "dist/resource-monitor");
       const boatd = path.join(root, "boatd-input");
-      for (const directory of [distExe, client, monitor]) {
+      for (const directory of [distExe, client, builtinPstackSkillDir, monitor]) {
         yield* fs.makeDirectory(directory, { recursive: true });
       }
       yield* fs.writeFileString(path.join(distExe, "t3-darwin-arm64"), "SEA fixture");
       yield* fs.writeFileString(path.join(client, "index.html"), "Client fixture");
+      yield* fs.writeFileString(
+        path.join(builtinPstackSkillDir, "SKILL.md"),
+        "---\nname: poteto-mode\ndescription: Poteto fixture\n---\n",
+      );
       yield* fs.writeFileString(path.join(monitor, "t3-resource-monitor"), "Monitor fixture");
       yield* fs.writeFileString(boatd, "Boat fixture");
       for (const entry of ["pnpm-workspace.yaml", "patches"]) {
@@ -127,6 +132,7 @@ it.layer(NodeServices.layer)("build-cli-archive contents", (it) => {
       assert.includeMembers(entries.trim().split("\n"), [
         `${stem}/t3`,
         `${stem}/sail-boatd`,
+        `${stem}/builtin-skills/pstack/skills/poteto-mode/SKILL.md`,
         `${stem}/resource-monitor/t3-resource-monitor`,
       ]);
       const extracted = yield* realSpawner.exitCode(
