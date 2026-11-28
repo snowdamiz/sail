@@ -1,11 +1,13 @@
 import * as NodeEvents from "node:events";
 import * as NodeTimersPromises from "node:timers/promises";
 
-const [portText, environmentId, threadId] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const blurComposer = args[0] === "--blur-composer";
+const [portText, environmentId, threadId] = args.slice(blurComposer ? 1 : 0);
 const port = Number(portText);
 if (!Number.isInteger(port) || port < 1 || port > 65535 || !!environmentId !== !!threadId) {
   throw new Error(
-    "Usage: node settled-replay-electron.mjs <fixture DevTools port> [environment ID and thread ID]",
+    "Usage: node settled-replay-electron.mjs [--blur-composer] <fixture DevTools port> [environment ID and thread ID]",
   );
 }
 
@@ -86,6 +88,13 @@ try {
   if (environmentId && threadId) {
     const fragment = [environmentId, threadId].map(encodeURIComponent).join("/");
     await call("Page.navigate", { url: `sail://app/#/${fragment}` });
+  }
+  if (blurComposer) {
+    await evaluate(() => {
+      if (document.activeElement?.matches("main [contenteditable=true]")) {
+        document.activeElement.blur();
+      }
+    });
   }
   const deadline = Date.now() + 8000;
   let captured = false;

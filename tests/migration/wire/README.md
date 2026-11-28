@@ -35,5 +35,33 @@ compares parsed JSON and records any nonnegative integer `Interrupt.fiberId` as 
 The final Pong marks the end of the checked exchange. The ticket and bearer token stay
 out of the receipt.
 
-The fixture covers shell event replay from a cursor with an HTTP resume decision. Replay
-provider conversations, other transports, and the client's update UI need separate checks.
+The fixture covers shell event replay from a cursor with an HTTP resume decision.
+
+## Check a Replay conversation
+
+[`incumbent-replay-v2.json`](incumbent-replay-v2.json) freezes a Showcase turn from
+the published v0.1.17 macOS arm64 package. The [source integration tests](incumbent.test.ts)
+run the same check with the repository's Replay agent.
+
+1. Prepare a new absolute fixture directory with
+   `sh tests/migration/incumbent/replay-fixture.sh prepare "$fixture"`. Start the package
+   or candidate on its `state` directory with startup pairing off. The check creates the
+   project and thread and sends the prompt.
+2. Issue one fresh session with `orchestration:read` and another with both
+   `orchestration:read` and `orchestration:operate`. Supply them as
+   `SAIL_WIRE_READ_TOKEN` and `SAIL_WIRE_OPERATE_TOKEN`.
+3. Run the checker from the repository root.
+
+```sh
+node tests/migration/wire/replay.ts "$origin" "$fixture/project"
+```
+
+The checker acknowledges each chunk. It disconnects the writing socket after the send
+receipt and disconnects the reading socket after the first streaming reply. A separate
+read-only subscription waits for completion before a new socket resumes at the saved
+cursor. The checker reconstructs the three conversation messages, verifies the completion
+marker and subscription cancellation, retries the original command, and checks the typed
+denial for a fresh read-only send. A final projection must contain one completed run
+and the same messages. The captured sample records preserve dynamic IDs, timestamps,
+and sequence values as examples. The checker compares stable fields and cursor
+relationships across runs. Credentials and download tickets stay out of the fixture.

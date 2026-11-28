@@ -20,7 +20,32 @@
   "wire": {
     "result": "pass",
     "fixture": "../../wire/incumbent-v2.json",
-    "check": "The published ZIP's bundled backend passed the standalone checker on a fresh seeded loopback server with a read-only token."
+    "check": "The published ZIP's bundled backend passed the standalone checker on a fresh seeded loopback server with a read-only token.",
+    "replay": {
+      "fixture": "../../wire/incumbent-replay-v2.json",
+      "check": "A fresh Showcase turn over Effect RPC v2 retained its three messages, original send receipt, completed run and typed denial across reconnect, retry and read-only access.",
+      "published": {
+        "result": "pass",
+        "runs": 2,
+        "observedCursors": {
+          "snapshotCursor": 2,
+          "acceptedSequence": 10,
+          "disconnectedAt": 32,
+          "resumedThrough": 61
+        }
+      },
+      "migrationHeadPackage": {
+        "result": "pass",
+        "sourceSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+        "receipt": "electron-macos-arm64/migration-head-9982ba07/package-receipt.json",
+        "observedCursors": {
+          "snapshotCursor": 2,
+          "acceptedSequence": 10,
+          "disconnectedAt": 32,
+          "resumedThrough": 61
+        }
+      }
+    }
   },
   "sqlite": {
     "filename": "statev2.sqlite",
@@ -91,7 +116,7 @@
       "timing": "electron-macos-arm64/migration-head-9982ba07/capture-timings.json",
       "differentPixels": 3417,
       "changedSteps": [2],
-      "scope": "The two incumbent installations and the two migration-head installations each matched within their build. The cross-source difference remains confined to the composer. One migration-head installation exceeded both timing budgets."
+      "scope": "The two incumbent installations and the two migration-head installations each matched within their build. The cross-source difference remains confined to the composer. One migration-head installation exceeded the 15% limit against both incumbents and stayed within the 2 s absolute limit."
     },
     "chromiumMigrationHead": {
       "result": "fail",
