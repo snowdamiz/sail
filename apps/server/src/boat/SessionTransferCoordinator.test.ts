@@ -5,6 +5,7 @@ import * as NodeNet from "node:net";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
+  BoatError,
   ChatAttachmentId,
   EnvironmentId,
   GitRefName,
@@ -243,6 +244,12 @@ interface HarnessOptions {
   readonly onRemoteFinalizeSource?: (
     input: SessionTransferFinalizeSourceInput,
   ) => Effect.Effect<{ readonly archived: boolean }, SessionTransferError>;
+  readonly onLocalAbort?: (
+    input: SessionTransferAbortInput,
+  ) => Effect.Effect<{ readonly cleanedUp: boolean }, SessionTransferError>;
+  readonly onGetMachineProxyAccess?: () => ReturnType<
+    NonNullable<BoatSupervisor.BoatSupervisor["Service"]["getMachineProxyAccess"]>
+  >;
   readonly onRemoteAbort?: (
     input: SessionTransferAbortInput,
   ) => Effect.Effect<{ readonly cleanedUp: boolean }, SessionTransferError>;
@@ -392,14 +399,16 @@ function makeHarness(options: HarnessOptions = {}) {
           return { data: { ok: true } };
         }),
       getMachineProxyAccess: () =>
-        Effect.succeed({
-          machineId: "machine-1",
-          machineName: "dev-boat",
-          environmentId: BOAT_ENV_ID,
-          state: currentBoatState,
-          localUrl: "http://127.0.0.1:41999",
-          bearerToken: "internal-boat-token",
-        }),
+        options.onGetMachineProxyAccess
+          ? options.onGetMachineProxyAccess()
+          : Effect.succeed({
+              machineId: "machine-1",
+              machineName: "dev-boat",
+              environmentId: BOAT_ENV_ID,
+              state: currentBoatState,
+              localUrl: "http://127.0.0.1:41999",
+              bearerToken: "internal-boat-token",
+            }),
       hasConfiguredBoats: Effect.succeed(true),
       currentState: Effect.sync(() =>
         Option.some({
@@ -496,11 +505,13 @@ function makeHarness(options: HarnessOptions = {}) {
         }
         return Effect.succeed({ archived: true });
       },
-      abort: (input) =>
-        Effect.sync(() => {
-          calls.localAbort.push(input);
-          return { cleanedUp: true };
-        }),
+      abort: (input) => {
+        calls.localAbort.push(input);
+        if (options.onLocalAbort) {
+          return options.onLocalAbort(input);
+        }
+        return Effect.succeed({ cleanedUp: true });
+      },
     }),
   );
 
@@ -3624,6 +3635,436 @@ describe("SessionTransferCoordinator", () => {
         expect(activeAfterRecovery.map((r) => r.transferId)).not.toContain(transferId);
       }).pipe(Effect.scoped, Effect.provide(harness.layer));
     },
+  );
+
+  it.effect(
+    "serializes concurrent cancel retries and retry so a delayed cancel cannot abort or mark a retried attempt cancelled",
+    () =>
+      Effect.gen(function* () {
+        const transferId = SessionTransferId.make("tx-concurrent-cancel-retry-race");
+        const stream1Started = yield* Deferred.make<void>();
+        const stream1Hold = yield* Deferred.make<void>();
+        const stream2Started = yield* Deferred.make<void>();
+        const stream2Hold = yield* Deferred.make<void>();
+        const stalledRemoteAbortStarted = yield* Deferred.make<void>();
+        const stalledRemoteAbortRelease = yield* Deferred.make<void>();
+
+        let streamCount = 0;
+        let remoteAbortMode: "fail" | "stall_once" | "succeed" = "fail";
+
+        const harness = makeHarness({
+          onStreamHttpTransfer: () => {
+            streamCount += 1;
+            const callIndex = streamCount;
+            if (callIndex === 1) {
+              return Deferred.succeed(stream1Started, undefined).pipe(
+                Effect.andThen(Deferred.await(stream1Hold)),
+                Effect.as({ bytesTransferred: 0, status: 200 }),
+              );
+            }
+            return Deferred.succeed(stream2Started, undefined).pipe(
+              Effect.andThen(Deferred.await(stream2Hold)),
+              Effect.as({ bytesTransferred: 0, status: 200 }),
+            );
+          },
+          onRemoteAbort: () => {
+            if (remoteAbortMode === "fail") {
+              // Initial cancel fails remote abort (both worker onInterrupt and cancel retry)
+              // so the worker exits with record still non-terminal.
+              return Effect.fail(
+                new SessionTransferError({
+                  code: "target_unavailable",
+                  message: "Transient Boat error on initial cancel",
+                }),
+              );
+            }
+            if (remoteAbortMode === "stall_once") {
+              remoteAbortMode = "succeed";
+              // First concurrent cancel retry stalls on remote abort reply.
+              return Deferred.succeed(stalledRemoteAbortStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(stalledRemoteAbortRelease)),
+                Effect.as({ cleanedUp: true }),
+              );
+            }
+            return Effect.succeed({ cleanedUp: true });
+          },
+        });
+
+        yield* Effect.gen(function* () {
+          const repo = yield* SessionTransferRepository.SessionTransferRepository;
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+
+          yield* coordinator.start({
+            transferId,
+            direction: "local_to_boat",
+            sourceEnvironmentId: LOCAL_ENV_ID,
+            sourceThreadId: LOCAL_THREAD_ID,
+            target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+          });
+
+          yield* Deferred.await(stream1Started);
+
+          // Initial cancel fails remote abort, leaving record non-terminal in transferring_workspace.
+          const initialCancelErr = yield* Effect.flip(coordinator.cancel({ transferId }));
+          expect(initialCancelErr.code).toBe("target_unavailable");
+          const remoteAbortsAfterInitialCancel = harness.calls.remoteAbort.length;
+          expect(remoteAbortsAfterInitialCancel).toBeGreaterThanOrEqual(1);
+
+          // Switch to stall_once and launch two concurrent cancel retries: cancel1 stalls in
+          // remoteAbort; cancel2 and a concurrent retry on the same transferId must serialize
+          // behind cancel1 instead of racing.
+          remoteAbortMode = "stall_once";
+          const cancel1Fiber = yield* Effect.forkScoped(coordinator.cancel({ transferId }));
+          yield* Deferred.await(stalledRemoteAbortStarted);
+
+          const cancel2Fiber = yield* Effect.forkScoped(coordinator.cancel({ transferId }));
+          const retryFiber = yield* Effect.forkScoped(coordinator.retry({ transferId }));
+
+          // Give cancel2 and retry time to queue on the per-transferId lock.
+          for (let i = 0; i < 10; i += 1) {
+            yield* Effect.yieldNow;
+          }
+          expect(harness.calls.remoteAbort).toHaveLength(remoteAbortsAfterInitialCancel + 1);
+          expect(harness.calls.localPrepareSource).toHaveLength(1);
+
+          const localAbortCountBeforeRelease = harness.calls.localAbort.length;
+
+          // Release the stalled remoteAbort reply: cancel1 finishes cancelling attempt 1,
+          // cancel2 sees terminal cancelled and becomes an idempotent no-op, and retry starts
+          // attempt 2 under the same transferId.
+          yield* Deferred.succeed(stalledRemoteAbortRelease, undefined);
+
+          const [cancel1Record, cancel2Record, retryRecord] = yield* Effect.all([
+            Fiber.join(cancel1Fiber),
+            Fiber.join(cancel2Fiber),
+            Fiber.join(retryFiber),
+          ]);
+          expect(cancel1Record.phase).toBe("cancelled");
+          expect(cancel2Record.phase).toBe("cancelled");
+          expect(retryRecord.transferId).toBe(transferId);
+
+          // Only cancel1 called abortSourceSide; cancel2 did NOT call remoteAbort or localAbort.
+          expect(harness.calls.remoteAbort).toHaveLength(remoteAbortsAfterInitialCancel + 1);
+          expect(harness.calls.localAbort).toHaveLength(localAbortCountBeforeRelease + 1);
+
+          // Attempt 2 advances into transferring_workspace and stays live in listActive().
+          yield* Deferred.await(stream2Started);
+          const activeDuringRetry = yield* repo.listActive();
+          const activeAttempt2 = activeDuringRetry.find((r) => r.transferId === transferId);
+          expect(activeAttempt2?.phase).toBe("transferring_workspace");
+          expect(harness.calls.localAbort).toHaveLength(localAbortCountBeforeRelease + 1);
+          expect(harness.calls.remoteAbort).toHaveLength(remoteAbortsAfterInitialCancel + 1);
+
+          // Subscribe for terminal completion and release stream2 so attempt 2 completes cleanly.
+          const subscribed = yield* Deferred.make<void>();
+          const completedFiber = yield* Effect.forkScoped(
+            coordinator.subscribe.pipe(
+              Stream.tap((event) =>
+                event._tag === "snapshot" ? Deferred.succeed(subscribed, undefined) : Effect.void,
+              ),
+              Stream.filter(
+                (
+                  event,
+                ): event is Extract<SessionTransferProgressEvent, { readonly _tag: "updated" }> =>
+                  event._tag === "updated" &&
+                  event.transfer.transferId === transferId &&
+                  isTerminalSessionTransferPhase(event.transfer.phase),
+              ),
+              Stream.map((event) => event.transfer),
+              Stream.runHead,
+            ),
+          );
+          yield* Deferred.await(subscribed);
+          yield* Deferred.succeed(stream2Hold, undefined);
+
+          const completed = yield* Fiber.join(completedFiber);
+          expect(Option.isSome(completed) && completed.value.phase).toBe("completed");
+          const persisted = yield* repo.getById(transferId);
+          expect(Option.isSome(persisted) && persisted.value.phase).toBe("completed");
+          expect(Option.isSome(persisted) && persisted.value.destinationThreadId).toBe(
+            DEST_THREAD_ID,
+          );
+          expect(harness.calls.localAbort).toHaveLength(localAbortCountBeforeRelease + 1);
+        }).pipe(Effect.scoped, Effect.provide(harness.layer));
+      }),
+  );
+
+  it.effect(
+    "cancelling local_to_boat during prepareSource skips unreachable Boat destination on retry cancel and reconcileOnStartup",
+    () =>
+      Effect.gen(function* () {
+        // Part A: cancel during prepareSource, fail local source abort once while Boat is
+        // unreachable, then restore local source abort (Boat stays unreachable) -> retry cancel
+        // cleans up source, skips unused Boat destination, marks cancelled, and unblocks thread.
+        const prepStartedA = yield* Deferred.make<void>();
+        const prepHoldA = yield* Deferred.make<void>();
+        let boatReachableA = true;
+        let failLocalAbortA = true;
+        let blockPrepareA = true;
+
+        const cancelHarness = makeHarness({
+          onGetMachineProxyAccess: () =>
+            boatReachableA
+              ? Effect.succeed({
+                  machineId: "machine-1",
+                  machineName: "dev-boat",
+                  environmentId: BOAT_ENV_ID,
+                  state: "idle",
+                  localUrl: "http://127.0.0.1:41999",
+                  bearerToken: "internal-boat-token",
+                })
+              : Effect.fail(
+                  new BoatError({
+                    message: "Boat machine is unreachable",
+                  }),
+                ),
+          onLocalPrepareSource: (input) => {
+            const manifest = makeManifest({
+              transferId: input.transferId,
+              direction: input.direction,
+              sourceEnvironmentId: LOCAL_ENV_ID,
+              sourceProjectId: LOCAL_PROJECT_ID,
+              sourceThreadId: input.threadId,
+            });
+            const result: SessionTransferPrepareSourceResult = {
+              manifest,
+              bundleDownloadRelativeUrl: TrimmedNonEmptyString.make(
+                `/api/session-transfers/${input.transferId}/bundle?token=src-bundle`,
+              ),
+              bundleExpiresAt: NOW_ISO,
+            };
+            if (!blockPrepareA) {
+              return Effect.succeed(result);
+            }
+            return Deferred.succeed(prepStartedA, undefined).pipe(
+              Effect.andThen(Deferred.await(prepHoldA)),
+              Effect.as(result),
+            );
+          },
+          onLocalAbort: () =>
+            failLocalAbortA
+              ? Effect.fail(
+                  new SessionTransferError({
+                    code: "internal",
+                    message: "Transient local source abort failure",
+                  }),
+                )
+              : Effect.succeed({ cleanedUp: true }),
+          onRemoteAbort: () =>
+            boatReachableA
+              ? Effect.succeed({ cleanedUp: true })
+              : Effect.fail(
+                  new SessionTransferError({
+                    code: "target_unavailable",
+                    message: "Boat destination unreachable",
+                  }),
+                ),
+        });
+
+        yield* Effect.gen(function* () {
+          const repo = yield* SessionTransferRepository.SessionTransferRepository;
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const transferId = SessionTransferId.make("tx-pre-dest-cancel-retry");
+
+          yield* coordinator.start({
+            transferId,
+            direction: "local_to_boat",
+            sourceEnvironmentId: LOCAL_ENV_ID,
+            sourceThreadId: LOCAL_THREAD_ID,
+            target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+          });
+
+          yield* Deferred.await(prepStartedA);
+          // Boat becomes unreachable before destination stageImport was ever invoked.
+          boatReachableA = false;
+
+          const firstCancelErr = yield* Effect.flip(coordinator.cancel({ transferId }));
+          expect(firstCancelErr.code).toBe("target_unavailable");
+          expect(cancelHarness.calls.remoteStageImport).toHaveLength(0);
+          expect(cancelHarness.calls.remoteAbort).toHaveLength(0);
+          const stuckRecord = yield* repo.getById(transferId);
+          expect(Option.isSome(stuckRecord) && stuckRecord.value.phase).toBe("exporting_source");
+
+          // Restore local source abort while Boat remains unreachable -> retry cancel succeeds!
+          failLocalAbortA = false;
+          const cancelled = yield* coordinator.cancel({ transferId });
+          expect(cancelled.phase).toBe("cancelled");
+          expect(cancelHarness.calls.remoteStageImport).toHaveLength(0);
+          expect(cancelHarness.calls.remoteAbort).toHaveLength(0);
+          const activeAfterCancel = yield* repo.listActive();
+          expect(activeAfterCancel.map((r) => r.transferId)).not.toContain(transferId);
+
+          // Source thread is unblocked for a fresh transfer once Boat returns.
+          boatReachableA = true;
+          blockPrepareA = false;
+          const nextTransfer = yield* coordinator.start({
+            transferId: SessionTransferId.make("tx-pre-dest-cancel-retry-followup"),
+            direction: "local_to_boat",
+            sourceEnvironmentId: LOCAL_ENV_ID,
+            sourceThreadId: LOCAL_THREAD_ID,
+            target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+          });
+          expect(nextTransfer.transferId).toBe(
+            SessionTransferId.make("tx-pre-dest-cancel-retry-followup"),
+          );
+        }).pipe(Effect.scoped, Effect.provide(cancelHarness.layer));
+
+        // Part B: same pre-destination state reconciled by reconcileOnStartup while Boat stays
+        // unreachable -> aborts local source, skips unreachable Boat destination, marks failed,
+        // and unblocks starting a new transfer for that thread.
+        const prepStartedB = yield* Deferred.make<void>();
+        const prepHoldB = yield* Deferred.make<void>();
+        let boatReachableB = true;
+        let failLocalAbortB = true;
+        let blockPrepareB = true;
+
+        const reconcileHarness = makeHarness({
+          onGetMachineProxyAccess: () =>
+            boatReachableB
+              ? Effect.succeed({
+                  machineId: "machine-1",
+                  machineName: "dev-boat",
+                  environmentId: BOAT_ENV_ID,
+                  state: "idle",
+                  localUrl: "http://127.0.0.1:41999",
+                  bearerToken: "internal-boat-token",
+                })
+              : Effect.fail(
+                  new BoatError({
+                    message: "Boat machine is unreachable",
+                  }),
+                ),
+          onLocalPrepareSource: (input) => {
+            const manifest = makeManifest({
+              transferId: input.transferId,
+              direction: input.direction,
+              sourceEnvironmentId: LOCAL_ENV_ID,
+              sourceProjectId: LOCAL_PROJECT_ID,
+              sourceThreadId: input.threadId,
+            });
+            const result: SessionTransferPrepareSourceResult = {
+              manifest,
+              bundleDownloadRelativeUrl: TrimmedNonEmptyString.make(
+                `/api/session-transfers/${input.transferId}/bundle?token=src-bundle`,
+              ),
+              bundleExpiresAt: NOW_ISO,
+            };
+            if (!blockPrepareB) {
+              return Effect.succeed(result);
+            }
+            return Deferred.succeed(prepStartedB, undefined).pipe(
+              Effect.andThen(Deferred.await(prepHoldB)),
+              Effect.as(result),
+            );
+          },
+          onLocalAbort: () =>
+            failLocalAbortB
+              ? Effect.fail(
+                  new SessionTransferError({
+                    code: "internal",
+                    message: "Transient local source abort failure",
+                  }),
+                )
+              : Effect.succeed({ cleanedUp: true }),
+          onRemoteAbort: () =>
+            boatReachableB
+              ? Effect.succeed({ cleanedUp: true })
+              : Effect.fail(
+                  new SessionTransferError({
+                    code: "target_unavailable",
+                    message: "Boat destination unreachable",
+                  }),
+                ),
+        });
+
+        yield* Effect.gen(function* () {
+          const repo = yield* SessionTransferRepository.SessionTransferRepository;
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const transferId = SessionTransferId.make("tx-pre-dest-reconcile");
+
+          yield* coordinator.start({
+            transferId,
+            direction: "local_to_boat",
+            sourceEnvironmentId: LOCAL_ENV_ID,
+            sourceThreadId: LOCAL_THREAD_ID,
+            target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+          });
+
+          yield* Deferred.await(prepStartedB);
+          boatReachableB = false;
+
+          const firstCancelErr = yield* Effect.flip(coordinator.cancel({ transferId }));
+          expect(firstCancelErr.code).toBe("target_unavailable");
+          expect(reconcileHarness.calls.remoteStageImport).toHaveLength(0);
+          expect(reconcileHarness.calls.remoteAbort).toHaveLength(0);
+
+          // Restore local source abort while Boat stays unreachable -> reconcileOnStartup finishes.
+          failLocalAbortB = false;
+          const localAbortBeforeReconcile = reconcileHarness.calls.localAbort.length;
+          yield* coordinator.reconcileOnStartup;
+
+          const reconciled = yield* repo.getById(transferId);
+          expect(Option.isSome(reconciled) && reconciled.value.phase).toBe("failed");
+          expect(reconcileHarness.calls.localAbort.length).toBe(localAbortBeforeReconcile + 1);
+          expect(reconcileHarness.calls.remoteStageImport).toHaveLength(0);
+          expect(reconcileHarness.calls.remoteAbort).toHaveLength(0);
+          const activeAfterReconcile = yield* repo.listActive();
+          expect(activeAfterReconcile.map((r) => r.transferId)).not.toContain(transferId);
+
+          // Also verify boat_to_local symmetry: a pre-prepareSource boat_to_local record in
+          // pausing_source reconciles cleanly even while Boat is unreachable, without calling
+          // remote source abort or unused local destination abort.
+          const preSourceBoatTransferId = SessionTransferId.make("tx-b2l-pre-source-reconcile");
+          yield* repo.insertIfAbsent({
+            transferId: preSourceBoatTransferId,
+            direction: "boat_to_local",
+            phase: "pausing_source",
+            phaseDetail: null,
+            sourceEnvironmentId: BOAT_ENV_ID,
+            sourceEnvironmentName: TrimmedNonEmptyString.make("dev-boat"),
+            sourceMachineId: TrimmedNonEmptyString.make("machine-1"),
+            sourceProjectId: BOAT_PROJECT_ID,
+            sourceThreadId: BOAT_THREAD_ID,
+            destinationEnvironmentId: LOCAL_ENV_ID,
+            destinationEnvironmentName: TrimmedNonEmptyString.make("MacBook Pro"),
+            destinationMachineId: null,
+            destinationProjectId: null,
+            destinationThreadId: null,
+            destinationBranch: null,
+            destinationWorktreePath: null,
+            sourceWasRunning: false,
+            hadPendingRuntimeRequest: false,
+            modelSelectionOverride: null,
+            cloneDestinationPath: null,
+            autoResume: true,
+            warnings: [],
+            errorMessage: null,
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+            completedAt: null,
+          });
+          const localAbortBeforeB2L = reconcileHarness.calls.localAbort.length;
+          yield* coordinator.reconcileOnStartup;
+          const reconciledB2L = yield* repo.getById(preSourceBoatTransferId);
+          expect(Option.isSome(reconciledB2L) && reconciledB2L.value.phase).toBe("failed");
+          expect(reconcileHarness.calls.remoteAbort).toHaveLength(0);
+          expect(reconcileHarness.calls.localAbort).toHaveLength(localAbortBeforeB2L);
+
+          // Unblocked to start a fresh local_to_boat transfer once Boat returns.
+          boatReachableB = true;
+          blockPrepareB = false;
+          const nextTransfer = yield* coordinator.start({
+            transferId: SessionTransferId.make("tx-pre-dest-reconcile-followup"),
+            direction: "local_to_boat",
+            sourceEnvironmentId: LOCAL_ENV_ID,
+            sourceThreadId: LOCAL_THREAD_ID,
+            target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+          });
+          expect(nextTransfer.transferId).toBe(
+            SessionTransferId.make("tx-pre-dest-reconcile-followup"),
+          );
+        }).pipe(Effect.scoped, Effect.provide(reconcileHarness.layer));
+      }),
   );
 });
 describe("makeLiveBoatRemoteClient", () => {

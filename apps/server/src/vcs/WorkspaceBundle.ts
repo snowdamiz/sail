@@ -87,6 +87,13 @@ export interface ExportWorkspaceBundleResult {
   readonly warnings: ReadonlyArray<string>;
 }
 
+interface AllocatedWorkspaceWorktree {
+  readonly repoCwd: string;
+  readonly worktreePath: string;
+  readonly branch: string;
+  readonly createdBranch: boolean;
+}
+
 export interface ImportWorkspaceBundleInput {
   readonly transferId: string;
   readonly repoCwd: string;
@@ -95,6 +102,9 @@ export interface ImportWorkspaceBundleInput {
   readonly targetLabel: "boat" | "local";
   readonly worktreePath?: string;
   readonly worktreesDirectory?: string;
+  readonly onWorktreeAllocated?: (
+    allocation: AllocatedWorkspaceWorktree,
+  ) => Effect.Effect<void, WorkspaceBundleError>;
   readonly beforeApplyDirtyLayers?: (
     worktreePath: string,
   ) => Effect.Effect<void, WorkspaceBundleError>;
@@ -1323,6 +1333,15 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
+
+      if (input.onWorktreeAllocated !== undefined) {
+        yield* input.onWorktreeAllocated({
+          repoCwd: input.repoCwd,
+          worktreePath,
+          branch: branchAllocation.branch,
+          createdBranch: !branchAllocation.useExistingBranch,
+        });
+      }
 
       const addArgs = branchAllocation.useExistingBranch
         ? ["worktree", "add", "--", worktreePath, branchAllocation.branch]

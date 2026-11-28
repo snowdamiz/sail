@@ -27,6 +27,7 @@ import {
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
   PlanId,
+  ProjectId,
   ProviderDriverKind,
   ProviderThreadId,
   RunAttemptId,
@@ -41,7 +42,7 @@ import {
   SessionTransferError,
   type SessionTransferFinalizeSourceInput,
   type SessionTransferFinalizeSourceResult,
-  type SessionTransferId,
+  SessionTransferId,
   type SessionTransferManifest,
   type SessionTransferPendingRuntimeRequest,
   type SessionTransferPrepareSourceInput,
@@ -71,6 +72,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
@@ -86,6 +88,7 @@ import {
   resolveExportBundlePath,
   resolveImportBundlePath,
   resolveTransferStagingDir,
+  resolveWorktreeOwnershipPath,
   uniqueTransferSegment,
 } from "../assets/SessionTransferToken.ts";
 import { resolveAttachmentPathById } from "../attachmentStore.ts";
@@ -130,6 +133,21 @@ type SourceLockEntry =
       readonly phase: "cleaning";
       readonly cleanupDeferred: Deferred.Deferred<void, SessionTransferError>;
     };
+
+const PersistedWorktreeOwnership = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  transferId: SessionTransferId,
+  destinationProjectId: ProjectId,
+  projectWorkspaceRoot: Schema.String,
+  destinationThreadId: ThreadId,
+  worktreePath: Schema.NullOr(Schema.String),
+  branch: Schema.NullOr(GitRefName),
+  createdBranch: Schema.Boolean,
+  importCompleted: Schema.Boolean,
+});
+type PersistedWorktreeOwnership = typeof PersistedWorktreeOwnership.Type;
+
+const PersistedWorktreeOwnershipJson = Schema.fromJsonString(PersistedWorktreeOwnership);
 
 interface StagedImportState {
   readonly transferId: SessionTransferId;
@@ -616,6 +634,136 @@ const make = Effect.gen(function* () {
         return yield* Effect.failCause(exit.cause);
       }),
     );
+  const encodeWorktreeOwnership = Schema.encodeEffect(PersistedWorktreeOwnershipJson);
+  const decodeWorktreeOwnership = Schema.decodeUnknownEffect(PersistedWorktreeOwnershipJson);
+
+  const writeWorktreeOwnership = Effect.fn("SessionTransferEndpointService.writeWorktreeOwnership")(
+    function* (ownership: PersistedWorktreeOwnership) {
+      const ownershipPath = resolveWorktreeOwnershipPath(
+        serverConfig.stateDir,
+        ownership.transferId,
+        path,
+      );
+      if (ownershipPath === null) {
+        return yield* new SessionTransferError({
+          code: "invalid_phase",
+          transferId: ownership.transferId,
+          message: `Invalid session transfer identifier '${ownership.transferId}' for worktree ownership persistence.`,
+        });
+      }
+
+      const encoded = yield* encodeWorktreeOwnership(ownership).pipe(
+        Effect.mapError(
+          (cause) =>
+            new SessionTransferError({
+              code: "internal",
+              transferId: ownership.transferId,
+              message: `Failed to encode worktree ownership metadata for transfer '${ownership.transferId}': ${String(cause)}`,
+              cause,
+            }),
+        ),
+      );
+
+      yield* fileSystem.makeDirectory(path.dirname(ownershipPath), { recursive: true }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new SessionTransferError({
+              code: "internal",
+              transferId: ownership.transferId,
+              message: `Failed to create staging directory for worktree ownership of transfer '${ownership.transferId}': ${cause.message}`,
+              cause,
+            }),
+        ),
+      );
+
+      const tempPath = `${ownershipPath}.${yield* secureRandom.uuidV4()}.tmp`;
+      yield* fileSystem.writeFileString(tempPath, encoded).pipe(
+        Effect.andThen(fileSystem.rename(tempPath, ownershipPath)),
+        Effect.tapError(() => fileSystem.remove(tempPath, { force: true }).pipe(Effect.ignore)),
+        Effect.mapError(
+          (cause) =>
+            new SessionTransferError({
+              code: "internal",
+              transferId: ownership.transferId,
+              message: `Failed to persist worktree ownership metadata for transfer '${ownership.transferId}': ${cause.message}`,
+              cause,
+            }),
+        ),
+      );
+    },
+  );
+
+  const readWorktreeOwnership = Effect.fn("SessionTransferEndpointService.readWorktreeOwnership")(
+    function* (
+      transferId: SessionTransferId,
+    ): Effect.fn.Return<PersistedWorktreeOwnership | null, SessionTransferError> {
+      const ownershipPath = resolveWorktreeOwnershipPath(serverConfig.stateDir, transferId, path);
+      if (ownershipPath === null) {
+        return null;
+      }
+
+      const raw = yield* fileSystem.readFileString(ownershipPath).pipe(
+        Effect.asSome,
+        Effect.catchIf(
+          (error) => error.reason._tag === "NotFound",
+          () => Effect.succeedNone,
+        ),
+        Effect.mapError(
+          (cause) =>
+            new SessionTransferError({
+              code: "internal",
+              transferId,
+              message: `Failed to read persisted worktree ownership for transfer '${transferId}': ${cause.message}`,
+              cause,
+            }),
+        ),
+      );
+      if (Option.isNone(raw)) {
+        return null;
+      }
+
+      const decoded = yield* decodeWorktreeOwnership(raw.value).pipe(
+        Effect.mapError(
+          (cause) =>
+            new SessionTransferError({
+              code: "internal",
+              transferId,
+              message: `Failed to decode persisted worktree ownership for transfer '${transferId}': ${String(cause)}`,
+              cause,
+            }),
+        ),
+      );
+      if (decoded.transferId !== transferId) {
+        return yield* new SessionTransferError({
+          code: "internal",
+          transferId,
+          message: `Persisted worktree ownership transferId mismatch for transfer '${transferId}'.`,
+        });
+      }
+      return decoded;
+    },
+  );
+
+  const removeWorktreeOwnershipBestEffort = (transferId: SessionTransferId) => {
+    const ownershipPath = resolveWorktreeOwnershipPath(serverConfig.stateDir, transferId, path);
+    if (ownershipPath === null) {
+      return Effect.void;
+    }
+    return fileSystem.remove(ownershipPath, { force: true }).pipe(
+      Effect.catchIf(
+        (error) => error.reason._tag === "NotFound",
+        () => Effect.void,
+      ),
+      Effect.tapError((cause) =>
+        Effect.logWarning("Failed to remove persisted session transfer worktree ownership file.", {
+          transferId,
+          cause,
+        }),
+      ),
+      Effect.ignore,
+    );
+  };
+
   const preparedSources = yield* Ref.make(
     new Map<SessionTransferId, SessionTransferPrepareSourceResult>(),
   );
@@ -1888,6 +2036,8 @@ const make = Effect.gen(function* () {
           }
 
           const replayWarnings: string[] = [];
+          yield* removeWorktreeOwnershipBestEffort(input.transferId);
+
           const { resumed, handoffComplete } = yield* completePostCommitHandoff({
             transferId: input.transferId,
             manifest: input.manifest,
@@ -1969,21 +2119,60 @@ const make = Effect.gen(function* () {
         let createdBranch = existingStaged?.createdBranch ?? false;
 
         // 3. Apply uploaded git workspace bundle into a fresh isolated worktree,
-        //    reusing an already-created worktree recorded in staged state on retry.
+        //    reusing an already-created worktree recorded in staged state or durable ownership on retry.
         if (input.manifest.workspace.mode === "git_bundle") {
+          const persistedOwnership = yield* readWorktreeOwnership(input.transferId);
+          const reusableWorktreePath =
+            existingStaged?.worktreePath ??
+            (persistedOwnership?.importCompleted === true ? persistedOwnership.worktreePath : null);
+          const reusableBranch =
+            existingStaged?.worktreePath !== null && existingStaged?.worktreePath !== undefined
+              ? existingStaged.branch
+              : persistedOwnership?.importCompleted === true
+                ? persistedOwnership.branch
+                : null;
+          const reusableCreatedBranch =
+            existingStaged?.worktreePath !== null && existingStaged?.worktreePath !== undefined
+              ? existingStaged.createdBranch
+              : (persistedOwnership?.createdBranch ?? false);
+
           const canReuseWorktree =
-            existingStaged?.worktreePath !== null &&
-            existingStaged?.worktreePath !== undefined &&
-            existingStaged.branch !== null &&
+            reusableWorktreePath !== null &&
+            reusableBranch !== null &&
             (yield* fileSystem
-              .exists(existingStaged.worktreePath)
+              .exists(reusableWorktreePath)
               .pipe(Effect.orElseSucceed(() => false)));
 
-          if (canReuseWorktree && existingStaged !== undefined) {
-            destinationBranch = existingStaged.branch;
-            destinationWorktreePath = TrimmedNonEmptyString.make(existingStaged.worktreePath!);
-            createdBranch = existingStaged.createdBranch;
+          if (canReuseWorktree) {
+            destinationBranch = reusableBranch;
+            destinationWorktreePath = TrimmedNonEmptyString.make(reusableWorktreePath);
+            createdBranch = reusableCreatedBranch;
           } else {
+            // If an earlier interrupted/crashed attempt left partial worktree/branch intent on disk,
+            // clean it up before allocating a fresh worktree so nothing is stranded.
+            if (
+              persistedOwnership !== null &&
+              (persistedOwnership.worktreePath !== null ||
+                (persistedOwnership.createdBranch && persistedOwnership.branch !== null))
+            ) {
+              yield* workspaceBundle
+                .removeWorktree({
+                  repoCwd: persistedOwnership.projectWorkspaceRoot,
+                  worktreePath: persistedOwnership.worktreePath,
+                  branch: persistedOwnership.createdBranch ? persistedOwnership.branch : null,
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new SessionTransferError({
+                        code: "workspace_error",
+                        transferId: input.transferId,
+                        message: `Failed to clean up partial destination worktree before retry for transfer '${input.transferId}': ${cause.message}`,
+                        cause,
+                      }),
+                  ),
+                );
+            }
             const importBundlePath = resolveImportBundlePath(
               serverConfig.stateDir,
               input.transferId,
@@ -2045,6 +2234,52 @@ const make = Effect.gen(function* () {
                 bundlePath: importBundlePath,
                 sourceBranch: input.manifest.workspace.branch,
                 targetLabel,
+                onWorktreeAllocated: (allocation) => {
+                  const allocatedBranch = GitRefName.make(allocation.branch);
+                  return writeWorktreeOwnership({
+                    schemaVersion: 1,
+                    transferId: input.transferId,
+                    destinationProjectId: project.id,
+                    projectWorkspaceRoot: allocation.repoCwd,
+                    destinationThreadId: input.destinationThreadId,
+                    worktreePath: allocation.worktreePath,
+                    branch: allocatedBranch,
+                    createdBranch: allocation.createdBranch,
+                    importCompleted: false,
+                  }).pipe(
+                    Effect.andThen(
+                      Ref.update(stagedImports, (map) => {
+                        const next = new Map(map);
+                        const prev = next.get(input.transferId);
+                        next.set(input.transferId, {
+                          transferId: input.transferId,
+                          destinationProjectId: project.id,
+                          projectWorkspaceRoot: allocation.repoCwd,
+                          destinationThreadId: input.destinationThreadId,
+                          resolvedModelSelection,
+                          attachmentUploads: prev?.attachmentUploads ?? [],
+                          claimedAttachmentIds: prev?.claimedAttachmentIds ?? {},
+                          warnings: prev?.warnings ?? [],
+                          worktreePath: allocation.worktreePath,
+                          branch: allocatedBranch,
+                          createdBranch: allocation.createdBranch,
+                          committed: false,
+                          handoffComplete: false,
+                          committedResult: null,
+                        });
+                        return next;
+                      }),
+                    ),
+                    Effect.mapError(
+                      (cause) =>
+                        new WorkspaceBundle.WorkspaceBundleError({
+                          code: "io_error",
+                          message: cause.message,
+                          cause,
+                        }),
+                    ),
+                  );
+                },
                 ...(beforeApplyDirtyLayers !== undefined ? { beforeApplyDirtyLayers } : {}),
               })
               .pipe(
@@ -2063,6 +2298,19 @@ const make = Effect.gen(function* () {
             destinationWorktreePath = TrimmedNonEmptyString.make(importedWorkspace.worktreePath);
             createdBranch = importedWorkspace.createdBranch;
             warnings.push(...importedWorkspace.warnings, ...setupWarnings);
+
+            // Persist completed worktree & branch ownership durably so restarts can reuse or clean up safely.
+            yield* writeWorktreeOwnership({
+              schemaVersion: 1,
+              transferId: input.transferId,
+              destinationProjectId: project.id,
+              projectWorkspaceRoot: project.workspaceRoot,
+              destinationThreadId: input.destinationThreadId,
+              worktreePath: importedWorkspace.worktreePath,
+              branch: destinationBranch,
+              createdBranch,
+              importCompleted: true,
+            });
 
             // Record created worktree & branch ownership immediately so retry reuses it and abort cleans safely.
             yield* Ref.update(stagedImports, (map) => {
@@ -2576,6 +2824,10 @@ const make = Effect.gen(function* () {
           ),
         );
 
+        // Thread is now durably committed: remove durable worktree ownership file immediately so a
+        // late abort can never treat this committed thread worktree as uncommitted staging state.
+        yield* removeWorktreeOwnershipBestEffort(input.transferId);
+
         // 6. Auto-resume with a single continuation turn & release queued runs idempotently
         //    ONLY when source was running, had no pending runtime/secret requests, and autoResume is enabled.
         const { resumed, handoffComplete } = yield* completePostCommitHandoff({
@@ -2900,8 +3152,16 @@ const make = Effect.gen(function* () {
       [transferLockKey(input.transferId)],
       Effect.gen(function* () {
         const staged = (yield* Ref.get(stagedImports)).get(input.transferId);
+        const persistedOwnershipResult = yield* Effect.result(
+          readWorktreeOwnership(input.transferId),
+        );
+        const persistedOwnership = Result.isSuccess(persistedOwnershipResult)
+          ? persistedOwnershipResult.success
+          : null;
         const candidateThreadId =
-          staged?.destinationThreadId ?? deterministicDestinationThreadId(input.transferId);
+          staged?.destinationThreadId ??
+          persistedOwnership?.destinationThreadId ??
+          deterministicDestinationThreadId(input.transferId);
         const alreadyCommitted =
           staged?.committed === true ||
           Option.isSome(
@@ -2913,6 +3173,7 @@ const make = Effect.gen(function* () {
           );
 
         if (alreadyCommitted) {
+          yield* removeWorktreeOwnershipBestEffort(input.transferId);
           yield* runWithAssetContext(cleanupTransferStagingDir(input.transferId)).pipe(
             Effect.tapError((cause) =>
               Effect.logWarning(
@@ -2925,25 +3186,34 @@ const make = Effect.gen(function* () {
           return { cleanedUp: false } satisfies SessionTransferAbortResult;
         }
 
-        const cleanupFailures: Array<SessionTransferError> = [];
-
-        const stagingResult = yield* Effect.result(cleanupSourceStagingDir(input.transferId));
-        const deletedStaging = Result.isSuccess(stagingResult) ? stagingResult.success : false;
-        if (Result.isFailure(stagingResult)) {
-          cleanupFailures.push(stagingResult.failure);
+        if (Result.isFailure(persistedOwnershipResult)) {
+          return yield* persistedOwnershipResult.failure;
         }
 
-        let cleanedWorktree = false;
-        let nextWorktreePath = staged?.worktreePath ?? null;
-        let nextBranch = staged?.branch ?? null;
-        let nextCreatedBranch = staged?.createdBranch ?? false;
+        const cleanupFailures: Array<SessionTransferError> = [];
 
-        if (staged?.worktreePath !== null && staged?.worktreePath !== undefined) {
+        const effectiveRepoCwd =
+          staged?.projectWorkspaceRoot ?? persistedOwnership?.projectWorkspaceRoot ?? null;
+        const effectiveWorktreePath =
+          staged?.worktreePath ?? persistedOwnership?.worktreePath ?? null;
+        const effectiveBranch = staged?.branch ?? persistedOwnership?.branch ?? null;
+        const effectiveCreatedBranch =
+          (staged?.createdBranch ?? false) || (persistedOwnership?.createdBranch ?? false);
+
+        let cleanedWorktree = false;
+        let worktreeOrBranchFailed = false;
+        let nextWorktreePath = effectiveWorktreePath;
+        let nextBranch = effectiveBranch;
+        let nextCreatedBranch = effectiveCreatedBranch;
+
+        // Perform worktree & branch removal BEFORE deleting the ownership file / staging directory
+        // so any worktree/branch failure preserves durable ownership across retries and restarts.
+        if (effectiveRepoCwd !== null && effectiveWorktreePath !== null) {
           const worktreeResult = yield* Effect.result(
             workspaceBundle
               .removeWorktree({
-                repoCwd: staged.projectWorkspaceRoot,
-                worktreePath: staged.worktreePath,
+                repoCwd: effectiveRepoCwd,
+                worktreePath: effectiveWorktreePath,
               })
               .pipe(
                 Effect.mapError(
@@ -2960,20 +3230,21 @@ const make = Effect.gen(function* () {
           if (Result.isSuccess(worktreeResult)) {
             cleanedWorktree = true;
             nextWorktreePath = null;
-            if (!staged.createdBranch) {
+            if (!effectiveCreatedBranch) {
               nextBranch = null;
             }
           } else {
+            worktreeOrBranchFailed = true;
             cleanupFailures.push(worktreeResult.failure);
           }
         }
 
-        if (staged !== undefined && staged.createdBranch && staged.branch !== null) {
+        if (effectiveRepoCwd !== null && effectiveCreatedBranch && effectiveBranch !== null) {
           const branchResult = yield* Effect.result(
             workspaceBundle
               .removeWorktree({
-                repoCwd: staged.projectWorkspaceRoot,
-                branch: staged.branch,
+                repoCwd: effectiveRepoCwd,
+                branch: effectiveBranch,
               })
               .pipe(
                 Effect.mapError(
@@ -2981,7 +3252,7 @@ const make = Effect.gen(function* () {
                     new SessionTransferError({
                       code: "workspace_error",
                       transferId: input.transferId,
-                      message: `Failed to delete destination branch '${staged.branch}' for transfer '${input.transferId}': ${cause.message}`,
+                      message: `Failed to delete destination branch '${effectiveBranch}' for transfer '${input.transferId}': ${cause.message}`,
                       cause,
                     }),
                 ),
@@ -2992,7 +3263,21 @@ const make = Effect.gen(function* () {
             nextBranch = null;
             nextCreatedBranch = false;
           } else {
+            worktreeOrBranchFailed = true;
             cleanupFailures.push(branchResult.failure);
+          }
+        }
+
+        // Only delete the ownership file & staging directory once worktree and created-branch
+        // cleanup have succeeded (independent of pending attachments stored in attachmentsDir).
+        let deletedStaging = false;
+        if (!worktreeOrBranchFailed) {
+          yield* removeWorktreeOwnershipBestEffort(input.transferId);
+          const stagingResult = yield* Effect.result(cleanupSourceStagingDir(input.transferId));
+          if (Result.isSuccess(stagingResult)) {
+            deletedStaging = stagingResult.success;
+          } else {
+            cleanupFailures.push(stagingResult.failure);
           }
         }
 
@@ -3032,6 +3317,29 @@ const make = Effect.gen(function* () {
               });
               return next;
             });
+          }
+
+          if (
+            worktreeOrBranchFailed &&
+            persistedOwnership !== null &&
+            (nextWorktreePath !== persistedOwnership.worktreePath ||
+              nextBranch !== persistedOwnership.branch ||
+              nextCreatedBranch !== persistedOwnership.createdBranch)
+          ) {
+            yield* writeWorktreeOwnership({
+              ...persistedOwnership,
+              worktreePath: nextWorktreePath,
+              branch: nextBranch,
+              createdBranch: nextCreatedBranch,
+            }).pipe(
+              Effect.tapError((cause) =>
+                Effect.logWarning(
+                  "Failed to update persisted worktree ownership after partial abort cleanup.",
+                  { transferId: input.transferId, cause },
+                ),
+              ),
+              Effect.ignore,
+            );
           }
 
           const [firstFailure, ...restFailures] = cleanupFailures;

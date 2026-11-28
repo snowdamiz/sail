@@ -71,6 +71,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -1967,9 +1968,40 @@ export class SessionTransferCoordinator extends Context.Service<
 >()("t3/boat/SessionTransferCoordinator") {}
 
 interface ActiveTransferEntry {
+  readonly attemptId: number;
   cancelled: boolean;
   committed: boolean;
   fiber: Fiber.Fiber<void, never> | null;
+}
+
+const PRE_SOURCE_PREPARE_PHASES: ReadonlySet<SessionTransferPhase> = new Set([
+  "queued",
+  "waking_target",
+  "pausing_source",
+]);
+
+const PRE_DESTINATION_STAGE_PHASES: ReadonlySet<SessionTransferPhase> = new Set([
+  "queued",
+  "waking_target",
+  "pausing_source",
+  "exporting_source",
+  "preparing_target_project",
+]);
+
+function hasDestinationStagingMetadata(record: SessionTransferRecord): boolean {
+  return (
+    record.destinationThreadId !== null ||
+    record.destinationBranch !== null ||
+    record.destinationWorktreePath !== null
+  );
+}
+
+function mayHaveStagedDestination(record: SessionTransferRecord): boolean {
+  return !PRE_DESTINATION_STAGE_PHASES.has(record.phase) || hasDestinationStagingMetadata(record);
+}
+
+function mayHavePreparedSource(record: SessionTransferRecord): boolean {
+  return !PRE_SOURCE_PREPARE_PHASES.has(record.phase) || hasDestinationStagingMetadata(record);
 }
 
 function collectAvailableModels(
@@ -2231,6 +2263,94 @@ const make = Effect.gen(function* () {
     Deferred.Deferred<SessionTransferRecord, SessionTransferError>
   >();
 
+  // Per-transferId mutex serializing mutating lifecycle operations (start/retry registration,
+  // cancel, and per-transfer startup reconciliation) without ever being acquired by the background
+  // worker fiber (preventing deadlock while cancel interrupts and joins the worker).
+  const transferLocks = new Map<
+    SessionTransferId,
+    { readonly semaphore: Semaphore.Semaphore; activeCount: number }
+  >();
+  let nextTransferAttemptSeq = 0;
+  const latestAttemptByTransfer = new Map<SessionTransferId, number>();
+  const MAX_TRACKED_TRANSFER_ATTEMPTS = 1024;
+
+  const currentTransferAttempt = (transferId: SessionTransferId): number =>
+    latestAttemptByTransfer.get(transferId) ?? 0;
+
+  const bumpTransferAttempt = (transferId: SessionTransferId): number => {
+    nextTransferAttemptSeq += 1;
+    latestAttemptByTransfer.delete(transferId);
+    latestAttemptByTransfer.set(transferId, nextTransferAttemptSeq);
+    if (latestAttemptByTransfer.size > MAX_TRACKED_TRANSFER_ATTEMPTS) {
+      for (const candidateId of latestAttemptByTransfer.keys()) {
+        if (latestAttemptByTransfer.size <= MAX_TRACKED_TRANSFER_ATTEMPTS) break;
+        if (!activeTransfers.has(candidateId) && !transferLocks.has(candidateId)) {
+          latestAttemptByTransfer.delete(candidateId);
+        }
+      }
+    }
+    return nextTransferAttemptSeq;
+  };
+
+  const withTransferLock = <A, E, R>(
+    transferId: SessionTransferId,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E, R> =>
+    Effect.suspend(() => {
+      let lock = transferLocks.get(transferId);
+      if (lock === undefined) {
+        lock = { semaphore: Semaphore.makeUnsafe(1), activeCount: 0 };
+        transferLocks.set(transferId, lock);
+      }
+      lock.activeCount += 1;
+      const lockedEntry = lock;
+      return lockedEntry.semaphore
+        .withPermits(1)(effect)
+        .pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              lockedEntry.activeCount -= 1;
+              if (lockedEntry.activeCount === 0 && transferLocks.get(transferId) === lockedEntry) {
+                transferLocks.delete(transferId);
+              }
+            }),
+          ),
+        );
+    });
+
+  // Defense-in-depth ownership check before invoking source aborts or persisting terminal states:
+  // ensures an obsolete caller can never stomp a newer retry attempt on the same transferId.
+  const verifyAttemptOwnership = Effect.fn("SessionTransferCoordinator.verifyAttemptOwnership")(
+    function* (input: {
+      readonly transferId: SessionTransferId;
+      readonly expectedAttempt: number;
+      readonly expectedPhase: SessionTransferPhase;
+      readonly expectedUpdatedAt: IsoDateTime;
+    }): Effect.fn.Return<SessionTransferRecord | null> {
+      if (
+        currentTransferAttempt(input.transferId) !== input.expectedAttempt ||
+        activeTransfers.has(input.transferId)
+      ) {
+        return null;
+      }
+      const latestOption = yield* repository
+        .getById(input.transferId)
+        .pipe(Effect.orElseSucceed(() => Option.none<SessionTransferRecord>()));
+      if (Option.isNone(latestOption)) {
+        return null;
+      }
+      const latest = latestOption.value;
+      if (
+        isTerminalSessionTransferPhase(latest.phase) ||
+        latest.phase !== input.expectedPhase ||
+        latest.updatedAt !== input.expectedUpdatedAt
+      ) {
+        return null;
+      }
+      return latest;
+    },
+  );
+
   const randomHex = (byteLength: number): Effect.Effect<string> =>
     Option.match(secureRandomOption, {
       onNone: () => Effect.sync(() => bytesToHex(SecureRandom.randomBytesUnsafe(byteLength))),
@@ -2391,6 +2511,7 @@ const make = Effect.gen(function* () {
       SessionTransferRepository.SessionTransferTransitionPhaseInput,
       "transferId" | "phase" | "updatedAt"
     > = {},
+    options?: { readonly onPersistedBeforePublish?: () => void },
   ) {
     const updatedAt = yield* nowIso();
     const sanitizedErrorMessage =
@@ -2416,6 +2537,7 @@ const make = Effect.gen(function* () {
           return toSessionTransferError("internal", error.message, transferId, error);
         }),
       );
+    options?.onPersistedBeforePublish?.();
     yield* publishRecord(updated);
     return updated;
   });
@@ -3744,6 +3866,14 @@ const make = Effect.gen(function* () {
       let stagedDestinationProjectId: ProjectId | null = null;
       let stagedDestinationThreadId: ThreadId | null = null;
 
+      const isCurrentAttempt = (): boolean =>
+        currentTransferAttempt(transferId) === entry.attemptId;
+      const releaseActiveEntry = (): void => {
+        if (activeTransfers.get(transferId) === entry) {
+          activeTransfers.delete(transferId);
+        }
+      };
+
       const checkCancelled = (): Effect.Effect<void, SessionTransferError> =>
         entry.cancelled
           ? Effect.fail(toSessionTransferError("cancelled", "Transfer cancelled.", transferId))
@@ -3758,7 +3888,7 @@ const make = Effect.gen(function* () {
           readonly destinationFailed: boolean;
           readonly sourceFailed: boolean;
         }> {
-          if (commitConfirmed || entry.committed) {
+          if (commitConfirmed || entry.committed || !isCurrentAttempt()) {
             return { allAborted: true, destinationFailed: false, sourceFailed: false };
           }
           let destinationFailed = false;
@@ -3827,6 +3957,9 @@ const make = Effect.gen(function* () {
               error: safeErrorMessage,
             },
           );
+          if (!isCurrentAttempt()) {
+            return;
+          }
           const currentOption = yield* repository
             .getById(transferId)
             .pipe(Effect.orElseSucceed(() => Option.none<SessionTransferRecord>()));
@@ -3837,30 +3970,35 @@ const make = Effect.gen(function* () {
             return;
           }
           const current = currentOption.value;
-          yield* transition(transferId, current.phase, {
-            expectedPhases: [current.phase],
-            phaseDetail: input.cancelled
-              ? `Cancellation awaiting ${failedSides} cleanup...`
-              : `Transfer failed; awaiting ${failedSides} cleanup...`,
-            errorMessage: safeErrorMessage,
-            warnings: [...warnings],
-            ...(direction === "local_to_boat" && boatAccess !== null
-              ? {
-                  ...(current.destinationEnvironmentId === null
-                    ? { destinationEnvironmentId: boatAccess.environmentId }
-                    : {}),
-                  ...(current.destinationMachineId === null
-                    ? { destinationMachineId: toNonEmptyTrimmed(boatAccess.machineId) }
-                    : {}),
-                }
-              : {}),
-            ...(stagedDestinationProjectId !== null && current.destinationProjectId === null
-              ? { destinationProjectId: stagedDestinationProjectId }
-              : {}),
-            ...(stagedDestinationThreadId !== null && current.destinationThreadId === null
-              ? { destinationThreadId: stagedDestinationThreadId }
-              : {}),
-          }).pipe(Effect.ignore);
+          yield* transition(
+            transferId,
+            current.phase,
+            {
+              expectedPhases: [current.phase],
+              phaseDetail: input.cancelled
+                ? `Cancellation awaiting ${failedSides} cleanup...`
+                : `Transfer failed; awaiting ${failedSides} cleanup...`,
+              errorMessage: safeErrorMessage,
+              warnings: [...warnings],
+              ...(direction === "local_to_boat" && boatAccess !== null
+                ? {
+                    ...(current.destinationEnvironmentId === null
+                      ? { destinationEnvironmentId: boatAccess.environmentId }
+                      : {}),
+                    ...(current.destinationMachineId === null
+                      ? { destinationMachineId: toNonEmptyTrimmed(boatAccess.machineId) }
+                      : {}),
+                  }
+                : {}),
+              ...(stagedDestinationProjectId !== null && current.destinationProjectId === null
+                ? { destinationProjectId: stagedDestinationProjectId }
+                : {}),
+              ...(stagedDestinationThreadId !== null && current.destinationThreadId === null
+                ? { destinationThreadId: stagedDestinationThreadId }
+                : {}),
+            },
+            { onPersistedBeforePublish: releaseActiveEntry },
+          ).pipe(Effect.ignore);
         },
       );
 
@@ -3868,6 +4006,9 @@ const make = Effect.gen(function* () {
         function* (
           reason: string,
         ): Effect.fn.Return<"resolved_committed" | "confirmed_not_committed" | "unknown"> {
+          if (!isCurrentAttempt()) {
+            return "unknown";
+          }
           if (!commitAttempted || commitConfirmed) {
             return commitConfirmed ? "resolved_committed" : "confirmed_not_committed";
           }
@@ -4348,12 +4489,17 @@ const make = Effect.gen(function* () {
               : remoteClient.finalizeSource(boatEndpoint!, finalizeInput);
 
             const completedAt = yield* nowIso();
-            yield* transition(transferId, "completed", {
-              phaseDetail: null,
-              errorMessage: null,
-              warnings: [...warnings],
-              completedAt,
-            });
+            yield* transition(
+              transferId,
+              "completed",
+              {
+                phaseDetail: null,
+                errorMessage: null,
+                warnings: [...warnings],
+                completedAt,
+              },
+              { onPersistedBeforePublish: releaseActiveEntry },
+            );
           }),
           Fiber.interrupt(keepAwakeFiber).pipe(Effect.ignore),
         );
@@ -4363,6 +4509,9 @@ const make = Effect.gen(function* () {
         Effect.catch((error) =>
           Effect.uninterruptible(
             Effect.gen(function* () {
+              if (!isCurrentAttempt()) {
+                return;
+              }
               if (commitConfirmed || entry.committed) {
                 // Destination already committed; never transition to terminal `failed` on a
                 // post-commit finalizeSource error (including internal/transient errors). Keep
@@ -4372,11 +4521,16 @@ const make = Effect.gen(function* () {
                   "Post-commit source finalization failed; keeping transfer in finalizing_source",
                   { transferId, code: error.code, error: safeMessage },
                 );
-                yield* transition(transferId, "finalizing_source", {
-                  phaseDetail: "Destination committed; awaiting source archival retry...",
-                  errorMessage: safeMessage,
-                  warnings: [...warnings],
-                }).pipe(Effect.ignore);
+                yield* transition(
+                  transferId,
+                  "finalizing_source",
+                  {
+                    phaseDetail: "Destination committed; awaiting source archival retry...",
+                    errorMessage: safeMessage,
+                    warnings: [...warnings],
+                  },
+                  { onPersistedBeforePublish: releaseActiveEntry },
+                ).pipe(Effect.ignore);
                 return;
               }
 
@@ -4410,19 +4564,27 @@ const make = Effect.gen(function* () {
                 });
                 return;
               }
+              if (!isCurrentAttempt()) {
+                return;
+              }
               const completedAt = yield* nowIso();
-              yield* transition(transferId, cancelled ? "cancelled" : "failed", {
-                phaseDetail: null,
-                errorMessage: cancelled ? null : safeMessage,
-                warnings: [...warnings],
-                completedAt,
-              }).pipe(Effect.ignore);
+              yield* transition(
+                transferId,
+                cancelled ? "cancelled" : "failed",
+                {
+                  phaseDetail: null,
+                  errorMessage: cancelled ? null : safeMessage,
+                  warnings: [...warnings],
+                  completedAt,
+                },
+                { onPersistedBeforePublish: releaseActiveEntry },
+              ).pipe(Effect.ignore);
             }),
           ),
         ),
         Effect.onInterrupt(() =>
           Effect.gen(function* () {
-            if (commitConfirmed || entry.committed) return;
+            if (commitConfirmed || entry.committed || !isCurrentAttempt()) return;
             let destinationAlreadyAborted = false;
             if (commitAttempted) {
               const outcome = yield* handleUncertainCommit("Transfer cancelled");
@@ -4447,18 +4609,26 @@ const make = Effect.gen(function* () {
               });
               return;
             }
+            if (!isCurrentAttempt()) return;
             const completedAt = yield* nowIso();
-            yield* transition(transferId, "cancelled", {
-              phaseDetail: null,
-              errorMessage: null,
-              warnings: [...warnings],
-              completedAt,
-            }).pipe(Effect.ignore);
+            yield* transition(
+              transferId,
+              "cancelled",
+              {
+                phaseDetail: null,
+                errorMessage: null,
+                warnings: [...warnings],
+                completedAt,
+              },
+              { onPersistedBeforePublish: releaseActiveEntry },
+            ).pipe(Effect.ignore);
           }),
         ),
         Effect.ensuring(
           Effect.sync(() => {
-            activeTransfers.delete(transferId);
+            if (activeTransfers.get(transferId) === entry) {
+              activeTransfers.delete(transferId);
+            }
           }),
         ),
       );
@@ -4670,58 +4840,93 @@ const make = Effect.gen(function* () {
       completedAt: null,
     };
 
-    const insertResult = yield* repository
-      .insertIfAbsent(initialRecord)
-      .pipe(
-        Effect.mapError((error) =>
-          error._tag === "SessionTransferConflictError"
-            ? toSessionTransferError("already_in_flight", error.message, transferId, error)
-            : toSessionTransferError("internal", error.message, transferId, error),
-        ),
-      );
-    if (!insertResult.created) {
-      return insertResult.record;
-    }
+    return yield* withTransferLock(
+      transferId,
+      Effect.gen(function* () {
+        const latestExistingById = yield* repository
+          .getById(transferId)
+          .pipe(
+            Effect.mapError((error) =>
+              toSessionTransferError("internal", error.message, transferId, error),
+            ),
+          );
+        if (Option.isSome(latestExistingById)) {
+          return latestExistingById.value;
+        }
 
-    // Synchronous atomic guard so only the single winning creator registers and forks a worker.
-    if (activeTransfers.has(transferId)) {
-      return insertResult.record;
-    }
-    const entry: ActiveTransferEntry = {
-      cancelled: false,
-      committed: false,
-      fiber: null,
-    };
-    activeTransfers.set(transferId, entry);
+        const latestInFlightForThread = yield* repository
+          .findInFlightForThread({
+            sourceEnvironmentId: input.sourceEnvironmentId,
+            sourceThreadId: input.sourceThreadId,
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              toSessionTransferError("internal", error.message, transferId, error),
+            ),
+          );
+        if (Option.isSome(latestInFlightForThread)) {
+          return yield* toSessionTransferError(
+            "already_in_flight",
+            `A session transfer (${latestInFlightForThread.value.transferId}) is already in progress for this thread.`,
+            latestInFlightForThread.value.transferId,
+          );
+        }
 
-    yield* publishRecord(insertResult.record);
+        const insertResult = yield* repository
+          .insertIfAbsent(initialRecord)
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "SessionTransferConflictError"
+                ? toSessionTransferError("already_in_flight", error.message, transferId, error)
+                : toSessionTransferError("internal", error.message, transferId, error),
+            ),
+          );
+        if (!insertResult.created) {
+          return insertResult.record;
+        }
 
-    const fiber = yield* Effect.forkIn(
-      executeTransfer({
-        transferId,
-        direction: input.direction,
-        sourceEnvironmentId: input.sourceEnvironmentId,
-        sourceThreadId: input.sourceThreadId,
-        ...(input.target.kind === "boat"
-          ? {
-              targetMachineId: input.target.machineId,
-              ...(input.target.environmentId !== undefined
-                ? { targetEnvironmentId: input.target.environmentId }
-                : {}),
-            }
-          : {}),
-        targetProjectId: input.targetProjectId ?? null,
-        cloneDestinationPath: input.cloneDestinationPath ?? null,
-        modelSelectionOverride: input.modelSelectionOverride ?? null,
-        autoResume: input.autoResume ?? true,
-        confirmedRunningPause: input.confirmedRunningPause === true,
-        entry,
+        // Synchronous atomic guard so only the single winning creator registers and forks a worker.
+        if (activeTransfers.has(transferId)) {
+          return insertResult.record;
+        }
+        const entry: ActiveTransferEntry = {
+          attemptId: bumpTransferAttempt(transferId),
+          cancelled: false,
+          committed: false,
+          fiber: null,
+        };
+        activeTransfers.set(transferId, entry);
+
+        yield* publishRecord(insertResult.record);
+
+        const fiber = yield* Effect.forkIn(
+          executeTransfer({
+            transferId,
+            direction: input.direction,
+            sourceEnvironmentId: input.sourceEnvironmentId,
+            sourceThreadId: input.sourceThreadId,
+            ...(input.target.kind === "boat"
+              ? {
+                  targetMachineId: input.target.machineId,
+                  ...(input.target.environmentId !== undefined
+                    ? { targetEnvironmentId: input.target.environmentId }
+                    : {}),
+                }
+              : {}),
+            targetProjectId: input.targetProjectId ?? null,
+            cloneDestinationPath: input.cloneDestinationPath ?? null,
+            modelSelectionOverride: input.modelSelectionOverride ?? null,
+            autoResume: input.autoResume ?? true,
+            confirmedRunningPause: input.confirmedRunningPause === true,
+            entry,
+          }),
+          serviceScope,
+        );
+        entry.fiber = fiber;
+
+        return insertResult.record;
       }),
-      serviceScope,
     );
-    entry.fiber = fiber;
-
-    return insertResult.record;
   });
 
   const start: SessionTransferCoordinatorShape["start"] = Effect.fn(
@@ -4766,300 +4971,376 @@ const make = Effect.gen(function* () {
   const cancel: SessionTransferCoordinatorShape["cancel"] = Effect.fn(
     "SessionTransferCoordinator.cancel",
   )(function* (input) {
-    const existingOption = yield* repository
-      .getById(input.transferId)
-      .pipe(
-        Effect.mapError((error) =>
-          toSessionTransferError("internal", error.message, input.transferId, error),
-        ),
-      );
-    if (Option.isNone(existingOption)) {
-      return yield* toSessionTransferError(
-        "not_found",
-        `Session transfer ${input.transferId} does not exist.`,
-        input.transferId,
-      );
-    }
-    const existing = existingOption.value;
-    if (existing.phase === "cancelled") {
-      return existing;
-    }
-    if (existing.phase === "completed" || existing.phase === "finalizing_source") {
-      return yield* toSessionTransferError(
-        "invalid_phase",
-        `Cannot cancel session transfer ${input.transferId} in phase ${existing.phase}.`,
-        input.transferId,
-      );
-    }
-    if (isTerminalSessionTransferPhase(existing.phase)) {
-      return existing;
-    }
+    return yield* withTransferLock(
+      input.transferId,
+      Effect.gen(function* () {
+        const existingOption = yield* repository
+          .getById(input.transferId)
+          .pipe(
+            Effect.mapError((error) =>
+              toSessionTransferError("internal", error.message, input.transferId, error),
+            ),
+          );
+        if (Option.isNone(existingOption)) {
+          return yield* toSessionTransferError(
+            "not_found",
+            `Session transfer ${input.transferId} does not exist.`,
+            input.transferId,
+          );
+        }
+        const existing = existingOption.value;
+        if (existing.phase === "cancelled") {
+          return existing;
+        }
+        if (existing.phase === "completed" || existing.phase === "finalizing_source") {
+          return yield* toSessionTransferError(
+            "invalid_phase",
+            `Cannot cancel session transfer ${input.transferId} in phase ${existing.phase}.`,
+            input.transferId,
+          );
+        }
+        if (isTerminalSessionTransferPhase(existing.phase)) {
+          return existing;
+        }
 
-    let current = existing;
-    const active = activeTransfers.get(input.transferId);
-    if (active) {
-      if (active.committed) {
-        return yield* toSessionTransferError(
-          "invalid_phase",
-          `Session transfer ${input.transferId} has already committed and cannot be cancelled.`,
-          input.transferId,
-        );
-      }
-      active.cancelled = true;
-      if (active.fiber) {
-        yield* Fiber.interrupt(active.fiber).pipe(
-          Effect.timeout(Duration.seconds(5)),
-          Effect.ignore,
-        );
-      }
-      const afterAbort = yield* repository
-        .getById(input.transferId)
-        .pipe(Effect.orElseSucceed(() => Option.none<SessionTransferRecord>()));
-      if (Option.isSome(afterAbort)) {
-        current = afterAbort.value;
-      }
-      if (current.phase === "cancelled" || current.phase === "failed") {
-        return current;
-      }
-      if (
-        active.committed ||
-        current.phase === "completed" ||
-        current.phase === "finalizing_source"
-      ) {
-        return yield* toSessionTransferError(
-          "invalid_phase",
-          `Cannot cancel session transfer ${input.transferId} in phase ${current.phase}.`,
-          input.transferId,
-        );
-      }
-    }
+        let current = existing;
+        const active = activeTransfers.get(input.transferId);
+        if (active) {
+          if (active.committed) {
+            return yield* toSessionTransferError(
+              "invalid_phase",
+              `Session transfer ${input.transferId} has already committed and cannot be cancelled.`,
+              input.transferId,
+            );
+          }
+          active.cancelled = true;
+          if (active.fiber) {
+            yield* Fiber.interrupt(active.fiber).pipe(
+              Effect.timeout(Duration.seconds(5)),
+              Effect.ignore,
+            );
+          }
+          const afterAbort = yield* repository
+            .getById(input.transferId)
+            .pipe(Effect.orElseSucceed(() => Option.none<SessionTransferRecord>()));
+          if (Option.isSome(afterAbort)) {
+            current = afterAbort.value;
+          }
+          if (current.phase === "cancelled" || current.phase === "failed") {
+            return current;
+          }
+          if (
+            active.committed ||
+            current.phase === "completed" ||
+            current.phase === "finalizing_source"
+          ) {
+            return yield* toSessionTransferError(
+              "invalid_phase",
+              `Cannot cancel session transfer ${input.transferId} in phase ${current.phase}.`,
+              input.transferId,
+            );
+          }
+          if (activeTransfers.get(input.transferId) === active) {
+            return yield* toSessionTransferError(
+              "target_unavailable",
+              `Session transfer ${input.transferId} worker is still winding down; retry cancellation once cleanup settles.`,
+              input.transferId,
+            );
+          }
+        }
 
-    if (current.phase === "committing_target" || current.phase === "resuming_target") {
-      const resolution = yield* resolveUncertainDestinationAndAbort({
-        transferId: current.transferId,
-        direction: current.direction,
-        destinationThreadId: current.destinationThreadId,
-        destinationMachineId: current.destinationMachineId,
-        destinationEnvironmentId: current.destinationEnvironmentId,
-        reason: "Cancelled by user",
-      });
-      if (resolution === "committed") {
-        const localEnv = yield* serverEnvironment.getDescriptor;
-        const destEnvId =
-          current.destinationEnvironmentId ??
-          (current.direction === "boat_to_local" ? localEnv.environmentId : null);
-        if (
-          destEnvId !== null &&
-          current.destinationProjectId !== null &&
-          current.destinationThreadId !== null
-        ) {
-          yield* finalizeSourceAndComplete({
+        const observedAttempt = currentTransferAttempt(input.transferId);
+        const observedPhase = current.phase;
+        const observedUpdatedAt = current.updatedAt;
+
+        const assertCancelOwnership = Effect.fn(
+          "SessionTransferCoordinator.cancel.assertOwnership",
+        )(function* (): Effect.fn.Return<
+          | { readonly kind: "owned" }
+          | { readonly kind: "already_terminal"; readonly record: SessionTransferRecord },
+          SessionTransferError
+        > {
+          const verified = yield* verifyAttemptOwnership({
+            transferId: input.transferId,
+            expectedAttempt: observedAttempt,
+            expectedPhase: observedPhase,
+            expectedUpdatedAt: observedUpdatedAt,
+          });
+          if (verified !== null) {
+            return { kind: "owned" as const };
+          }
+          const latestOption = yield* repository
+            .getById(input.transferId)
+            .pipe(Effect.orElseSucceed(() => Option.none<SessionTransferRecord>()));
+          if (
+            Option.isSome(latestOption) &&
+            (latestOption.value.phase === "cancelled" || latestOption.value.phase === "failed")
+          ) {
+            return { kind: "already_terminal" as const, record: latestOption.value };
+          }
+          return yield* toSessionTransferError(
+            "invalid_phase",
+            `Session transfer ${input.transferId} state changed concurrently during cancellation.`,
+            input.transferId,
+          );
+        });
+
+        if (current.phase === "committing_target" || current.phase === "resuming_target") {
+          const resolution = yield* resolveUncertainDestinationAndAbort({
+            transferId: current.transferId,
+            direction: current.direction,
+            destinationThreadId: current.destinationThreadId,
+            destinationMachineId: current.destinationMachineId,
+            destinationEnvironmentId: current.destinationEnvironmentId,
+            reason: "Cancelled by user",
+          });
+          if (resolution === "committed") {
+            const localEnv = yield* serverEnvironment.getDescriptor;
+            const destEnvId =
+              current.destinationEnvironmentId ??
+              (current.direction === "boat_to_local" ? localEnv.environmentId : null);
+            if (
+              destEnvId !== null &&
+              current.destinationProjectId !== null &&
+              current.destinationThreadId !== null
+            ) {
+              yield* finalizeSourceAndComplete({
+                transferId: current.transferId,
+                direction: current.direction,
+                sourceEnvironmentId: current.sourceEnvironmentId,
+                sourceMachineId: current.sourceMachineId,
+                sourceThreadId: current.sourceThreadId,
+                destinationEnvironmentId: destEnvId,
+                destinationEnvironmentName:
+                  current.destinationEnvironmentName ??
+                  (current.direction === "boat_to_local"
+                    ? toNonEmptyTrimmed(localEnv.label)
+                    : null),
+                destinationMachineId: current.destinationMachineId,
+                destinationProjectId: current.destinationProjectId,
+                destinationThreadId: current.destinationThreadId,
+                currentPhase: current.phase,
+              });
+            }
+            return yield* toSessionTransferError(
+              "invalid_phase",
+              `Session transfer ${input.transferId} has already committed and cannot be cancelled.`,
+              input.transferId,
+            );
+          }
+          if (resolution === "unknown") {
+            return yield* toSessionTransferError(
+              "invalid_phase",
+              `Cannot cancel session transfer ${input.transferId} while commit outcome is uncertain (phase ${current.phase}).`,
+              input.transferId,
+            );
+          }
+          if (resolution === "abort_failed") {
+            return yield* toSessionTransferError(
+              "target_unavailable",
+              `Failed to abort destination for session transfer ${input.transferId}; cannot safely cancel from phase ${current.phase}.`,
+              input.transferId,
+            );
+          }
+          // resolution === "confirmed_not_committed": destination already aborted & verified uncommitted.
+          const ownershipBeforeSource = yield* assertCancelOwnership();
+          if (ownershipBeforeSource.kind === "already_terminal") {
+            return ownershipBeforeSource.record;
+          }
+          const sourceAbortOutcome = yield* abortSourceSide({
             transferId: current.transferId,
             direction: current.direction,
             sourceEnvironmentId: current.sourceEnvironmentId,
             sourceMachineId: current.sourceMachineId,
             sourceThreadId: current.sourceThreadId,
-            destinationEnvironmentId: destEnvId,
-            destinationEnvironmentName:
-              current.destinationEnvironmentName ??
-              (current.direction === "boat_to_local" ? toNonEmptyTrimmed(localEnv.label) : null),
-            destinationMachineId: current.destinationMachineId,
-            destinationProjectId: current.destinationProjectId,
-            destinationThreadId: current.destinationThreadId,
-            currentPhase: current.phase,
+            reason: "Cancelled by user",
           });
+          if (sourceAbortOutcome === "failed") {
+            return yield* toSessionTransferError(
+              "target_unavailable",
+              `Failed to abort source for session transfer ${input.transferId}; transfer remains non-terminal so cleanup can be retried.`,
+              input.transferId,
+            );
+          }
+        } else {
+          // Pre-commit phase: abort only endpoints that could have been contacted based on the
+          // durable phase boundary and destination staging metadata. Never let an unused/uncontacted
+          // endpoint block cleanup, while still requiring abort once staging or source export began.
+          const destAbortOutcome = mayHaveStagedDestination(current)
+            ? yield* abortDestinationSide({
+                transferId: current.transferId,
+                direction: current.direction,
+                destinationEnvironmentId: current.destinationEnvironmentId,
+                destinationMachineId: current.destinationMachineId,
+                destinationThreadId: current.destinationThreadId,
+                reason: "Cancelled by user",
+              })
+            : ("not_needed" as const);
+          const ownershipBeforeSource = yield* assertCancelOwnership();
+          if (ownershipBeforeSource.kind === "already_terminal") {
+            return ownershipBeforeSource.record;
+          }
+          const sourceAbortOutcome = mayHavePreparedSource(current)
+            ? yield* abortSourceSide({
+                transferId: current.transferId,
+                direction: current.direction,
+                sourceEnvironmentId: current.sourceEnvironmentId,
+                sourceMachineId: current.sourceMachineId,
+                sourceThreadId: current.sourceThreadId,
+                reason: "Cancelled by user",
+              })
+            : ("aborted" as const);
+          if (destAbortOutcome === "failed" || sourceAbortOutcome === "failed") {
+            const failedSides = [
+              ...(destAbortOutcome === "failed" ? ["destination"] : []),
+              ...(sourceAbortOutcome === "failed" ? ["source"] : []),
+            ].join(" and ");
+            return yield* toSessionTransferError(
+              "target_unavailable",
+              `Failed to abort ${failedSides} for session transfer ${input.transferId}; transfer remains non-terminal so cleanup can be retried.`,
+              input.transferId,
+            );
+          }
         }
-        return yield* toSessionTransferError(
-          "invalid_phase",
-          `Session transfer ${input.transferId} has already committed and cannot be cancelled.`,
-          input.transferId,
-        );
-      }
-      if (resolution === "unknown") {
-        return yield* toSessionTransferError(
-          "invalid_phase",
-          `Cannot cancel session transfer ${input.transferId} while commit outcome is uncertain (phase ${current.phase}).`,
-          input.transferId,
-        );
-      }
-      if (resolution === "abort_failed") {
-        return yield* toSessionTransferError(
-          "target_unavailable",
-          `Failed to abort destination for session transfer ${input.transferId}; cannot safely cancel from phase ${current.phase}.`,
-          input.transferId,
-        );
-      }
-      // resolution === "confirmed_not_committed": destination already aborted & verified uncommitted.
-      const sourceAbortOutcome = yield* abortSourceSide({
-        transferId: current.transferId,
-        direction: current.direction,
-        sourceEnvironmentId: current.sourceEnvironmentId,
-        sourceMachineId: current.sourceMachineId,
-        sourceThreadId: current.sourceThreadId,
-        reason: "Cancelled by user",
-      });
-      if (sourceAbortOutcome === "failed") {
-        return yield* toSessionTransferError(
-          "target_unavailable",
-          `Failed to abort source for session transfer ${input.transferId}; transfer remains non-terminal so cleanup can be retried.`,
-          input.transferId,
-        );
-      }
-    } else {
-      // Pre-commit phase: abort both destination and source sides. Only transition to terminal
-      // `cancelled` once both sides confirm cleanup so unreachable endpoints remain non-terminal
-      // for a later cancel retry or startup reconciliation.
-      const destAbortOutcome = yield* abortDestinationSide({
-        transferId: current.transferId,
-        direction: current.direction,
-        destinationEnvironmentId: current.destinationEnvironmentId,
-        destinationMachineId: current.destinationMachineId,
-        destinationThreadId: current.destinationThreadId,
-        reason: "Cancelled by user",
-      });
-      const sourceAbortOutcome = yield* abortSourceSide({
-        transferId: current.transferId,
-        direction: current.direction,
-        sourceEnvironmentId: current.sourceEnvironmentId,
-        sourceMachineId: current.sourceMachineId,
-        sourceThreadId: current.sourceThreadId,
-        reason: "Cancelled by user",
-      });
-      if (destAbortOutcome === "failed" || sourceAbortOutcome === "failed") {
-        const failedSides = [
-          ...(destAbortOutcome === "failed" ? ["destination"] : []),
-          ...(sourceAbortOutcome === "failed" ? ["source"] : []),
-        ].join(" and ");
-        return yield* toSessionTransferError(
-          "target_unavailable",
-          `Failed to abort ${failedSides} for session transfer ${input.transferId}; transfer remains non-terminal so cleanup can be retried.`,
-          input.transferId,
-        );
-      }
-    }
 
-    const completedAt = yield* nowIso();
-    return yield* transition(input.transferId, "cancelled", {
-      phaseDetail: null,
-      errorMessage: null,
-      completedAt,
-    });
+        const ownershipBeforePersist = yield* assertCancelOwnership();
+        if (ownershipBeforePersist.kind === "already_terminal") {
+          return ownershipBeforePersist.record;
+        }
+        const completedAt = yield* nowIso();
+        return yield* transition(input.transferId, "cancelled", {
+          expectedPhases: [observedPhase],
+          phaseDetail: null,
+          errorMessage: null,
+          completedAt,
+        });
+      }),
+    );
   });
 
   const retry: SessionTransferCoordinatorShape["retry"] = Effect.fn(
     "SessionTransferCoordinator.retry",
   )(function* (input) {
-    if (activeTransfers.has(input.transferId) || startingTransfers.has(input.transferId)) {
-      return yield* toSessionTransferError(
-        "already_in_flight",
-        `Session transfer ${input.transferId} is already running.`,
-        input.transferId,
-      );
-    }
+    return yield* withTransferLock(
+      input.transferId,
+      Effect.gen(function* () {
+        if (activeTransfers.has(input.transferId) || startingTransfers.has(input.transferId)) {
+          return yield* toSessionTransferError(
+            "already_in_flight",
+            `Session transfer ${input.transferId} is already running.`,
+            input.transferId,
+          );
+        }
 
-    const existingOption = yield* repository
-      .getById(input.transferId)
-      .pipe(
-        Effect.mapError((error) =>
-          toSessionTransferError("internal", error.message, input.transferId, error),
-        ),
-      );
-    if (Option.isNone(existingOption)) {
-      return yield* toSessionTransferError(
-        "not_found",
-        `Session transfer ${input.transferId} does not exist.`,
-        input.transferId,
-      );
-    }
-    const existing = existingOption.value;
-    if (existing.phase !== "failed" && existing.phase !== "cancelled") {
-      return yield* toSessionTransferError(
-        "invalid_phase",
-        `Only failed or cancelled transfers can be retried (current phase: ${existing.phase}).`,
-        input.transferId,
-      );
-    }
+        const existingOption = yield* repository
+          .getById(input.transferId)
+          .pipe(
+            Effect.mapError((error) =>
+              toSessionTransferError("internal", error.message, input.transferId, error),
+            ),
+          );
+        if (Option.isNone(existingOption)) {
+          return yield* toSessionTransferError(
+            "not_found",
+            `Session transfer ${input.transferId} does not exist.`,
+            input.transferId,
+          );
+        }
+        const existing = existingOption.value;
+        if (existing.phase !== "failed" && existing.phase !== "cancelled") {
+          return yield* toSessionTransferError(
+            "invalid_phase",
+            `Only failed or cancelled transfers can be retried (current phase: ${existing.phase}).`,
+            input.transferId,
+          );
+        }
 
-    const inFlight = yield* repository
-      .findInFlightForThread({
-        sourceEnvironmentId: existing.sourceEnvironmentId,
-        sourceThreadId: existing.sourceThreadId,
-      })
-      .pipe(
-        Effect.mapError((error) =>
-          toSessionTransferError("internal", error.message, input.transferId, error),
-        ),
-      );
-    if (Option.isSome(inFlight)) {
-      return yield* toSessionTransferError(
-        "already_in_flight",
-        `Another transfer (${inFlight.value.transferId}) is already in progress for this thread.`,
-        inFlight.value.transferId,
-      );
-    }
+        const inFlight = yield* repository
+          .findInFlightForThread({
+            sourceEnvironmentId: existing.sourceEnvironmentId,
+            sourceThreadId: existing.sourceThreadId,
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              toSessionTransferError("internal", error.message, input.transferId, error),
+            ),
+          );
+        if (Option.isSome(inFlight)) {
+          return yield* toSessionTransferError(
+            "already_in_flight",
+            `Another transfer (${inFlight.value.transferId}) is already in progress for this thread.`,
+            inFlight.value.transferId,
+          );
+        }
 
-    const nextTargetProjectId = input.targetProjectId ?? existing.destinationProjectId;
-    const nextModelOverride =
-      input.modelSelectionOverride !== undefined
-        ? input.modelSelectionOverride
-        : existing.modelSelectionOverride;
-    const nextCloneDestinationPath =
-      input.cloneDestinationPath !== undefined
-        ? input.cloneDestinationPath
-        : existing.cloneDestinationPath;
-    const nextAutoResume = input.autoResume ?? existing.autoResume;
+        const nextTargetProjectId = input.targetProjectId ?? existing.destinationProjectId;
+        const nextModelOverride =
+          input.modelSelectionOverride !== undefined
+            ? input.modelSelectionOverride
+            : existing.modelSelectionOverride;
+        const nextCloneDestinationPath =
+          input.cloneDestinationPath !== undefined
+            ? input.cloneDestinationPath
+            : existing.cloneDestinationPath;
+        const nextAutoResume = input.autoResume ?? existing.autoResume;
 
-    const reset = yield* transition(input.transferId, "queued", {
-      expectedPhases: ["failed", "cancelled"],
-      phaseDetail: "Retrying transfer...",
-      errorMessage: null,
-      completedAt: null,
-      destinationProjectId: nextTargetProjectId,
-      modelSelectionOverride: nextModelOverride,
-      cloneDestinationPath: nextCloneDestinationPath,
-      autoResume: nextAutoResume,
-      warnings: [],
-    });
+        const reset = yield* transition(input.transferId, "queued", {
+          expectedPhases: ["failed", "cancelled"],
+          phaseDetail: "Retrying transfer...",
+          errorMessage: null,
+          completedAt: null,
+          destinationProjectId: nextTargetProjectId,
+          destinationThreadId: null,
+          destinationBranch: null,
+          destinationWorktreePath: null,
+          modelSelectionOverride: nextModelOverride,
+          cloneDestinationPath: nextCloneDestinationPath,
+          autoResume: nextAutoResume,
+          warnings: [],
+        });
 
-    if (activeTransfers.has(input.transferId)) {
-      return reset;
-    }
+        if (activeTransfers.has(input.transferId)) {
+          return reset;
+        }
 
-    const entry: ActiveTransferEntry = {
-      cancelled: false,
-      committed: false,
-      fiber: null,
-    };
-    activeTransfers.set(input.transferId, entry);
+        const entry: ActiveTransferEntry = {
+          attemptId: bumpTransferAttempt(input.transferId),
+          cancelled: false,
+          committed: false,
+          fiber: null,
+        };
+        activeTransfers.set(input.transferId, entry);
 
-    const fiber = yield* Effect.forkIn(
-      executeTransfer({
-        transferId: input.transferId,
-        direction: existing.direction,
-        sourceEnvironmentId: existing.sourceEnvironmentId,
-        sourceThreadId: existing.sourceThreadId,
-        ...(existing.direction === "local_to_boat"
-          ? {
-              ...(existing.destinationMachineId !== null
-                ? { targetMachineId: existing.destinationMachineId }
-                : {}),
-              ...(existing.destinationEnvironmentId !== null
-                ? { targetEnvironmentId: existing.destinationEnvironmentId }
-                : {}),
-            }
-          : {}),
-        targetProjectId: nextTargetProjectId,
-        cloneDestinationPath: nextCloneDestinationPath,
-        modelSelectionOverride: nextModelOverride,
-        autoResume: nextAutoResume,
-        confirmedRunningPause: existing.sourceWasRunning || existing.hadPendingRuntimeRequest,
-        entry,
+        const fiber = yield* Effect.forkIn(
+          executeTransfer({
+            transferId: input.transferId,
+            direction: existing.direction,
+            sourceEnvironmentId: existing.sourceEnvironmentId,
+            sourceThreadId: existing.sourceThreadId,
+            ...(existing.direction === "local_to_boat"
+              ? {
+                  ...(existing.destinationMachineId !== null
+                    ? { targetMachineId: existing.destinationMachineId }
+                    : {}),
+                  ...(existing.destinationEnvironmentId !== null
+                    ? { targetEnvironmentId: existing.destinationEnvironmentId }
+                    : {}),
+                }
+              : {}),
+            targetProjectId: nextTargetProjectId,
+            cloneDestinationPath: nextCloneDestinationPath,
+            modelSelectionOverride: nextModelOverride,
+            autoResume: nextAutoResume,
+            confirmedRunningPause: existing.sourceWasRunning || existing.hadPendingRuntimeRequest,
+            entry,
+          }),
+          serviceScope,
+        );
+        entry.fiber = fiber;
+
+        return reset;
       }),
-      serviceScope,
     );
-    entry.fiber = fiber;
-
-    return reset;
   });
 
   const list: SessionTransferCoordinatorShape["list"] = Effect.fn(
@@ -5096,129 +5377,195 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    for (const record of active) {
-      if (
-        record.phase === "finalizing_source" ||
-        record.phase === "committing_target" ||
-        record.phase === "resuming_target"
-      ) {
-        const resolution = yield* resolveUncertainDestinationAndAbort({
-          transferId: record.transferId,
-          direction: record.direction,
-          destinationThreadId: record.destinationThreadId,
-          destinationMachineId: record.destinationMachineId,
-          destinationEnvironmentId: record.destinationEnvironmentId,
-          reason: "Interrupted by server restart",
-        });
-
-        if (resolution === "committed") {
-          const localEnv = yield* serverEnvironment.getDescriptor;
-          const destEnvId =
-            record.destinationEnvironmentId ??
-            (record.direction === "boat_to_local" ? localEnv.environmentId : null);
+    for (const initialRecord of active) {
+      yield* withTransferLock(
+        initialRecord.transferId,
+        Effect.gen(function* () {
+          if (activeTransfers.has(initialRecord.transferId)) {
+            return;
+          }
+          const latestOption = yield* repository
+            .getById(initialRecord.transferId)
+            .pipe(Effect.orElseSucceed(() => Option.none<SessionTransferRecord>()));
           if (
-            destEnvId !== null &&
-            record.destinationProjectId !== null &&
-            record.destinationThreadId !== null
+            Option.isNone(latestOption) ||
+            isTerminalSessionTransferPhase(latestOption.value.phase)
           ) {
-            yield* finalizeSourceAndComplete({
+            return;
+          }
+          const record = latestOption.value;
+          const observedAttempt = currentTransferAttempt(record.transferId);
+          const observedPhase = record.phase;
+          const observedUpdatedAt = record.updatedAt;
+
+          if (
+            record.phase === "finalizing_source" ||
+            record.phase === "committing_target" ||
+            record.phase === "resuming_target"
+          ) {
+            const resolution = yield* resolveUncertainDestinationAndAbort({
+              transferId: record.transferId,
+              direction: record.direction,
+              destinationThreadId: record.destinationThreadId,
+              destinationMachineId: record.destinationMachineId,
+              destinationEnvironmentId: record.destinationEnvironmentId,
+              reason: "Interrupted by server restart",
+            });
+
+            if (resolution === "committed") {
+              const localEnv = yield* serverEnvironment.getDescriptor;
+              const destEnvId =
+                record.destinationEnvironmentId ??
+                (record.direction === "boat_to_local" ? localEnv.environmentId : null);
+              if (
+                destEnvId !== null &&
+                record.destinationProjectId !== null &&
+                record.destinationThreadId !== null
+              ) {
+                yield* finalizeSourceAndComplete({
+                  transferId: record.transferId,
+                  direction: record.direction,
+                  sourceEnvironmentId: record.sourceEnvironmentId,
+                  sourceMachineId: record.sourceMachineId,
+                  sourceThreadId: record.sourceThreadId,
+                  destinationEnvironmentId: destEnvId,
+                  destinationEnvironmentName:
+                    record.destinationEnvironmentName ??
+                    (record.direction === "boat_to_local"
+                      ? toNonEmptyTrimmed(localEnv.label)
+                      : null),
+                  destinationMachineId: record.destinationMachineId,
+                  destinationProjectId: record.destinationProjectId,
+                  destinationThreadId: record.destinationThreadId,
+                  currentPhase: record.phase,
+                });
+                return;
+              }
+              yield* Effect.logWarning(
+                "Destination commit confirmed on startup but destination metadata is incomplete; deferring reconciliation",
+                { transferId: record.transferId, phase: record.phase },
+              );
+              return;
+            }
+
+            if (resolution === "unknown" || resolution === "abort_failed") {
+              yield* Effect.logWarning(
+                "Destination commit/abort outcome could not be verified on startup; deferring reconciliation",
+                { transferId: record.transferId, phase: record.phase, resolution },
+              );
+              return;
+            }
+
+            // resolution === "confirmed_not_committed": destination abort succeeded and post-abort
+            // verification confirmed no commit. Now abort source side before marking terminally failed.
+            const stillOwnedBeforeSource = yield* verifyAttemptOwnership({
+              transferId: record.transferId,
+              expectedAttempt: observedAttempt,
+              expectedPhase: observedPhase,
+              expectedUpdatedAt: observedUpdatedAt,
+            });
+            if (stillOwnedBeforeSource === null) {
+              return;
+            }
+            const sourceAbortOutcome = yield* abortSourceSide({
               transferId: record.transferId,
               direction: record.direction,
               sourceEnvironmentId: record.sourceEnvironmentId,
               sourceMachineId: record.sourceMachineId,
               sourceThreadId: record.sourceThreadId,
-              destinationEnvironmentId: destEnvId,
-              destinationEnvironmentName:
-                record.destinationEnvironmentName ??
-                (record.direction === "boat_to_local" ? toNonEmptyTrimmed(localEnv.label) : null),
-              destinationMachineId: record.destinationMachineId,
-              destinationProjectId: record.destinationProjectId,
-              destinationThreadId: record.destinationThreadId,
-              currentPhase: record.phase,
+              reason: "Interrupted by server restart",
             });
-            continue;
+            if (sourceAbortOutcome === "failed") {
+              yield* Effect.logWarning(
+                "Startup source abort incomplete; keeping transfer non-terminal for retry",
+                { transferId: record.transferId, phase: record.phase, sourceAbortOutcome },
+              );
+              return;
+            }
+
+            const stillOwnedBeforePersist = yield* verifyAttemptOwnership({
+              transferId: record.transferId,
+              expectedAttempt: observedAttempt,
+              expectedPhase: observedPhase,
+              expectedUpdatedAt: observedUpdatedAt,
+            });
+            if (stillOwnedBeforePersist === null) {
+              return;
+            }
+            const completedAt = yield* nowIso();
+            yield* transition(record.transferId, "failed", {
+              expectedPhases: [observedPhase],
+              phaseDetail: null,
+              errorMessage: "Interrupted by server restart",
+              completedAt,
+            }).pipe(Effect.ignore);
+            return;
           }
-          yield* Effect.logWarning(
-            "Destination commit confirmed on startup but destination metadata is incomplete; deferring reconciliation",
-            { transferId: record.transferId, phase: record.phase },
-          );
-          continue;
-        }
 
-        if (resolution === "unknown" || resolution === "abort_failed") {
-          yield* Effect.logWarning(
-            "Destination commit/abort outcome could not be verified on startup; deferring reconciliation",
-            { transferId: record.transferId, phase: record.phase, resolution },
-          );
-          continue;
-        }
-
-        // resolution === "confirmed_not_committed": destination abort succeeded and post-abort
-        // verification confirmed no commit. Now abort source side before marking terminally failed.
-        const sourceAbortOutcome = yield* abortSourceSide({
-          transferId: record.transferId,
-          direction: record.direction,
-          sourceEnvironmentId: record.sourceEnvironmentId,
-          sourceMachineId: record.sourceMachineId,
-          sourceThreadId: record.sourceThreadId,
-          reason: "Interrupted by server restart",
-        });
-        if (sourceAbortOutcome === "failed") {
-          yield* Effect.logWarning(
-            "Startup source abort incomplete; keeping transfer non-terminal for retry",
-            { transferId: record.transferId, phase: record.phase, sourceAbortOutcome },
-          );
-          continue;
-        }
-
-        const completedAt = yield* nowIso();
-        yield* transition(record.transferId, "failed", {
-          phaseDetail: null,
-          errorMessage: "Interrupted by server restart",
-          completedAt,
-        }).pipe(Effect.ignore);
-        continue;
-      }
-
-      // Crashed before commit: abort BOTH destination and source sides.
-      // Only mark terminally failed once both sides have confirmed cleanup or not-found/gone so
-      // temporarily unreachable Boats are retried on subsequent reconciliation.
-      const destAbortOutcome = yield* abortDestinationSide({
-        transferId: record.transferId,
-        direction: record.direction,
-        destinationEnvironmentId: record.destinationEnvironmentId,
-        destinationMachineId: record.destinationMachineId,
-        destinationThreadId: record.destinationThreadId,
-        reason: "Interrupted by server restart",
-      });
-      const sourceAbortOutcome = yield* abortSourceSide({
-        transferId: record.transferId,
-        direction: record.direction,
-        sourceEnvironmentId: record.sourceEnvironmentId,
-        sourceMachineId: record.sourceMachineId,
-        sourceThreadId: record.sourceThreadId,
-        reason: "Interrupted by server restart",
-      });
-
-      if (destAbortOutcome === "failed" || sourceAbortOutcome === "failed") {
-        yield* Effect.logWarning(
-          "Startup pre-commit abort incomplete; keeping transfer non-terminal for retry",
-          {
+          // Crashed before commit: abort only endpoints that could have been contacted based on
+          // durable phase and destination staging metadata. Only mark terminally failed once every
+          // required side confirms cleanup so temporarily unreachable Boats are retried later.
+          const destAbortOutcome = mayHaveStagedDestination(record)
+            ? yield* abortDestinationSide({
+                transferId: record.transferId,
+                direction: record.direction,
+                destinationEnvironmentId: record.destinationEnvironmentId,
+                destinationMachineId: record.destinationMachineId,
+                destinationThreadId: record.destinationThreadId,
+                reason: "Interrupted by server restart",
+              })
+            : ("not_needed" as const);
+          const stillOwnedBeforeSource = yield* verifyAttemptOwnership({
             transferId: record.transferId,
-            phase: record.phase,
-            destAbortOutcome,
-            sourceAbortOutcome,
-          },
-        );
-        continue;
-      }
+            expectedAttempt: observedAttempt,
+            expectedPhase: observedPhase,
+            expectedUpdatedAt: observedUpdatedAt,
+          });
+          if (stillOwnedBeforeSource === null) {
+            return;
+          }
+          const sourceAbortOutcome = mayHavePreparedSource(record)
+            ? yield* abortSourceSide({
+                transferId: record.transferId,
+                direction: record.direction,
+                sourceEnvironmentId: record.sourceEnvironmentId,
+                sourceMachineId: record.sourceMachineId,
+                sourceThreadId: record.sourceThreadId,
+                reason: "Interrupted by server restart",
+              })
+            : ("aborted" as const);
 
-      const completedAt = yield* nowIso();
-      yield* transition(record.transferId, "failed", {
-        phaseDetail: null,
-        errorMessage: "Interrupted by server restart",
-        completedAt,
-      }).pipe(Effect.ignore);
+          if (destAbortOutcome === "failed" || sourceAbortOutcome === "failed") {
+            yield* Effect.logWarning(
+              "Startup pre-commit abort incomplete; keeping transfer non-terminal for retry",
+              {
+                transferId: record.transferId,
+                phase: record.phase,
+                destAbortOutcome,
+                sourceAbortOutcome,
+              },
+            );
+            return;
+          }
+
+          const stillOwnedBeforePersist = yield* verifyAttemptOwnership({
+            transferId: record.transferId,
+            expectedAttempt: observedAttempt,
+            expectedPhase: observedPhase,
+            expectedUpdatedAt: observedUpdatedAt,
+          });
+          if (stillOwnedBeforePersist === null) {
+            return;
+          }
+          const completedAt = yield* nowIso();
+          yield* transition(record.transferId, "failed", {
+            expectedPhases: [observedPhase],
+            phaseDetail: null,
+            errorMessage: "Interrupted by server restart",
+            completedAt,
+          }).pipe(Effect.ignore);
+        }),
+      );
     }
   });
 

@@ -140,6 +140,15 @@ export function resolveImportBundlePath(
   return dir === null ? null : path.join(dir, "import.bundle");
 }
 
+export function resolveWorktreeOwnershipPath(
+  stateDir: string,
+  transferId: string,
+  path: Path.Path,
+): string | null {
+  const dir = resolveTransferStagingDir(stateDir, transferId, path);
+  return dir === null ? null : path.join(dir, "worktree-ownership.json");
+}
+
 interface SweepStaleSessionTransferStagingResult {
   readonly deletedFiles: number;
   readonly deletedDirs: number;

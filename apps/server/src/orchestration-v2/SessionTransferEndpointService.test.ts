@@ -53,6 +53,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as AssetSigner from "../assets/AssetSigner.ts";
@@ -60,6 +61,7 @@ import {
   resolveExportBundlePath,
   resolveImportBundlePath,
   resolveTransferStagingDir,
+  resolveWorktreeOwnershipPath,
   SESSION_TRANSFER_TOKEN_TTL_MS,
   validateSessionTransferBundleToken,
 } from "../assets/SessionTransferToken.ts";
@@ -67,7 +69,12 @@ import { createAttachmentId, resolveAttachmentPathById } from "../attachmentStor
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as BoatSupervisor from "../boat/BoatSupervisor.ts";
+import * as SessionTransferCoordinator from "../boat/SessionTransferCoordinator.ts";
+import * as SessionTransferRepository from "../persistence/SessionTransferRepository.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
@@ -193,6 +200,7 @@ function makeEndpointTestLayer(options: {
   }>;
   readonly recorder: MockRecorder;
   readonly hooks?: EndpointTestHooks;
+  readonly sharedBaseDir?: string;
 }) {
   const rawBaseLayer = Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer);
   const baseLayer =
@@ -213,11 +221,18 @@ function makeEndpointTestLayer(options: {
           }),
         ).pipe(Layer.provideMerge(rawBaseLayer))
       : rawBaseLayer;
-  const configLayer = ServerConfig.layerTest(process.cwd(), {
-    prefix: `t3-xfer-endpoint-${options.environmentId}-`,
-  }).pipe(Layer.provideMerge(baseLayer));
+  const configLayer = ServerConfig.layerTest(
+    process.cwd(),
+    options.sharedBaseDir ?? {
+      prefix: `t3-xfer-endpoint-${options.environmentId}-`,
+    },
+  ).pipe(Layer.provideMerge(baseLayer));
 
-  const sqliteLayer = SqlitePersistence.layerMemory.pipe(Layer.provideMerge(configLayer));
+  const sqliteLayer = (
+    options.sharedBaseDir !== undefined
+      ? SqlitePersistence.layerConfig
+      : SqlitePersistence.layerMemory
+  ).pipe(Layer.provideMerge(configLayer));
   const eventStoreLayer = EventStore.layer.pipe(Layer.provideMerge(sqliteLayer));
   const rawProjectionStoreLayer = ProjectionStore.layer.pipe(Layer.provideMerge(eventStoreLayer));
   const projectionStoreLayer =
@@ -5450,8 +5465,9 @@ describe("SessionTransferEndpointService", () => {
               "",
             );
 
-            // Attempt 1: block worktree removal -> abort fails, independent staging + attachment
-            // cleanup still run, and both worktree + created branch remain tracked in staged state.
+            // Attempt 1: block worktree removal -> abort fails, independent attachment cleanup
+            // still runs, and stagingDir (with durable worktree-ownership.json) remains intact on
+            // disk alongside worktree + created branch so cleanup survives a destination restart.
             blockedWorktreePath = worktreePath;
             blockWorktreeRemoval = true;
             const abort1 = yield* Effect.result(
@@ -5464,7 +5480,10 @@ describe("SessionTransferEndpointService", () => {
             if (Result.isFailure(abort1)) {
               expect(abort1.failure.code).toBe("workspace_error");
             }
-            expect(NodeFS.existsSync(stagingDir)).toBe(false);
+            expect(NodeFS.existsSync(stagingDir)).toBe(true);
+            expect(NodeFS.existsSync(NodePath.join(stagingDir, "worktree-ownership.json"))).toBe(
+              true,
+            );
             expect(NodeFS.existsSync(pendingAttachmentPath)).toBe(false);
             expect(NodeFS.existsSync(worktreePath)).toBe(true);
             expect(git(dstRepo, ["branch", "--list", "feat/dst-abort-wt-fail"]).trim()).not.toBe(
@@ -5503,13 +5522,14 @@ describe("SessionTransferEndpointService", () => {
             }
 
             // Attempt 3: once branch deletion is unblocked, retry finishes deleting the leftover
-            // branch, clears staged state, and returns cleanedUp: true.
+            // branch, removes stagingDir & ownership file, clears staged state, and returns cleanedUp: true.
             const abort3 = yield* svc.abort({
               transferId,
               role: "destination",
             });
             expect(abort3.cleanedUp).toBe(true);
             expect(git(dstRepo, ["branch", "--list", "feat/dst-abort-wt-fail"]).trim()).toBe("");
+            expect(NodeFS.existsSync(stagingDir)).toBe(false);
 
             // Attempt 4: subsequent abort is a clean no-op.
             const abort4 = yield* svc.abort({
@@ -5958,6 +5978,341 @@ describe("SessionTransferEndpointService", () => {
               }
             }
           }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "cleans up created worktree and branch after destination server restart when commit fails before creating the thread",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-dst-restart-cleanup-"),
+        );
+        const srcRepo = NodePath.join(tmpRoot, "src");
+        const dstRepo = NodePath.join(tmpRoot, "dst");
+        const sharedBaseDirRaw = NodePath.join(tmpRoot, "server-base");
+        NodeFS.mkdirSync(sharedBaseDirRaw, { recursive: true });
+        const sharedBaseDir = NodeFS.realpathSync(sharedBaseDirRaw);
+
+        initGitRepo(srcRepo);
+        git(tmpRoot, ["clone", srcRepo, dstRepo]);
+        const featureBranch = "feat/dst-restart-cleanup";
+        git(srcRepo, ["checkout", "-b", featureBranch]);
+        NodeFS.writeFileSync(NodePath.join(srcRepo, "feature.txt"), "restart cleanup feature\n");
+        git(srcRepo, ["add", "feature.txt"]);
+        git(srcRepo, ["commit", "-m", "feature commit"]);
+
+        const srcProjectId = ProjectId.make("proj-dst-restart-src");
+        const dstProjectId = ProjectId.make("proj-dst-restart-dst");
+        const srcThreadId = ThreadId.make("thread-dst-restart-src");
+        const transferId = SessionTransferId.make("tx-dst-restart-cleanup-1");
+        const modelSelection: ModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+        const boatEnvId = EnvironmentId.make("env-boat-restart-src");
+        const localEnvId = EnvironmentId.make("env-dst-restart");
+        const nowIso = IsoDateTime.make("2026-11-28T05:00:00.000Z");
+
+        try {
+          let worktreePath = "";
+          let stagingDir = "";
+          let ownershipPath = "";
+          let destinationThreadId: ThreadId | null = null;
+
+          // Instance 1: commits workspace bundle (creating real worktree & branch), fails before
+          // persisting the thread, and fails the initial abort worktree removal.
+          let failNextCommitEventWrite = false;
+          let blockWorktreeRemoval = false;
+          let blockedWorktreePath: string | null = null;
+          const recorder1: MockRecorder = {
+            dispatches: [],
+            forceStops: [],
+            detachedSessions: [],
+            sentMessages: [],
+          };
+          const instance1Layer = makeEndpointTestLayer({
+            environmentId: localEnvId,
+            environmentLabel: "Destination Restart Host",
+            sharedBaseDir,
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: recorder1,
+            hooks: {
+              onEventSinkWrite: (events) => {
+                if (
+                  failNextCommitEventWrite &&
+                  events.some((event) => event.type === "thread.created")
+                ) {
+                  failNextCommitEventWrite = false;
+                  return Effect.fail(
+                    new TestHookError({
+                      message: "Simulated crash before creating destination thread",
+                    }),
+                  );
+                }
+                return Effect.void;
+              },
+              onVcsRun: ({ input: vcsInput, next }) =>
+                blockWorktreeRemoval && vcsInput.operation === "WorkspaceBundle.removeWorktree"
+                  ? Effect.succeed({
+                      exitCode: 128 as VcsProcess.VcsProcessOutput["exitCode"],
+                      stdout: "",
+                      stderr: "fatal: simulated worktree removal failure before restart",
+                      stdoutTruncated: false,
+                      stderrTruncated: false,
+                    })
+                  : next,
+              onFileSystemRemove: ({ targetPath, next }) =>
+                blockWorktreeRemoval &&
+                blockedWorktreePath !== null &&
+                targetPath === blockedWorktreePath
+                  ? Effect.fail(
+                      PlatformError.systemError({
+                        _tag: "PermissionDenied",
+                        module: "FileSystem",
+                        method: "remove",
+                        pathOrDescriptor: targetPath,
+                      }),
+                    )
+                  : next,
+            },
+          });
+
+          const repo1Layer = SessionTransferRepository.layer.pipe(
+            Layer.provideMerge(instance1Layer),
+          );
+
+          yield* Effect.gen(function* () {
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            const repo = yield* SessionTransferRepository.SessionTransferRepository;
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: featureBranch,
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const staged = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            destinationThreadId = staged.destinationThreadId;
+
+            const exportBundlePath = resolveExportBundlePath(config.stateDir, transferId, path)!;
+            const importBundlePath = resolveImportBundlePath(config.stateDir, transferId, path)!;
+            NodeFS.mkdirSync(NodePath.dirname(importBundlePath), { recursive: true });
+            NodeFS.copyFileSync(exportBundlePath, importBundlePath);
+
+            // Commit creates the real worktree and git branch, writes durable worktree-ownership.json,
+            // then fails eventSink.write before the thread is created.
+            failNextCommitEventWrite = true;
+            const commitRes = yield* Effect.result(
+              svc.commitImport({
+                transferId,
+                destinationProjectId: staged.destinationProjectId,
+                destinationThreadId: staged.destinationThreadId,
+                manifest: prep.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitRes)).toBe(true);
+
+            const stagedAfterFailedCommit = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            worktreePath = stagedAfterFailedCommit.destinationWorktreePath!;
+            stagingDir = resolveTransferStagingDir(config.stateDir, transferId, path)!;
+            ownershipPath = resolveWorktreeOwnershipPath(config.stateDir, transferId, path)!;
+
+            expect(NodeFS.existsSync(worktreePath)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", featureBranch])).not.toBe("");
+            expect(NodeFS.existsSync(stagingDir)).toBe(true);
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+
+            // Seed the in-flight coordinator record in shared SQLite at committing_target.
+            yield* repo.insertIfAbsent({
+              transferId,
+              direction: "boat_to_local",
+              phase: "committing_target",
+              phaseDetail: "Committing destination...",
+              sourceEnvironmentId: boatEnvId,
+              sourceEnvironmentName: TrimmedNonEmptyString.make("dev-boat"),
+              sourceMachineId: TrimmedNonEmptyString.make("machine-1"),
+              sourceProjectId: srcProjectId,
+              sourceThreadId: srcThreadId,
+              destinationEnvironmentId: localEnvId,
+              destinationEnvironmentName: TrimmedNonEmptyString.make("Destination Restart Host"),
+              destinationMachineId: null,
+              destinationProjectId: staged.destinationProjectId,
+              destinationThreadId: staged.destinationThreadId,
+              destinationBranch: GitRefName.make(featureBranch),
+              destinationWorktreePath: TrimmedNonEmptyString.make(worktreePath),
+              sourceWasRunning: false,
+              hadPendingRuntimeRequest: false,
+              modelSelectionOverride: null,
+              cloneDestinationPath: null,
+              autoResume: false,
+              warnings: [],
+              errorMessage: null,
+              createdAt: nowIso,
+              updatedAt: nowIso,
+              completedAt: null,
+            });
+
+            // First abort fails to remove the worktree -> ownership file and stagingDir must stay.
+            blockedWorktreePath = worktreePath;
+            blockWorktreeRemoval = true;
+            const abort1 = yield* Effect.result(
+              svc.abort({
+                transferId,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(abort1)).toBe(true);
+            if (Result.isFailure(abort1)) {
+              expect(abort1.failure.code).toBe("workspace_error");
+            }
+            expect(NodeFS.existsSync(worktreePath)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", featureBranch])).not.toBe("");
+            expect(NodeFS.existsSync(stagingDir)).toBe(true);
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+          }).pipe(Effect.provide(repo1Layer));
+
+          // Simulate a full destination server restart: build a brand-new SessionTransferEndpointService
+          // (fresh empty stagedImports in-memory map) + SessionTransferCoordinator sharing the same
+          // on-disk stateDir and SQLite DB.
+          const recorder2: MockRecorder = {
+            dispatches: [],
+            forceStops: [],
+            detachedSessions: [],
+            sentMessages: [],
+          };
+          const instance2Layer = makeEndpointTestLayer({
+            environmentId: localEnvId,
+            environmentLabel: "Destination Restart Host",
+            sharedBaseDir,
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: recorder2,
+          });
+
+          const remoteSourceAbortCalls: Array<string> = [];
+          const coordinator2SupportLayer = Layer.mergeAll(
+            SessionTransferRepository.layer.pipe(Layer.provideMerge(instance2Layer)),
+            Layer.succeed(
+              BoatSupervisor.BoatSupervisor,
+              BoatSupervisor.BoatSupervisor.of({
+                invoke: () => Effect.succeed({ data: { ok: true } }),
+                getMachineProxyAccess: () =>
+                  Effect.succeed({
+                    machineId: "machine-1",
+                    machineName: "dev-boat",
+                    environmentId: boatEnvId,
+                    state: "idle",
+                    localUrl: "http://127.0.0.1:41999",
+                    bearerToken: "internal-boat-token",
+                  }),
+                hasConfiguredBoats: Effect.succeed(true),
+                currentState: Effect.succeedNone,
+                passiveEvents: Stream.empty,
+                events: Stream.empty,
+                notices: Stream.empty,
+              }),
+            ),
+            Layer.succeed(
+              SessionTransferCoordinator.BoatRemoteClient,
+              SessionTransferCoordinator.BoatRemoteClient.of({
+                getServerConfig: () => Effect.die("unused"),
+                getShellSnapshot: () => Effect.die("unused"),
+                getThreadSummary: () => Effect.die("unused"),
+                prepareSource: () => Effect.die("unused"),
+                stageImport: () => Effect.die("unused"),
+                commitImport: () => Effect.die("unused"),
+                finalizeSource: () => Effect.die("unused"),
+                abort: (_endpoint, input) =>
+                  Effect.sync(() => {
+                    remoteSourceAbortCalls.push(`${input.transferId}:${input.role}`);
+                    return { cleanedUp: true };
+                  }),
+                streamHttpTransfer: () => Effect.die("unused"),
+              }),
+            ),
+            Layer.succeed(ProviderRegistry.ProviderRegistry, {
+              getProviders: Effect.succeed([]),
+            } as unknown as ProviderRegistry.ProviderRegistry["Service"]),
+            Layer.succeed(
+              RepositoryIdentityResolver.RepositoryIdentityResolver,
+              RepositoryIdentityResolver.RepositoryIdentityResolver.of({
+                resolve: () => Effect.succeed(null),
+              }),
+            ),
+          );
+
+          const coordinator2Layer = SessionTransferCoordinator.layer.pipe(
+            Layer.provideMerge(coordinator2SupportLayer),
+          );
+
+          yield* Effect.gen(function* () {
+            const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+            const repo = yield* SessionTransferRepository.SessionTransferRepository;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+
+            // Confirm destination thread was never committed before reconciliation.
+            const threadCheck = yield* Effect.result(
+              projectionStore.getThreadProjection(destinationThreadId!),
+            );
+            expect(Result.isFailure(threadCheck)).toBe(true);
+
+            // Reconcile on startup against the fresh endpoint service instance!
+            yield* coordinator.reconcileOnStartup;
+
+            // Worktree directory, created branch, ownership file, and staging dir must all be gone.
+            expect(NodeFS.existsSync(worktreePath)).toBe(false);
+            expect(git(dstRepo, ["branch", "--list", featureBranch])).toBe("");
+            expect(NodeFS.existsSync(ownershipPath)).toBe(false);
+            expect(NodeFS.existsSync(stagingDir)).toBe(false);
+
+            // Source was aborted and the SQLite transfer record transitioned cleanly to failed.
+            expect(remoteSourceAbortCalls).toEqual([`${transferId}:source`]);
+            const reconciled = yield* repo.getById(transferId);
+            expect(Option.isSome(reconciled) && reconciled.value.phase).toBe("failed");
+            const activeAfterReconcile = yield* repo.listActive();
+            expect(activeAfterReconcile.map((r) => r.transferId)).not.toContain(transferId);
+
+            // Subsequent abort on the restarted instance is an idempotent no-op.
+            const repeatAbort = yield* svc.abort({
+              transferId,
+              role: "destination",
+            });
+            expect(repeatAbort.cleanedUp).toBe(false);
+          }).pipe(Effect.scoped, Effect.provide(coordinator2Layer));
         } finally {
           NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
         }
