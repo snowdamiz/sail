@@ -1,5 +1,6 @@
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- Loopback HTTP fixture servers for live BoatRemoteClient tests.
+// @effect-diagnostics nodeBuiltinImport:off -- Loopback HTTP/TCP fixture servers for live BoatRemoteClient tests.
 import * as NodeHttp from "node:http";
+import * as NodeNet from "node:net";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -39,7 +40,9 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -197,7 +200,7 @@ interface HarnessOptions {
     readonly originProjectId?: string | null;
     readonly title?: string;
     readonly repoKey?: string | null;
-  }>;
+  }> | null;
   readonly localProjects?: ReadonlyArray<{
     readonly id: ProjectId;
     readonly title: string;
@@ -233,9 +236,18 @@ interface HarnessOptions {
   readonly onRemoteStageImport?: (
     input: SessionTransferStageImportInput,
   ) => Effect.Effect<SessionTransferStageImportResult, SessionTransferError>;
+  readonly onLocalFinalizeSource?: (
+    input: SessionTransferFinalizeSourceInput,
+  ) => Effect.Effect<{ readonly archived: boolean }, SessionTransferError>;
   readonly onRemoteFinalizeSource?: (
     input: SessionTransferFinalizeSourceInput,
   ) => Effect.Effect<{ readonly archived: boolean }, SessionTransferError>;
+  readonly onRemoteAbort?: (
+    input: SessionTransferAbortInput,
+  ) => Effect.Effect<{ readonly cleanedUp: boolean }, SessionTransferError>;
+  readonly onRemoteGetServerConfig?: () => ReturnType<
+    SessionTransferCoordinator.BoatRemoteClientShape["getServerConfig"]
+  >;
   readonly onRemoteGetThreadSummary?: (
     threadId: ThreadId,
   ) => Effect.Effect<SessionTransferCoordinator.RemoteThreadSummary, SessionTransferError>;
@@ -298,15 +310,18 @@ function makeHarness(options: HarnessOptions = {}) {
       },
     ]),
   ];
+  const omitDaemonProjects = options.boatDaemonProjects === null;
   const daemonProjects = [
-    ...(options.boatDaemonProjects ?? [
-      {
-        id: BOAT_PROJECT_ID,
-        originProjectId: LOCAL_PROJECT_ID,
-        title: "sail",
-        repoKey: SAMPLE_REPO_IDENTITY.canonicalKey,
-      },
-    ]),
+    ...(options.boatDaemonProjects === null
+      ? []
+      : (options.boatDaemonProjects ?? [
+          {
+            id: BOAT_PROJECT_ID,
+            originProjectId: LOCAL_PROJECT_ID,
+            title: "sail",
+            repoKey: SAMPLE_REPO_IDENTITY.canonicalKey,
+          },
+        ])),
   ];
   const localProjects = [
     ...(options.localProjects ?? [
@@ -367,7 +382,7 @@ function makeHarness(options: HarnessOptions = {}) {
                     environmentId: BOAT_ENV_ID,
                     name: "dev-boat",
                     state: currentBoatState,
-                    projects: daemonProjects,
+                    ...(omitDaemonProjects ? {} : { projects: daemonProjects }),
                   },
                 ],
               },
@@ -393,7 +408,7 @@ function makeHarness(options: HarnessOptions = {}) {
               environmentId: BOAT_ENV_ID,
               name: "dev-boat",
               state: currentBoatState,
-              projects: daemonProjects,
+              ...(omitDaemonProjects ? {} : { projects: daemonProjects }),
             },
           ],
         }),
@@ -473,11 +488,13 @@ function makeHarness(options: HarnessOptions = {}) {
             warnings: [],
           };
         }),
-      finalizeSource: (input) =>
-        Effect.sync(() => {
-          calls.localFinalizeSource.push(input);
-          return { archived: true };
-        }),
+      finalizeSource: (input) => {
+        calls.localFinalizeSource.push(input);
+        if (options.onLocalFinalizeSource) {
+          return options.onLocalFinalizeSource(input);
+        }
+        return Effect.succeed({ archived: true });
+      },
       abort: (input) =>
         Effect.sync(() => {
           calls.localAbort.push(input);
@@ -489,16 +506,18 @@ function makeHarness(options: HarnessOptions = {}) {
   const remoteClientLayer = Layer.succeed(
     SessionTransferCoordinator.BoatRemoteClient,
     SessionTransferCoordinator.BoatRemoteClient.of({
-      getServerConfig: () =>
-        Effect.sync(() => {
-          calls.remoteGetServerConfigCount += 1;
-          return {
-            environmentId: BOAT_ENV_ID,
-            environmentLabel: "dev-boat",
-            sessionTransferSupported: options.boatSessionTransferSupported ?? true,
-            providers: boatProviders,
-          };
-        }),
+      getServerConfig: () => {
+        calls.remoteGetServerConfigCount += 1;
+        if (options.onRemoteGetServerConfig) {
+          return options.onRemoteGetServerConfig();
+        }
+        return Effect.succeed({
+          environmentId: BOAT_ENV_ID,
+          environmentLabel: "dev-boat",
+          sessionTransferSupported: options.boatSessionTransferSupported ?? true,
+          providers: boatProviders,
+        });
+      },
       getShellSnapshot: () =>
         Effect.sync(() => {
           calls.remoteGetShellSnapshotCount += 1;
@@ -626,11 +645,13 @@ function makeHarness(options: HarnessOptions = {}) {
         }
         return Effect.succeed({ archived: true });
       },
-      abort: (_endpoint, input) =>
-        Effect.sync(() => {
-          calls.remoteAbort.push(input);
-          return { cleanedUp: true };
-        }),
+      abort: (_endpoint, input) => {
+        calls.remoteAbort.push(input);
+        if (options.onRemoteAbort) {
+          return options.onRemoteAbort(input);
+        }
+        return Effect.succeed({ cleanedUp: true });
+      },
       streamHttpTransfer: (input) => {
         calls.streamTransfers.push({
           sourceUrl: input.sourceUrl,
@@ -1511,7 +1532,19 @@ describe("SessionTransferCoordinator", () => {
   it.effect(
     "reconcileOnStartup completes transfers stuck in finalizing_source and fails pre-commit active transfers",
     () => {
-      const harness = makeHarness();
+      const harness = makeHarness({
+        remoteThreadSummary: {
+          transferOrigin: {
+            transferId: SessionTransferId.make("tx-finalizing"),
+            environmentId: LOCAL_ENV_ID,
+            environmentName: TrimmedNonEmptyString.make("MacBook Pro"),
+            machineId: null,
+            projectId: LOCAL_PROJECT_ID,
+            threadId: ThreadId.make("thread-a"),
+            transferredAt: NOW_ISO,
+          },
+        },
+      });
 
       return Effect.gen(function* () {
         const repo = yield* SessionTransferRepository.SessionTransferRepository;
@@ -1622,6 +1655,15 @@ describe("SessionTransferCoordinator", () => {
             heldQueuedRunCount: 0,
             isGitRepo: true,
           }),
+        localThreadTransferOrigin: {
+          transferId: transientTxId,
+          environmentId: BOAT_ENV_ID,
+          environmentName: TrimmedNonEmptyString.make("dev-boat"),
+          machineId: TrimmedNonEmptyString.make("machine-1"),
+          projectId: BOAT_PROJECT_ID,
+          threadId: BOAT_THREAD_ID,
+          transferredAt: NOW_ISO,
+        },
         onRemoteFinalizeSource: () =>
           Effect.fail(
             new SessionTransferError({
@@ -2080,6 +2122,675 @@ describe("SessionTransferCoordinator", () => {
       expect(res.final.errorMessage).not.toContain("boat-upload");
     }).pipe(Effect.scoped, Effect.provide(harness.layer));
   });
+
+  it.effect(
+    "redacts signed token path segments in persisted transfer errorMessage on 404 and 500 download failures",
+    () =>
+      Effect.gen(function* () {
+        const bundleToken404 = "eyJ0eXBlIjoiYnVuZGxlLTQwNCJ9.superSecretPathSig404";
+        const bundleToken500 = "eyJ0eXBlIjoiYnVuZGxlLTUwMCJ9.superSecretPathSig500";
+        const attachToken500 = "eyJ0eXBlIjoiYXR0YWNobWVudCJ9.superSecretAttSig500";
+        const assetToken500 = "eyJ0eXBlIjoiYXNzZXQifQ.superSecretAssetSig500";
+
+        // 1. 404 with path-token URL
+        const harness404 = makeHarness({
+          onStreamHttpTransfer: () =>
+            Effect.fail(
+              new SessionTransferError({
+                code: "not_found",
+                message: `Transfer payload not found at source (http://127.0.0.1:41999/api/session-transfers/${bundleToken404}/bundle).`,
+              }),
+            ),
+        });
+        yield* Effect.gen(function* () {
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const repo = yield* SessionTransferRepository.SessionTransferRepository;
+          const result = yield* collectTransferEventsUntilTerminal(
+            coordinator,
+            coordinator.start({
+              direction: "local_to_boat",
+              sourceEnvironmentId: LOCAL_ENV_ID,
+              sourceThreadId: LOCAL_THREAD_ID,
+              target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+            }),
+          );
+          expect(result.final.phase).toBe("failed");
+          const persisted = yield* repo.getById(result.final.transferId);
+          expect(Option.isSome(persisted)).toBe(true);
+          if (!Option.isSome(persisted)) return;
+          expect(persisted.value.errorMessage).toContain("/api/session-transfers/[REDACTED]");
+          expect(persisted.value.errorMessage).not.toContain(bundleToken404);
+          expect(persisted.value.errorMessage).not.toContain("superSecretPathSig404");
+        }).pipe(Effect.scoped, Effect.provide(harness404.layer));
+
+        // 2. 500 with path-token URLs across session-transfers, attachments, and assets
+        const harness500 = makeHarness({
+          onStreamHttpTransfer: () =>
+            Effect.fail(
+              new SessionTransferError({
+                code: "workspace_error",
+                message: `Failed to download transfer payload (HTTP 500): refs http://127.0.0.1:41999/api/session-transfers/${bundleToken500}/bundle http://127.0.0.1:41999/api/attachments/upload/${attachToken500} http://127.0.0.1:41999/api/assets/${assetToken500}/shot.png`,
+              }),
+            ),
+        });
+        yield* Effect.gen(function* () {
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const repo = yield* SessionTransferRepository.SessionTransferRepository;
+          const result = yield* collectTransferEventsUntilTerminal(
+            coordinator,
+            coordinator.start({
+              direction: "local_to_boat",
+              sourceEnvironmentId: LOCAL_ENV_ID,
+              sourceThreadId: LOCAL_THREAD_ID,
+              target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+            }),
+          );
+          expect(result.final.phase).toBe("failed");
+          const persisted = yield* repo.getById(result.final.transferId);
+          expect(Option.isSome(persisted)).toBe(true);
+          if (!Option.isSome(persisted)) return;
+          expect(persisted.value.errorMessage).toContain("/api/session-transfers/[REDACTED]");
+          expect(persisted.value.errorMessage).toContain("/api/attachments/[REDACTED]");
+          expect(persisted.value.errorMessage).toContain("/api/assets/[REDACTED]");
+          expect(persisted.value.errorMessage).not.toContain(bundleToken500);
+          expect(persisted.value.errorMessage).not.toContain(attachToken500);
+          expect(persisted.value.errorMessage).not.toContain(assetToken500);
+        }).pipe(Effect.scoped, Effect.provide(harness500.layer));
+      }),
+  );
+
+  it.effect(
+    "reconcileOnStartup aborts finalizing_source when destination thread does not exist instead of archiving source",
+    () => {
+      const txId = SessionTransferId.make("tx-finalizing-uncommitted");
+      const harness = makeHarness({
+        onRemoteGetThreadSummary: () =>
+          Effect.fail(
+            new SessionTransferError({
+              code: "not_found",
+              message: "Destination thread does not exist",
+            }),
+          ),
+      });
+
+      return Effect.gen(function* () {
+        const repo = yield* SessionTransferRepository.SessionTransferRepository;
+        const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+
+        yield* repo.upsert({
+          transferId: txId,
+          direction: "local_to_boat",
+          sourceEnvironmentId: LOCAL_ENV_ID,
+          sourceEnvironmentName: TrimmedNonEmptyString.make("MacBook Pro"),
+          sourceMachineId: null,
+          sourceProjectId: LOCAL_PROJECT_ID,
+          sourceThreadId: LOCAL_THREAD_ID,
+          destinationEnvironmentId: BOAT_ENV_ID,
+          destinationEnvironmentName: TrimmedNonEmptyString.make("dev-boat"),
+          destinationMachineId: TrimmedNonEmptyString.make("machine-1"),
+          destinationProjectId: BOAT_PROJECT_ID,
+          destinationThreadId: DEST_THREAD_ID,
+          phase: "finalizing_source",
+          phaseDetail: "Archiving source thread...",
+          sourceWasRunning: false,
+          autoResume: false,
+          hadPendingRuntimeRequest: false,
+          destinationBranch: GitRefName.make("feat/transfer"),
+          destinationWorktreePath: TrimmedNonEmptyString.make("/home/sail/sail/.worktrees/wt-1"),
+          modelSelectionOverride: null,
+          cloneDestinationPath: null,
+          warnings: [],
+          errorMessage: null,
+          createdAt: NOW_ISO,
+          updatedAt: NOW_ISO,
+          completedAt: null,
+        });
+
+        yield* coordinator.reconcileOnStartup;
+
+        const record = yield* repo.getById(txId);
+        expect(Option.isSome(record) && record.value.phase).toBe("failed");
+        expect(harness.calls.localFinalizeSource).toHaveLength(0);
+        expect(harness.calls.localAbort).toHaveLength(1);
+        expect(harness.calls.remoteAbort).toHaveLength(1);
+      }).pipe(Effect.scoped, Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect(
+    "live worker keeps transfer in finalizing_source on post-commit internal finalizeSource error and reconcileOnStartup completes it",
+    () => {
+      const txId = SessionTransferId.make("tx-post-commit-internal-err");
+      let failFinalize = true;
+      const finalizeFailedSignal = Deferred.makeUnsafe<void>();
+
+      const harness = makeHarness({
+        remoteThreadSummary: {
+          transferOrigin: {
+            transferId: txId,
+            environmentId: LOCAL_ENV_ID,
+            environmentName: TrimmedNonEmptyString.make("MacBook Pro"),
+            machineId: null,
+            projectId: LOCAL_PROJECT_ID,
+            threadId: LOCAL_THREAD_ID,
+            transferredAt: NOW_ISO,
+          },
+        },
+        onLocalFinalizeSource: () => {
+          if (failFinalize) {
+            return Effect.fail(
+              new SessionTransferError({
+                code: "internal",
+                message: "SQLITE_BUSY while archiving source thread",
+              }),
+            ).pipe(
+              Effect.tapError(() =>
+                Deferred.succeed(finalizeFailedSignal, undefined).pipe(Effect.ignore),
+              ),
+            );
+          }
+          return Effect.succeed({ archived: true });
+        },
+      });
+
+      return Effect.gen(function* () {
+        const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+        const repo = yield* SessionTransferRepository.SessionTransferRepository;
+        const subscribed = yield* Deferred.make<void>();
+
+        const awaitRetryPhase = yield* Effect.forkScoped(
+          coordinator.subscribe.pipe(
+            Stream.tap((event) =>
+              event._tag === "snapshot" ? Deferred.succeed(subscribed, undefined) : Effect.void,
+            ),
+            Stream.filter(
+              (
+                event,
+              ): event is Extract<SessionTransferProgressEvent, { readonly _tag: "updated" }> =>
+                event._tag === "updated" && event.transfer.transferId === txId,
+            ),
+            Stream.takeUntil(
+              (event) =>
+                event.transfer.phase === "finalizing_source" &&
+                (event.transfer.phaseDetail?.includes("awaiting source archival retry") ?? false),
+            ),
+            Stream.runDrain,
+          ),
+        );
+
+        yield* Deferred.await(subscribed);
+        yield* coordinator.start({
+          transferId: txId,
+          direction: "local_to_boat",
+          sourceEnvironmentId: LOCAL_ENV_ID,
+          sourceThreadId: LOCAL_THREAD_ID,
+          target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+          autoResume: false,
+        });
+
+        yield* Deferred.await(finalizeFailedSignal);
+        yield* Fiber.join(awaitRetryPhase);
+
+        const afterError = yield* repo.getById(txId);
+        expect(Option.isSome(afterError)).toBe(true);
+        if (!Option.isSome(afterError)) return;
+        expect(afterError.value.phase).toBe("finalizing_source");
+        expect(afterError.value.completedAt).toBeNull();
+        expect(afterError.value.errorMessage).toContain("SQLITE_BUSY");
+        expect(harness.calls.localAbort).toHaveLength(0);
+        expect(harness.calls.remoteAbort).toHaveLength(0);
+
+        failFinalize = false;
+        yield* coordinator.reconcileOnStartup;
+
+        const completed = yield* repo.getById(txId);
+        expect(Option.isSome(completed) && completed.value.phase).toBe("completed");
+        expect(Option.isSome(completed) && completed.value.errorMessage).toBeNull();
+        expect(harness.calls.localFinalizeSource).toHaveLength(2);
+      }).pipe(Effect.scoped, Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect(
+    "reconcileOnStartup keeps pre-commit transfer non-terminal when remote abort fails and retries cleanly next pass",
+    () => {
+      const txId = SessionTransferId.make("tx-remote-abort-retry");
+      let remoteAbortShouldFail = true;
+      const harness = makeHarness({
+        onRemoteAbort: () => {
+          if (remoteAbortShouldFail) {
+            return Effect.fail(
+              new SessionTransferError({
+                code: "target_unavailable",
+                message: "Boat temporarily unreachable during abort",
+              }),
+            );
+          }
+          return Effect.succeed({ cleanedUp: true });
+        },
+      });
+
+      return Effect.gen(function* () {
+        const repo = yield* SessionTransferRepository.SessionTransferRepository;
+        const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+
+        yield* repo.upsert({
+          transferId: txId,
+          direction: "local_to_boat",
+          sourceEnvironmentId: LOCAL_ENV_ID,
+          sourceEnvironmentName: TrimmedNonEmptyString.make("MacBook Pro"),
+          sourceMachineId: null,
+          sourceProjectId: LOCAL_PROJECT_ID,
+          sourceThreadId: LOCAL_THREAD_ID,
+          destinationEnvironmentId: BOAT_ENV_ID,
+          destinationEnvironmentName: TrimmedNonEmptyString.make("dev-boat"),
+          destinationMachineId: TrimmedNonEmptyString.make("machine-1"),
+          destinationProjectId: BOAT_PROJECT_ID,
+          destinationThreadId: DEST_THREAD_ID,
+          phase: "transferring_workspace",
+          phaseDetail: "Streaming workspace bundle...",
+          sourceWasRunning: false,
+          autoResume: false,
+          hadPendingRuntimeRequest: false,
+          destinationBranch: null,
+          destinationWorktreePath: null,
+          modelSelectionOverride: null,
+          cloneDestinationPath: null,
+          warnings: [],
+          errorMessage: null,
+          createdAt: NOW_ISO,
+          updatedAt: NOW_ISO,
+          completedAt: null,
+        });
+
+        // First reconciliation: remote abort fails -> record MUST stay non-terminal.
+        yield* coordinator.reconcileOnStartup;
+        const afterFirst = yield* repo.getById(txId);
+        expect(Option.isSome(afterFirst) && afterFirst.value.phase).toBe("transferring_workspace");
+        expect(harness.calls.remoteAbort).toHaveLength(1);
+
+        // Second reconciliation: remote abort succeeds -> transitions to failed.
+        remoteAbortShouldFail = false;
+        yield* coordinator.reconcileOnStartup;
+        const afterSecond = yield* repo.getById(txId);
+        expect(Option.isSome(afterSecond) && afterSecond.value.phase).toBe("failed");
+        expect(harness.calls.remoteAbort).toHaveLength(2);
+      }).pipe(Effect.scoped, Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect(
+    "cancel honors completed, finalizing_source, and committed committing_target without aborting destination",
+    () =>
+      Effect.gen(function* () {
+        // Case 1: Worker finishes uninterruptible commit and advances to completed while cancel interrupts it.
+        const txId1 = SessionTransferId.make("tx-cancel-race-committed");
+        const enteredCommit = Deferred.makeUnsafe<void>();
+        const releaseCommit = Deferred.makeUnsafe<void>();
+        let destinationCommitted = false;
+
+        const harness1 = makeHarness({
+          onBoatCommitImport: (_endpoint, input) =>
+            Effect.uninterruptible(
+              Effect.gen(function* () {
+                yield* Deferred.succeed(enteredCommit, undefined).pipe(Effect.ignore);
+                yield* Deferred.await(releaseCommit);
+                destinationCommitted = true;
+                return {
+                  destinationProjectId: input.destinationProjectId,
+                  destinationThreadId: input.destinationThreadId,
+                  destinationBranch: GitRefName.make("feat/transfer"),
+                  destinationWorktreePath: TrimmedNonEmptyString.make(
+                    "/home/sail/sail/.worktrees/wt-1",
+                  ),
+                  resumed: false,
+                  warnings: [],
+                };
+              }),
+            ),
+          onRemoteGetThreadSummary: (threadId) =>
+            destinationCommitted
+              ? Effect.succeed({
+                  id: threadId,
+                  projectId: BOAT_PROJECT_ID,
+                  title: "Committed thread",
+                  modelSelection: CLAUDE_MODEL,
+                  branch: GitRefName.make("feat/transfer"),
+                  worktreePath: "/home/sail/sail/.worktrees/wt-1",
+                  transferOrigin: {
+                    transferId: txId1,
+                    environmentId: LOCAL_ENV_ID,
+                    environmentName: TrimmedNonEmptyString.make("MacBook Pro"),
+                    machineId: null,
+                    projectId: LOCAL_PROJECT_ID,
+                    threadId: LOCAL_THREAD_ID,
+                    transferredAt: NOW_ISO,
+                  },
+                  wasRunning: false,
+                  pendingRuntimeRequests: [],
+                  activeSubagentCount: 0,
+                  heldQueuedRunCount: 0,
+                  isGitRepo: true,
+                })
+              : Effect.fail(new SessionTransferError({ code: "not_found", message: "missing" })),
+        });
+
+        yield* Effect.gen(function* () {
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const repo = yield* SessionTransferRepository.SessionTransferRepository;
+
+          yield* coordinator.start({
+            transferId: txId1,
+            direction: "local_to_boat",
+            sourceEnvironmentId: LOCAL_ENV_ID,
+            sourceThreadId: LOCAL_THREAD_ID,
+            target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+            autoResume: false,
+          });
+          yield* Deferred.await(enteredCommit);
+
+          // Simulate a race where cancel passed its initial phase check right before
+          // committing_target was observed, then interrupts the worker as it completes commit.
+          const current = yield* repo.getById(txId1);
+          expect(Option.isSome(current) && current.value.phase).toBe("committing_target");
+          if (Option.isSome(current)) {
+            yield* repo.transitionPhase({
+              transferId: txId1,
+              phase: "transferring_workspace",
+              updatedAt: NOW_ISO,
+            });
+          }
+
+          const cancelFiber = yield* Effect.forkChild(
+            Effect.flip(coordinator.cancel({ transferId: txId1 })),
+          );
+          for (let tick = 0; tick < 20; tick += 1) {
+            yield* Effect.yieldNow;
+          }
+          yield* Deferred.succeed(releaseCommit, undefined).pipe(Effect.ignore);
+
+          const cancelErr = yield* Fiber.join(cancelFiber);
+          expect(cancelErr.code).toBe("invalid_phase");
+
+          const finalRecord = yield* repo.getById(txId1);
+          expect(Option.isSome(finalRecord)).toBe(true);
+          if (Option.isSome(finalRecord)) {
+            expect(["completed", "finalizing_source"]).toContain(finalRecord.value.phase);
+          }
+          expect(harness1.calls.localFinalizeSource).toHaveLength(1);
+          expect(harness1.calls.remoteAbort).toHaveLength(0);
+          expect(harness1.calls.localAbort).toHaveLength(0);
+        }).pipe(Effect.scoped, Effect.provide(harness1.layer));
+
+        // Case 2: Worker is interrupted inside committing_target after destination already committed
+        // durably, and finalizeSource fails -> stays finalizing_source, cancel must NOT abort destination.
+        const txId2 = SessionTransferId.make("tx-cancel-race-finalizing");
+        const commitStarted2 = Deferred.makeUnsafe<void>();
+
+        const harness2 = makeHarness({
+          onBoatCommitImport: () =>
+            Deferred.succeed(commitStarted2, undefined).pipe(Effect.andThen(Effect.never)),
+          onLocalFinalizeSource: () =>
+            Effect.fail(
+              new SessionTransferError({
+                code: "internal",
+                message: "Transient archive lock",
+              }),
+            ),
+          onRemoteGetThreadSummary: (threadId) =>
+            Effect.succeed({
+              id: threadId,
+              projectId: BOAT_PROJECT_ID,
+              title: "Committed thread",
+              modelSelection: CLAUDE_MODEL,
+              branch: GitRefName.make("feat/transfer"),
+              worktreePath: "/home/sail/sail/.worktrees/wt-1",
+              transferOrigin: {
+                transferId: txId2,
+                environmentId: LOCAL_ENV_ID,
+                environmentName: TrimmedNonEmptyString.make("MacBook Pro"),
+                machineId: null,
+                projectId: LOCAL_PROJECT_ID,
+                threadId: LOCAL_THREAD_ID,
+                transferredAt: NOW_ISO,
+              },
+              wasRunning: false,
+              pendingRuntimeRequests: [],
+              activeSubagentCount: 0,
+              heldQueuedRunCount: 0,
+              isGitRepo: true,
+            }),
+        });
+
+        yield* Effect.gen(function* () {
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const repo = yield* SessionTransferRepository.SessionTransferRepository;
+
+          yield* coordinator.start({
+            transferId: txId2,
+            direction: "local_to_boat",
+            sourceEnvironmentId: LOCAL_ENV_ID,
+            sourceThreadId: LOCAL_THREAD_ID,
+            target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+            autoResume: false,
+          });
+          yield* Deferred.await(commitStarted2);
+
+          const current = yield* repo.getById(txId2);
+          expect(Option.isSome(current) && current.value.phase).toBe("committing_target");
+          if (Option.isSome(current)) {
+            yield* repo.transitionPhase({
+              transferId: txId2,
+              phase: "transferring_workspace",
+              updatedAt: NOW_ISO,
+            });
+          }
+
+          const cancelErr = yield* Effect.flip(coordinator.cancel({ transferId: txId2 }));
+          expect(cancelErr.code).toBe("invalid_phase");
+
+          const finalRecord = yield* repo.getById(txId2);
+          expect(Option.isSome(finalRecord) && finalRecord.value.phase).toBe("finalizing_source");
+          expect(harness2.calls.localFinalizeSource).toHaveLength(1);
+          expect(harness2.calls.remoteAbort).toHaveLength(0);
+          expect(harness2.calls.localAbort).toHaveLength(0);
+        }).pipe(Effect.scoped, Effect.provide(harness2.layer));
+      }),
+  );
+
+  it.live(
+    "interrupting winning start fiber settles startingTransfers Deferred so duplicate waiter never hangs",
+    () => {
+      const txId = SessionTransferId.make("tx-start-interrupt-race");
+      const enteredStart = Deferred.makeUnsafe<void>();
+      let blockFirstCall = true;
+
+      const harness = makeHarness({
+        onRemoteGetServerConfig: () => {
+          if (blockFirstCall) {
+            blockFirstCall = false;
+            return Deferred.succeed(enteredStart, undefined).pipe(Effect.andThen(Effect.never));
+          }
+          return Effect.succeed({
+            environmentId: BOAT_ENV_ID,
+            environmentLabel: "dev-boat",
+            sessionTransferSupported: true,
+            providers: [makeServerProvider("claudeAgent", "claudeAgent", ["claude-sonnet-4-6"])],
+          });
+        },
+      });
+
+      return Effect.gen(function* () {
+        const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+        const startInput = {
+          transferId: txId,
+          direction: "local_to_boat" as const,
+          sourceEnvironmentId: LOCAL_ENV_ID,
+          sourceThreadId: LOCAL_THREAD_ID,
+          target: { kind: "boat" as const, machineId: TrimmedNonEmptyString.make("machine-1") },
+          autoResume: false,
+        };
+
+        const winner = yield* Effect.forkChild(coordinator.start(startInput));
+        yield* Deferred.await(enteredStart);
+
+        const waiter = yield* Effect.forkChild(coordinator.start(startInput));
+        for (let tick = 0; tick < 20; tick += 1) {
+          yield* Effect.yieldNow;
+        }
+
+        yield* Fiber.interrupt(winner);
+
+        const waiterExit = yield* Fiber.await(waiter).pipe(
+          Effect.timeoutOption(Duration.seconds(2)),
+        );
+        expect(Option.isSome(waiterExit)).toBe(true);
+        if (Option.isSome(waiterExit)) {
+          expect(Exit.isFailure(waiterExit.value)).toBe(true);
+        }
+
+        const retryResult = yield* collectTransferEventsUntilTerminal(
+          coordinator,
+          coordinator.start(startInput),
+        );
+        expect(retryResult.final.phase).toBe("completed");
+      }).pipe(Effect.scoped, Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect(
+    "passes resolved destination modelSelectionOverride (provider instance + canonical slug) to stageImport and commitImport",
+    () => {
+      const destinationProvider: ServerProvider = {
+        ...makeServerProvider("claude-boat-custom", "claudeAgent", ["claude-sonnet-4-6"]),
+        models: [
+          {
+            slug: TrimmedNonEmptyString.make("claude-sonnet-4-6"),
+            name: TrimmedNonEmptyString.make("Claude Sonnet 4.6"),
+            aliases: [TrimmedNonEmptyString.make("sonnet-latest")],
+            isCustom: false,
+            capabilities: null,
+          },
+        ],
+      };
+
+      const harness = makeHarness({
+        boatProviders: [destinationProvider],
+      });
+
+      return Effect.gen(function* () {
+        const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+        const result = yield* collectTransferEventsUntilTerminal(
+          coordinator,
+          coordinator.start({
+            direction: "local_to_boat",
+            sourceEnvironmentId: LOCAL_ENV_ID,
+            sourceThreadId: LOCAL_THREAD_ID,
+            target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+            modelSelectionOverride: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: TrimmedNonEmptyString.make("sonnet-latest"),
+            },
+            autoResume: false,
+          }),
+        );
+
+        expect(result.final.phase).toBe("completed");
+        const expectedResolved: ModelSelection = {
+          instanceId: ProviderInstanceId.make("claude-boat-custom"),
+          model: TrimmedNonEmptyString.make("claude-sonnet-4-6"),
+        };
+        expect(harness.calls.remoteStageImport).toHaveLength(1);
+        expect(harness.calls.remoteStageImport[0]?.modelSelectionOverride).toEqual(
+          expectedResolved,
+        );
+        expect(harness.calls.remoteCommitImport).toHaveLength(1);
+        expect(harness.calls.remoteCommitImport[0]?.modelSelectionOverride).toEqual(
+          expectedResolved,
+        );
+      }).pipe(Effect.scoped, Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect(
+    "sleeping local-to-Boat preflight enforces project resolution parity for invalid/unverified targetProjectId and multiple origin matches",
+    () =>
+      Effect.gen(function* () {
+        // 1. Sleeping Boat with cached projects: bogus explicit targetProjectId fails with not_found.
+        const cachedHarness = makeHarness({ boatState: "asleep" });
+        yield* Effect.gen(function* () {
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const err = yield* Effect.flip(
+            coordinator.preflight({
+              direction: "local_to_boat",
+              sourceEnvironmentId: LOCAL_ENV_ID,
+              sourceThreadId: LOCAL_THREAD_ID,
+              target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+              targetProjectId: ProjectId.make("proj-does-not-exist"),
+            }),
+          );
+          expect(err.code).toBe("not_found");
+          expect(cachedHarness.calls.remoteGetShellSnapshotCount).toBe(0);
+        }).pipe(Effect.scoped, Effect.provide(cachedHarness.layer));
+
+        // 2. Sleeping Boat without cached project list: explicit targetProjectId cannot be verified -> ready=false.
+        const uncachedHarness = makeHarness({
+          boatState: "asleep",
+          boatDaemonProjects: null,
+        });
+        yield* Effect.gen(function* () {
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const preflight = yield* coordinator.preflight({
+            direction: "local_to_boat",
+            sourceEnvironmentId: LOCAL_ENV_ID,
+            sourceThreadId: LOCAL_THREAD_ID,
+            target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+            targetProjectId: ProjectId.make("proj-unverified"),
+          });
+          expect(preflight.ready).toBe(false);
+          expect(preflight.needsProjectSelection).toBe(true);
+          expect(preflight.resolvedTargetProjectId).toBeNull();
+          expect(preflight.warnings.some((w) => w.includes("project list is unavailable"))).toBe(
+            true,
+          );
+          expect(uncachedHarness.calls.remoteGetShellSnapshotCount).toBe(0);
+        }).pipe(Effect.scoped, Effect.provide(uncachedHarness.layer));
+
+        // 3. Sleeping Boat with multiple originProjectId matches: MUST report ambiguity
+        //    even if only one of them matches repoKey (never fall through to repo matching).
+        const ambiguousOriginHarness = makeHarness({
+          boatState: "asleep",
+          boatDaemonProjects: [
+            {
+              id: "proj-boat-origin-1",
+              originProjectId: LOCAL_PROJECT_ID,
+              title: "sail-1",
+              repoKey: SAMPLE_REPO_IDENTITY.canonicalKey,
+            },
+            {
+              id: "proj-boat-origin-2",
+              originProjectId: LOCAL_PROJECT_ID,
+              title: "sail-2",
+              repoKey: "github.com/other/repo",
+            },
+          ],
+        });
+        yield* Effect.gen(function* () {
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const preflight = yield* coordinator.preflight({
+            direction: "local_to_boat",
+            sourceEnvironmentId: LOCAL_ENV_ID,
+            sourceThreadId: LOCAL_THREAD_ID,
+            target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+          });
+          expect(preflight.ready).toBe(false);
+          expect(preflight.needsProjectSelection).toBe(true);
+          expect(preflight.resolvedTargetProjectId).toBeNull();
+          expect(preflight.willAutoCloneProject).toBe(false);
+          expect(ambiguousOriginHarness.calls.remoteGetShellSnapshotCount).toBe(0);
+        }).pipe(Effect.scoped, Effect.provide(ambiguousOriginHarness.layer));
+      }),
+  );
 });
 describe("makeLiveBoatRemoteClient", () => {
   const mockTicketFetch: typeof fetch = async (input) => {
@@ -2668,6 +3379,360 @@ describe("makeLiveBoatRemoteClient", () => {
         expect(serverErr.message.length).toBeLessThan(350);
         expect(serverErr.message).not.toContain("top-secret-500");
         expect(serverErr.message).not.toContain("super-secret-token");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "streamHttpTransfer redacts signed path-segment credentials on 404 and 500 responses",
+    () =>
+      Effect.gen(function* () {
+        const pathToken404 = "eyJvcCI6ImRvd25sb2FkIn0.pathSecretSig404";
+        const pathToken500 = "eyJvcCI6ImRvd25sb2FkIn0.pathSecretSig500";
+        const attPathToken = "eyJvcCI6InVwbG9hZCJ9.attSecretSig500";
+
+        const servers = yield* Effect.acquireRelease(
+          Effect.promise(async () => {
+            const srcSrv = NodeHttp.createServer((req, res) => {
+              if (req.url?.includes(pathToken404)) {
+                res.writeHead(404);
+                res.end("not found");
+                return;
+              }
+              res.writeHead(500, { "content-type": "text/plain" });
+              res.end(
+                `Upstream failed for /api/session-transfers/${pathToken500}/bundle and http://127.0.0.1/api/attachments/upload/${attPathToken}`,
+              );
+            });
+            const dstSrv = NodeHttp.createServer((_req, res) => {
+              res.writeHead(200);
+              res.end("ok");
+            });
+            await new Promise<void>((resolve) => srcSrv.listen(0, "127.0.0.1", () => resolve()));
+            await new Promise<void>((resolve) => dstSrv.listen(0, "127.0.0.1", () => resolve()));
+            const srcAddr = srcSrv.address();
+            const dstAddr = dstSrv.address();
+            if (
+              !srcAddr ||
+              typeof srcAddr === "string" ||
+              !dstAddr ||
+              typeof dstAddr === "string"
+            ) {
+              throw new Error("Expected numeric ports");
+            }
+            return { srcSrv, dstSrv, srcPort: srcAddr.port, dstPort: dstAddr.port };
+          }),
+          ({ srcSrv, dstSrv }) =>
+            Effect.promise(async () => {
+              await new Promise<void>((resolve) => srcSrv.close(() => resolve()));
+              await new Promise<void>((resolve) => dstSrv.close(() => resolve()));
+            }),
+        );
+
+        const client = SessionTransferCoordinator.makeLiveBoatRemoteClient(Option.none());
+
+        const err404 = yield* Effect.flip(
+          client.streamHttpTransfer({
+            sourceUrl: `http://127.0.0.1:${servers.srcPort}/api/session-transfers/${pathToken404}/bundle`,
+            targetUrl: `http://127.0.0.1:${servers.dstPort}/api/session-transfers/dst-tok/bundle`,
+          }),
+        );
+        expect(err404.code).toBe("not_found");
+        expect(err404.message).toContain("/api/session-transfers/[REDACTED]");
+        expect(err404.message).not.toContain(pathToken404);
+        expect(err404.message).not.toContain("pathSecretSig404");
+
+        const err500 = yield* Effect.flip(
+          client.streamHttpTransfer({
+            sourceUrl: `http://127.0.0.1:${servers.srcPort}/api/session-transfers/${pathToken500}/bundle`,
+            targetUrl: `http://127.0.0.1:${servers.dstPort}/api/session-transfers/dst-tok/bundle`,
+          }),
+        );
+        expect(err500.code).toBe("workspace_error");
+        expect(err500.message).toContain("/api/session-transfers/[REDACTED]");
+        expect(err500.message).toContain("/api/attachments/[REDACTED]");
+        expect(err500.message).not.toContain(pathToken500);
+        expect(err500.message).not.toContain(attPathToken);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "streamHttpTransfer preserves early target 413/503 status and delayed error body across Content-Length and chunked sources",
+    () =>
+      Effect.gen(function* () {
+        const chunk64k = Buffer.alloc(64 * 1024, 0x55);
+        const totalSize = chunk64k.byteLength * 4;
+
+        const servers = yield* Effect.acquireRelease(
+          Effect.promise(async () => {
+            const srcSrv = NodeHttp.createServer((req, res) => {
+              const isChunked = req.url?.startsWith("/paced-chunked");
+              if (isChunked) {
+                res.writeHead(200, { "content-type": "application/octet-stream" });
+              } else {
+                res.writeHead(200, {
+                  "content-type": "application/octet-stream",
+                  "content-length": String(totalSize),
+                });
+              }
+              res.write(chunk64k);
+              // @effect-diagnostics-next-line globalTimers:off -- Raw Node HTTP mock server paces chunks outside an Effect fiber.
+              const timer = setTimeout(() => {
+                if (!res.destroyed && !res.writableEnded) {
+                  res.write(chunk64k);
+                  res.write(chunk64k);
+                  res.end(chunk64k);
+                }
+              }, 300);
+              res.on("close", () => clearTimeout(timer));
+            });
+
+            const dstSrv = NodeHttp.createServer((req, res) => {
+              const status = req.url?.includes("413") ? 413 : 503;
+              const detail =
+                status === 413 ? "bundle exceeds 100 MiB limit" : "boat staging disk busy";
+              res.writeHead(status, { "content-type": "text/plain" });
+              res.flushHeaders();
+              // @effect-diagnostics-next-line globalTimers:off -- Raw Node HTTP mock server delays error body outside an Effect fiber.
+              setTimeout(() => {
+                if (!res.destroyed && !res.writableEnded) {
+                  res.end(detail);
+                }
+              }, 100);
+              req.resume();
+            });
+
+            await new Promise<void>((resolve) => srcSrv.listen(0, "127.0.0.1", () => resolve()));
+            await new Promise<void>((resolve) => dstSrv.listen(0, "127.0.0.1", () => resolve()));
+            const srcAddr = srcSrv.address();
+            const dstAddr = dstSrv.address();
+            if (
+              !srcAddr ||
+              typeof srcAddr === "string" ||
+              !dstAddr ||
+              typeof dstAddr === "string"
+            ) {
+              throw new Error("Expected numeric ports");
+            }
+            return { srcSrv, dstSrv, srcPort: srcAddr.port, dstPort: dstAddr.port };
+          }),
+          ({ srcSrv, dstSrv }) =>
+            Effect.promise(async () => {
+              srcSrv.closeAllConnections();
+              dstSrv.closeAllConnections();
+              await new Promise<void>((resolve) => srcSrv.close(() => resolve()));
+              await new Promise<void>((resolve) => dstSrv.close(() => resolve()));
+            }),
+        );
+
+        const client = SessionTransferCoordinator.makeLiveBoatRemoteClient(Option.none());
+
+        for (const sourcePath of ["/paced-cl", "/paced-chunked"]) {
+          const err413 = yield* Effect.flip(
+            client.streamHttpTransfer({
+              sourceUrl: `http://127.0.0.1:${servers.srcPort}${sourcePath}`,
+              targetUrl: `http://127.0.0.1:${servers.dstPort}/reject-413`,
+            }),
+          );
+          expect(err413.code).toBe("bundle_too_large");
+          expect(err413.message).toContain("HTTP 413");
+          expect(err413.message).toContain("bundle exceeds 100 MiB limit");
+
+          const err503 = yield* Effect.flip(
+            client.streamHttpTransfer({
+              sourceUrl: `http://127.0.0.1:${servers.srcPort}${sourcePath}`,
+              targetUrl: `http://127.0.0.1:${servers.dstPort}/reject-503`,
+            }),
+          );
+          expect(err503.code).toBe("workspace_error");
+          expect(err503.message).toContain("HTTP 503");
+          expect(err503.message).toContain("boat staging disk busy");
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "streamHttpTransfer fails when target returns early 2xx while source truncates before Content-Length",
+    () =>
+      Effect.gen(function* () {
+        const servers = yield* Effect.acquireRelease(
+          Effect.promise(async () => {
+            const srcSrv = NodeNet.createServer((socket) => {
+              socket.once("data", () => {
+                socket.write(
+                  "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 100000\r\nConnection: close\r\n\r\n",
+                );
+                socket.write(Buffer.alloc(8192, 0x41));
+                // @effect-diagnostics-next-line globalTimers:off -- Raw Node TCP mock server truncates socket outside an Effect fiber.
+                setTimeout(() => {
+                  socket.end();
+                }, 60);
+              });
+            });
+
+            const dstSrv = NodeHttp.createServer((req, res) => {
+              const status = req.url?.includes("201") ? 201 : 200;
+              res.writeHead(status, { "content-type": "application/json" });
+              res.end(JSON.stringify({ ok: true }));
+              req.resume();
+            });
+
+            await new Promise<void>((resolve) => srcSrv.listen(0, "127.0.0.1", () => resolve()));
+            await new Promise<void>((resolve) => dstSrv.listen(0, "127.0.0.1", () => resolve()));
+            const srcAddr = srcSrv.address();
+            const dstAddr = dstSrv.address();
+            if (
+              !srcAddr ||
+              typeof srcAddr === "string" ||
+              !dstAddr ||
+              typeof dstAddr === "string"
+            ) {
+              throw new Error("Expected numeric ports");
+            }
+            return { srcSrv, dstSrv, srcPort: srcAddr.port, dstPort: dstAddr.port };
+          }),
+          ({ srcSrv, dstSrv }) =>
+            Effect.promise(async () => {
+              dstSrv.closeAllConnections();
+              await new Promise<void>((resolve) => srcSrv.close(() => resolve()));
+              await new Promise<void>((resolve) => dstSrv.close(() => resolve()));
+            }),
+        );
+
+        const client = SessionTransferCoordinator.makeLiveBoatRemoteClient(Option.none());
+
+        for (const dstPath of ["/early-200", "/early-201"]) {
+          const err = yield* Effect.flip(
+            client.streamHttpTransfer({
+              sourceUrl: `http://127.0.0.1:${servers.srcPort}/truncated`,
+              targetUrl: `http://127.0.0.1:${servers.dstPort}${dstPath}`,
+            }),
+          );
+          expect(err.code).toBe("workspace_error");
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "streamHttpTransfer strictly rejects invalid or conflicting Content-Length and malformed or truncated chunked framing",
+    () =>
+      Effect.gen(function* () {
+        let receivedTargetBytes = Buffer.alloc(0);
+
+        const servers = yield* Effect.acquireRelease(
+          Effect.promise(async () => {
+            const srcSrv = NodeNet.createServer((socket) => {
+              socket.once("data", (buf) => {
+                const reqLine = buf.toString("latin1").split("\r\n")[0] ?? "";
+                if (reqLine.includes("/bad-cl-alpha")) {
+                  socket.end(
+                    "HTTP/1.1 200 OK\r\nContent-Length: abc\r\nConnection: close\r\n\r\nhello",
+                  );
+                  return;
+                }
+                if (reqLine.includes("/bad-cl-conflict")) {
+                  socket.end(
+                    "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 10\r\nConnection: close\r\n\r\nhello",
+                  );
+                  return;
+                }
+                if (reqLine.includes("/bad-chunk-delim")) {
+                  socket.end(
+                    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhelloXX0\r\n\r\n",
+                  );
+                  return;
+                }
+                if (reqLine.includes("/truncated-chunk-trailer")) {
+                  socket.end(
+                    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\n",
+                  );
+                  return;
+                }
+                if (reqLine.includes("/valid-chunk-with-trailer")) {
+                  socket.end(
+                    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\nX-Checksum: deadbeef\r\n\r\n",
+                  );
+                  return;
+                }
+                socket.end("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+              });
+            });
+
+            const dstSrv = NodeHttp.createServer((req, res) => {
+              const chunks: Buffer[] = [];
+              req.on("data", (chunk: Buffer) => chunks.push(chunk));
+              req.on("end", () => {
+                receivedTargetBytes = Buffer.concat(chunks);
+                res.writeHead(200);
+                res.end("ok");
+              });
+            });
+
+            await new Promise<void>((resolve) => srcSrv.listen(0, "127.0.0.1", () => resolve()));
+            await new Promise<void>((resolve) => dstSrv.listen(0, "127.0.0.1", () => resolve()));
+            const srcAddr = srcSrv.address();
+            const dstAddr = dstSrv.address();
+            if (
+              !srcAddr ||
+              typeof srcAddr === "string" ||
+              !dstAddr ||
+              typeof dstAddr === "string"
+            ) {
+              throw new Error("Expected numeric ports");
+            }
+            return { srcSrv, dstSrv, srcPort: srcAddr.port, dstPort: dstAddr.port };
+          }),
+          ({ srcSrv, dstSrv }) =>
+            Effect.promise(async () => {
+              dstSrv.closeAllConnections();
+              await new Promise<void>((resolve) => srcSrv.close(() => resolve()));
+              await new Promise<void>((resolve) => dstSrv.close(() => resolve()));
+            }),
+        );
+
+        const client = SessionTransferCoordinator.makeLiveBoatRemoteClient(Option.none());
+
+        const badAlpha = yield* Effect.flip(
+          client.streamHttpTransfer({
+            sourceUrl: `http://127.0.0.1:${servers.srcPort}/bad-cl-alpha`,
+            targetUrl: `http://127.0.0.1:${servers.dstPort}/upload`,
+          }),
+        );
+        expect(badAlpha.code).toBe("workspace_error");
+        expect(badAlpha.message).toContain("Content-Length");
+
+        const badConflict = yield* Effect.flip(
+          client.streamHttpTransfer({
+            sourceUrl: `http://127.0.0.1:${servers.srcPort}/bad-cl-conflict`,
+            targetUrl: `http://127.0.0.1:${servers.dstPort}/upload`,
+          }),
+        );
+        expect(badConflict.code).toBe("workspace_error");
+        expect(badConflict.message).toContain("Conflicting Content-Length");
+
+        const badChunkDelim = yield* Effect.flip(
+          client.streamHttpTransfer({
+            sourceUrl: `http://127.0.0.1:${servers.srcPort}/bad-chunk-delim`,
+            targetUrl: `http://127.0.0.1:${servers.dstPort}/upload`,
+          }),
+        );
+        expect(badChunkDelim.code).toBe("workspace_error");
+        expect(badChunkDelim.message).toContain("Malformed chunked");
+
+        const truncatedTrailer = yield* Effect.flip(
+          client.streamHttpTransfer({
+            sourceUrl: `http://127.0.0.1:${servers.srcPort}/truncated-chunk-trailer`,
+            targetUrl: `http://127.0.0.1:${servers.dstPort}/upload`,
+          }),
+        );
+        expect(truncatedTrailer.code).toBe("workspace_error");
+        expect(truncatedTrailer.message).toContain("prematurely");
+
+        const validWithTrailer = yield* client.streamHttpTransfer({
+          sourceUrl: `http://127.0.0.1:${servers.srcPort}/valid-chunk-with-trailer`,
+          targetUrl: `http://127.0.0.1:${servers.dstPort}/upload`,
+        });
+        expect(validWithTrailer.bytesTransferred).toBe(5);
+        expect(receivedTargetBytes.toString("utf8")).toBe("hello");
       }).pipe(Effect.scoped),
   );
 });

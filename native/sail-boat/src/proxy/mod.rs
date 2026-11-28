@@ -353,7 +353,7 @@ async fn fallback(State(m): M, upgrade: Result<WebSocketUpgrade, WebSocketUpgrad
 /// Plain requests without a route of their own need the live machine: wake it if needed, swap in
 /// the upstream token. URL-token requests without a bearer may come from any web page: they reach a
 /// running machine but never wake it or keep it awake. Session-transfer routes signal user activity
-/// only after upstream accepts the request (not on 401/403/502/503) so unauthorized or expired
+/// only after upstream returns a 2xx response so invalid, expired, or missing (e.g. 404)
 /// transfer URLs cannot invalidate caches or send keep-awake heartbeats. The assets a recorded
 /// answer points to are kept as they pass, and answered from what was kept while the machine does
 /// not run.
@@ -381,12 +381,7 @@ async fn forward(State(m): M, req: Request) -> Response {
         wake: authorized,
     };
     let answer = relay(&m, parts, body, route).await;
-    if is_session_transfer
-        && !matches!(
-            answer.status(),
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE
-        )
-    {
+    if is_session_transfer && answer.status().is_success() {
         m.user_action();
     }
     // A range of it (206) is not the asset.
@@ -681,6 +676,10 @@ mod tests {
                 post(|| async { (StatusCode::FORBIDDEN, "expired token") }),
             )
             .route(
+                "/api/session-transfers/invalid-token/bundle",
+                get(|| async { (StatusCode::NOT_FOUND, "not found") }),
+            )
+            .route(
                 "/api/session-transfers/tx-ok/bundle/download",
                 get(|| async { (StatusCode::OK, "ok") }),
             );
@@ -727,6 +726,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res_403_bearer.status(), StatusCode::FORBIDDEN);
+        assert_eq!(machine.cache.lock().unwrap().epoch, epoch0);
+
+        // 404 URL-token GET (invalid/expired token) must NOT trigger user_action.
+        let res_404_no_bearer = client
+            .get(format!("{local_url}/api/session-transfers/invalid-token/bundle"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res_404_no_bearer.status(), StatusCode::NOT_FOUND);
+        assert_eq!(machine.cache.lock().unwrap().epoch, epoch0);
+
+        // 404 GET even with bearer must NOT trigger user_action on /api/session-transfers/.
+        let res_404_bearer = client
+            .get(format!("{local_url}/api/session-transfers/invalid-token/bundle"))
+            .bearer_auth(&bearer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res_404_bearer.status(), StatusCode::NOT_FOUND);
         assert_eq!(machine.cache.lock().unwrap().epoch, epoch0);
 
         // Accepted 200 GET DOES trigger user_action.
