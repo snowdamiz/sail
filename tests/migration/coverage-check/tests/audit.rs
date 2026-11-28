@@ -487,6 +487,30 @@ fn rejects_a_rehashed_reconnect_trace_that_loses_the_draft() {
 }
 
 #[test]
+fn verifies_the_published_linux_chromium_browser_panel() {
+    for state in ["preview-rendered", "tool-result"] {
+        let fixture = Fixture::visual("browser-preview", state, "served-chromium-linux");
+        let output = fixture.run();
+        assert!(
+            output.status.success(),
+            "{state}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["verifiedVisualReferenceObservations"], 1);
+    }
+}
+
+#[test]
+fn rejects_a_rehashed_browser_trace_with_a_different_tool_result() {
+    let mut fixture = Fixture::visual("browser-preview", "tool-result", "served-chromium-linux");
+    fixture.edit_process_json(0, "capture-receipt", |capture| {
+        capture["trace"][3]["observed"]["tool"]["value"]["body"] = json!("Changed page");
+    });
+    fixture.rejects("Browser panel trace disagrees with the observed evaluateInnerTab result");
+}
+
+#[test]
 fn uses_generic_visual_checks_for_non_linux_display_references() {
     let mut fixture = Fixture::visual("chat-turn", "settled", "electron-macos-arm64");
     fixture.catalog["cases"][0]["id"] = json!("chat-display");

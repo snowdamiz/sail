@@ -369,6 +369,11 @@ def capture():
         with preview_session() as call:
             capture_reconnect(ROOT, source, call, prepare)
         return
+    if (ROOT / "browser-preview").is_file():
+        from browser_preview import capture_browser_preview
+
+        with preview_session() as call:
+            return capture_browser_preview(ROOT, source, call, prepare)
     probe = Path("/fixture/settled-replay-browser.js").read_text().strip()
     if "captureRounds" in source:
         with preview_session() as call:
@@ -402,14 +407,14 @@ for line in sys.stdin:
         elif method in ("session/set_model", "session/set_mode", "session/close", "authenticate"):
             result = {}
         elif method == "session/prompt":
-            capture()
+            reply = capture() or "Captured settled Replay."
             send({
                 "method": "session/update",
                 "params": {
                     "sessionId": request["params"]["sessionId"],
                     "update": {
                         "sessionUpdate": "agent_message_chunk",
-                        "content": {"type": "text", "text": "Captured settled Replay."},
+                        "content": {"type": "text", "text": reply},
                     },
                 },
             })

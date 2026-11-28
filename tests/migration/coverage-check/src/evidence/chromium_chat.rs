@@ -15,11 +15,12 @@ pub(super) fn verify(
 ) -> Result<()> {
     let state = capture_witness::observed_state(evidence, observation, run, capture)?;
     let name = observation.cell.state.as_str();
-    let reconnect = observation.cell.case_id == "disconnect-recover";
-    let records = &state[if reconnect {
-        "reconnectStates"
-    } else {
-        "chatStates"
+    let case = observation.cell.case_id.as_str();
+    let records = &state[match case {
+        "browser-preview" => "previewStates",
+        "disconnect-recover" => "reconnectStates",
+        "chat-view-states" => "chatStates",
+        _ => anyhow::bail!("unknown Linux Chromium capture case {case}"),
     }];
     let record = &records[name];
     let profile = &record["profile"];
@@ -47,16 +48,18 @@ pub(super) fn verify(
             "chat state profile disagrees on {field}"
         );
     }
-    if reconnect {
-        ensure!(
-            profile["fonts"]
-                .as_array()
-                .is_some_and(|fonts| fonts.len() == 2),
-            "reconnect capture must record both body and code fonts"
-        );
-        verify_reconnect(&state, records, name, capture)?;
-    } else {
-        verify_chat_view(&state, &record["observed"], name, capture)?;
+    match case {
+        "browser-preview" => verify_browser_preview(&state, &record["observed"], name, capture)?,
+        "disconnect-recover" => {
+            ensure!(
+                profile["fonts"]
+                    .as_array()
+                    .is_some_and(|fonts| fonts.len() == 2),
+                "reconnect capture must record both body and code fonts"
+            );
+            verify_reconnect(&state, records, name, capture)?;
+        }
+        _ => verify_chat_view(&state, &record["observed"], name, capture)?,
     }
     capture_witness::verify_png(image, 1280, 1200)
 }
@@ -222,6 +225,74 @@ fn verify_reconnect(state: &Value, records: &Value, name: &str, capture: &Captur
                 && step.action == *action
                 && serde_json::to_value(&step.observed)? == expected,
             "reconnect trace disagrees with the observed {state_name} state"
+        );
+    }
+    Ok(())
+}
+
+fn verify_browser_preview(
+    state: &Value,
+    observed: &Value,
+    name: &str,
+    capture: &Capture,
+) -> Result<()> {
+    const URL: &str = "http://127.0.0.1:47720/";
+    let panel = json!({
+        "address": URL, "canvasVisible": true, "panelMaximized": true,
+        "originalTitle": false, "updatedTitle": true, "focusedElement": "BODY",
+    });
+    ensure!(
+        state["pageSha256"] == "0bce63921bffbda9218078ad2f454ad850061bd492f01e9f26a80984503b3e7c"
+            && state["titleChange"]
+                == json!({
+                    "before": "Original title", "after": "Updated title", "url": URL,
+                    "sameInnerTab": true, "releasedByClient": true,
+                })
+            && *observed == panel,
+        "Browser panel capture disagrees with the pinned page or title change"
+    );
+    let value = json!({"title": "Updated title", "body": "Click to rename"});
+    let tool = json!({
+        "name": "preview_evaluate",
+        "expression": "({title: document.title, body: document.body.textContent.trim()})",
+        "value": value,
+    });
+    let provider_run = json!({"status": "completed", "reply": value});
+    ensure!(
+        state["tool"] == tool && state["providerRun"] == provider_run,
+        "Browser tool result disagrees with the completed provider turn"
+    );
+    let steps = [
+        (
+            "openFixturePage",
+            json!({"title": "Original title", "url": URL}),
+        ),
+        (
+            "renamePageThroughCanvas",
+            json!({"title": "Updated title", "url": URL, "sameInnerTab": true}),
+        ),
+        (
+            "releaseBrowserControl",
+            json!({"owner": "unclaimed", "panel": panel}),
+        ),
+        (
+            "evaluateInnerTab",
+            json!({"tool": tool, "providerRun": provider_run}),
+        ),
+    ];
+    let count = match name {
+        "preview-rendered" => 3,
+        "tool-result" => 4,
+        _ => anyhow::bail!("unknown Linux Chromium Browser panel state {name}"),
+    };
+    ensure!(
+        capture.trace.len() == count,
+        "wrong Browser panel action trace length"
+    );
+    for ((action, expected), step) in steps.into_iter().zip(&capture.trace) {
+        ensure!(
+            step.action == action && serde_json::to_value(&step.observed)? == expected,
+            "Browser panel trace disagrees with the observed {action} result"
         );
     }
     Ok(())

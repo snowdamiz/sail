@@ -229,6 +229,8 @@ Append `--reconnect` to the [Linux Chromium capture command](#linux) for two new
 
 ## Capture the Browser panel fixture
 
+For two Linux Chromium repeats, use the [Linux capture command](#linux) with separate output directories. Mount `$PWD/scripts/scenarios/browser-tab-follows-page-title.e2e.ts` at `/preview-scenario.ts` read-only and append `--browser-preview`. The probe opens and maximizes the packaged Browser panel inside its fixture thread, clicks the page canvas, and verifies the title changed on the same tab and URL. It releases client control before evaluating the inner tab. The CLI checks that the completed provider turn returned the exact tool result. [Linux Chromium Browser panel](observations/served-chromium-linux/browser-panel)
+
 Serve the page from [the title-change scenario](../../../scripts/scenarios/browser-tab-follows-page-title.e2e.ts) on loopback. Open it in the seeded thread's **Browser** panel and click the page canvas. Wait for the tab to display **Updated title** at the same address. Select **Release control** and use the thread provider's `preview_status` to locate the tab. Call `preview_evaluate` on that tab with the expression in the [Browser panel receipt](observations/served-chromium-macos/browser-panel/receipt.json). The receipt includes the packaged v0.1.17 screenshots and the tool's returned value.
 
 The [browser availability receipt](observations/browser-availability.json) records WebDriver startup failures for Safari and stock Firefox on macOS. Those macOS Replay profiles remain open.

@@ -503,5 +503,21 @@
       }
     },
     "scope": "Two isolated published v0.1.17 target homes and Browser panel sessions on Debian 12.15 arm64. Each run terminated the real thread host, confirmed its listener refused connections, clicked Retry now while it was stopped, and restarted the same home. The original authenticated cookie session reconnected its WebSocket. The same tab kept the draft and restored Send, and the saved Replay message and run payloads matched the pinned seed. Candidate comparisons and timing remain open."
+  },
+  "linuxChromiumBrowserPanel": {
+    "directory": "served-chromium-linux/browser-panel",
+    "comparisons": {
+      "preview-rendered": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "tool-result": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      }
+    },
+    "scope": "Two isolated published v0.1.17 Browser panel runs on Debian 12.15 arm64. Both maximized the actual product panel, changed the inner page title through the canvas without changing the tab or address, and released control. The packaged provider returned the exact evaluation result as its completed reply. Candidate comparisons and timing remain open."
   }
 }

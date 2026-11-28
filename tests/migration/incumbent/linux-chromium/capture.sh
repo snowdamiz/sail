@@ -8,6 +8,7 @@ mkdir "$root"
 case "${2:-}" in
   --chat-states) touch "$root/chat-states" ;;
   --reconnect) touch "$root/reconnect" ;;
+  --browser-preview) touch "$root/browser-preview" ;;
   "") ;;
   *) exit 2 ;;
 esac
@@ -112,6 +113,25 @@ elif [ -f "$root/reconnect" ]; then
   for state in online offline reconnecting recovered; do
     test -s "$root/$state/capture.png"
   done
+elif [ -f "$root/browser-preview" ]; then
+  for state in preview-rendered tool-result; do
+    test -s "$root/$state/capture.png"
+  done
+  python3 - "$root" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+path = root / "state.json"
+state = json.loads(path.read_text())
+run = json.loads((root / "capture-run.private.json").read_text())
+reply = json.loads(run["reply"])
+assert run["status"] == "completed" and run["error"] is None
+assert reply == state["tool"]["value"]
+state["providerRun"] = {"status": run["status"], "reply": reply}
+path.write_text(json.dumps(state, indent=2) + "\n")
+PY
 else
   test -s "$root/receipt.json"
   test -s "$root/capture.png"
