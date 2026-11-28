@@ -941,4 +941,219 @@ describe("ProviderAuthSync", () => {
         }).pipe(Effect.provide(Layer.merge(NodeCrypto.layer, NodeServices.layer))),
       ),
   );
+
+  it.effect(
+    "reconciles mixed-case Codex_Home vs CODEX_HOME on win32 without duplicating env vars or misrouting auth.json",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = yield* fs.makeTempDirectoryScoped({ prefix: "sail-win-reconcile-sync-" });
+          const dstHome = path.join(root, "dst-home");
+          const dstState = path.join(root, "dst-state");
+          const existingCodexDir = path.join(dstHome, "existing-codex");
+          const incomingCodexDir = path.join(dstHome, "incoming-codex");
+          const codexEnvId = ProviderInstanceId.make("codex_win_reconcile");
+
+          const dstNode = makeServerNode({
+            homeDir: dstHome,
+            stateDir: dstState,
+            platform: "win32",
+            settingsOverrides: {
+              providerInstances: {
+                [codexEnvId]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  displayName: "Codex Win Reconcile",
+                  enabled: true,
+                  environment: [{ name: "Codex_Home", value: existingCodexDir, sensitive: false }],
+                },
+              },
+            },
+          });
+
+          const codexAuth = JSON.stringify({
+            tokens: { access_token: "codex-reconcile-token" },
+            last_refresh: "2026-11-27T12:20:00.000Z",
+          });
+
+          yield* Effect.gen(function* () {
+            const sync = yield* ProviderAuthSync.ProviderAuthSync;
+            const settings = yield* ServerSettingsService;
+
+            const result = yield* sync.importBundle({
+              preferExistingNewer: true,
+              bundle: {
+                version: 1,
+                instances: [
+                  {
+                    instanceId: codexEnvId,
+                    driver: ProviderDriverKind.make("codex"),
+                    displayName: "Codex Win Reconcile",
+                    enabled: true,
+                    environment: [
+                      { name: "CODEX_HOME", value: incomingCodexDir, sensitive: false },
+                    ],
+                  },
+                ],
+                storeBlobs: [],
+                antigravityFiles: [],
+                cliAuth: [{ kind: "codex", instanceId: codexEnvId, authJson: codexAuth }],
+              },
+            });
+            assert.isTrue(result.changed);
+
+            const nextSettings = yield* settings.getSettings;
+            const instance = nextSettings.providerInstances[codexEnvId];
+            assert.strictEqual(instance?.environment?.length, 1);
+            assert.strictEqual(instance?.environment?.[0]?.name, "Codex_Home");
+            assert.strictEqual(instance?.environment?.[0]?.value, existingCodexDir);
+            assert.isUndefined(
+              (instance?.config as { shadowHomePath?: string } | undefined)?.shadowHomePath,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(existingCodexDir, "auth.json")),
+              codexAuth,
+            );
+            assert.isFalse(yield* fs.exists(path.join(incomingCodexDir, "auth.json")));
+          }).pipe(Effect.provide(dstNode.fullLayer));
+        }).pipe(Effect.provide(Layer.merge(NodeCrypto.layer, NodeServices.layer))),
+      ),
+  );
+
+  it.effect(
+    "resolves secret-backed Claude_Config_Dir and Codex_Home on win32 without generating isolated homes, and skips unresolvable secret homes",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const nowMs = yield* Clock.currentTimeMillis;
+          const root = yield* fs.makeTempDirectoryScoped({ prefix: "sail-win-secret-home-sync-" });
+          const dstHome = path.join(root, "dst-home");
+          const dstState = path.join(root, "dst-state");
+          const secretClaudeDir = path.join(dstHome, "secret-claude");
+          const secretCodexDir = path.join(dstHome, "secret-codex");
+
+          const claudeSecretId = ProviderInstanceId.make("claudeAgent_secret_home");
+          const codexSecretId = ProviderInstanceId.make("codex_secret_home");
+          const codexUnresolvedId = ProviderInstanceId.make("codex_unresolved_secret_home");
+
+          const dstNode = makeServerNode({
+            homeDir: dstHome,
+            stateDir: dstState,
+            platform: "win32",
+            resolvedSecrets: new Map([
+              ["op://vault/claude/home", secretClaudeDir],
+              ["op://vault/codex/home", secretCodexDir],
+            ]),
+            settingsOverrides: {
+              secretProviders: {
+                [PORTABLE_VAULT_ID]: {
+                  kind: ONE_PASSWORD_KIND,
+                  label: "1Password SA",
+                  config: { serviceAccountToken: "ops_token" },
+                },
+              },
+              providerInstances: {
+                [claudeSecretId]: {
+                  driver: ProviderDriverKind.make("claudeAgent"),
+                  displayName: "Claude Secret Home",
+                  enabled: true,
+                  environment: [
+                    {
+                      name: "Claude_Config_Dir",
+                      value: { provider: PORTABLE_VAULT_ID, reference: "op://vault/claude/home" },
+                      sensitive: true,
+                    },
+                  ],
+                },
+                [codexSecretId]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  displayName: "Codex Secret Home",
+                  enabled: true,
+                  environment: [
+                    {
+                      name: "Codex_Home",
+                      value: { provider: PORTABLE_VAULT_ID, reference: "op://vault/codex/home" },
+                      sensitive: true,
+                    },
+                  ],
+                },
+                [codexUnresolvedId]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  displayName: "Codex Unresolved Secret Home",
+                  enabled: true,
+                  environment: [
+                    {
+                      name: "Codex_Home",
+                      value: { provider: PORTABLE_VAULT_ID, reference: "op://vault/codex/missing" },
+                      sensitive: true,
+                    },
+                  ],
+                },
+              },
+            },
+          });
+
+          const claudeCreds = JSON.stringify({
+            claudeAiOauth: {
+              accessToken: "claude-secret-home-token",
+              refreshToken: "claude-secret-home-refresh",
+              expiresAt: nowMs + 3_600_000,
+            },
+          });
+          const codexAuth = JSON.stringify({
+            tokens: { access_token: "codex-secret-home-token" },
+            last_refresh: "2026-11-27T12:25:00.000Z",
+          });
+
+          yield* Effect.gen(function* () {
+            const sync = yield* ProviderAuthSync.ProviderAuthSync;
+            const settings = yield* ServerSettingsService;
+
+            const result = yield* sync.importBundle({
+              bundle: {
+                version: 1,
+                instances: [],
+                storeBlobs: [],
+                antigravityFiles: [],
+                cliAuth: [
+                  { kind: "claude", instanceId: claudeSecretId, credentialsJson: claudeCreds },
+                  { kind: "codex", instanceId: codexSecretId, authJson: codexAuth },
+                  { kind: "codex", instanceId: codexUnresolvedId, authJson: codexAuth },
+                ],
+              },
+            });
+            assert.isTrue(result.changed);
+
+            const nextSettings = yield* settings.getSettings;
+            assert.isUndefined(
+              (nextSettings.providerInstances[claudeSecretId]?.config as { homePath?: string })
+                ?.homePath,
+            );
+            assert.isUndefined(
+              (nextSettings.providerInstances[codexSecretId]?.config as { shadowHomePath?: string })
+                ?.shadowHomePath,
+            );
+            assert.isUndefined(
+              (
+                nextSettings.providerInstances[codexUnresolvedId]?.config as {
+                  shadowHomePath?: string;
+                }
+              )?.shadowHomePath,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(secretClaudeDir, ".credentials.json")),
+              claudeCreds,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(secretCodexDir, "auth.json")),
+              codexAuth,
+            );
+            assert.isFalse(yield* fs.exists(path.join(dstHome, ".codex", "auth.json")));
+          }).pipe(Effect.provide(dstNode.fullLayer));
+        }).pipe(Effect.provide(Layer.merge(NodeCrypto.layer, NodeServices.layer))),
+      ),
+  );
 });
