@@ -45,9 +45,10 @@ To reproduce the [archived Replay controls](incumbent/observations/harness-contr
 
 ```sh
 python3 tests/migration/record-harness-controls.py "$scratch/controls"
+vp fmt "$scratch/controls/receipt.json" "$scratch/controls/comparisons.json"
 ```
 
-The script compares the two archived Chromium captures twice, then changes one input in each scratch copy. It records the mutation, the comparator result, and a PNG rendered from the five results.
+The script compares the two archived Chromium captures twice, then changes one input in each scratch copy. It records the mutation, the comparator result, and a PNG rendered from the five results. Format both JSON outputs before comparing their file hashes with the catalog.
 
 ## Reuse the macOS capture process
 
