@@ -94,6 +94,14 @@ Use the same browser cookie to request a v2 WebSocket ticket. Read the projectio
 
 The [read-only receipt](observations/served-chromium-macos/read-only-chat/receipt.json) records the published and candidate behavior. The candidate shows the Poteto control alongside the disabled Send action. The whole-window comparison records 3,478 changed composer pixels and 219 changed pixels from the independently seeded runs' elapsed-time labels.
 
+## Capture the reading position and empty thread
+
+On the published scratch host, start a Replay **Multi turn** thread with **Start**. Submit the [70-sentence reading fixture](../../../scripts/scenarios/side-panel-preserves-reading-position.e2e.ts) through the browser composer and wait for **second fixture turn complete**. Create an empty thread using the Replay wire fixture's `thread.create` request. Use a different thread ID and title and leave its transcript empty. Back up this SQLite state for the candidate host.
+
+In the long thread, close the sidebar and details, expand the full user message, and position character 2,500 at 48 CSS pixels from the timeline's top. Open the right panel and check the same character and active control. In the empty thread, focus the composer and check the empty hint and zero saved runs and messages.
+
+The [reading position receipt](observations/served-chromium-macos/reading-position/receipt.json) records Browser panel actions and two full-resolution Chromium captures per state and build. The anchor stayed at 47.75 CSS pixels across the panel transition, and the empty composer kept focus. The cross-build images differ by 3,170 pixels in the composer row where Poteto shifts the model control.
+
 ## Capture chat loading and reconnect
 
 Run the packaged server with the seeded home. Put [the loopback gate](thread-load-gate.mjs) in front of it and pair the browser at the gate's port. Use a fresh origin or browser profile so the client has no saved transcript for the thread.
