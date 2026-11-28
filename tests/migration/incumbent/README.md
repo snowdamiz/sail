@@ -44,6 +44,10 @@ Run the published Linux arm64 CLI archive twice under separate scratch homes wit
 
 The [Electron comparisons](observations/electron-macos-arm64/settled-hover/comparisons.json) record zero changed pixels and trace steps between the two v0.1.17 copies and between v0.1.17 and the [published v0.1.18 build](observations/release-revisions/v0.1.18.json). All 42 samples produced matching PNGs and traces. The [native capture timings](observations/electron-macos-arm64/settled-hover/capture-timings.json) show p95s of 710 and 1,050 ms for the two v0.1.17 copies and 968 ms for v0.1.18. The newer release exceeded the 15% budget against the first incumbent. The screenshot stage took 621 ms in that v0.1.18 sample. This timing covers the already-loaded fixture and includes the macOS screenshot command.
 
+## Capture Electron display variants
+
+Open the settled thread in the packaged macOS app. Use **Settings → Appearance** for light and dark modes and **Settings → General → Language** for German. For 120% zoom, choose **View → Actual Size**, then **View → Zoom In** twice. Read the zoom factor from the desktop bridge and keep the physical capture dimensions with the renderer's CSS dimensions. Capture the docked sidebar at 1100 × 780 points and the thread and sidebar sheet at 640 × 780 points. [Display receipts](observations/electron-macos-arm64/display/receipt.json)
+
 ## Check approval and client compatibility
 
 The [approval receipt](observations/served-chromium-macos/approval/receipt.json) records the published Chromium client's supervised Replay approval and decline paths, SQLite outcomes, and disabled approval controls in a read-only session. The [version rejection receipt](observations/served-chromium-macos/version-rejection/receipt.json) records the published server's HTTP 426 and the published client's **Update** and **Retry update** states against the [simulated older service](version-rejection/README.md).

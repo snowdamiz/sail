@@ -167,7 +167,57 @@
     "localesAtIncumbent": ["de", "en", "es", "fr", "ja", "ko", "pt-BR", "ru", "sv", "zh"],
     "localeSource": "apps/web/src/i18n/locales.ts",
     "requiredVariants": ["light", "dark", "zoomed", "translated", "compact", "wide"],
-    "concreteProfiles": [],
+    "concreteProfiles": [
+      {
+        "platformId": "electron-macos-arm64",
+        "state": "light",
+        "configurationId": "electron-macos-arm64-en-light-1100x780-2x",
+        "captureReceipt": "observations/electron-macos-arm64/display/receipt.json",
+        "screenshot": "observations/electron-macos-arm64/display/light.png"
+      },
+      {
+        "platformId": "electron-macos-arm64",
+        "state": "dark",
+        "configurationId": "electron-macos-arm64-en-dark-1100x780-2x",
+        "captureReceipt": "observations/electron-macos-arm64/display/receipt.json",
+        "screenshot": "observations/electron-macos-arm64/display/ref-theme.png"
+      },
+      {
+        "platformId": "electron-macos-arm64",
+        "state": "zoomed",
+        "configurationId": "electron-macos-arm64-en-dark-1100x780-2x-zoom-120",
+        "captureReceipt": "observations/electron-macos-arm64/display/receipt.json",
+        "screenshot": "observations/electron-macos-arm64/display/zoomed.png"
+      },
+      {
+        "platformId": "electron-macos-arm64",
+        "state": "translated",
+        "configurationId": "electron-macos-arm64-de-dark-1100x780-2x",
+        "captureReceipt": "observations/electron-macos-arm64/display/receipt.json",
+        "screenshot": "observations/electron-macos-arm64/display/translated.png"
+      },
+      {
+        "platformId": "electron-macos-arm64",
+        "state": "wide",
+        "configurationId": "electron-macos-arm64-en-dark-1100x780-2x-docked-sidebar",
+        "captureReceipt": "observations/electron-macos-arm64/display/receipt.json",
+        "screenshot": "observations/electron-macos-arm64/display/wide.png"
+      },
+      {
+        "platformId": "electron-macos-arm64",
+        "state": "compact",
+        "configurationId": "electron-macos-arm64-en-dark-640x780-2x",
+        "captureReceipt": "observations/electron-macos-arm64/display/receipt.json",
+        "screenshot": "observations/electron-macos-arm64/display/compact.png"
+      },
+      {
+        "platformId": "electron-macos-arm64",
+        "state": "compact",
+        "configurationId": "electron-macos-arm64-en-dark-640x780-2x-sidebar-sheet",
+        "captureReceipt": "observations/electron-macos-arm64/display/receipt.json",
+        "screenshot": "observations/electron-macos-arm64/display/compact-sidebar.png"
+      }
+    ],
     "localeConfig": "apps/web/gt.config.json"
   },
   "observationContract": {

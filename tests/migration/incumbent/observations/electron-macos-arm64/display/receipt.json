@@ -1,0 +1,299 @@
+{
+  "fixtureId": "chat-display",
+  "tag": "v0.1.17",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "artifact": "Sail-0.1.17-arm64.zip",
+  "artifactSha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+  "client": "Sail v0.1.17 (Electron 44.10.1)",
+  "os": "macOS 27.0.1 (26A434) arm64",
+  "capture": "Native macOS window screenshots. The recorded renderer CSS viewport reflects Electron page zoom.",
+  "states": [
+    {
+      "state": "light",
+      "configurationId": "electron-macos-arm64-en-light-1100x780-2x",
+      "action": "Set Light mode in Appearance and open the saved thread.",
+      "windowPoints": [1100, 780],
+      "displayScale": 2,
+      "observed": {
+        "heading": "Compatibility replay",
+        "reply": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "tableRows": 4,
+        "locale": "en",
+        "theme": "light",
+        "zoomFactor": 1,
+        "rendererCssViewport": {
+          "width": 1100,
+          "height": 780,
+          "devicePixelRatio": 2,
+          "visualViewportScale": 1
+        },
+        "motion": "standard",
+        "compactMedia": false,
+        "openSidebar": {
+          "buttonPressed": false,
+          "compact": false,
+          "docked": false
+        },
+        "attachmentControl": "Attach files",
+        "composerPlaceholder": "Ask anything. @ files, $ skills, / commands",
+        "focus": null,
+        "fonts": [
+          "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ]
+      },
+      "screenshot": {
+        "path": "light.png",
+        "sha256": "8af2d0354ff0ce03ad3c830ceca51606747395264d415728452f26d847267631",
+        "pixels": [2200, 1560]
+      }
+    },
+    {
+      "state": "dark",
+      "configurationId": "electron-macos-arm64-en-dark-1100x780-2x",
+      "action": "Set Dark mode in Appearance and open the saved thread.",
+      "windowPoints": [1100, 780],
+      "displayScale": 2,
+      "observed": {
+        "heading": "Compatibility replay",
+        "reply": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "tableRows": 4,
+        "locale": "en",
+        "theme": "dark",
+        "zoomFactor": 1,
+        "rendererCssViewport": {
+          "width": 1100,
+          "height": 780,
+          "devicePixelRatio": 2,
+          "visualViewportScale": 1
+        },
+        "motion": "standard",
+        "compactMedia": false,
+        "openSidebar": {
+          "buttonPressed": false,
+          "compact": false,
+          "docked": false
+        },
+        "attachmentControl": "Attach files",
+        "composerPlaceholder": "Ask anything. @ files, $ skills, / commands",
+        "focus": "Message Compatibility replay",
+        "fonts": [
+          "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ]
+      },
+      "screenshot": {
+        "path": "ref-theme.png",
+        "sha256": "12eda19556030ba7a2b3d4af64a004e03e45137c99d6f8724b2b970c19ac740b",
+        "pixels": [2200, 1560]
+      }
+    },
+    {
+      "state": "zoomed",
+      "configurationId": "electron-macos-arm64-en-dark-1100x780-2x-zoom-120",
+      "action": "Choose View → Actual Size, then View → Zoom In twice.",
+      "windowPoints": [1100, 780],
+      "displayScale": 2,
+      "observed": {
+        "heading": "Compatibility replay",
+        "reply": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "tableRows": 4,
+        "locale": "en",
+        "theme": "dark",
+        "zoomFactor": 1.2,
+        "rendererCssViewport": {
+          "width": 916,
+          "height": 650,
+          "devicePixelRatio": 2.4000000953674316,
+          "visualViewportScale": 1
+        },
+        "motion": "standard",
+        "compactMedia": false,
+        "openSidebar": {
+          "buttonPressed": false,
+          "compact": false,
+          "docked": false
+        },
+        "attachmentControl": "Attach files",
+        "composerPlaceholder": "Ask anything. @ files, $ skills, / commands",
+        "focus": "Message Compatibility replay",
+        "fonts": [
+          "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ]
+      },
+      "screenshot": {
+        "path": "zoomed.png",
+        "sha256": "676caf2586a11d312cffde71f3f136ebee4acf87fafc463786f3caca2ac530c3",
+        "pixels": [2200, 1560]
+      }
+    },
+    {
+      "state": "translated",
+      "configurationId": "electron-macos-arm64-de-dark-1100x780-2x",
+      "action": "Select Deutsch in General and open the saved thread.",
+      "windowPoints": [1100, 780],
+      "displayScale": 2,
+      "observed": {
+        "heading": "Compatibility replay",
+        "reply": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "tableRows": 4,
+        "locale": "de",
+        "theme": "dark",
+        "zoomFactor": 1,
+        "rendererCssViewport": {
+          "width": 1100,
+          "height": 780,
+          "devicePixelRatio": 2,
+          "visualViewportScale": 1
+        },
+        "motion": "standard",
+        "compactMedia": false,
+        "openSidebar": {
+          "buttonPressed": false,
+          "compact": false,
+          "docked": false
+        },
+        "attachmentControl": "Dateien anhängen",
+        "composerPlaceholder": "Frag einfach. @ Dateien, $ Skills, / Befehle",
+        "focus": null,
+        "fonts": [
+          "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ]
+      },
+      "screenshot": {
+        "path": "translated.png",
+        "sha256": "abf64fa4cba175b3d76f91a97a33ff0089a35786ef9789b38a6cd4158c47d777",
+        "pixels": [2200, 1560]
+      }
+    },
+    {
+      "state": "wide",
+      "configurationId": "electron-macos-arm64-en-dark-1100x780-2x-docked-sidebar",
+      "action": "Restore English and open the docked sidebar at wide size.",
+      "windowPoints": [1100, 780],
+      "displayScale": 2,
+      "observed": {
+        "heading": "Compatibility replay",
+        "reply": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "tableRows": 4,
+        "locale": "en",
+        "theme": "dark",
+        "zoomFactor": 1,
+        "rendererCssViewport": {
+          "width": 1100,
+          "height": 780,
+          "devicePixelRatio": 2,
+          "visualViewportScale": 1
+        },
+        "motion": "standard",
+        "compactMedia": false,
+        "openSidebar": {
+          "buttonPressed": true,
+          "compact": false,
+          "docked": true
+        },
+        "attachmentControl": "Attach files",
+        "composerPlaceholder": "Ask anything. @ files, $ skills, / commands",
+        "focus": "Message Compatibility replay",
+        "fonts": [
+          "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ]
+      },
+      "screenshot": {
+        "path": "wide.png",
+        "sha256": "28e6dbf1513f2740b8b70719b3d3ff0198f6dd71e3f4be60b6c29e56dcdde71f",
+        "pixels": [2200, 1560]
+      }
+    },
+    {
+      "state": "compact",
+      "configurationId": "electron-macos-arm64-en-dark-640x780-2x",
+      "action": "Resize the window to 640 points and close the sidebar sheet.",
+      "windowPoints": [640, 780],
+      "displayScale": 2,
+      "observed": {
+        "heading": "Compatibility replay",
+        "reply": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "tableRows": 4,
+        "locale": "en",
+        "theme": "dark",
+        "zoomFactor": 1,
+        "rendererCssViewport": {
+          "width": 640,
+          "height": 780,
+          "devicePixelRatio": 2,
+          "visualViewportScale": 1
+        },
+        "motion": "standard",
+        "compactMedia": true,
+        "openSidebar": {
+          "buttonPressed": false,
+          "compact": false,
+          "docked": false
+        },
+        "attachmentControl": "Attach files",
+        "composerPlaceholder": "Ask anything. @ files, $ skills, / commands",
+        "focus": null,
+        "fonts": [
+          "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ]
+      },
+      "screenshot": {
+        "path": "compact.png",
+        "sha256": "7d5dbec8bac1529f160eee099b1e926d8e187d860bc45f0c25024c6eecd105b0",
+        "pixels": [1280, 1560]
+      }
+    },
+    {
+      "state": "compact",
+      "configurationId": "electron-macos-arm64-en-dark-640x780-2x-sidebar-sheet",
+      "action": "Open the sidebar sheet at compact size.",
+      "windowPoints": [640, 780],
+      "displayScale": 2,
+      "observed": {
+        "heading": "Compatibility replay",
+        "reply": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "tableRows": 4,
+        "locale": "en",
+        "theme": "dark",
+        "zoomFactor": 1,
+        "rendererCssViewport": {
+          "width": 640,
+          "height": 780,
+          "devicePixelRatio": 2,
+          "visualViewportScale": 1
+        },
+        "motion": "standard",
+        "compactMedia": true,
+        "openSidebar": {
+          "buttonPressed": true,
+          "compact": true,
+          "docked": false
+        },
+        "attachmentControl": "Attach files",
+        "composerPlaceholder": "Ask anything. @ files, $ skills, / commands",
+        "focus": "Toggle main sidebar",
+        "fonts": [
+          "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ]
+      },
+      "screenshot": {
+        "path": "compact-sidebar.png",
+        "sha256": "8905f7ae3d6ee084b13fc7d8944e195a0e2904cdaa37c9272d3e9ff8e77fa98f",
+        "pixels": [1280, 1560]
+      }
+    }
+  ]
+}

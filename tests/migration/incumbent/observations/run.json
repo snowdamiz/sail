@@ -114,5 +114,10 @@
     "result": "pass",
     "receipt": "served-chromium-macos/disconnect-recover/receipt.json",
     "scope": "isolated packaged host stop and restart with draft and transcript preserved in the same Chromium tab"
+  },
+  "chatDisplay": {
+    "result": "pass",
+    "receipt": "electron-macos-arm64/display/receipt.json",
+    "scope": "macOS arm64 Electron. English light and dark, native 120% zoom, German, and wide and compact sidebars."
   }
 }
