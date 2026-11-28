@@ -1,0 +1,36 @@
+[
+  {
+    "incumbent": "a",
+    "candidate": "head-a",
+    "fixtureId": "chat-turn",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+    "changedSteps": [],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/served-firefox-linux/settled/a/capture.png",
+      "candidate": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/first-round/capture.png",
+      "diff": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/first-round-diff.png",
+      "baselineSize": [1280, 1200],
+      "candidateSize": [1280, 1200],
+      "differentPixels": 0,
+      "bounds": null
+    }
+  },
+  {
+    "incumbent": "b",
+    "candidate": "head-b",
+    "fixtureId": "chat-turn",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+    "changedSteps": [],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/served-firefox-linux/settled/b/capture.png",
+      "candidate": "/tmp/sail-p01-firefox-head.Jg42JL/comparison-head-b/capture.png",
+      "diff": "/tmp/sail-p01-firefox-head.Jg42JL/comparison-head-b-diff.png",
+      "baselineSize": [1280, 1200],
+      "candidateSize": [1280, 1200],
+      "differentPixels": 0,
+      "bounds": null
+    }
+  }
+]

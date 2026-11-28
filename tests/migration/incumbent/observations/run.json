@@ -98,6 +98,14 @@
       "changedSteps": [],
       "scope": "settled replay in the recorded Linux arm64 Firefox ESR profile"
     },
+    "firefoxLinuxMigrationHead": {
+      "result": "incomplete",
+      "sourceSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+      "package": "served-firefox-linux/migration-head-03c866c2/package-receipt.json",
+      "firstRoundComparisons": "served-firefox-linux/migration-head-03c866c2/first-round-comparisons.json",
+      "repeat": "served-firefox-linux/migration-head-03c866c2/repeat-receipt.json",
+      "scope": "The first Firefox ESR capture matched the published pixels and action trace on both locally built installs. Later captures varied across builds and all three timed attempts ended early."
+    },
     "electronMigrationHead": {
       "result": "fail",
       "sourceSha": "4807bdae945354ade96b40ad7d5116483ff0d308",

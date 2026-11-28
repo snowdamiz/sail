@@ -35,7 +35,9 @@ The [packaged migration-head comparison](observations/served-chromium-macos/migr
 
 ## Capture the settled Firefox replay on Linux
 
-Run the published Linux arm64 CLI archive twice under separate scratch homes with copies of the seeded database. Pair a fresh Firefox ESR profile to each server under Xvfb. Use the same viewport, Tab action, and pointer position as the Chromium capture. Adapt the probe's user-agent match to Firefox and record the installed version from GeckoDriver. The [Linux Firefox receipts](observations/served-firefox-linux/settled) contain both matching captures and the installed package versions.
+Run the published Linux arm64 CLI archive twice under separate scratch homes with copies of the seeded database. Pair a fresh Firefox ESR profile to each server under Xvfb. Use the same viewport, Tab action, and pointer position as the Chromium capture. Record the installed Firefox version from GeckoDriver. The [Linux Firefox receipts](observations/served-firefox-linux/settled) contain both matching captures and the installed package versions.
+
+Both installs of the Linux arm64 archive built at `03c866c2` matched the published reference on the first capture of the settled chat with no provider configured. Subsequent captures also showed a sync status, a scroll offset, or reply hover controls across the incumbent and candidate installs. The [package and capture receipts](observations/served-firefox-linux/migration-head-03c866c2) retain the first comparisons and the incomplete timing runs. Repeat parity and paired timing remain open.
 
 ## Capture the settled Electron replay on macOS
 

@@ -26,7 +26,7 @@
   const tableRows = main?.querySelector("table")?.rows.length;
   const menuCount = visible('[role="menu"]').length;
   const stopVisible = visible('[aria-label="Stop generation"]').length > 0;
-  const browser = navigator.userAgent.match(/Chrome\/[^ ]+/)?.[0];
+  const browser = navigator.userAgent.match(/(?:Chrome|Firefox)\/[^ ]+/)?.[0];
   if (
     threadTitle !== "Compatibility replay" ||
     composerName !== "Message Compatibility replay" ||
