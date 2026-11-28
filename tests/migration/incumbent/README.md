@@ -198,6 +198,12 @@ Append `--display` to the capture command to repeat the six chat display states.
 
 The [arm64](observations/electron-linux-arm64/display/) and [x64](observations/electron-linux-x64/display/) comparison receipts use separate desktop installations and scratch homes. Compare repeat runs within the same architecture and profile.
 
+### Capture Linux Chromium display variants
+
+Append `--display` to the [Linux Chromium capture command](#linux). The fixture selects light and dark in Appearance and Deutsch in General, then verifies each change on the reloaded Replay thread. It opens and closes the responsive sidebar at 640 × 600 and 1280 × 780. The wide layout shows the host label, so both hosts use **Compatibility fixture**. The capture records the exact saved reply, code, and table in each state.
+
+Capture Browser panel zoom last. The fixture calls the published `preview.adjust` operation for 125% and measures the resulting 768 × 576 CSS viewport at DPR 2.5 inside the 1920 × 1440 capture. A pilot reset to 100% left the renderer at the prior scale. The [comparison receipts](observations/served-chromium-linux/display/) compare two separate released installations and browser sessions.
+
 ### Repeat chat-link and palette navigation
 
 Use the pinned arm64 OCI image from the release inventory to prepare a copy of the existing activation fixture.

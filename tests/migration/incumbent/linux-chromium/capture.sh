@@ -12,6 +12,7 @@ case "${2:-}" in
   --approval) touch "$root/approval" ;;
   --version-rejection) touch "$root/version-rejection" ;;
   --entrypoints) touch "$root/entrypoints" ;;
+  --display) touch "$root/display" ;;
   "") ;;
   *) exit 2 ;;
 esac
@@ -97,7 +98,7 @@ export SAIL_HOME="$root/state"
 export T3CODE_HOME="$root/state"
 export T3CODE_TELEMETRY_ENABLED=false
 export T3CODE_SERVER_BROWSER_SANDBOX=0
-if [ -f "$root/version-rejection" ]; then
+if [ -f "$root/version-rejection" ] || [ -f "$root/display" ]; then
   export T3CODE_ENVIRONMENT_LABEL="Compatibility fixture"
 fi
 cli="$root/runtime/t3"
@@ -142,6 +143,10 @@ elif [ -f "$root/version-rejection" ]; then
   done
 elif [ -f "$root/entrypoints" ]; then
   for state in chat-link palette-link; do
+    test -s "$root/$state/capture.png"
+  done
+elif [ -f "$root/display" ]; then
+  for state in light dark zoomed translated compact wide; do
     test -s "$root/$state/capture.png"
   done
 else

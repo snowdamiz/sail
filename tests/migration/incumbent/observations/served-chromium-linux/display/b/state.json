@@ -1,0 +1,296 @@
+{
+  "schemaVersion": 1,
+  "captureRunId": "88aed540-1376-4642-9d00-1c29e73cddf8",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+  "arch": "arm64",
+  "osVersion": "Debian 12.15",
+  "browser": "Google Chrome for Testing 158.0.8127.88",
+  "pairing": "browser-session-cookie",
+  "environmentLabel": "Compatibility fixture",
+  "seedSha256": "b76ac23ca172ea7223867b52aef8eb2af96ba46db04d2a829f7531bdce8b4dc6",
+  "stateFingerprint": {
+    "messages": "575ae62e5027b648775dcb0ab7eada7005d996a4c71223daff6948d104b6d4d6",
+    "runs": "a543ae94a7af7d28ce23d8149c516a62fd9fb4e1da3ce6ebfe152550aac6ef47"
+  },
+  "runtimeOwnerSha256": "89886ea83c7cbeb81ccac24494cc4f861a9371d95f9ecbb40de542412340202f",
+  "displayCaptures": {
+    "light": {
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "locale": "en",
+        "theme": "light",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "viewport": {
+          "width": 960,
+          "height": 720,
+          "scale": 2,
+          "zoom": 1
+        }
+      },
+      "compact": false,
+      "attachmentControl": "Attach files",
+      "chat": {
+        "title": "Compatibility replay",
+        "reply": true,
+        "highlightedCode": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "table": [
+          ["Step", "Tool", "Result"],
+          ["Read", "read", "1 file"],
+          ["Edit", "edit", "+4 lines"],
+          ["Test", "execute", "12 passed"]
+        ],
+        "composerFocused": false,
+        "sidebarOpen": false,
+        "menuOpen": false
+      },
+      "rendererViewport": {
+        "width": 960,
+        "height": 720,
+        "scale": 2,
+        "zoom": 1
+      },
+      "action": {
+        "control": "Use light mode",
+        "selected": true
+      },
+      "screenshotSha256": "d9bdba9201e1e5050d71b66a4cd8c36f0a868345c75bc1f39936f7db96e66252"
+    },
+    "dark": {
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "locale": "en",
+        "theme": "dark",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "viewport": {
+          "width": 960,
+          "height": 720,
+          "scale": 2,
+          "zoom": 1
+        }
+      },
+      "compact": false,
+      "attachmentControl": "Attach files",
+      "chat": {
+        "title": "Compatibility replay",
+        "reply": true,
+        "highlightedCode": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "table": [
+          ["Step", "Tool", "Result"],
+          ["Read", "read", "1 file"],
+          ["Edit", "edit", "+4 lines"],
+          ["Test", "execute", "12 passed"]
+        ],
+        "composerFocused": false,
+        "sidebarOpen": false,
+        "menuOpen": false
+      },
+      "rendererViewport": {
+        "width": 960,
+        "height": 720,
+        "scale": 2,
+        "zoom": 1
+      },
+      "action": {
+        "control": "Use dark mode",
+        "selected": true
+      },
+      "screenshotSha256": "3b185014309a6b47efa32dd92566414aecf59f0d66a9962ec159ee0b7d3ee6f2"
+    },
+    "translated": {
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "locale": "de",
+        "theme": "light",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "viewport": {
+          "width": 960,
+          "height": 720,
+          "scale": 2,
+          "zoom": 1
+        }
+      },
+      "compact": false,
+      "attachmentControl": "Dateien anh\u00e4ngen",
+      "chat": {
+        "title": "Compatibility replay",
+        "reply": true,
+        "highlightedCode": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "table": [
+          ["Step", "Tool", "Result"],
+          ["Read", "read", "1 file"],
+          ["Edit", "edit", "+4 lines"],
+          ["Test", "execute", "12 passed"]
+        ],
+        "composerFocused": false,
+        "sidebarOpen": false,
+        "menuOpen": false
+      },
+      "rendererViewport": {
+        "width": 960,
+        "height": 720,
+        "scale": 2,
+        "zoom": 1
+      },
+      "action": {
+        "control": "Language",
+        "selected": "Deutsch"
+      },
+      "screenshotSha256": "e5a0d2b769f78d3b6068255df132f74c1553db5109eec758d5ef4eb5ec38d029"
+    },
+    "compact": {
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "locale": "en",
+        "theme": "light",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "viewport": {
+          "width": 640,
+          "height": 600,
+          "scale": 2,
+          "zoom": 1
+        }
+      },
+      "compact": true,
+      "attachmentControl": "Attach files",
+      "chat": {
+        "title": "Compatibility replay",
+        "reply": true,
+        "highlightedCode": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "table": [
+          ["Step", "Tool", "Result"],
+          ["Read", "read", "1 file"],
+          ["Edit", "edit", "+4 lines"],
+          ["Test", "execute", "12 passed"]
+        ],
+        "composerFocused": false,
+        "sidebarOpen": false,
+        "menuOpen": false
+      },
+      "rendererViewport": {
+        "width": 640,
+        "height": 600,
+        "scale": 2,
+        "zoom": 1
+      },
+      "action": {
+        "sidebar": "mobile sheet",
+        "closedAfterCheck": true
+      },
+      "screenshotSha256": "12050ffdd938e9a26b6242e6d23f54737e088d9b846f999661ac46cc6524bdc2"
+    },
+    "wide": {
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "locale": "en",
+        "theme": "light",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "viewport": {
+          "width": 1280,
+          "height": 780,
+          "scale": 2,
+          "zoom": 1
+        }
+      },
+      "compact": false,
+      "attachmentControl": "Attach files",
+      "chat": {
+        "title": "Compatibility replay",
+        "reply": true,
+        "highlightedCode": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "table": [
+          ["Step", "Tool", "Result"],
+          ["Read", "read", "1 file"],
+          ["Edit", "edit", "+4 lines"],
+          ["Test", "execute", "12 passed"]
+        ],
+        "composerFocused": false,
+        "sidebarOpen": false,
+        "menuOpen": false
+      },
+      "rendererViewport": {
+        "width": 1280,
+        "height": 780,
+        "scale": 2,
+        "zoom": 1
+      },
+      "action": {
+        "sidebar": "docked",
+        "closedAfterCheck": true
+      },
+      "screenshotSha256": "d0f27dac3119d7851ac98103e4cb994327e454eacf22d143e068094aeef590ee"
+    },
+    "zoomed": {
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "locale": "en",
+        "theme": "light",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "viewport": {
+          "width": 960,
+          "height": 720,
+          "scale": 2,
+          "zoom": 1.25
+        }
+      },
+      "compact": false,
+      "attachmentControl": "Attach files",
+      "chat": {
+        "title": "Compatibility replay",
+        "reply": true,
+        "highlightedCode": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "table": [
+          ["Step", "Tool", "Result"],
+          ["Read", "read", "1 file"],
+          ["Edit", "edit", "+4 lines"],
+          ["Test", "execute", "12 passed"]
+        ],
+        "composerFocused": false,
+        "sidebarOpen": false,
+        "menuOpen": false
+      },
+      "rendererViewport": {
+        "width": 768,
+        "height": 576,
+        "scale": 2.5,
+        "zoom": 1
+      },
+      "action": {
+        "control": "Browser panel zoom",
+        "rpc": "preview.adjust",
+        "acceptedFactor": 1.25
+      },
+      "screenshotSha256": "b18cfe5cc5b2ea649d9a2494b17c9574b68a667b62c18f759d7c150bb46f9daa"
+    }
+  }
+}

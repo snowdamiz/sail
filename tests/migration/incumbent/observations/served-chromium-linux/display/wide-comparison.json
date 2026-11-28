@@ -1,0 +1,20 @@
+{
+  "fixtureId": "chat-display",
+  "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "changedSteps": [],
+  "pixels": {
+    "baseline": "tests/migration/incumbent/observations/served-chromium-linux/display/a/wide/capture.png",
+    "candidate": "tests/migration/incumbent/observations/served-chromium-linux/display/b/wide/capture.png",
+    "diff": "tests/migration/incumbent/observations/served-chromium-linux/display/wide-diff.png",
+    "baselineSize": [2560, 1560],
+    "candidateSize": [2560, 1560],
+    "differentPixels": 0,
+    "bounds": null
+  },
+  "artifactSha256": {
+    "baselineReceipt": "01f31646ec1bfe2e2f7cefda65132691b92fc49a8644426ad4a98a4b69a48a50",
+    "candidateReceipt": "f1a2090d7ac76126b36e2b03dadcdec789e97564f086e34bdc3eab42033ae2eb",
+    "diff": "b6c230b09677fcfe2051fec96d887be6086c138cb06679d8e6fbb8571e31472e"
+  }
+}

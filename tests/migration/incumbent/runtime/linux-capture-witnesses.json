@@ -47,6 +47,10 @@
     "platformId": "served-chromium-linux",
     "stateSha256": "8798b34d4d05f29a0ac486cbbb43f12b7eac33f9bb6a825372889bc8ec8f237c"
   },
+  "88aed540-1376-4642-9d00-1c29e73cddf8": {
+    "platformId": "served-chromium-linux",
+    "stateSha256": "22c5c9489df040fc8458b3cb17b7d5e05572c0bb217698158e8c09ff08baed0e"
+  },
   "9fa6f253-c97d-4dac-9112-5ca1b6cc058a": {
     "platformId": "electron-linux-arm64",
     "stateSha256": "f7edb43e85968b29ef9ca8e8bcdd0947b4c14c866a12c79198c3bf5bbc762bc1"
@@ -74,6 +78,10 @@
   "e61eecd1-8038-4274-805d-26650e1c0943": {
     "platformId": "served-chromium-linux",
     "stateSha256": "299658bbf73577ed5b8495ba9106a6dc1527605657257b21d13e0e50906fdd0a"
+  },
+  "e8b960bf-0b02-4ad5-af6c-e59fdb946f72": {
+    "platformId": "served-chromium-linux",
+    "stateSha256": "a0c6bca2cee4f0ded5f520c4017cbb9d0250c8f9e6c35492f647b358bb39cfad"
   },
   "ff42cee5-5310-42c9-ab9c-0ba4aa1a724f": {
     "platformId": "served-chromium-linux",

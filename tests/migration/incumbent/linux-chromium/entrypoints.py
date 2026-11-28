@@ -5,19 +5,15 @@ from runpy import run_path
 from urllib.parse import quote
 from uuid import uuid4
 
-from browser_capture import PROFILE, SETTLE, snapshot
+from browser_capture import PROFILE, REPLAY_CODE, REPLAY_TABLE, REPLAY_TITLE, SETTLE, snapshot
 
 
 ORIGIN = "http://127.0.0.1:47717"
-TITLE = "Compatibility replay"
+TITLE = REPLAY_TITLE
 SOURCE = "Navigation source"
 LINK = 'a[aria-label="Thread, Compatibility replay"]'
 PALETTE = 'input[placeholder="Search commands, projects, and threads..."]'
 COMPOSER = 'main [contenteditable="true"][aria-label="Message Compatibility replay"]'
-CODE = "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0"
-TABLE = [
-    ["Step", "Tool", "Result"], ["Read", "read", "1 file"], ["Edit", "edit", "+4 lines"], ["Test", "execute", "12 passed"],
-]
 OBSERVE = """(() => {
   const main = document.querySelector("main");
   const code = main?.querySelector(".chat-markdown-shiki pre code");
@@ -91,7 +87,7 @@ def capture_destination(root, call, tab, name, route, action):
     value = call("preview_evaluate", **tab, expression=OBSERVE)["value"]
     assert value.pop("path") == route
     assert value["destination"] == {
-        "title": TITLE, "paletteClosed": True, "reply": True, "code": CODE, "table": TABLE,
+        "title": TITLE, "paletteClosed": True, "reply": True, "code": REPLAY_CODE, "table": REPLAY_TABLE,
     }
     value["destination"].update(
         sameSavedRoute=True, sameActiveEnvironment=True, focus=arrival["control"],

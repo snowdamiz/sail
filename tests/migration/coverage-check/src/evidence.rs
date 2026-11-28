@@ -282,6 +282,9 @@ fn load_capture(
         ("electron-linux-arm64" | "electron-linux-x64", "chat-display") => {
             display::verify(evidence, observation, run, &capture, &image_path)?;
         }
+        ("served-chromium-linux", "chat-display") => {
+            display::verify_chromium(evidence, observation, run, &capture, &image_path)?;
+        }
         (
             "electron-linux-arm64" | "electron-linux-x64" | "served-chromium-linux",
             "chat-link" | "palette-link",

@@ -395,6 +395,12 @@ def capture():
         with preview_session() as call:
             capture_entrypoints(ROOT, source, call, prepare)
         return
+    if (ROOT / "display").is_file():
+        from display import capture_display
+
+        with preview_session() as call:
+            capture_display(ROOT, source, call, prepare)
+        return
     probe = Path("/fixture/settled-replay-browser.js").read_text().strip()
     if "captureRounds" in source:
         with preview_session() as call:

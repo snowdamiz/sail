@@ -568,5 +568,41 @@
       }
     },
     "scope": "Two isolated published v0.1.17 Linux Chromium installations opened the original Replay route through the rendered chat link and Ctrl+K search and selection. The destination composer had focus on arrival and the original environment and saved payloads were preserved. Captures clear focus. Candidate comparisons and timing remain open."
+  },
+  "linuxChromiumDisplay": {
+    "directory": "served-chromium-linux/display",
+    "comparisons": {
+      "light": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "dark": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "zoomed": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "translated": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "compact": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "wide": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      }
+    },
+    "scope": "Two isolated published v0.1.17 Linux Chromium installations show light, dark, Browser panel zoom at 125%, German, and compact and wide responsive layouts on the original saved Replay route. The full unmasked captures preserve the exact saved payloads. Candidate comparisons and timing remain open."
   }
 }

@@ -324,6 +324,30 @@ fn verifies_the_linux_display_receipt_against_the_live_state() {
 }
 
 #[test]
+fn verifies_all_published_linux_chromium_display_variants() {
+    for state in ["light", "dark", "zoomed", "translated", "compact", "wide"] {
+        let fixture = Fixture::visual("chat-display", state, "served-chromium-linux");
+        let output = fixture.run();
+        assert!(
+            output.status.success(),
+            "{state}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["verifiedVisualReferenceObservations"], 1);
+    }
+}
+
+#[test]
+fn rejects_a_rehashed_chromium_display_trace_with_unapplied_zoom() {
+    let mut fixture = Fixture::visual("chat-display", "zoomed", "served-chromium-linux");
+    fixture.edit_process_json(0, "capture-receipt", |capture| {
+        capture["trace"][1]["observed"]["rendererViewport"]["scale"] = json!(2);
+    });
+    fixture.rejects("display trace disagrees with the observed action or runtime state");
+}
+
+#[test]
 fn rejects_a_display_receipt_with_a_rehashed_fabricated_locale_observation() {
     let mut fixture = Fixture::visual("chat-display", "translated", "electron-linux-arm64");
     fixture.edit_process_json(0, "state-receipt", |state| {

@@ -3,6 +3,12 @@ import shutil
 import struct
 
 
+REPLAY_TITLE = "Compatibility replay"
+REPLAY_CODE = "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0"
+REPLAY_TABLE = [
+    ["Step", "Tool", "Result"], ["Read", "read", "1 file"], ["Edit", "edit", "+4 lines"], ["Test", "execute", "12 passed"],
+]
+
 PROFILE = r"""{
       browser: navigator.userAgent.match(/Chrome\/[^ ]+/)?.[0],
       locale: document.documentElement.lang,
@@ -23,14 +29,15 @@ SETTLE = """(async () => {
 })()"""
 
 
-def snapshot(root, call, tab, state, observation):
+def snapshot(root, call, tab, state, observation, *, dimensions=(1280, 1200)):
     directory = root / state
     directory.mkdir()
     path = directory / "capture.png"
     screenshot = call("preview_snapshot", **tab, save=True)
     shutil.copyfile(screenshot["screenshotPath"], path)
     with path.open("rb") as source:
-        assert struct.unpack(">II", source.read(24)[16:24]) == (1280, 1200)
+        size = struct.unpack(">II", source.read(24)[16:24])
+        assert size == dimensions, (size, dimensions)
         source.seek(0)
         observation["screenshotSha256"] = file_digest(source, "sha256").hexdigest()
     return observation
