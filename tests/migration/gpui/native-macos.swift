@@ -107,7 +107,7 @@ func launchFixture(_ executable: URL) throws -> Process {
     return process
 }
 
-func stopFixture(_ process: Process) {
+func stopOwnedProcess(_ process: Process) {
     guard process.isRunning else { return }
     process.terminate()
     let deadline = clock.now + .seconds(1)
@@ -197,7 +197,7 @@ func sendKey(
     }
 }
 
-func capture(_ file: String, _ running: NSRunningApplication, _ out: URL, _ evidence: Evidence) throws {
+func capture(_ file: String, _ running: NSRunningApplication, _ out: URL, _ evidence: Evidence) async throws {
     let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
         as? [[String: Any]] ?? []
     let matches = windows.filter {
@@ -213,7 +213,8 @@ func capture(_ file: String, _ running: NSRunningApplication, _ out: URL, _ evid
     capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
     capture.arguments = ["-l", String(id), "-o", "-x", path.path]
     try capture.run()
-    capture.waitUntilExit()
+    defer { stopOwnedProcess(capture) }
+    let _: Bool = try await waitFor("screencapture to finish") { capture.isRunning ? nil : true }
     guard capture.terminationStatus == 0,
           let source = CGImageSourceCreateWithURL(path as CFURL, nil),
           let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
@@ -265,7 +266,7 @@ func verify(_ executable: URL, _ out: URL, _ reopen: Bool, _ evidence: Evidence)
     }
 
     let process = try launchFixture(executable)
-    defer { stopFixture(process) }
+    defer { stopOwnedProcess(process) }
     let pid = process.processIdentifier
     evidence.pid = pid
     evidence.record("process_launched", ["pid": pid])
@@ -282,14 +283,14 @@ func verify(_ executable: URL, _ out: URL, _ reopen: Bool, _ evidence: Evidence)
 
     if reopen {
         let relaunched = try launchFixture(executable)
-        defer { stopFixture(relaunched) }
+        defer { stopOwnedProcess(relaunched) }
         let newPid = relaunched.processIdentifier
         evidence.record("process_relaunched", ["pid": newPid])
         let restarted = try await application(relaunched, executable)
         let reopenedWindow = try await fixtureWindow(restarted)
         let (_, reopenedComposer) = try await fixtureControls(reopenedWindow)
         evidence.record("window_reopened", ["pid": newPid, "title": windowTitle, "composer": name(reopenedComposer)])
-        try capture("gpui-reopen.png", restarted, out, evidence)
+        try await capture("gpui-reopen.png", restarted, out, evidence)
     }
 }
 
@@ -307,7 +308,7 @@ func verifyWindow(
     evidence.record("composer", ["role": kAXTextFieldRole, "name": name(composer)])
     let initialValue: String = ax(composer, kAXValueAttribute) ?? ""
     guard initialValue.isEmpty else { throw DriverError("Expected a fresh composer with an empty value") }
-    try capture("gpui-native.png", running, out, evidence)
+    try await capture("gpui-native.png", running, out, evidence)
 
     try sendKey(kVK_Tab, to: running)
     evidence.record("keyboard", ["key": "Tab"])
@@ -330,7 +331,7 @@ func verifyWindow(
     let verifiedSelection = exposesSelection
         ? try await verifyText("selection", input, { selection(composer) }, evidence)
         : false
-    try capture("gpui-input.png", running, out, evidence)
+    try await capture("gpui-input.png", running, out, evidence)
     if !verifiedSelection && verifiedValue {
         // A replacement of the entire draft confirms the keyboard selected all four characters.
         try sendKey(kVK_ANSI_X, to: running, character: 120)
@@ -347,7 +348,7 @@ func verifyWindow(
     try requireAX(AXUIElementSetAttributeValue(composer, kAXFocusedAttribute as CFString, kCFBooleanTrue), "Focus Message through AX")
     let _: Bool = try await waitFor("AX focus on Message") { focused(composer) ? true : nil }
     evidence.record("accessibility_focus", ["action": kAXFocusedAttribute, "name": name(composer)])
-    try capture("gpui-a11y.png", running, out, evidence)
+    try await capture("gpui-a11y.png", running, out, evidence)
 }
 
 let usage = "Usage: swift native-macos.swift EXECUTABLE OUTPUT_DIR [--close-reopen]"

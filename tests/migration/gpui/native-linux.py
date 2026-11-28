@@ -244,27 +244,34 @@ class Fixture:
         # window manager changes focus between the check and the send.
         command("xdotool", "key", "--window", self.xid, *keys)
 
-    def capture(self, name, output, evidence):
-        self.require_window()
-        png = command("import", "-silent", "-window", self.xid, "png:-").stdout
-        width, height = png_dimensions(png)
-        write_atomic(output / name, png)
-        evidence.record("screenshot", file=name, window_id=int(self.xid), width=width, height=height)
+    def capture(self, name, output, evidence, *, selected=False):
+        snapshot = None
 
-        pixels = command("convert", "png:-", "-alpha", "off", "-depth", "8", "rgb:-", input=png).stdout
-        colors = (pixels[index:index + 3] for index in range(0, len(pixels), 3))
-        sidebar, transcript = 0, 0
-        for pixel in colors:
-            sidebar += pixel == b"\x20\x20\x24"
-            transcript += pixel == b"\x18\x18\x1b"
-        if min(sidebar, transcript) < width * height // 20:
-            raise DriverError(f"{name} does not show the fixture's sidebar and transcript")
+        def rendered_fixture():
+            nonlocal snapshot
+            self.require_window()
+            png = command("import", "-silent", "-window", self.xid, "png:-").stdout
+            width, height = png_dimensions(png)
+            snapshot = png, width, height
+            pixels = command("convert", "png:-", "-alpha", "off", "-depth", "8", "rgb:-", input=png).stdout
+            sidebar, transcript, selection = 0, 0, 0
+            for index in range(0, len(pixels), 3):
+                pixel = pixels[index:index + 3]
+                sidebar += pixel == b"\x20\x20\x24"
+                transcript += pixel == b"\x18\x18\x1b"
+                selection += pixel == b"\x43\x5d\x87"
+            if min(sidebar, transcript) >= width * height // 20 and (selection >= 16) == selected:
+                return True
+            return None
 
-        # Compare the composer interior without its focus border.
-        return command(
-            "convert", "png:-", "-crop", f"{width - 260}x20+236+{height - 50}",
-            "+repage", "-alpha", "off", "-depth", "8", "rgb:-", input=png,
-        ).stdout
+        try:
+            state = "with a visible selection" if selected else "with an empty selection"
+            wait_for(f"{name} to show the rendered fixture {state}", rendered_fixture)
+        finally:
+            if snapshot:
+                png, width, height = snapshot
+                write_atomic(output / name, png)
+                evidence.record("screenshot", file=name, window_id=int(self.xid), width=width, height=height)
 
 
 def verify_text(description, read, evidence):
@@ -333,7 +340,7 @@ def verify_window(fixture, output, evidence):
     text_interface = fixture.atspi.Text
     if text is not None and text_interface.get_text(text, 0, -1):
         raise DriverError("Expected a fresh composer with an empty value")
-    initial_composer = fixture.capture("gpui-native.png", output, evidence)
+    fixture.capture("gpui-native.png", output, evidence)
 
     fixture.send_keys("Tab")
     evidence.record("keyboard", key="Tab")
@@ -351,10 +358,8 @@ def verify_window(fixture, output, evidence):
         for description in ("value", "selection"):
             evidence.result["gaps"].append(f"AT-SPI Text did not expose {description}")
             evidence.record(description, expected=INPUT, observed=None)
-    selected_composer = fixture.capture("gpui-input.png", output, evidence)
-    if not initial_composer or initial_composer == selected_composer:
-        raise DriverError("The captured composer did not change after typing and selecting text")
-    evidence.record("visible_composer_change")
+    fixture.capture("gpui-input.png", output, evidence, selected=True)
+    evidence.record("visible_composer_selection")
 
 
     fixture.send_keys("Shift+Tab")
@@ -366,7 +371,7 @@ def verify_window(fixture, output, evidence):
         raise DriverError("AT-SPI Component.GrabFocus failed for Message")
     wait_for("AT-SPI focus on Message", lambda: fixture.focused(composer) or None)
     evidence.record("accessibility_focus", action="Component.GrabFocus", name=COMPOSER)
-    fixture.capture("gpui-a11y.png", output, evidence)
+    fixture.capture("gpui-a11y.png", output, evidence, selected=True)
 
 
 def main():
