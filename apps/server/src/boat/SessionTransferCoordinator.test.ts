@@ -5,6 +5,7 @@ import {
   EnvironmentId,
   GitRefName,
   IsoDateTime,
+  MessageId,
   type ModelSelection,
   NonNegativeInt,
   ProjectId,
@@ -28,6 +29,7 @@ import {
   type SessionTransferStageImportResult,
   ThreadId,
   TrimmedNonEmptyString,
+  WS_METHODS,
   isTerminalSessionTransferPhase,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -37,7 +39,10 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import * as HttpClient from "effect/http/HttpClient";
 import * as Stream from "effect/Stream";
+import * as NodeWS from "@effect/platform-node/NodeWS";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProjectionStoreV2 from "../orchestration-v2/ProjectionStore.ts";
@@ -1499,5 +1504,351 @@ describe("SessionTransferCoordinator", () => {
         expect(harness.calls.localAbort).toHaveLength(1);
       }).pipe(Effect.scoped, Effect.provide(harness.layer));
     },
+  );
+});
+
+describe("makeLiveBoatRemoteClient", () => {
+  const mockTicketFetch: typeof fetch = async (input) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url.endsWith("/api/auth/websocket-ticket/rpc")) {
+      return new Response(JSON.stringify({ ticket: "test-ticket" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response("Not Found", { status: 404 });
+  };
+
+  const mockHttpLayer = FetchHttpClient.layer.pipe(
+    Layer.provide(Layer.succeed(FetchHttpClient.Fetch, mockTicketFetch)),
+  );
+
+  const acquireMockBoatRpcServer = (handler: (tag: string, payload: unknown) => unknown) =>
+    Effect.acquireRelease(
+      Effect.promise(async () => {
+        const received: Array<{ readonly tag: string; readonly payload: unknown }> = [];
+        const wss = new NodeWS.WebSocketServer({ host: "127.0.0.1", port: 0 });
+        wss.on("connection", (ws) => {
+          ws.on("message", (raw) => {
+            const parsed = JSON.parse(String(raw)) as {
+              readonly id: string;
+              readonly tag: string;
+              readonly payload: unknown;
+            };
+            received.push({ tag: parsed.tag, payload: parsed.payload });
+            const value = handler(parsed.tag, parsed.payload);
+            ws.send(
+              JSON.stringify({
+                _tag: "Exit",
+                requestId: parsed.id,
+                exit: { _tag: "Success", value },
+              }),
+            );
+          });
+        });
+
+        await new Promise<void>((resolve) => {
+          wss.once("listening", () => resolve());
+        });
+        const address = wss.address();
+        if (!address || typeof address === "string") {
+          throw new Error("Expected numeric listen address");
+        }
+        return {
+          wss,
+          received,
+          endpoint: {
+            localUrl: `http://127.0.0.1:${address.port}`,
+            bearerToken: "test-bearer-token",
+          } satisfies SessionTransferCoordinator.BoatRemoteEndpoint,
+        };
+      }),
+      ({ wss }) =>
+        Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              for (const client of wss.clients) {
+                client.terminate();
+              }
+              wss.close(() => resolve());
+            }),
+        ),
+    );
+
+  it.effect(
+    "createRemoteProject parses direct { projectId, workspaceRoot } without sending initGit and supports legacy { project }",
+    () =>
+      Effect.gen(function* () {
+        const httpClient = yield* HttpClient.HttpClient;
+        const client = SessionTransferCoordinator.makeLiveBoatRemoteClient(Option.some(httpClient));
+        let callIndex = 0;
+        const mock = yield* acquireMockBoatRpcServer((tag) => {
+          if (tag !== WS_METHODS.projectsCreateNew) {
+            throw new Error(`Unexpected RPC tag: ${tag}`);
+          }
+          callIndex += 1;
+          if (callIndex === 1) {
+            return {
+              projectId: "proj-direct",
+              workspaceRoot: "/home/sail/projects/new-app",
+            };
+          }
+          if (callIndex === 2) {
+            return {
+              project: {
+                id: "proj-legacy",
+                workspaceRoot: "/home/sail/projects/legacy-app",
+              },
+            };
+          }
+          return {};
+        });
+
+        const direct = yield* client.createRemoteProject!(mock.endpoint, {
+          name: "new-app",
+          initGit: true,
+        });
+        expect(direct).toEqual({
+          projectId: ProjectId.make("proj-direct"),
+          workspaceRoot: "/home/sail/projects/new-app",
+        });
+        expect(mock.received[0]).toEqual({
+          tag: WS_METHODS.projectsCreateNew,
+          payload: { name: "new-app" },
+        });
+        expect(Object.hasOwn(mock.received[0]!.payload as Record<string, unknown>, "initGit")).toBe(
+          false,
+        );
+
+        const legacy = yield* client.createRemoteProject!(mock.endpoint, {
+          name: "legacy-app",
+        });
+        expect(legacy).toEqual({
+          projectId: ProjectId.make("proj-legacy"),
+          workspaceRoot: "/home/sail/projects/legacy-app",
+        });
+
+        const missingError = yield* Effect.flip(
+          client.createRemoteProject!(mock.endpoint, { name: "broken-app" }),
+        );
+        expect(missingError).toBeInstanceOf(SessionTransferError);
+        expect(missingError.code).toBe("internal");
+      }).pipe(Effect.scoped, Effect.provide(mockHttpLayer)),
+  );
+
+  it.effect(
+    "prepareSource decodes DateTime.Utc fields from wire JSON and rejects malformed responses with internal error",
+    () =>
+      Effect.gen(function* () {
+        const httpClient = yield* HttpClient.HttpClient;
+        const client = SessionTransferCoordinator.makeLiveBoatRemoteClient(Option.some(httpClient));
+        const txId = SessionTransferId.make("tx-decode-prepare");
+        const baseManifest = makeManifest({
+          transferId: txId,
+          direction: "boat_to_local",
+          sourceEnvironmentId: BOAT_ENV_ID,
+          sourceProjectId: BOAT_PROJECT_ID,
+          sourceThreadId: BOAT_THREAD_ID,
+        });
+        let malformed = false;
+        const mock = yield* acquireMockBoatRpcServer((tag) => {
+          if (tag !== WS_METHODS.sessionTransferPrepareSource) {
+            throw new Error(`Unexpected RPC tag: ${tag}`);
+          }
+          if (malformed) {
+            return { manifest: { invalid: true } };
+          }
+          return {
+            manifest: {
+              ...baseManifest,
+              messages: [
+                {
+                  id: MessageId.make("msg-1"),
+                  threadId: BOAT_THREAD_ID,
+                  runId: null,
+                  nodeId: null,
+                  createdBy: "user",
+                  creationSource: "web",
+                  role: "user",
+                  text: "hello from boat",
+                  attachments: [],
+                  streaming: false,
+                  createdAt: "2026-11-28T05:00:00.000Z",
+                  updatedAt: "2026-11-28T05:00:01.000Z",
+                },
+              ],
+            },
+            bundleDownloadRelativeUrl: "/api/session-transfer/tx-decode-prepare/bundle",
+            bundleExpiresAt: NOW_ISO,
+          };
+        });
+
+        const decoded = yield* client.prepareSource(mock.endpoint, {
+          transferId: txId,
+          direction: "boat_to_local",
+          threadId: BOAT_THREAD_ID,
+        });
+        expect(decoded.manifest.messages).toHaveLength(1);
+        const msg = decoded.manifest.messages[0]!;
+        expect(DateTime.isDateTime(msg.createdAt)).toBe(true);
+        expect(DateTime.isDateTime(msg.updatedAt)).toBe(true);
+        expect(DateTime.formatIso(msg.createdAt)).toBe("2026-11-28T05:00:00.000Z");
+        expect(DateTime.formatIso(msg.updatedAt)).toBe("2026-11-28T05:00:01.000Z");
+
+        malformed = true;
+        const decodeErr = yield* Effect.flip(
+          client.prepareSource(mock.endpoint, {
+            transferId: txId,
+            direction: "boat_to_local",
+            threadId: BOAT_THREAD_ID,
+          }),
+        );
+        expect(decodeErr).toBeInstanceOf(SessionTransferError);
+        expect(decodeErr.code).toBe("internal");
+        expect(decodeErr.transferId).toBe(txId);
+      }).pipe(Effect.scoped, Effect.provide(mockHttpLayer)),
+  );
+
+  it.effect(
+    "stageImport, commitImport, finalizeSource, and abort decode valid responses and fail with internal on malformed responses",
+    () =>
+      Effect.gen(function* () {
+        const httpClient = yield* HttpClient.HttpClient;
+        const client = SessionTransferCoordinator.makeLiveBoatRemoteClient(Option.some(httpClient));
+        const txId = SessionTransferId.make("tx-decode-rpcs");
+        const manifest = makeManifest({
+          transferId: txId,
+          direction: "local_to_boat",
+          sourceEnvironmentId: LOCAL_ENV_ID,
+          sourceProjectId: LOCAL_PROJECT_ID,
+          sourceThreadId: LOCAL_THREAD_ID,
+        });
+        let malformed = false;
+        const mock = yield* acquireMockBoatRpcServer((tag) => {
+          if (malformed) {
+            return { unexpected: true };
+          }
+          switch (tag) {
+            case WS_METHODS.sessionTransferStageImport:
+              return {
+                destinationProjectId: BOAT_PROJECT_ID,
+                destinationThreadId: DEST_THREAD_ID,
+                destinationBranch: "feat/transfer",
+                destinationWorktreePath: "/home/sail/sail/.worktrees/wt-1",
+                resolvedModelSelection: CLAUDE_MODEL,
+                bundleUploadRelativeUrl: "/api/session-transfer/tx-decode-rpcs/bundle",
+                bundleUploadExpiresAt: NOW_ISO,
+                attachmentUploads: [],
+                warnings: [],
+              };
+            case WS_METHODS.sessionTransferCommitImport:
+              return {
+                destinationProjectId: BOAT_PROJECT_ID,
+                destinationThreadId: DEST_THREAD_ID,
+                destinationBranch: "feat/transfer",
+                destinationWorktreePath: "/home/sail/sail/.worktrees/wt-1",
+                resumed: false,
+                warnings: [],
+              };
+            case WS_METHODS.sessionTransferFinalizeSource:
+              return { archived: true };
+            case WS_METHODS.sessionTransferAbort:
+              return { cleanedUp: true };
+            default:
+              throw new Error(`Unexpected RPC tag: ${tag}`);
+          }
+        });
+
+        const staged = yield* client.stageImport(mock.endpoint, {
+          transferId: txId,
+          manifest,
+          targetProjectId: BOAT_PROJECT_ID,
+        });
+        expect(staged.destinationThreadId).toBe(DEST_THREAD_ID);
+
+        const committed = yield* client.commitImport(mock.endpoint, {
+          transferId: txId,
+          manifest,
+          destinationProjectId: BOAT_PROJECT_ID,
+          destinationThreadId: DEST_THREAD_ID,
+          autoResume: false,
+        });
+        expect(committed.destinationThreadId).toBe(DEST_THREAD_ID);
+        expect(committed.resumed).toBe(false);
+
+        const finalized = yield* client.finalizeSource(mock.endpoint, {
+          transferId: txId,
+          threadId: BOAT_THREAD_ID,
+          destination: {
+            transferId: txId,
+            environmentId: LOCAL_ENV_ID,
+            environmentName: TrimmedNonEmptyString.make("MacBook Pro"),
+            machineId: null,
+            projectId: LOCAL_PROJECT_ID,
+            threadId: DEST_THREAD_ID,
+            transferredAt: NOW_ISO,
+          },
+        });
+        expect(finalized.archived).toBe(true);
+
+        const aborted = yield* client.abort(mock.endpoint, {
+          transferId: txId,
+          role: "destination",
+          reason: "test",
+        });
+        expect(aborted.cleanedUp).toBe(true);
+
+        malformed = true;
+        const stageErr = yield* Effect.flip(
+          client.stageImport(mock.endpoint, {
+            transferId: txId,
+            manifest,
+            targetProjectId: BOAT_PROJECT_ID,
+          }),
+        );
+        expect(stageErr.code).toBe("internal");
+        expect(stageErr.transferId).toBe(txId);
+
+        const commitErr = yield* Effect.flip(
+          client.commitImport(mock.endpoint, {
+            transferId: txId,
+            manifest,
+            destinationProjectId: BOAT_PROJECT_ID,
+            destinationThreadId: DEST_THREAD_ID,
+            autoResume: false,
+          }),
+        );
+        expect(commitErr.code).toBe("internal");
+        expect(commitErr.transferId).toBe(txId);
+
+        const finalizeErr = yield* Effect.flip(
+          client.finalizeSource(mock.endpoint, {
+            transferId: txId,
+            threadId: BOAT_THREAD_ID,
+            destination: {
+              transferId: txId,
+              environmentId: LOCAL_ENV_ID,
+              environmentName: TrimmedNonEmptyString.make("MacBook Pro"),
+              machineId: null,
+              projectId: LOCAL_PROJECT_ID,
+              threadId: DEST_THREAD_ID,
+              transferredAt: NOW_ISO,
+            },
+          }),
+        );
+        expect(finalizeErr.code).toBe("internal");
+        expect(finalizeErr.transferId).toBe(txId);
+
+        const abortErr = yield* Effect.flip(
+          client.abort(mock.endpoint, {
+            transferId: txId,
+            role: "destination",
+            reason: "test",
+          }),
+        );
+        expect(abortErr.code).toBe("internal");
+        expect(abortErr.transferId).toBe(txId);
+      }).pipe(Effect.scoped, Effect.provide(mockHttpLayer)),
   );
 });
