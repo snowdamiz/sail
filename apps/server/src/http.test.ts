@@ -1,6 +1,11 @@
+// @effect-diagnostics nodeBuiltinImport:off -- tests verify Node FileHandle descriptor closure and SHA-256 checksums for bundle downloads.
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodeHttp from "node:http";
+import type * as NodeFSP from "node:fs/promises";
 import { expect, it } from "@effect/vitest";
 import { describe, vi } from "vite-plus/test";
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeHttpPlatform from "@effect/platform-node/NodeHttpPlatform";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -15,7 +20,14 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Queue from "effect/Queue";
 import * as Tracer from "effect/Tracer";
-import { HttpClient, HttpClientRequest, HttpRouter, HttpServerResponse } from "effect/http";
+import {
+  HttpClient,
+  HttpClientRequest,
+  HttpRouter,
+  HttpServer,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/http";
 import { openMediaFile } from "./assets/MediaFile.ts";
 
 import {
@@ -32,6 +44,12 @@ import {
 } from "@t3tools/shared/desktopReadinessProof";
 import { FILE_PREVIEW_SCROLL_SCRIPT } from "@t3tools/shared/htmlRender";
 
+import * as AssetSigner from "./assets/AssetSigner.ts";
+import {
+  issueSessionTransferBundleUrl,
+  resolveExportBundlePath,
+} from "./assets/SessionTransferToken.ts";
+import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as ServerConfig from "./config.ts";
 
 import { assetResponseHeaders, assetFileResponse, downloadContentDisposition } from "./http.ts";
@@ -259,7 +277,7 @@ describe("desktop readiness proof", () => {
                 ),
               ),
             ),
-            Layer.provideMerge(NodeCrypto.layerMac),
+            Layer.provideMerge(PlatformNodeCrypto.layerMac),
             Layer.provide(NodeServices.layer),
           ),
           { disableLogger: true },
@@ -293,7 +311,7 @@ describe("desktop readiness proof", () => {
 
       expect((yield* get("")).status).toBe(404);
       expect((yield* get(`?challenge=${"a".repeat(129)}`)).status).toBe(404);
-    }).pipe(Effect.scoped, Effect.provide(NodeCrypto.layerMac)),
+    }).pipe(Effect.scoped, Effect.provide(PlatformNodeCrypto.layerMac)),
   );
 
   it.effect("does not answer on a server launched without a readiness secret", () =>
@@ -1007,4 +1025,429 @@ describe("downloadContentDisposition", () => {
       `attachment; filename="bad_name.pdf"; filename*=UTF-8''bad%EF%BF%BDname.pdf`,
     );
   });
+});
+
+describe("session transfer bundle download HEAD handling", () => {
+  it.effect(
+    "returns 200 with accurate headers, empty body, and closes the bundle FileHandle on HEAD requests",
+    () =>
+      Effect.gen(function* () {
+        const assetLayer = AssetSigner.layer.pipe(
+          Layer.provideMerge(ServerSecretStore.layer),
+          Layer.provideMerge(
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3-http-xfer-head-" }),
+          ),
+          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer)),
+        );
+
+        const services = yield* Layer.build(
+          HttpRouter.serve(ServerHttp.layerSessionTransferBundleDownloadRoute, {
+            disableListenLog: true,
+            disableLogger: true,
+          }).pipe(Layer.provideMerge(NodeHttpServer.layerTest), Layer.provideMerge(assetLayer)),
+        );
+
+        const config = Context.get(services, ServerConfig.ServerConfig);
+        const fs = Context.get(services, FileSystem.FileSystem);
+        const path = Context.get(services, Path.Path);
+        const client = Context.get(services, HttpClient.HttpClient);
+
+        const transferId = "xfer-http-head-fd";
+        const payload = new Uint8Array(64 * 1024);
+        for (let i = 0; i < payload.byteLength; i += 1) {
+          payload[i] = (i * 17) % 251;
+        }
+        const payloadSha256 = NodeCrypto.createHash("sha256").update(payload).digest("hex");
+
+        const exportPath = resolveExportBundlePath(config.stateDir, transferId, path)!;
+        yield* fs.makeDirectory(path.dirname(exportPath), { recursive: true });
+        yield* fs.writeFile(exportPath, payload);
+
+        const downloadUrl = yield* issueSessionTransferBundleUrl({
+          transferId,
+          operation: "download",
+          expectedSizeBytes: payload.byteLength,
+          expectedSha256: payloadSha256,
+        }).pipe(Effect.provide(services));
+
+        const openedHandles: Array<NodeFSP.FileHandle> = [];
+        const closeSpies: Array<ReturnType<typeof vi.spyOn>> = [];
+        const createReadStreamSpies: Array<ReturnType<typeof vi.spyOn>> = [];
+        const realOpen = NodeFS.promises.open;
+        const openSpy = vi.spyOn(NodeFS.promises, "open").mockImplementation(async (...args) => {
+          const handle = await realOpen(...args);
+          if (String(args[0]) === exportPath) {
+            openedHandles.push(handle);
+            closeSpies.push(vi.spyOn(handle, "close"));
+            createReadStreamSpies.push(vi.spyOn(handle, "createReadStream"));
+          }
+          return handle;
+        });
+
+        try {
+          // 1. HEAD on nonempty bundle returns 200, matching headers, empty body, and closes FD once.
+          const headResponse = yield* client.execute(
+            HttpClientRequest.head(downloadUrl.relativeUrl),
+          );
+          expect(headResponse.status).toBe(200);
+          expect(headResponse.headers["content-type"]).toBe("application/octet-stream");
+          expect(headResponse.headers["content-length"]).toBe(String(payload.byteLength));
+          expect(headResponse.headers["cache-control"]).toBe("private, no-store");
+          expect(headResponse.headers["x-content-type-options"]).toBe("nosniff");
+          expect(yield* headResponse.text).toBe("");
+
+          expect(openedHandles).toHaveLength(1);
+          expect(openedHandles[0]?.fd).toBe(-1);
+          expect(closeSpies[0]).toHaveBeenCalledTimes(1);
+          expect(createReadStreamSpies[0]).not.toHaveBeenCalled();
+
+          // 2. GET immediately afterward streams the full verified payload and closes its FD once.
+          const getResponse = yield* client.execute(HttpClientRequest.get(downloadUrl.relativeUrl));
+          expect(getResponse.status).toBe(200);
+          expect(getResponse.headers["content-length"]).toBe(String(payload.byteLength));
+          const downloadedBytes = new Uint8Array(yield* getResponse.arrayBuffer);
+          expect(downloadedBytes).toEqual(payload);
+
+          expect(openedHandles).toHaveLength(2);
+          for (const handle of openedHandles) {
+            expect(handle.fd).toBe(-1);
+          }
+          expect(closeSpies[1]).toHaveBeenCalledTimes(1);
+          expect(createReadStreamSpies[1]).not.toHaveBeenCalled();
+
+          // 3. HEAD on a tampered bundle still rejects with 409 and closes its FD once.
+          const tampered = new Uint8Array(payload);
+          tampered[0] = (tampered[0]! + 1) % 256;
+          yield* fs.writeFile(exportPath, tampered);
+          const tamperedHead = yield* client.execute(
+            HttpClientRequest.head(downloadUrl.relativeUrl),
+          );
+          expect(tamperedHead.status).toBe(409);
+          expect(yield* tamperedHead.text).toBe("");
+
+          expect(openedHandles).toHaveLength(3);
+          for (const handle of openedHandles) {
+            expect(handle.fd).toBe(-1);
+          }
+          expect(closeSpies[2]).toHaveBeenCalledTimes(1);
+          expect(createReadStreamSpies[2]).not.toHaveBeenCalled();
+        } finally {
+          openSpy.mockRestore();
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "closes the verified bundle FileHandle once on pre-stream GET client disconnect without starting the stream",
+    () =>
+      Effect.gen(function* () {
+        const assetLayer = AssetSigner.layer.pipe(
+          Layer.provideMerge(ServerSecretStore.layer),
+          Layer.provideMerge(
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3-http-xfer-prestream-" }),
+          ),
+          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer)),
+        );
+
+        const nodeServer = NodeHttp.createServer();
+        let serverResClosedResolve: (() => void) | null = null;
+        const serverResClosed = new Promise<void>((resolve) => {
+          serverResClosedResolve = resolve;
+        });
+        let observeFirstDisconnect = true;
+        nodeServer.on("request", (_req, res) => {
+          if (observeFirstDisconnect) {
+            observeFirstDisconnect = false;
+            res.once("close", () => {
+              serverResClosedResolve?.();
+            });
+          }
+        });
+
+        let routeReturnedResolve: (() => void) | null = null;
+        const routeReturned = new Promise<void>((resolve) => {
+          routeReturnedResolve = resolve;
+        });
+        let pauseAfterRoute = true;
+        const pauseBeforeStreamMiddleware = HttpRouter.middleware(
+          (httpEffect) =>
+            Effect.gen(function* () {
+              const response = yield* httpEffect;
+              if (pauseAfterRoute) {
+                pauseAfterRoute = false;
+                routeReturnedResolve?.();
+                yield* Effect.promise(() => serverResClosed);
+              }
+              return response;
+            }),
+          { global: true },
+        );
+
+        const services = yield* Layer.build(
+          HttpRouter.serve(
+            Layer.mergeAll(
+              ServerHttp.layerSessionTransferBundleDownloadRoute,
+              pauseBeforeStreamMiddleware,
+            ),
+            {
+              disableListenLog: true,
+              disableLogger: true,
+            },
+          ).pipe(
+            Layer.provideMerge(
+              NodeHttpServer.layer(() => nodeServer, { port: 0, host: "127.0.0.1" }),
+            ),
+            Layer.provideMerge(assetLayer),
+          ),
+        );
+
+        const server = Context.get(services, HttpServer.HttpServer);
+        const config = Context.get(services, ServerConfig.ServerConfig);
+        const fs = Context.get(services, FileSystem.FileSystem);
+        const path = Context.get(services, Path.Path);
+        expect(server.address._tag).toBe("InetAddressV4");
+        if (server.address._tag !== "InetAddressV4") return;
+        const port = server.address.port;
+
+        const transferId = "xfer-http-prestream-disconnect";
+        const payload = new Uint8Array(64 * 1024);
+        for (let i = 0; i < payload.byteLength; i += 1) {
+          payload[i] = (i * 29) % 251;
+        }
+        const payloadSha256 = NodeCrypto.createHash("sha256").update(payload).digest("hex");
+
+        const exportPath = resolveExportBundlePath(config.stateDir, transferId, path)!;
+        yield* fs.makeDirectory(path.dirname(exportPath), { recursive: true });
+        yield* fs.writeFile(exportPath, payload);
+
+        const downloadUrl = yield* issueSessionTransferBundleUrl({
+          transferId,
+          operation: "download",
+          expectedSizeBytes: payload.byteLength,
+          expectedSha256: payloadSha256,
+        }).pipe(Effect.provide(services));
+
+        const openedHandles: Array<NodeFSP.FileHandle> = [];
+        const closeSpies: Array<ReturnType<typeof vi.spyOn>> = [];
+        const createReadStreamSpies: Array<ReturnType<typeof vi.spyOn>> = [];
+        const readCallCounts: Array<number> = [];
+        let firstHandleClosedResolve: (() => void) | null = null;
+        const firstHandleClosed = new Promise<void>((resolve) => {
+          firstHandleClosedResolve = resolve;
+        });
+
+        const realOpen = NodeFS.promises.open;
+        const openSpy = vi.spyOn(NodeFS.promises, "open").mockImplementation(async (...args) => {
+          const handle = await realOpen(...args);
+          if (String(args[0]) === exportPath) {
+            const handleIndex = openedHandles.length;
+            openedHandles.push(handle);
+            readCallCounts.push(0);
+            createReadStreamSpies.push(vi.spyOn(handle, "createReadStream"));
+
+            const realRead = handle.read.bind(handle);
+            handle.read = (async (...readArgs: Parameters<typeof realRead>) => {
+              readCallCounts[handleIndex] = (readCallCounts[handleIndex] ?? 0) + 1;
+              return realRead(...readArgs);
+            }) as typeof handle.read;
+
+            const realClose = handle.close.bind(handle);
+            const closeSpy = vi.spyOn(handle, "close").mockImplementation(async () => {
+              try {
+                return await realClose();
+              } finally {
+                if (handleIndex === 0) {
+                  firstHandleClosedResolve?.();
+                }
+              }
+            });
+            closeSpies.push(closeSpy);
+          }
+          return handle;
+        });
+
+        try {
+          // 1. Verification succeeds and route registers the Scope finalizer, then the client
+          //    destroys the socket BEFORE NodeHttpServer starts consuming bundle.stream.
+          const abortedReq = NodeHttp.request({
+            host: "127.0.0.1",
+            port,
+            path: downloadUrl.relativeUrl,
+            method: "GET",
+            agent: false,
+          });
+          abortedReq.on("error", () => undefined);
+          abortedReq.end();
+
+          yield* Effect.promise(() => routeReturned);
+          abortedReq.destroy();
+
+          // Await deterministic FileHandle closure via request Scope finalizer (exactly once).
+          yield* Effect.promise(() => firstHandleClosed);
+          expect(openedHandles).toHaveLength(1);
+          // Only the single 64 KiB SHA-256 verification read ran; streaming never pulled from handle.
+          expect(readCallCounts[0]).toBe(1);
+          expect(createReadStreamSpies[0]).not.toHaveBeenCalled();
+          expect(closeSpies[0]).toHaveBeenCalledTimes(1);
+          expect(openedHandles[0]?.fd).toBe(-1);
+
+          // 2. Subsequent normal GET streams the full verified payload directly from FileHandle
+          //    and closes its handle deterministically once.
+          const normalBody = yield* Effect.promise(
+            () =>
+              new Promise<{ readonly status: number; readonly body: Uint8Array }>(
+                (resolve, reject) => {
+                  const req = NodeHttp.get(
+                    { host: "127.0.0.1", port, path: downloadUrl.relativeUrl, agent: false },
+                    (res) => {
+                      const chunks: Array<Buffer> = [];
+                      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+                      res.on("end", () =>
+                        resolve({
+                          status: res.statusCode ?? 0,
+                          body: new Uint8Array(Buffer.concat(chunks)),
+                        }),
+                      );
+                      res.on("error", reject);
+                    },
+                  );
+                  req.on("error", reject);
+                },
+              ),
+          );
+          expect(normalBody.status).toBe(200);
+          expect(normalBody.body).toEqual(payload);
+          // 1 verification read + 1 stream read.
+          expect(readCallCounts[1]).toBe(2);
+          expect(createReadStreamSpies[1]).not.toHaveBeenCalled();
+          expect(closeSpies[1]).toHaveBeenCalledTimes(1);
+          expect(openedHandles).toHaveLength(2);
+          for (const handle of openedHandles) {
+            expect(handle.fd).toBe(-1);
+          }
+        } finally {
+          openSpy.mockRestore();
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "interrupts bundle checksum verification mid-hashing on request fiber interrupt and closes the FileHandle once",
+    () =>
+      Effect.gen(function* () {
+        const assetLayer = AssetSigner.layer.pipe(
+          Layer.provideMerge(ServerSecretStore.layer),
+          Layer.provideMerge(
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3-http-xfer-interrupt-hash-" }),
+          ),
+          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer)),
+        );
+
+        const services = yield* Layer.build(assetLayer);
+        const config = Context.get(services, ServerConfig.ServerConfig);
+        const fs = Context.get(services, FileSystem.FileSystem);
+        const path = Context.get(services, Path.Path);
+
+        const transferId = "xfer-http-interrupt-hash";
+        // 4 x 64 KiB chunks so aborting after chunk 1 proves remaining chunks are never read/hashed.
+        const payload = new Uint8Array(4 * 64 * 1024);
+        for (let i = 0; i < payload.byteLength; i += 1) {
+          payload[i] = (i * 31) % 251;
+        }
+        const payloadSha256 = NodeCrypto.createHash("sha256").update(payload).digest("hex");
+
+        const exportPath = resolveExportBundlePath(config.stateDir, transferId, path)!;
+        yield* fs.makeDirectory(path.dirname(exportPath), { recursive: true });
+        yield* fs.writeFile(exportPath, payload);
+
+        const downloadUrl = yield* issueSessionTransferBundleUrl({
+          transferId,
+          operation: "download",
+          expectedSizeBytes: payload.byteLength,
+          expectedSha256: payloadSha256,
+        }).pipe(Effect.provide(services));
+
+        const httpEffect = yield* HttpRouter.toHttpEffect(
+          ServerHttp.layerSessionTransferBundleDownloadRoute.pipe(
+            Layer.provideMerge(Layer.succeedContext(services)),
+          ),
+        );
+
+        let readCalls = 0;
+        let firstReadEnteredResolve: (() => void) | null = null;
+        const firstReadEntered = new Promise<void>((resolve) => {
+          firstReadEnteredResolve = resolve;
+        });
+        let allowFirstReadResolve!: () => void;
+        const allowFirstRead = new Promise<void>((resolve) => {
+          allowFirstReadResolve = resolve;
+        });
+        let handleClosedResolve: (() => void) | null = null;
+        const handleClosed = new Promise<void>((resolve) => {
+          handleClosedResolve = resolve;
+        });
+        const openedHandles: Array<NodeFSP.FileHandle> = [];
+        const closeSpies: Array<ReturnType<typeof vi.spyOn>> = [];
+
+        const realOpen = NodeFS.promises.open;
+        const openSpy = vi.spyOn(NodeFS.promises, "open").mockImplementation(async (...args) => {
+          const handle = await realOpen(...args);
+          if (String(args[0]) === exportPath) {
+            openedHandles.push(handle);
+            const realRead = handle.read.bind(handle);
+            handle.read = (async (...readArgs: Parameters<typeof realRead>) => {
+              readCalls += 1;
+              if (readCalls === 1) {
+                firstReadEnteredResolve?.();
+                await allowFirstRead;
+              }
+              return realRead(...readArgs);
+            }) as typeof handle.read;
+
+            const realClose = handle.close.bind(handle);
+            const closeSpy = vi.spyOn(handle, "close").mockImplementation(async () => {
+              try {
+                return await realClose();
+              } finally {
+                handleClosedResolve?.();
+              }
+            });
+            closeSpies.push(closeSpy);
+          }
+          return handle;
+        });
+
+        try {
+          const request = HttpServerRequest.fromWeb(
+            new Request(`http://127.0.0.1${downloadUrl.relativeUrl}`, { method: "GET" }),
+          );
+          const requestFiber = yield* Effect.forkChild(
+            httpEffect.pipe(
+              Effect.provide(services),
+              Effect.provideService(HttpServerRequest.HttpServerRequest, request),
+              Effect.scoped,
+            ),
+          );
+
+          yield* Effect.promise(() => firstReadEntered);
+
+          // Interrupt the request fiber BEFORE releasing chunk 1's read: this MUST complete
+          // immediately (proving resolveExportBundleForDownload is interruptible and AbortSignal fired).
+          yield* Fiber.interrupt(requestFiber);
+
+          // Release chunk 1's in-flight read -> verification sees signal.aborted, stops hashing,
+          // and closes the FileHandle in finally without reading chunks 2..4.
+          allowFirstReadResolve();
+          yield* Effect.promise(() => handleClosed);
+
+          expect(openedHandles).toHaveLength(1);
+          expect(readCalls).toBe(1);
+          expect(closeSpies[0]).toHaveBeenCalledTimes(1);
+          expect(openedHandles[0]?.fd).toBe(-1);
+        } finally {
+          allowFirstReadResolve();
+          openSpy.mockRestore();
+        }
+      }).pipe(Effect.scoped),
+  );
 });

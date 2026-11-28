@@ -16,6 +16,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type * as HttpServerRequest from "effect/http/HttpServerRequest";
@@ -23,6 +24,7 @@ import type * as HttpServerRequest from "effect/http/HttpServerRequest";
 import {
   attachmentFileExtension,
   createPendingAttachmentId,
+  listAttachmentFileAndSidecarRelativePaths,
   parseThreadSegmentFromAttachmentId,
   PENDING_ATTACHMENT_THREAD_SEGMENT,
   resolveAttachmentPathById,
@@ -284,6 +286,9 @@ export const storeAttachmentUpload = Effect.fn("AttachmentUpload.store")(
   }),
 );
 
+const isNotFoundPlatformError = (error: PlatformError.PlatformError): boolean =>
+  error.reason._tag === "NotFound";
+
 export const deletePendingAttachment = Effect.fn("AttachmentUpload.deletePending")(
   function* (attachmentId: string) {
     if (parseThreadSegmentFromAttachmentId(attachmentId) !== PENDING_ATTACHMENT_THREAD_SEGMENT) {
@@ -302,6 +307,69 @@ export const deletePendingAttachment = Effect.fn("AttachmentUpload.deletePending
     const fileSystem = yield* FileSystem.FileSystem;
     yield* fileSystem.remove(attachmentPath, { force: true }).pipe(Effect.orElseSucceed(() => {}));
     yield* fileSystem.remove(`${attachmentPath}.txt`, { force: true }).pipe(Effect.ignore);
+  },
+  withAdmission("root"),
+  Effect.catchTags({
+    ServerMaintenanceBusy: (cause) =>
+      new PersistChatAttachmentsError({ message: cause.message, cause }),
+  }),
+);
+
+export const deletePendingAttachmentStrict = Effect.fn("AttachmentUpload.deletePendingStrict")(
+  function* (attachmentId: string) {
+    if (parseThreadSegmentFromAttachmentId(attachmentId) !== PENDING_ATTACHMENT_THREAD_SEGMENT) {
+      return;
+    }
+
+    const candidateNames = new Set(listAttachmentFileAndSidecarRelativePaths(attachmentId));
+    if (candidateNames.size === 0) {
+      return;
+    }
+
+    const config = yield* ServerConfig.ServerConfig;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const entries = yield* fileSystem
+      .readDirectory(config.attachmentsDir)
+      .pipe(
+        Effect.catchIf(isNotFoundPlatformError, () => Effect.succeed<ReadonlyArray<string>>([])),
+      );
+
+    const matchingPaths: Array<string> = [];
+    for (const entry of entries) {
+      if (!candidateNames.has(entry)) {
+        continue;
+      }
+      const resolvedPath = resolveAttachmentRelativePath({
+        attachmentsDir: config.attachmentsDir,
+        relativePath: entry,
+      });
+      if (resolvedPath !== null) {
+        matchingPaths.push(resolvedPath);
+      }
+    }
+    matchingPaths.sort();
+
+    const failures: Array<PlatformError.PlatformError> = [];
+    for (const targetPath of matchingPaths) {
+      const removeResult = yield* Effect.result(
+        fileSystem
+          .remove(targetPath)
+          .pipe(Effect.catchIf(isNotFoundPlatformError, () => Effect.void)),
+      );
+      if (Result.isFailure(removeResult)) {
+        failures.push(removeResult.failure);
+      }
+    }
+    if (failures.length > 0) {
+      const [firstFailure, ...restFailures] = failures;
+      for (const extraFailure of restFailures) {
+        yield* Effect.logWarning("Additional pending attachment deletion failure.", {
+          attachmentId,
+          cause: extraFailure,
+        });
+      }
+      return yield* firstFailure!;
+    }
   },
   withAdmission("root"),
   Effect.catchTags({
