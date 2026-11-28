@@ -464,7 +464,6 @@ describe("DesktopShellEnvironment", () => {
             NODE_EXTRA_CA_CERTS: "/cached/ca.pem",
             SSL_CERT_FILE: "/cached/cert.pem",
             SSL_CERT_DIR: "/cached/certs",
-            T3CODE_TELEMETRY_ENABLED: "false",
             SSH_AUTH_SOCK: "/stale.sock",
             NODE_OPTIONS: "--bad",
           },
@@ -505,7 +504,6 @@ describe("DesktopShellEnvironment", () => {
         assert.equal(env.NODE_EXTRA_CA_CERTS, "/launcher/ca.pem");
         assert.equal(env.SSL_CERT_FILE, "");
         assert.equal(env.SSL_CERT_DIR, "/cached/certs");
-        assert.equal(env.T3CODE_TELEMETRY_ENABLED, "false");
         assert.equal(env.SSH_AUTH_SOCK, "/current.sock");
         assert.isUndefined(env.NODE_OPTIONS);
         assert.equal(yield* fs.readFileString(cachePath), contents);
@@ -1084,24 +1082,6 @@ describe("DesktopShellEnvironment", () => {
       yield* TestClock.adjust("5 seconds");
       yield* Fiber.join(fiber);
       assert.deepEqual([...new Set(commands)], ["pwsh.exe", "powershell.exe"]);
-    }),
-  );
-
-  it.effect("applies a saved Windows user telemetry opt-out missing from the launcher", () =>
-    Effect.gen(function* () {
-      const env: NodeJS.ProcessEnv = { PATH: "C:\\Windows\\System32" };
-
-      yield* runShellEnvironment({
-        env,
-        platform: "win32",
-        handler: (command) =>
-          command._tag === "StandardCommand" &&
-          String(command.args.at(-1)).includes("T3CODE_TELEMETRY_ENABLED")
-            ? envOutput({ PATH: "C:\\Windows\\System32", T3CODE_TELEMETRY_ENABLED: "false" })
-            : envOutput({ PATH: "C:\\Windows\\System32" }),
-      });
-
-      assert.equal(env.T3CODE_TELEMETRY_ENABLED, "false");
     }),
   );
 

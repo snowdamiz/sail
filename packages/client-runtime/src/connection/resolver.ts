@@ -1,7 +1,6 @@
 import { msg } from "gt-i18n";
 import { translatableDetail } from "../errors/translatable.ts";
 import type { ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
-import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -177,19 +176,17 @@ const makeBearerBroker = Effect.fn("clientRuntime.connection.broker.makeBearer")
 const makeRelayBroker = Effect.fn("clientRuntime.connection.broker.makeRelay")(function* () {
   const remote = yield* RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
 
-  return Effect.fnUntraced(
-    function* (target: RelayConnectionTarget) {
-      const authorized = yield* remote.authorizeDpop({
-        expectedEnvironmentId: target.environmentId,
-      });
-      return {
-        ...authorized,
-        target,
-      } satisfies PreparedConnection;
-    },
-    Effect.withSpan("clientRuntime.connection.broker.relay"),
-    withRelayClientTracing,
-  );
+  return Effect.fn("clientRuntime.connection.broker.relay")(function* (
+    target: RelayConnectionTarget,
+  ) {
+    const authorized = yield* remote.authorizeDpop({
+      expectedEnvironmentId: target.environmentId,
+    });
+    return {
+      ...authorized,
+      target,
+    } satisfies PreparedConnection;
+  });
 });
 
 const makeSshBroker = Effect.fn("clientRuntime.connection.broker.makeSsh")(function* () {
