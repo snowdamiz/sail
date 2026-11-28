@@ -1,176 +1,219 @@
-import { useAtomValue } from "@effect/atom-react";
-import { environmentSupportsLocalSessions } from "@t3tools/contracts";
+import { useGT } from "gt-react";
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { serverEnvironment } from "~/state/server";
-import { useBoatAccess } from "../access";
-import type { UiState } from "../types";
-import { cleanName, hourly, NAME_RE, suggestName } from "../machine";
-import { Icon } from "./Icons";
-import { ProjectList, useLocalProjects } from "./ProjectPicker";
-import { SubHeader } from "./SubHeader";
 
-interface Props {
-  state: UiState;
-  onNameChange: (name: string) => void;
-  onCreate: (name: string, size: string, projects: string[]) => void;
-  onBack: () => void;
+import { cn } from "~/lib/utils";
+import { SettingsGroup } from "../../settings/SettingsGroup";
+import { Button } from "../../ui/button";
+import { CheckboxMark } from "../../ui/checkbox";
+import { Input } from "../../ui/input";
+import { Label } from "../../ui/label";
+import { useBoatAccess } from "../access";
+import { NAME_RE, cleanName, suggestName } from "../machine";
+import type { UiState } from "../types";
+import { MachineSizePicker } from "./MachineSizePicker";
+import { ProjectList, useLocalProjects } from "./ProjectPicker";
+
+export interface CreateMachineInput {
+  readonly name: string;
+  readonly size: string;
+  readonly projects: string[];
 }
 
-function LocalProjectsFieldset({
+function LocalProjectsSection({
   picked,
   onToggle,
 }: {
-  picked: string[];
-  onToggle: (id: string) => void;
+  readonly picked: readonly string[];
+  readonly onToggle: (id: string) => void;
 }) {
+  const gt = useGT();
   const projects = useLocalProjects();
+
   return (
-    <fieldset className="field">
-      <legend className="caption">projects</legend>
-      <div className="pick pick-checklist" role="group" aria-label="Projects to add">
-        <div className="pick-scroll">
+    <fieldset className="space-y-2.5">
+      <div className="space-y-0.5 px-3 sm:px-4">
+        <div className="flex items-baseline gap-2">
+          <legend className="text-base font-semibold text-foreground">{gt("Projects")}</legend>
+          <span className="text-xs text-muted-foreground">{gt("Optional")}</span>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {gt("Cloned from git once it's up, .env files included")}
+        </p>
+      </div>
+      <SettingsGroup divided={false}>
+        <div
+          role="group"
+          aria-label={gt("Projects to add")}
+          className="max-h-64 space-y-0.5 overflow-y-auto p-1.5"
+        >
           <ProjectList
             projects={projects}
             shown={projects.list ?? []}
             query=""
-            option={(p) => {
-              const on = picked.includes(p.id);
-              // One clone per repository: another project of the same repo is already picked.
+            option={(project) => {
+              const on = picked.includes(project.id);
               const sameRepo =
                 !on &&
-                (projects.list ?? []).some((o) => o.repoKey === p.repoKey && picked.includes(o.id));
-              const flip = () => !sameRepo && onToggle(p.id);
+                (projects.list ?? []).some(
+                  (other) => other.repoKey === project.repoKey && picked.includes(other.id),
+                );
+              const flip = () => {
+                if (!sameRepo) onToggle(project.id);
+              };
               return {
                 role: "checkbox",
                 tabIndex: 0,
                 "aria-checked": on,
                 "aria-disabled": sameRepo,
-                className: `pick-option${on ? " is-active" : ""}${sameRepo ? " is-done" : ""}`,
+                className: cn(
+                  "flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  sameRepo
+                    ? "cursor-not-allowed opacity-55"
+                    : on
+                      ? "cursor-pointer bg-accent/60"
+                      : "cursor-pointer hover:bg-accent/35",
+                ),
                 onClick: flip,
-                onKeyDown: (e: KeyboardEvent) => {
-                  if (e.key === " " || e.key === "Enter") {
-                    e.preventDefault();
+                onKeyDown: (event: KeyboardEvent) => {
+                  if (event.key === " " || event.key === "Enter") {
+                    event.preventDefault();
                     flip();
                   }
                 },
-                badge: on ? (
-                  <span className="line-ok">
-                    <Icon name="check" size={10} />
-                  </span>
-                ) : null,
+                leading: <CheckboxMark checked={on} />,
               };
             }}
           />
         </div>
-      </div>
-      <span className="hint">Optional · cloned from git once it's up, .env files included</span>
+      </SettingsGroup>
     </fieldset>
   );
 }
 
-export function NewMachine({ state, onNameChange, onCreate, onBack }: Props) {
+export function NewMachine({
+  state,
+  supportsLocalProjects,
+  canCreate,
+  onCreate,
+  onCancel,
+}: {
+  readonly state: UiState;
+  readonly supportsLocalProjects: boolean;
+  readonly canCreate: boolean;
+  readonly onCreate: (input: CreateMachineInput) => void;
+  readonly onCancel: () => void;
+}) {
+  const gt = useGT();
   const access = useBoatAccess();
-  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(access.environmentId));
-  const supportsLocalProjects = environmentSupportsLocalSessions(serverConfig);
   const taken = state.machines.map((m) => m.name);
   const [name, setName] = useState(() => suggestName(taken));
-  // Boat's own default: room for builds and tests without the large price.
   const [size, setSize] = useState(() =>
     state.sizes.some((s) => s.id === "default") ? "default" : (state.sizes[0]?.id ?? ""),
   );
-  const input = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const [picked, setPicked] = useState<string[]>([]);
-  const toggle = (id: string) =>
-    setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
 
+  const toggle = (id: string) =>
+    setPicked((current) =>
+      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
+    );
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- selects the suggested machine name in the input DOM node on mount
   useEffect(() => {
-    input.current?.select();
+    inputRef.current?.select();
   }, []);
-  useEffect(() => onNameChange(name), [name, onNameChange]);
 
   const problem = !name
-    ? "Give it a name"
+    ? gt("Give it a name")
     : !NAME_RE.test(name)
-      ? "Start with a letter or number"
+      ? gt("Start with a letter or number")
       : taken.includes(name)
-        ? "You already have a machine with this name"
+        ? gt("You already have a machine with this name")
         : null;
 
   const selectedProjects = supportsLocalProjects ? picked : [];
 
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    if (!problem && size) onCreate(name, size, selectedProjects);
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!problem && size && canCreate) {
+      onCreate({ name, size, projects: selectedProjects });
+    }
   };
 
   return (
-    <form className="view" onSubmit={submit}>
-      <SubHeader title="New machine" onBack={onBack} />
-      <div className="view-body">
-        <div className="field">
-          <label className="caption" htmlFor="machine-name">
-            name
-          </label>
-          <span className="prompt-input">
-            <span className="prompt-sign" aria-hidden>
-              $
-            </span>
-            <input
+    <form onSubmit={submit} className="space-y-8">
+      <section className="space-y-2.5">
+        <div className="px-3 sm:px-4">
+          <h2 className="text-base font-semibold text-foreground">{gt("Configuration")}</h2>
+        </div>
+        <SettingsGroup>
+          <div className="space-y-2 px-3 py-4 sm:px-4">
+            <Label htmlFor="machine-name">{gt("Name")}</Label>
+            <Input
               id="machine-name"
-              ref={input}
+              ref={inputRef}
+              font="mono"
+              className="max-w-sm"
               aria-describedby="machine-name-hint"
+              aria-invalid={!!problem}
               value={name}
-              onChange={(e) => setName(cleanName(e.target.value))}
               spellCheck={false}
               autoComplete="off"
-              aria-invalid={!!problem}
+              onChange={(event) => setName(cleanName(event.target.value))}
             />
-          </span>
-          <span id="machine-name-hint" className={`hint${problem && name ? " is-error" : ""}`}>
-            {problem ?? "Shows up under this name in Sail"}
-          </span>
-        </div>
-
-        <fieldset className="field">
-          <legend className="caption">size</legend>
-          <div className="sizes" role="radiogroup">
-            {state.sizes.map((s) => (
-              <label key={s.id} className={`size${size === s.id ? " is-on" : ""}`}>
-                <input
-                  type="radio"
-                  name="size"
-                  value={s.id}
-                  checked={size === s.id}
-                  onChange={() => setSize(s.id)}
-                />
-                <span className="size-name">{s.id}</span>
-                <span className="size-spec">{s.spec}</span>
-                <span className="size-price">{hourly(s.hourly)}</span>
-              </label>
-            ))}
+            <p
+              id="machine-name-hint"
+              className={cn(
+                "text-xs",
+                problem && name ? "text-destructive-foreground" : "text-muted-foreground",
+              )}
+            >
+              {problem ?? gt("Shows up under this name in Sail")}
+            </p>
           </div>
-          <span className="hint">
-            Billed only while awake · sleeps 3 min after agents finish · resize anytime
-          </span>
-        </fieldset>
 
-        {supportsLocalProjects ? <LocalProjectsFieldset picked={picked} onToggle={toggle} /> : null}
-      </div>
-      <div className="view-foot">
-        <button
-          type="submit"
-          className="btn btn-solid btn-lg"
-          disabled={!!problem || !size || !access.can("create_machine")}
-        >
-          Launch machine
-        </button>
-        <p className="foot-note">
-          Takes about a minute
-          {selectedProjects.length
-            ? `, then ${selectedProjects.length} ${selectedProjects.length === 1 ? "project" : "projects"}`
-            : ""}
-          .{access.onHost ? " Sail will ask to add it." : ""}
+          <div className="px-3 py-4 sm:px-4">
+            <fieldset className="space-y-3">
+              <div className="space-y-0.5">
+                <legend className="text-sm font-medium text-foreground">{gt("Size")}</legend>
+                <p className="text-xs text-muted-foreground">
+                  {gt(
+                    "Billed only while awake · sleeps 3 min after agents finish · resize anytime",
+                  )}
+                </p>
+              </div>
+              <MachineSizePicker sizes={state.sizes} value={size} onChange={setSize} name="size" />
+            </fieldset>
+          </div>
+        </SettingsGroup>
+      </section>
+
+      {supportsLocalProjects ? <LocalProjectsSection picked={picked} onToggle={toggle} /> : null}
+
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/50 px-3 pt-5 sm:px-4">
+        <p className="text-xs text-muted-foreground">
+          {selectedProjects.length > 0
+            ? selectedProjects.length === 1
+              ? gt("Takes about a minute, then 1 project.")
+              : gt("Takes about a minute, then {count} projects.", {
+                  count: selectedProjects.length,
+                })
+            : gt("Takes about a minute.")}
+          {access.onHost ? ` ${gt("Sail will ask to add it.")}` : ""}
         </p>
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={onCancel}>
+            {gt("Cancel")}
+          </Button>
+          <Button
+            type="submit"
+            variant="default"
+            size="sm"
+            disabled={!!problem || !size || !canCreate}
+          >
+            {gt("Launch machine")}
+          </Button>
+        </div>
       </div>
     </form>
   );

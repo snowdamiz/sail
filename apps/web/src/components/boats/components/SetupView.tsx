@@ -1,129 +1,205 @@
-import type { ReactNode } from "react";
+import type { BoatSignIn, BoatSignInPhase } from "@t3tools/contracts";
 import { useGT } from "gt-react";
+import { AlertTriangleIcon, RefreshCwIcon } from "lucide-react";
+import { useRef, useState, type ReactNode } from "react";
+
+import { SailBrandMark } from "../../SailBrandMark";
+import { SettingsGroup } from "../../settings/SettingsGroup";
+import { Alert, AlertDescription } from "../../ui/alert";
+import { Button } from "../../ui/button";
+import { Spinner } from "../../ui/spinner";
 import { useBoatAccess } from "../access";
-import type { Setup, SetupAction } from "../types";
-import { Icon } from "./Icons";
-import { Dots } from "./common";
+import { useBoatCall, type useFollowBoatLink } from "../api";
+import { errorText } from "../reply";
+import type { Setup, SetupAction, UiState } from "../types";
+import { BoatsFrame, type Notice, type Notify, type ServerSelection } from "./BoatsFrame";
+import { SignInPanel } from "./SignInPanel";
+import { useIsMountedRef } from "./common";
 
-const STEPS: {
-  id: Exclude<Setup, "starting" | "ready">;
-  title: string;
-  body: string;
-  button: string;
-  busy: string;
-}[] = [
-  {
-    id: "installBoat",
-    title: "Install the Boat CLI",
-    body: "Sail uses the Boat CLI on this server to run cloud machines on your Boat account.",
-    button: "Install Boat CLI",
-    busy: "Installing",
-  },
-  {
-    id: "signInBoat",
-    title: "Sign in to Boat",
-    body: "",
-    button: "Sign in to Boat",
-    busy: "Waiting for sign-in",
-  },
-];
+type FollowLink = ReturnType<typeof useFollowBoatLink>;
 
-export function SetupView({
+export function SetupBody({
+  state,
+  follow,
+  notify,
+  server,
+  notice,
+  dismissNotice,
+}: {
+  readonly state: UiState;
+  readonly follow: FollowLink;
+  readonly notify: Notify;
+  readonly server: ServerSelection;
+  readonly notice: Notice | null;
+  readonly dismissNotice: () => void;
+}) {
+  const gt = useGT();
+  const call = useBoatCall();
+  const [signIn, setSignIn] = useState<BoatSignIn | null>(null);
+  const [requesting, setRequesting] = useState(false);
+  const activeAttemptIdRef = useRef<string | null>(null);
+  const mountedRef = useIsMountedRef();
+
+  const finish = (attemptId: string, phase: BoatSignInPhase) => {
+    if (!mountedRef.current || activeAttemptIdRef.current !== attemptId) return;
+    activeAttemptIdRef.current = null;
+    setSignIn((current) => (current?.attemptId === attemptId ? null : current));
+    if (phase === "expired") notify(gt("The sign-in expired. Start again to get a new code."));
+    if (phase === "failed") notify(gt("Sign-in could not finish. Try again."));
+  };
+
+  const act = (action: SetupAction) => {
+    setRequesting(true);
+    void call("setup_action", { action })
+      .then(
+        (reply) => {
+          if (!mountedRef.current) return;
+          if (reply.signIn !== undefined) {
+            activeAttemptIdRef.current = reply.signIn.attemptId;
+            setSignIn(reply.signIn);
+            if (reply.signIn.onHost) follow(reply.signIn.prompt?.url);
+          } else {
+            follow(reply.openUrl);
+          }
+        },
+        (error) => {
+          if (mountedRef.current) notify(errorText(error));
+        },
+      )
+      .finally(() => {
+        if (mountedRef.current) setRequesting(false);
+      });
+  };
+
+  const isChecking = state.setup === "starting" || state.setup === "ready";
+
+  return (
+    <BoatsFrame
+      breadcrumbHeading={isChecking}
+      back={null}
+      server={server}
+      notice={notice}
+      dismissNotice={dismissNotice}
+    >
+      <SetupView
+        setup={state.setup}
+        busy={state.setupBusy}
+        signIn={
+          signIn === null ? null : (
+            <SignInPanel
+              key={signIn.attemptId}
+              attempt={signIn}
+              command="manage_boat_sign_in"
+              onFinish={finish}
+            />
+          )
+        }
+        requesting={requesting}
+        onAction={act}
+      />
+    </BoatsFrame>
+  );
+}
+
+function SetupView({
   setup,
   busy,
   signIn,
   requesting,
   onAction,
 }: {
-  setup: Setup;
-  busy: boolean;
-  signIn: ReactNode;
-  requesting: boolean;
-  onAction: (a: SetupAction) => void;
+  readonly setup: Setup;
+  readonly busy: boolean;
+  readonly signIn: ReactNode;
+  readonly requesting: boolean;
+  readonly onAction: (action: SetupAction) => void;
 }) {
   const gt = useGT();
   const canAct = useBoatAccess().can("setup_action");
   const locked = busy || requesting || !canAct || signIn !== null;
+
   if (setup === "starting" || setup === "ready") {
     return (
-      <div className="view center">
-        <p className="caption">
-          <Dots /> checking your setup
-        </p>
+      <div
+        role="status"
+        className="flex items-center justify-center gap-2.5 py-20 text-sm text-muted-foreground"
+      >
+        <Spinner aria-hidden="true" size="sm" tone="muted" />
+        <span>{gt("Checking your setup…")}</span>
       </div>
     );
   }
-  const current = setup === "installT3" ? STEPS.length : STEPS.findIndex((s) => s.id === setup);
+
+  const primaryAction: SetupAction = setup === "installBoat" ? "installBoat" : "signInBoat";
 
   return (
-    <div className="view">
-      <div className="view-body">
-        <h1 className="display">Set sail in two steps</h1>
-        <p className="lede">
-          Launch cloud machines inside Sail that sleep for free when no agent is working.
+    <div className="mx-auto w-full max-w-xl space-y-6 pt-4 sm:pt-8">
+      <div className="space-y-2 px-1">
+        <SailBrandMark aria-hidden="true" className="size-6 text-foreground" />
+        <h1 className="text-xl font-semibold tracking-tight text-foreground">
+          {gt("Set sail with Boat")}
+        </h1>
+        <p className="text-sm leading-relaxed text-muted-foreground">
+          {gt("Launch cloud machines inside Sail that sleep for free when no agent is working.")}
         </p>
-        <ol className="steps">
-          {STEPS.map((s, i) => {
-            const status = i < current ? "done" : i === current ? "current" : "todo";
-            return (
-              <li
-                key={s.id}
-                className={`step is-${status}`}
-                aria-current={status === "current" ? "step" : undefined}
-              >
-                <span className="step-num">
-                  {status === "done" ? <Icon name="check" size={12} /> : `0${i + 1}`}
-                </span>
-                <div className="step-text">
-                  <span className="step-title">
-                    {s.id === "signInBoat" ? gt("Sign in to Boat") : s.title}
-                  </span>
-                  {status === "current" ? (
-                    <span className="step-body">
-                      {s.id === "signInBoat" ? gt("Machines bill to your Boat plan.") : s.body}
-                    </span>
-                  ) : null}
-                  {status === "current" && signIn === null ? (
-                    <button
-                      type="button"
-                      className="btn btn-solid btn-lg"
-                      disabled={locked}
-                      aria-busy={busy}
-                      onClick={() => onAction(s.id)}
-                    >
-                      {busy ? (
-                        <>
-                          <Dots /> {s.id === "signInBoat" ? gt("Waiting for sign-in…") : s.busy}
-                        </>
-                      ) : s.id === "signInBoat" ? (
-                        gt("Sign in to Boat")
-                      ) : (
-                        s.button
-                      )}
-                    </button>
-                  ) : null}
-                  {status === "current" ? signIn : null}
-                </div>
-              </li>
-            );
-          })}
-        </ol>
-        {setup === "installT3" ? (
-          <p className="lede" style={{ marginTop: 12 }}>
-            This server could not run its own <code>t3</code> command. Restart the server, then
-            check again.
-          </p>
-        ) : null}
       </div>
-      <div className="view-foot">
-        <button
-          type="button"
-          className="btn btn-link"
+
+      <SettingsGroup divided={false}>
+        {setup === "installT3" ? (
+          <div className="px-4 py-4 sm:px-5">
+            <Alert variant="warning">
+              <AlertTriangleIcon aria-hidden="true" />
+              <AlertDescription>
+                {gt(
+                  "This server could not run its own t3 command. Restart the server, then check again.",
+                )}
+              </AlertDescription>
+            </Alert>
+          </div>
+        ) : (
+          <div className="space-y-4 px-4 py-4 sm:px-5">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+              <div className="min-w-0 space-y-0.5">
+                <h2 className="text-sm font-medium text-foreground">{gt("Sign in to Boat")}</h2>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {gt("Machines bill to your Boat plan. Sail handles setup automatically.")}
+                </p>
+              </div>
+              {signIn === null ? (
+                <Button
+                  size="sm"
+                  variant="default"
+                  className="shrink-0"
+                  disabled={locked}
+                  aria-busy={busy || requesting}
+                  onClick={() => onAction(primaryAction)}
+                >
+                  {busy || requesting ? (
+                    <>
+                      <Spinner aria-hidden="true" />
+                      {gt("Setting up Boat…")}
+                    </>
+                  ) : (
+                    gt("Sign in to Boat")
+                  )}
+                </Button>
+              ) : null}
+            </div>
+            {signIn}
+          </div>
+        )}
+      </SettingsGroup>
+
+      <div className="flex justify-end px-1">
+        <Button
+          size="xs"
+          variant="ghost-muted"
           disabled={locked}
           onClick={() => onAction("recheck")}
         >
-          Done it already? Check again
-        </button>
+          <RefreshCwIcon aria-hidden="true" className="size-3.5" />
+          {gt("Done it already? Check again")}
+        </Button>
       </div>
     </div>
   );

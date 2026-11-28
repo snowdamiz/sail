@@ -1,16 +1,22 @@
+import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
+import type { BoatAccess } from "./access";
+import { sampleCountdown } from "./components/common";
+import { deriveMachineControls } from "./components/MachineActions";
 import { classifyBoatLink, errorText } from "./reply";
 import {
   ACTIONS,
+  MACHINE_STATUS,
   cleanName,
   duration,
+  isMachineOpenable,
   machineKey,
   menuActions,
   primaryAction,
-  stateTag,
+  shortDate,
   suggestName,
 } from "./machine";
-import type { MachineView, Size } from "./types";
+import type { MachineState, MachineView, Size } from "./types";
 
 function makeMachine(overrides: Partial<MachineView> = {}): MachineView {
   return {
@@ -43,10 +49,10 @@ describe("Sail Boats helpers", () => {
     expect(errorText({ message: "rpc error" })).toBe("Something went wrong");
   });
 
-  it("derives Sail-branded actions, state tags, and names", () => {
+  it("derives Sail-branded actions, statuses, and names", () => {
     const unpaired = makeMachine({ state: "idle", paired: false });
     expect(machineKey(unpaired)).toBe("m-1");
-    expect(stateTag(unpaired.state)).toBe("idle");
+    expect(MACHINE_STATUS[unpaired.state].badgeVariant).toBe("success");
     expect(primaryAction(unpaired, false)?.label).toBe("Add to Sail");
     expect(ACTIONS.open.label).toBe("Open last thread in Sail");
 
@@ -72,11 +78,124 @@ describe("Sail Boats helpers", () => {
 
     const creating = makeMachine({ id: "", state: "creating" });
     expect(machineKey(creating)).toBe("new:harbor");
-    expect(stateTag(creating.state)).toBe("building");
+    expect(MACHINE_STATUS[creating.state].badgeVariant).toBe("warning");
+    expect(isMachineOpenable(creating)).toBe(false);
+    expect(isMachineOpenable(unpaired)).toBe(true);
 
     expect(cleanName("My Boat_01!")).toBe("my-boat-01");
     expect(suggestName(["skiff"])).toBe("dinghy");
     expect(duration(7500)).toBe("2h 5m");
+    expect(shortDate(1767225600, "en-US")).not.toBe("Invalid Date");
+    expect(shortDate(1767225600, "de-DE")).not.toBe(shortDate(1767225600, "en-US"));
+  });
+
+  it("covers every machine state in MACHINE_STATUS", () => {
+    const states: readonly MachineState[] = [
+      "working",
+      "idle",
+      "sleeping",
+      "asleep",
+      "waking",
+      "creating",
+      "error",
+      "missing",
+      "unknown",
+    ];
+    for (const state of states) {
+      expect(MACHINE_STATUS[state].label).toBeTruthy();
+      expect(MACHINE_STATUS[state].dotClassName).toBeTruthy();
+      expect(MACHINE_STATUS[state].badgeVariant).toBeTruthy();
+    }
+  });
+
+  it("derives narrowed machine controls from access, local project support, and pending state", () => {
+    const envId = EnvironmentId.make("boat-env");
+    const access: BoatAccess = {
+      environmentId: EnvironmentId.make("host-env"),
+      can: () => true,
+      isPaired: (id) => id === envId,
+      onHost: false,
+    };
+    const asleep = makeMachine({
+      id: "m-2",
+      environmentId: envId,
+      state: "asleep",
+      paired: true,
+    });
+    const remoteControls = deriveMachineControls({
+      machine: asleep,
+      sizes: SIZES,
+      access,
+      supportsLocalProjects: false,
+      pending: null,
+      deleteRefusal: null,
+      signingIn: false,
+    });
+    expect(remoteControls.canOpen).toBe(true);
+    expect(remoteControls.canResize).toBe(true);
+    expect(remoteControls.rowPrimary).toMatchObject({
+      kind: "ordinary",
+      action: ACTIONS.wake,
+      disabled: false,
+    });
+    expect(remoteControls.detailsPrimary).toMatchObject({
+      kind: "ordinary",
+      action: ACTIONS.open,
+      disabled: false,
+    });
+    expect(remoteControls.menuItems.some((item) => item.kind === "pickProject")).toBe(false);
+    expect(
+      remoteControls.menuItems.some(
+        (item) => item.kind === "ordinary" && item.action === ACTIONS.wake,
+      ),
+    ).toBe(false);
+    expect(remoteControls.needsProject).toBe(false);
+
+    const readOnlyControls = deriveMachineControls({
+      machine: asleep,
+      sizes: SIZES,
+      access: { ...access, can: (cmd) => cmd !== "resize_machine" },
+      supportsLocalProjects: true,
+      pending: null,
+      deleteRefusal: null,
+      signingIn: false,
+    });
+    expect(readOnlyControls.canResize).toBe(false);
+
+    const busyControls = deriveMachineControls({
+      machine: asleep,
+      sizes: SIZES,
+      access: { ...access, onHost: true },
+      supportsLocalProjects: true,
+      pending: { action: ACTIONS.wake, label: "Waking…" },
+      deleteRefusal: null,
+      signingIn: false,
+    });
+    expect(busyControls.canAddProject).toBe(false);
+    expect(busyControls.canResize).toBe(false);
+
+    const missingControls = deriveMachineControls({
+      machine: makeMachine({ id: "m-3", state: "missing" }),
+      sizes: SIZES,
+      access: { ...access, onHost: true },
+      supportsLocalProjects: true,
+      pending: null,
+      deleteRefusal: null,
+      signingIn: false,
+    });
+    expect(missingControls.rowPrimary).toMatchObject({
+      kind: "armDelete",
+      deletion: { kind: "removeMissing", action: ACTIONS.remove },
+      disabled: false,
+    });
+    expect(missingControls.deleteControl).toMatchObject({
+      kind: "armDelete",
+      deletion: { kind: "removeMissing", action: ACTIONS.remove },
+      disabled: false,
+    });
+    expect(missingControls.canResize).toBe(false);
+    expect(missingControls.menuItems).toEqual([]);
+    expect(missingControls.power).toBeNull();
   });
 
   it("sends a reply's link to pairing, an app route, or the browser", () => {
@@ -93,5 +212,21 @@ describe("Sail Boats helpers", () => {
     expect(classifyBoatLink("http://localhost:47732/", true)).toEqual({ kind: "ignored" });
     expect(classifyBoatLink("sail://", true)).toEqual({ kind: "ignored" });
     expect(classifyBoatLink(undefined, true)).toEqual({ kind: "ignored" });
+  });
+
+  it("samples countdown value and next wake delay consistently from one clock instant", () => {
+    expect(sampleCountdown(1_000, 1_000)).toEqual({ value: 0, nextDelayMs: null });
+    expect(sampleCountdown(1_000, 1_001)).toEqual({ value: 0, nextDelayMs: null });
+    expect(sampleCountdown(Number.NaN, 0)).toEqual({ value: 0, nextDelayMs: null });
+    expect(sampleCountdown(Number.POSITIVE_INFINITY, 0)).toEqual({ value: 0, nextDelayMs: null });
+
+    expect(sampleCountdown(1_000, 999)).toEqual({ value: 1, nextDelayMs: 1 });
+    expect(sampleCountdown(1_000, 750)).toEqual({ value: 1, nextDelayMs: 250 });
+
+    expect(sampleCountdown(61_000, 999)).toEqual({ value: 120, nextDelayMs: 1 });
+    expect(sampleCountdown(61_000, 1_000)).toEqual({ value: 60, nextDelayMs: 1_000 });
+
+    expect(sampleCountdown(121_000, 999)).toEqual({ value: 180, nextDelayMs: 1 });
+    expect(sampleCountdown(121_000, 1_000)).toEqual({ value: 120, nextDelayMs: 60_000 });
   });
 });

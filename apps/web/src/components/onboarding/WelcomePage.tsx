@@ -546,29 +546,7 @@ function BoatsOnboardingSetup({ state }: { readonly state: UiState }) {
 
   return (
     <>
-      {state.setup === "installBoat" ? (
-        <div className="flex min-h-10 items-center gap-3 py-1">
-          <RowIcon>
-            <SailBrandMark className="size-4" aria-hidden="true" />
-          </RowIcon>
-          <div className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-medium text-foreground">
-              <T>Install the Boat CLI</T>
-            </span>
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              <T>Required on this server to launch and manage cloud Boat machines.</T>
-            </p>
-          </div>
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={locked}
-            onClick={() => runSetupAction("installBoat")}
-          >
-            {state.setupBusy || requesting ? gt("Installing…") : gt("Install")}
-          </Button>
-        </div>
-      ) : state.setup === "signInBoat" ? (
+      {state.setup === "installBoat" || state.setup === "signInBoat" ? (
         <>
           <div className="flex min-h-10 items-center gap-3 py-1">
             <RowIcon>
@@ -587,9 +565,11 @@ function BoatsOnboardingSetup({ state }: { readonly state: UiState }) {
                 size="xs"
                 variant="outline"
                 disabled={locked}
-                onClick={() => runSetupAction("signInBoat")}
+                onClick={() =>
+                  runSetupAction(state.setup === "installBoat" ? "installBoat" : "signInBoat")
+                }
               >
-                {state.setupBusy || requesting ? gt("Waiting…") : gt("Sign in")}
+                {state.setupBusy || requesting ? gt("Setting up…") : gt("Sign in")}
               </Button>
             ) : null}
           </div>

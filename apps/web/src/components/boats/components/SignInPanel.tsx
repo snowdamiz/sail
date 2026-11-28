@@ -1,10 +1,17 @@
 import type { BoatSignIn, BoatSignInAction, BoatSignInPhase } from "@t3tools/contracts";
-import { useGT } from "gt-react";
-import { useEffect, useState } from "react";
+import { msg, useGT } from "gt-react";
+import { AlertTriangleIcon, CheckIcon, CopyIcon, ExternalLinkIcon } from "lucide-react";
+import { useEffect, useEffectEvent, useId, useState } from "react";
 
+import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
+import { Alert, AlertDescription } from "../../ui/alert";
+import { Button } from "../../ui/button";
+import { Input } from "../../ui/input";
+import { Label } from "../../ui/label";
+import { Spinner } from "../../ui/spinner";
 import { useBoatAccess } from "../access";
-import { useBoatCall } from "../api";
-import { Dots } from "./common";
+import { invokeBoat, useBoatCall } from "../api";
+import { useIsMountedRef } from "./common";
 
 type SignInCommand = "manage_agent_sign_in" | "manage_boat_sign_in";
 
@@ -13,30 +20,45 @@ export function SignInPanel({
   command,
   onFinish,
 }: {
-  attempt: BoatSignIn;
-  command: SignInCommand;
-  onFinish: (phase: BoatSignInPhase) => void;
+  readonly attempt: BoatSignIn;
+  readonly command: SignInCommand;
+  readonly onFinish: (attemptId: string, phase: BoatSignInPhase) => void;
 }) {
   const gt = useGT();
   const call = useBoatCall();
-  const canManage = useBoatAccess().can(command);
+  const access = useBoatAccess();
+  const canManage = access.can(command);
+  const codeId = useId();
   const [code, setCode] = useState("");
   const [action, setAction] = useState<"submit" | "cancel" | null>(null);
   const [submitted, setSubmitted] = useState(false);
   const [failed, setFailed] = useState(false);
+  const mountedRef = useIsMountedRef();
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    timeout: 1500,
+    target: {
+      target: "sign-in code",
+      unavailableMessage: msg("Clipboard API is unavailable while copying sign-in code."),
+      failureMessage: msg("Failed to copy sign-in code to the clipboard."),
+    },
+  });
   const { attemptId, prompt } = attempt;
+  const reportFinish = useEffectEvent((phase: BoatSignInPhase) => onFinish(attemptId, phase));
 
-  // Poll the caller's private attempt while the vendor CLI is waiting for the browser.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- polls sign-in status RPC on a timer until settled
   useEffect(() => {
     if (!canManage) return;
     let stopped = false;
     let timer: number | undefined;
     const poll = async () => {
       try {
-        const { data: phase } = await call(command, { action: "status", attemptId });
+        const { data: phase } = await invokeBoat(access.environmentId, command, {
+          action: "status",
+          attemptId,
+        });
         if (stopped) return;
         if (phase !== "pending") {
-          onFinish(phase);
+          reportFinish(phase);
           return;
         }
       } catch {
@@ -49,7 +71,7 @@ export function SignInPanel({
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [attemptId, call, canManage, command, onFinish]);
+  }, [access.environmentId, attemptId, canManage, command]);
 
   const act = (input: BoatSignInAction) => {
     setAction(input.action === "submit" ? "submit" : "cancel");
@@ -57,75 +79,132 @@ export function SignInPanel({
     setFailed(false);
     void call(command, input).then(
       ({ data: phase }) => {
-        if (phase !== "pending") onFinish(phase);
+        if (!mountedRef.current) return;
+        if (phase !== "pending") onFinish(attemptId, phase);
         else if (input.action === "submit") {
           setSubmitted(true);
           setAction(null);
         }
       },
       () => {
+        if (!mountedRef.current) return;
         setAction(null);
         setFailed(true);
       },
     );
   };
+
   if (!canManage) return null;
 
   const url = prompt === null ? null : URL.parse(prompt.url);
   const link = url?.protocol === "https:" ? url.href : null;
+  const showDevice = prompt?.kind === "device" && action !== "cancel";
+  const showPaste = prompt?.kind === "paste" && action === null;
+
   return (
-    <div className="boat-sign-in">
-      {link && action !== "cancel" ? (
-        <a className="btn btn-link" href={link} target="_blank" rel="noopener noreferrer">
-          {gt("Open sign-in page")}
-        </a>
+    <div className="overflow-hidden rounded-xl border border-border/60 bg-background/60 shadow-xs/5">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-3">
+        <div
+          role="status"
+          className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground"
+        >
+          <Spinner aria-hidden="true" size="xs" tone="muted" />
+          <span>
+            {action === "cancel" ? gt("Cancelling sign-in…") : gt("Waiting for sign-in…")}
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {link && action !== "cancel" ? (
+            <Button
+              size="xs"
+              variant="default"
+              render={<a href={link} target="_blank" rel="noopener noreferrer" />}
+            >
+              {gt("Open sign-in page")}
+              <ExternalLinkIcon aria-hidden="true" className="size-3.5" />
+            </Button>
+          ) : null}
+          {action !== "cancel" ? (
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={action === "submit"}
+              onClick={() => act({ action: "cancel", attemptId })}
+            >
+              {gt("Cancel sign-in")}
+            </Button>
+          ) : null}
+        </div>
+      </div>
+
+      {showDevice ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/50 bg-muted/30 px-3.5 py-3">
+          <span className="text-xs text-muted-foreground">
+            {gt("Enter this code on the sign-in page")}
+          </span>
+          <div className="flex items-center gap-1.5">
+            <code className="rounded-md border border-border/70 bg-background px-2.5 py-1 font-mono text-sm font-semibold tracking-wider text-foreground select-all">
+              {prompt.code}
+            </code>
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              aria-label={gt("Copy code")}
+              onClick={() => copyToClipboard(prompt.code, undefined)}
+            >
+              {isCopied ? (
+                <CheckIcon aria-hidden="true" className="size-3.5 text-success" />
+              ) : (
+                <CopyIcon aria-hidden="true" className="size-3.5" />
+              )}
+            </Button>
+          </div>
+        </div>
       ) : null}
-      {prompt?.kind === "device" && action !== "cancel" ? (
-        <span className="step-body">
-          {gt("Enter this code on the sign-in page")}{" "}
-          <code className="step-code">{prompt.code}</code>
-        </span>
-      ) : null}
-      {prompt?.kind === "paste" && action === null ? (
+
+      {showPaste ? (
         <form
-          className="boat-sign-in"
+          className="flex flex-col gap-2.5 border-t border-border/50 bg-muted/30 px-3.5 py-3 sm:flex-row sm:items-end"
           onSubmit={(event) => {
             event.preventDefault();
             if (code.trim()) act({ action: "submit", attemptId, code });
           }}
         >
-          <label className="boat-sign-in">
-            {gt("Paste the sign-in code")}
-            <input
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <Label htmlFor={codeId}>{gt("Paste the sign-in code")}</Label>
+            <Input
+              id={codeId}
               type="password"
-              className="input"
+              font="mono"
+              size="sm"
               autoComplete="off"
               maxLength={2048}
               value={code}
               onChange={(event) => setCode(event.target.value)}
             />
-          </label>
-          <button className="btn btn-sm btn-solid" type="submit" disabled={!code.trim()}>
+          </div>
+          <Button size="sm" variant="default" type="submit" disabled={!code.trim()}>
             {gt("Submit code")}
-          </button>
+          </Button>
         </form>
       ) : null}
-      {failed ? <span role="alert">{gt("The sign-in request failed. Try again.")}</span> : null}
-      {submitted && !failed && action !== "cancel" ? (
-        <span role="status">{gt("Code sent. If sign-in stalls, try another code.")}</span>
+
+      {failed ? (
+        <div className="border-t border-border/50 px-3.5 py-3">
+          <Alert variant="error">
+            <AlertTriangleIcon aria-hidden="true" />
+            <AlertDescription>{gt("The sign-in request failed. Try again.")}</AlertDescription>
+          </Alert>
+        </div>
       ) : null}
-      <div role="status" className="step-body">
-        <Dots /> {action === "cancel" ? gt("Cancelling sign-in…") : gt("Waiting for sign-in…")}
-      </div>
-      {action !== "cancel" ? (
-        <button
-          className="btn btn-sm btn-outline"
-          type="button"
-          disabled={action === "submit"}
-          onClick={() => act({ action: "cancel", attemptId })}
+
+      {submitted && !failed && action !== "cancel" ? (
+        <p
+          role="status"
+          className="border-t border-border/50 bg-muted/20 px-3.5 py-2 text-xs text-muted-foreground"
         >
-          {gt("Cancel sign-in")}
-        </button>
+          {gt("Code sent. If sign-in stalls, try another code.")}
+        </p>
       ) : null}
     </div>
   );

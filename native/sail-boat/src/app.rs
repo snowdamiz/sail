@@ -32,13 +32,12 @@ pub enum Setup {
     #[default]
     Starting,
     Ready,
-    InstallBoat,
     SignInBoat,
     InstallT3,
 }
 
 pub async fn check_setup() -> (Setup, Option<Boat>, Option<T3Desktop>) {
-    let Some(boat) = Boat::locate() else { return (Setup::InstallBoat, None, None) };
+    let Some(boat) = Boat::locate() else { return (Setup::SignInBoat, None, None) };
     if !boat.account().await.is_ok_and(|a| a.signed_in) {
         return (Setup::SignInBoat, Some(boat), None);
     }

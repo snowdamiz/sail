@@ -1,20 +1,78 @@
 import { ProjectId, type EnvironmentId } from "@t3tools/contracts";
-import { useGT } from "gt-react";
+import { msg, useGT, useMessages } from "gt-react";
+
+import { m } from "~/i18n/messages";
 import type { MachineState, MachineView, Size } from "./types";
 
-const TAGS: Record<MachineState, string> = {
-  working: "working",
-  idle: "idle",
-  sleeping: "dozing off",
-  asleep: "zzz",
-  waking: "waking",
-  creating: "building",
-  error: "error",
-  missing: "gone",
-  unknown: "…",
-};
+type StatusDotClassName = "bg-success" | "bg-warning" | "bg-destructive" | "bg-muted-foreground/40";
 
-export const stateTag = (s: MachineState) => TAGS[s];
+type StatusPingClassName = "bg-success/60 duration-2000" | "bg-warning/60 duration-2000" | null;
+
+type StatusBadgeVariant = "success" | "warning" | "error" | "secondary" | "outline";
+
+interface StatusPresentation {
+  readonly label: ReturnType<typeof msg>;
+  readonly dotClassName: StatusDotClassName;
+  readonly pingClassName: StatusPingClassName;
+  readonly badgeVariant: StatusBadgeVariant;
+}
+
+export const MACHINE_STATUS = {
+  working: {
+    label: msg("Working"),
+    dotClassName: "bg-success",
+    pingClassName: "bg-success/60 duration-2000",
+    badgeVariant: "success",
+  },
+  idle: {
+    label: msg("Idle"),
+    dotClassName: "bg-success",
+    pingClassName: null,
+    badgeVariant: "success",
+  },
+  sleeping: {
+    label: msg("Going to sleep"),
+    dotClassName: "bg-warning",
+    pingClassName: "bg-warning/60 duration-2000",
+    badgeVariant: "warning",
+  },
+  asleep: {
+    label: msg("Asleep"),
+    dotClassName: "bg-muted-foreground/40",
+    pingClassName: null,
+    badgeVariant: "secondary",
+  },
+  waking: {
+    label: msg("Waking"),
+    dotClassName: "bg-warning",
+    pingClassName: "bg-warning/60 duration-2000",
+    badgeVariant: "warning",
+  },
+  creating: {
+    label: msg("Creating"),
+    dotClassName: "bg-warning",
+    pingClassName: "bg-warning/60 duration-2000",
+    badgeVariant: "warning",
+  },
+  error: {
+    label: msg("Error"),
+    dotClassName: "bg-destructive",
+    pingClassName: null,
+    badgeVariant: "error",
+  },
+  missing: {
+    label: msg("Missing"),
+    dotClassName: "bg-destructive",
+    pingClassName: null,
+    badgeVariant: "error",
+  },
+  unknown: {
+    label: msg("Unknown"),
+    dotClassName: "bg-muted-foreground/40",
+    pingClassName: null,
+    badgeVariant: "outline",
+  },
+} satisfies Record<MachineState, StatusPresentation>;
 
 export function managedBoatOriginProject(
   machines: readonly MachineView[],
@@ -28,173 +86,203 @@ export function managedBoatOriginProject(
   return typeof origin === "string" && origin.trim() !== "" ? ProjectId.make(origin) : undefined;
 }
 
-/** Stable key: creating rows have no id yet. */
-export const machineKey = (m: MachineView) => m.id || `new:${m.name}`;
+export const machineKey = (machine: MachineView) => machine.id || `new:${machine.name}`;
 
-export function seedOf(key: string): number {
-  let h = 0;
-  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0;
-  return (h >>> 0) / 4294967296;
+export const isMachineOpenable = (machine: MachineView) =>
+  !!machine.id && machine.state !== "creating";
+
+interface ActionMeta {
+  readonly label: string;
+  readonly busy: string;
+  readonly solid?: boolean;
 }
 
-/** A backend command for one machine, with the arguments it needs beyond the id. */
-export type Action = {
-  label: string;
-  busy: string;
-  /** solid button when primary; outline otherwise */
-  solid?: boolean;
-} & (
-  | { cmd: "open_machine" | "pair_machine" | "wake_machine" | "sleep_machine" | "turn_on_connect" }
-  | { cmd: "resize_machine"; size: string }
-  /** null = until stopped (auto sleep off), 0 ends it */
-  | { cmd: "keep_awake"; minutes: number | null }
-  /** the agent's name as `signedOut` lists it */
-  | { cmd: "sign_in_agent"; agent: string }
-  /** discard: delete even while work runs on it */
-  | { cmd: "delete_machine"; discard: boolean }
-);
+type SimpleMachineAction = ActionMeta & {
+  readonly cmd:
+    | "open_machine"
+    | "pair_machine"
+    | "wake_machine"
+    | "sleep_machine"
+    | "turn_on_connect";
+};
 
-/** UI-only ⋯ menu entry: opens the project picker in the details view. */
-export const PICK_PROJECT = { kind: "pickProject", label: "Add a project…" } as const;
+export type ResizeMachineAction = ActionMeta & {
+  readonly cmd: "resize_machine";
+  readonly size: string;
+};
 
-export type MenuItem = Action | typeof PICK_PROJECT;
+export type KeepAwakeAction = ActionMeta & {
+  readonly cmd: "keep_awake";
+  readonly minutes: number | null;
+};
 
-export const signInTo = (agent: string): Action => ({
+type SignInAgentAction = ActionMeta & {
+  readonly cmd: "sign_in_agent";
+  readonly agent: string;
+};
+
+export type DeleteMachineAction =
+  | (ActionMeta & { readonly cmd: "delete_machine"; readonly discard: true })
+  | (ActionMeta & { readonly cmd: "delete_machine"; readonly discard: false });
+
+export type NonDeleteAction =
+  | SimpleMachineAction
+  | ResizeMachineAction
+  | KeepAwakeAction
+  | SignInAgentAction;
+
+export type Action = NonDeleteAction | DeleteMachineAction;
+
+export type PendingAction = Action | { readonly cmd: "add_project"; readonly projectId: string };
+
+const PICK_PROJECT = { kind: "pickProject", label: msg("Add a project…") } as const;
+
+type MenuItem = NonDeleteAction | typeof PICK_PROJECT;
+
+export const signInTo = (agent: string): SignInAgentAction => ({
   cmd: "sign_in_agent",
-  label: `Sign in ${agent}`,
-  busy: "Signing in…",
+  label: m(msg("Sign in {agent}"), { agent }),
+  busy: msg("Signing in…"),
   agent,
 });
 
 export const ACTIONS = {
-  pair: { cmd: "pair_machine", label: "Add to Sail", busy: "Sending…", solid: true },
-  repair: { cmd: "pair_machine", label: "Add to Sail again", busy: "Sending…" },
-  open: { cmd: "open_machine", label: "Open last thread in Sail", busy: "Opening…" },
-  wake: { cmd: "wake_machine", label: "Wake now", busy: "Waking…" },
-  retry: { cmd: "wake_machine", label: "Try waking", busy: "Waking…" },
-  sleep: { cmd: "sleep_machine", label: "Sleep now", busy: "Sleeping…" },
-  connect: { cmd: "turn_on_connect", label: "Turn on", busy: "Approve in browser…" },
-  remove: { cmd: "delete_machine", label: "Remove", busy: "Removing…", discard: true },
-  del: { cmd: "delete_machine", label: "Delete", busy: "Deleting…", discard: false },
-  deleteAnyway: { cmd: "delete_machine", label: "Delete anyway", busy: "Deleting…", discard: true },
-} satisfies Record<string, Action>;
+  pair: { cmd: "pair_machine", label: msg("Add to Sail"), busy: msg("Sending…"), solid: true },
+  repair: { cmd: "pair_machine", label: msg("Add to Sail again"), busy: msg("Sending…") },
+  open: { cmd: "open_machine", label: msg("Open last thread in Sail"), busy: msg("Opening…") },
+  wake: { cmd: "wake_machine", label: msg("Wake now"), busy: msg("Waking…") },
+  retry: { cmd: "wake_machine", label: msg("Try waking"), busy: msg("Waking…") },
+  sleep: { cmd: "sleep_machine", label: msg("Sleep now"), busy: msg("Sleeping…") },
+  connect: { cmd: "turn_on_connect", label: msg("Turn on"), busy: msg("Approve in browser…") },
+  remove: { cmd: "delete_machine", label: msg("Remove"), busy: msg("Removing…"), discard: true },
+  del: { cmd: "delete_machine", label: msg("Delete"), busy: msg("Deleting…"), discard: false },
+  deleteAnyway: {
+    cmd: "delete_machine",
+    label: msg("Delete anyway"),
+    busy: msg("Deleting…"),
+    discard: true,
+  },
+} as const satisfies Record<string, Action>;
 
-/** The one obvious thing to do with a machine right now, if any. */
-export function primaryAction(m: MachineView, paired: boolean): Action | null {
-  switch (m.state) {
+export function primaryAction(machine: MachineView, paired: boolean): Action | null {
+  switch (machine.state) {
     case "working":
     case "idle":
-    case "asleep": // wakes by itself when used in Sail; opening it lives in the details view
+    case "asleep":
       return paired ? null : ACTIONS.pair;
     case "error":
       return ACTIONS.retry;
     case "missing":
       return ACTIONS.remove;
     default:
-      return null; // transitional: the boat + detail line say what's happening
+      return null;
   }
 }
 
 export function useMachineActionLabel() {
   const gt = useGT();
-  return (action: MenuItem) => {
-    switch (action.label) {
-      case ACTIONS.pair.label:
-        return gt("Add to Sail");
-      case ACTIONS.repair.label:
-        return gt("Add to Sail again");
-      case ACTIONS.open.label:
-        return gt("Open last thread in Sail");
-      case ACTIONS.wake.label:
-        return gt("Wake now");
-      case ACTIONS.retry.label:
-        return gt("Try waking");
+  const messages = useMessages();
+  return (action: Action | typeof PICK_PROJECT) => {
+    if ("kind" in action) return messages(action.label);
+    switch (action.cmd) {
+      case "resize_machine":
+        return gt("Resize to {size}", { size: action.size });
+      case "sign_in_agent":
+        return gt("Sign in {agent}", { agent: action.agent });
+      case "keep_awake":
+        return action.minutes === null
+          ? gt("Turn off auto sleep")
+          : action.minutes === 0
+            ? gt("Stop staying awake")
+            : gt("Stay awake for {duration}", { duration: duration(action.minutes * 60) });
       default:
-        return action.label;
+        return messages(action.label);
     }
   };
 }
 
-/** "Stay awake for…" choices, in minutes. */
+export function useMachineBusyLabel() {
+  const messages = useMessages();
+  return (action: Action) => messages(action.busy);
+}
+
 export const STAY_AWAKE = [15, 30, 60, 120] as const;
 
-/** A one-time "stay up at least this long"; 0 stops it early. */
-export const keepAwake = (minutes: number): Action => ({
+export const keepAwake = (minutes: number): KeepAwakeAction => ({
   cmd: "keep_awake",
-  label: minutes ? `Stay awake for ${duration(minutes * 60)}` : "Stop staying awake",
-  busy: minutes ? "Waking…" : "Stopping…",
+  label: minutes
+    ? m(msg("Stay awake for {duration}"), { duration: duration(minutes * 60) })
+    : msg("Stop staying awake"),
+  busy: minutes ? msg("Waking…") : msg("Stopping…"),
   minutes,
 });
 
-/** The auto sleep switch: off keeps the machine up until it's turned back on. */
-export const autoSleep = (on: boolean): Action => ({
+export const autoSleep = (on: boolean): KeepAwakeAction => ({
   cmd: "keep_awake",
-  label: on ? "Turn on auto sleep" : "Turn off auto sleep",
-  busy: on ? "Turning on auto sleep…" : "Turning off auto sleep…",
+  label: on ? msg("Turn on auto sleep") : msg("Turn off auto sleep"),
+  busy: on ? msg("Turning on auto sleep…") : msg("Turning off auto sleep…"),
   minutes: on ? 0 : null,
 });
 
-export const resizeTo = (size: string): Action => ({
+export const resizeTo = (size: string): ResizeMachineAction => ({
   cmd: "resize_machine",
-  label: `Resize to ${size}`,
-  busy: "Resizing…",
+  label: m(msg("Resize to {size}"), { size }),
+  busy: msg("Resizing…"),
   size,
 });
 
-/** Secondary actions for the ⋯ menu (delete is always appended by the menu). */
-export function menuActions(m: MachineView, sizes: Size[], paired: boolean): MenuItem[] {
-  if (!m.id || m.state === "missing") return [];
+export function menuActions(
+  machine: MachineView,
+  sizes: readonly Size[],
+  paired: boolean,
+): MenuItem[] {
+  if (!machine.id || machine.state === "missing") return [];
   const out: MenuItem[] = [];
-  if (m.state === "asleep") out.push(ACTIONS.wake);
-  if (m.state === "working" || m.state === "idle") out.push(ACTIONS.sleep);
+  if (machine.state === "asleep") out.push(ACTIONS.wake);
+  if (machine.state === "working" || machine.state === "idle") out.push(ACTIONS.sleep);
   out.push(PICK_PROJECT);
   if (paired) out.push(ACTIONS.repair);
-  sizes.filter((s) => s.id !== m.size).forEach((s) => out.push(resizeTo(s.id)));
+  sizes.filter((s) => s.id !== machine.size).forEach((s) => out.push(resizeTo(s.id)));
   return out;
 }
 
-/** Wake or sleep, whichever applies now; null mid-transition. */
-export function powerAction(m: MachineView): Action | null {
-  if (m.state === "asleep") return ACTIONS.wake;
-  if (m.state === "working" || m.state === "idle") return ACTIONS.sleep;
+export function powerAction(machine: MachineView): SimpleMachineAction | null {
+  if (machine.state === "asleep") return ACTIONS.wake;
+  if (machine.state === "working" || machine.state === "idle") return ACTIONS.sleep;
   return null;
 }
 
-/** When a resize takes effect, per contract. */
-export function resizeHint(m: MachineView): string {
-  if (m.state === "asleep") return "Applies on next wake";
-  if (m.state === "working" || m.waiting) return "Applies after it next sleeps, never mid-turn";
-  if (m.state === "idle") return "Restarts onto the new size now";
-  return "Billed only while awake";
+export function resizeHint(machine: MachineView) {
+  if (machine.state === "asleep") return msg("Applies on next wake");
+  if (machine.state === "working" || machine.waiting) {
+    return msg("Applies after it next sleeps, never mid-turn");
+  }
+  if (machine.state === "idle") return msg("Restarts onto the new size now");
+  return msg("Billed only while awake");
 }
 
-/** "2h 14m", "2h", "38m", "0m" */
 export function duration(secs: number): string {
-  const m = Math.floor(secs / 60);
-  if (m < 60) return `${m}m`;
-  return m % 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m / 60}h`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  return mins % 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins / 60}h`;
 }
 
-/** "42s", "4m", "1h 5m"; minutes round up. Matches the backend's `human_secs`. */
 export function timeLeft(secs: number): string {
   if (secs < 60) return `${secs}s`;
-  const m = Math.ceil(secs / 60);
-  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+  const mins = Math.ceil(secs / 60);
+  return mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`;
 }
 
-/** "/Users/you/Dev/app" → "~/Dev/app" */
 export const homePath = (path: string) => path.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, "~");
 
-/** The machine has this repository, or is getting it. */
-export const hasRepo = (m: MachineView, repoKey: string) =>
-  m.projects.some((p) => p.repoKey === repoKey);
+export const hasRepo = (machine: MachineView, repoKey: string) =>
+  machine.projects.some((p) => p.repoKey === repoKey);
 
-/** Up and added to Sail, but nothing to work on yet: the last step of setting it up. */
-export const needsProject = (m: MachineView, paired: boolean) =>
-  paired && !m.projects.length && !["creating", "missing", "error"].includes(m.state);
+export const needsProject = (machine: MachineView, paired: boolean) =>
+  paired && !machine.projects.length && !["creating", "missing", "error"].includes(machine.state);
 
-export const shortDate = (unixSecs: number) =>
-  new Date(unixSecs * 1000).toLocaleDateString("en-US", {
+export const shortDate = (unixSecs: number, locale?: string) =>
+  new Date(unixSecs * 1000).toLocaleDateString(locale || undefined, {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -203,7 +291,7 @@ export const shortDate = (unixSecs: number) =>
 export const money = (n: number) => `$${n.toFixed(2)}`;
 export const hourly = (n: number) => `$${n < 0.1 ? n.toFixed(3) : n.toFixed(2)}/h`;
 
-export const sizeOf = (sizes: Size[], id: string) => sizes.find((s) => s.id === id);
+export const sizeOf = (sizes: readonly Size[], id: string) => sizes.find((s) => s.id === id);
 
 const NAMES = [
   "skiff",

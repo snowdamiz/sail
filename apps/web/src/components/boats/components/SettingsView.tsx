@@ -1,142 +1,232 @@
-import { useGT } from "gt-react";
-import { useEffect, useState } from "react";
+import { T, Var, useGT } from "gt-react";
+import { CheckIcon, EyeIcon, EyeOffIcon } from "lucide-react";
+import { useState } from "react";
+
+import { cn } from "~/lib/utils";
+import { SettingsGroup } from "../../settings/SettingsGroup";
+import { ITEM_ROW_CLASSNAME } from "../../settings/itemRows";
+import { Badge } from "../../ui/badge";
+import { Button } from "../../ui/button";
+import { Spinner } from "../../ui/spinner";
+import { Switch } from "../../ui/switch";
 import { useBoatAccess } from "../access";
 import type { McpClient, Settings, UiState } from "../types";
 import { AgentName, AgentNames } from "./AgentLogos";
-import { Icon } from "./Icons";
-import { Dots } from "./common";
-import { SubHeader } from "./SubHeader";
 
-const CLIENTS: { id: McpClient; name: string }[] = [
+const CLIENTS: ReadonlyArray<{ readonly id: McpClient; readonly name: string }> = [
   { id: "claudeCode", name: "Claude Code" },
   { id: "codex", name: "Codex" },
 ];
 
-interface Props {
-  state: UiState;
-  onSave: (s: Settings) => void;
-  /** never rejects; errors are shown by the caller */
-  onAddMcp: (client: McpClient) => Promise<void>;
-  onBack: () => void;
-  onSignOut: () => Promise<void>;
-}
-
-export function SettingsView({ state, onSave, onAddMcp, onBack, onSignOut }: Props) {
+export function SettingsView({
+  state,
+  onSave,
+  onAddMcp,
+  onSignOut,
+}: {
+  readonly state: UiState;
+  readonly onSave: (settings: Settings) => Promise<void>;
+  readonly onAddMcp: (client: McpClient) => Promise<void>;
+  readonly onSignOut: () => Promise<void>;
+}) {
   const access = useBoatAccess();
   const gt = useGT();
   const [signingOut, setSigningOut] = useState(false);
-  // optimistic copy; the next "state" event is the source of truth
-  const [s, setS] = useState(state.settings);
-  useEffect(() => setS(state.settings), [state.settings]);
-
-  // hidden by default so screen recordings don't leak the email
+  const [optimistic, setOptimistic] = useState<{
+    readonly baseline: Settings;
+    readonly next: Settings;
+  } | null>(null);
   const [showEmail, setShowEmail] = useState(false);
+  const [adding, setAdding] = useState<McpClient | null>(null);
+
+  const settings =
+    optimistic !== null && optimistic.baseline === state.settings
+      ? optimistic.next
+      : state.settings;
+
   const email = state.account?.identifier;
   const plan = state.account?.plan;
+  const missing = CLIENTS.filter((client) => state.mcp[client.id] === null).map(
+    (client) => client.name,
+  );
 
-  const [adding, setAdding] = useState<McpClient | null>(null);
+  const save = (patch: Partial<Settings>) => {
+    const next = { ...settings, ...patch };
+    setOptimistic({ baseline: state.settings, next });
+    void onSave(next).finally(() => {
+      setOptimistic((current) => (current?.next === next ? null : current));
+    });
+  };
+
   const add = (client: McpClient) => {
     setAdding(client);
     void onAddMcp(client).finally(() => setAdding(null));
   };
-  const missing = CLIENTS.filter((c) => state.mcp[c.id] === null).map((c) => c.name);
-
-  const change = (p: Partial<Settings>) => {
-    const next = { ...s, ...p };
-    setS(next);
-    onSave(next);
-  };
 
   return (
-    <div className="view">
-      <SubHeader title="Boat Settings" onBack={onBack} />
-      <div className="view-body settings">
-        <p className="hint">
-          Machines sleep 3 minutes after their agents finish and wake by themselves when you use
-          them in Sail.
-        </p>
-        <label className="setting setting-row">
-          <span className="setting-name">Start background boats at login</span>
-          <input
-            type="checkbox"
-            role="switch"
-            className="switch"
-            checked={s.startAtLogin}
-            disabled={!access.can("update_settings")}
-            onChange={(e) => change({ startAtLogin: e.target.checked })}
-          />
-        </label>
-        <div className="setting">
-          <span className="caption">mcp</span>
-          <span className="setting-name">
-            Let <AgentNames names={CLIENTS.map((c) => c.name)} /> control Sail Boats
-          </span>
-          <div className="mcp-buttons">
-            {CLIENTS.map((c) => {
-              const added = state.mcp[c.id];
-              return added ? (
-                <span key={c.id} className="mcp-added">
-                  <Icon name="check" size={10} />
-                  <span>
-                    Added to <AgentName name={c.name} />
-                  </span>
-                </span>
-              ) : (
-                <button
-                  key={c.id}
-                  type="button"
-                  className="btn btn-sm btn-outline"
-                  disabled={added === null || adding !== null || !access.can("add_mcp")}
-                  aria-busy={adding === c.id}
-                  onClick={() => add(c.id)}
-                >
-                  {adding === c.id ? (
-                    <>
-                      <Dots /> Adding…
-                    </>
-                  ) : (
-                    <span>
-                      Add to <AgentName name={c.name} />
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-          <span className="hint">
-            {missing.length ? (
-              <>
-                <AgentNames names={missing} /> {missing.length === 1 ? "isn't" : "aren't"} installed
-                on this server
-              </>
-            ) : (
-              "Their agents can then create, wake and send work to machines"
-            )}
-          </span>
+    <div className="space-y-8">
+      <section className="space-y-2.5">
+        <div className="px-3 sm:px-4">
+          <h2 className="text-base font-semibold text-foreground">{gt("General")}</h2>
         </div>
-      </div>
-      <div className="view-foot settings-foot">
-        <span className="setting-value" title="Boat account">
-          {email && (
-            <button type="button" className="account-email" onClick={() => setShowEmail((v) => !v)}>
-              {showEmail ? email : "Show email"}
-            </button>
+        <SettingsGroup>
+          <div className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-6")}>
+            <div className="min-w-0 space-y-0.5">
+              <h3 className="text-sm font-medium text-foreground">
+                {gt("Start background boats at login")}
+              </h3>
+              <p className="text-xs leading-normal text-muted-foreground">
+                {gt(
+                  "Machines sleep 3 minutes after their agents finish and wake by themselves when you use them in Sail.",
+                )}
+              </p>
+            </div>
+            <Switch
+              aria-label={gt("Start background boats at login")}
+              checked={settings.startAtLogin}
+              disabled={!access.can("update_settings")}
+              onCheckedChange={(checked) => save({ startAtLogin: checked })}
+            />
+          </div>
+        </SettingsGroup>
+      </section>
+
+      <section className="space-y-2.5">
+        <div className="space-y-0.5 px-3 sm:px-4">
+          <h2 className="text-base font-semibold text-foreground">{gt("MCP")}</h2>
+          <p className="text-xs text-muted-foreground">
+            <T>
+              Let{" "}
+              <Var>
+                <AgentNames names={CLIENTS.map((client) => client.name)} />
+              </Var>{" "}
+              control Sail Boats
+            </T>
+          </p>
+        </div>
+        <SettingsGroup>
+          {CLIENTS.map((client) => {
+            const status = state.mcp[client.id];
+            const isAdding = adding === client.id;
+            return (
+              <div
+                key={client.id}
+                className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-3")}
+              >
+                <AgentName name={client.name} className="text-sm" />
+                {status ? (
+                  <span className="inline-flex items-center gap-1.5 text-xs font-medium text-success-foreground">
+                    <CheckIcon aria-hidden="true" className="size-3.5" />
+                    {gt("Added")}
+                  </span>
+                ) : (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={status === null || adding !== null || !access.can("add_mcp")}
+                    aria-busy={isAdding}
+                    onClick={() => add(client.id)}
+                  >
+                    {isAdding ? (
+                      <>
+                        <Spinner aria-hidden="true" />
+                        {gt("Adding…")}
+                      </>
+                    ) : (
+                      gt("Add to {name}", { name: client.name })
+                    )}
+                  </Button>
+                )}
+              </div>
+            );
+          })}
+        </SettingsGroup>
+        <p className="px-3 text-xs text-muted-foreground sm:px-4">
+          {missing.length > 0 ? (
+            missing.length === 1 ? (
+              <T>
+                <Var>
+                  <AgentNames names={missing} />
+                </Var>{" "}
+                isn't installed on this server
+              </T>
+            ) : (
+              <T>
+                <Var>
+                  <AgentNames names={missing} />
+                </Var>{" "}
+                aren't installed on this server
+              </T>
+            )
+          ) : (
+            gt("Their agents can then create, wake and send work to machines.")
           )}
-          {email && plan && " · "}
-          {plan}
-        </span>
-        <button
-          type="button"
-          className="btn btn-sm btn-outline"
-          disabled={signingOut || !access.can("sign_out_boat")}
-          onClick={() => {
-            setSigningOut(true);
-            void onSignOut().finally(() => setSigningOut(false));
-          }}
-        >
-          {signingOut ? gt("Signing out of Boat…") : gt("Sign out of Boat")}
-        </button>
-      </div>
+        </p>
+      </section>
+
+      <section className="space-y-2.5">
+        <div className="px-3 sm:px-4">
+          <h2 className="text-base font-semibold text-foreground">{gt("Account")}</h2>
+        </div>
+        <SettingsGroup>
+          <div
+            className={cn(
+              ITEM_ROW_CLASSNAME,
+              "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6",
+            )}
+          >
+            <div className="min-w-0 space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-medium text-foreground">{gt("Boat account")}</h3>
+                {plan ? (
+                  <Badge size="sm" variant="secondary">
+                    {plan}
+                  </Badge>
+                ) : null}
+              </div>
+              {email ? (
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    size="xs"
+                    variant="ghost-muted"
+                    className="-ms-2"
+                    onClick={() => setShowEmail((visible) => !visible)}
+                  >
+                    {showEmail ? (
+                      <EyeOffIcon aria-hidden="true" className="size-3.5" />
+                    ) : (
+                      <EyeIcon aria-hidden="true" className="size-3.5" />
+                    )}
+                    <span className={showEmail ? "font-mono text-foreground" : undefined}>
+                      {showEmail ? email : gt("Show email")}
+                    </span>
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+            <Button
+              size="sm"
+              variant="destructive-outline"
+              className="shrink-0"
+              disabled={signingOut || !access.can("sign_out_boat")}
+              aria-busy={signingOut}
+              onClick={() => {
+                setSigningOut(true);
+                void onSignOut().finally(() => setSigningOut(false));
+              }}
+            >
+              {signingOut ? (
+                <>
+                  <Spinner aria-hidden="true" />
+                  {gt("Signing out of Boat…")}
+                </>
+              ) : (
+                gt("Sign out of Boat")
+              )}
+            </Button>
+          </div>
+        </SettingsGroup>
+      </section>
     </div>
   );
 }

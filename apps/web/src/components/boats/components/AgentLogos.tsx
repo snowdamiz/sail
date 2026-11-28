@@ -1,11 +1,13 @@
-// Coding agents' names, each led by its logo as if part of the word. Claude Code keeps its brand colour;
-// Codex takes the text colour. Sail is not affiliated with either.
+import { useLocale } from "gt-react";
 import { Fragment, type ComponentType } from "react";
+
+import { cn } from "~/lib/utils";
 
 function ClaudeCodeLogo() {
   return (
-    <svg viewBox="0 0 24 24" aria-hidden>
+    <svg viewBox="0 0 24 24" className="size-3.5 shrink-0" aria-hidden="true">
       <path
+        // oxlint-disable-next-line shadcn/no-raw-colors -- Claude Code brand mark color
         fill="#D97757"
         fillRule="evenodd"
         clipRule="evenodd"
@@ -17,7 +19,7 @@ function ClaudeCodeLogo() {
 
 function CodexLogo() {
   return (
-    <svg viewBox="0 0 24 24" aria-hidden>
+    <svg viewBox="0 0 24 24" className="size-3.5 shrink-0" aria-hidden="true">
       <path
         fill="currentColor"
         fillRule="evenodd"
@@ -28,29 +30,62 @@ function CodexLogo() {
   );
 }
 
-/** Keyed by the names the UI shows: Settings' "Claude Code", the backend's "Claude" and "Codex". */
 const LOGOS: Record<string, ComponentType> = {
   Claude: ClaudeCodeLogo,
   "Claude Code": ClaudeCodeLogo,
   Codex: CodexLogo,
 };
 
-export function AgentName({ name }: { name: string }) {
+export function AgentName({
+  name,
+  className,
+}: {
+  readonly name: string;
+  readonly className?: string;
+}) {
   const Logo = LOGOS[name];
   return (
-    <span className="agent-name">
+    <span className={cn("inline-flex items-center gap-1.5 font-medium", className)}>
       {Logo ? <Logo /> : null}
-      {name}
+      <span>{name}</span>
     </span>
   );
 }
 
-/** "Claude", "Claude and Codex", "A, B and C" */
-export function AgentNames({ names }: { names: string[] }) {
-  return names.map((n, i) => (
-    <Fragment key={n}>
-      {i === 0 ? "" : i === names.length - 1 ? " and " : ", "}
-      <AgentName name={n} />
-    </Fragment>
-  ));
+function formatNameParts(names: readonly string[], locale: string) {
+  const formatter = new Intl.ListFormat(locale || undefined, {
+    style: "long",
+    type: "conjunction",
+  });
+  const items: Array<{
+    readonly key: string;
+    readonly type: "element" | "literal";
+    readonly value: string;
+  }> = [];
+  let literalCount = 0;
+  for (const part of formatter.formatToParts(names)) {
+    if (part.type === "element") {
+      items.push({ key: `agent:${part.value}`, type: "element", value: part.value });
+    } else {
+      literalCount += 1;
+      items.push({ key: `sep:${literalCount}:${part.value}`, type: "literal", value: part.value });
+    }
+  }
+  return items;
+}
+
+export function AgentNames({ names }: { readonly names: readonly string[] }) {
+  const locale = useLocale();
+  const parts = formatNameParts(names, locale);
+  return (
+    <>
+      {parts.map((part) =>
+        part.type === "element" ? (
+          <AgentName key={part.key} name={part.value} />
+        ) : (
+          <Fragment key={part.key}>{part.value}</Fragment>
+        ),
+      )}
+    </>
+  );
 }

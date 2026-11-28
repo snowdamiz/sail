@@ -3,6 +3,8 @@ import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { promptLinkAppPath } from "@t3tools/shared/promptLinks";
 import { readPairingAppLink } from "@t3tools/shared/remote";
 
+import { msg } from "gt-react";
+
 import { m } from "~/i18n/messages";
 import type { CommandName, CommandResult } from "./types";
 
@@ -42,6 +44,6 @@ export function classifyBoatLink(openUrl: string | undefined, onHost: boolean): 
 
 export function errorText(e: unknown): string {
   if (typeof e === "string") return e;
-  if (e instanceof Error) return thrownErrorMessage(e, m) || "Something went wrong";
-  return "Something went wrong";
+  if (e instanceof Error) return thrownErrorMessage(e, m) || m(msg("Something went wrong"));
+  return m(msg("Something went wrong"));
 }

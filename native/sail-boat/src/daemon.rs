@@ -29,6 +29,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 const COSTS_EVERY: Duration = Duration::from_secs(300);
+const INSTALL_BOAT_TIMEOUT: Duration = Duration::from_secs(120);
 const EVENT_CHANNEL_CAPACITY: usize = 64;
 const BOAT_DAEMON_PROTOCOL_VERSION: u32 = 3;
 
@@ -225,8 +226,18 @@ pub struct Daemon {
     sign_ins: tokio::sync::Mutex<HashMap<SignInTarget, Attempt>>,
     /// One `init` at a time: startup and `recheck` must not both construct an `App`.
     init_lock: tokio::sync::Mutex<()>,
+    /// One Boat CLI installation at a time so concurrent setup actions do not overlap.
+    install_lock: tokio::sync::Mutex<()>,
     shutdown_tx: watch::Sender<bool>,
     background_tasks: Mutex<Vec<JoinHandle<()>>>,
+}
+
+struct BusyGuard<'a>(&'a Daemon);
+
+impl Drop for BusyGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set_busy(false);
+    }
 }
 
 impl Daemon {
@@ -244,6 +255,7 @@ impl Daemon {
             events_tx,
             sign_ins: tokio::sync::Mutex::default(),
             init_lock: tokio::sync::Mutex::new(()),
+            install_lock: tokio::sync::Mutex::new(()),
             shutdown_tx,
             background_tasks: Mutex::new(Vec::new()),
         })
@@ -633,52 +645,99 @@ impl Daemon {
         }
     }
 
+    async fn ensure_boat_installed_with<Locate, Install, Fut>(
+        &self,
+        locate: Locate,
+        install: Install,
+    ) -> std::result::Result<Boat, CmdErr>
+    where
+        Locate: Fn() -> Option<Boat>,
+        Install: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
+        if let Some(boat) = locate() {
+            return Ok(boat);
+        }
+        let _guard = self.install_lock.lock().await;
+        if let Some(boat) = locate() {
+            return Ok(boat);
+        }
+        self.set_busy(true);
+        let _busy = BusyGuard(self);
+        install().await.map_err(err)?;
+        locate().ok_or_else(|| {
+            CmdErr::Internal("Boat installed, but the boat CLI could not be found.".to_owned())
+        })
+    }
+
+    async fn sign_in_boat_with<Locate, Install, Fut>(
+        self: &Arc<Self>,
+        client: Option<SignInClient>,
+        locate: Locate,
+        install: Install,
+    ) -> std::result::Result<Reply, CmdErr>
+    where
+        Locate: Fn() -> Option<Boat>,
+        Install: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
+        let client = client.ok_or_else(sign_in_unavailable)?;
+        if self
+            .sign_ins
+            .lock()
+            .await
+            .get(&SignInTarget::Boat)
+            .is_some_and(|a| *a.phase.borrow() == Phase::Pending)
+        {
+            return Err(CmdErr::BadRequest("A sign-in is already in progress".to_owned()));
+        }
+        let boat = self.ensure_boat_installed_with(locate, install).await?;
+        if boat.account().await.is_ok_and(|account| account.signed_in) {
+            self.recheck_setup().await;
+            return Ok(Reply::default());
+        }
+        let daemon = self.clone();
+        self.start_attempt(SignInTarget::Boat, client, false, move |prompt, _, mut cancel| async move {
+            daemon.set_busy(true);
+            let _busy = BusyGuard(&daemon);
+            let phase = async {
+                // Boat can reuse a pending code across daemon restarts. Start from a
+                // signed-out account with any earlier pending code cleared.
+                if !boat.account().await.is_ok_and(|account| !account.signed_in)
+                    || boat.sign_out().await.is_err()
+                {
+                    return Phase::Failed;
+                }
+                let Ok(sign_in) = boat.start_sign_in().await else { return Phase::Failed };
+                let next = match sign_in.code {
+                    Some(code) => Prompt::Device { url: sign_in.url, code },
+                    None => Prompt::Browser { url: sign_in.url },
+                };
+                let _ = prompt.send(next);
+                let phase = tokio::select! {
+                    phase = boat.finish_sign_in() => phase,
+                    _ = &mut cancel => Phase::Cancelled,
+                    _ = tokio::time::sleep(Duration::from_secs(900)) => Phase::Expired,
+                };
+                if matches!(phase, Phase::Cancelled | Phase::Expired) && boat.sign_out().await.is_err() {
+                    return Phase::Failed;
+                }
+                phase
+            }.await;
+            daemon.recheck_setup().await;
+            phase
+        }).await
+    }
+
     async fn setup_action(self: &Arc<Self>, action: &str, client: Option<SignInClient>) -> std::result::Result<Reply, CmdErr> {
         match action {
             "installBoat" => {
-                self.set_busy(true);
-                let result = install_boat().await;
-                if result.is_ok() {
-                    self.recheck_setup().await;
-                }
-                self.set_busy(false);
-                result.map_err(err)?;
+                let _ = self.ensure_boat_installed_with(Boat::locate, install_boat).await?;
+                self.recheck_setup().await;
                 return Ok(Reply::default());
             }
             "signInBoat" => {
-                let boat = Boat::locate().ok_or_else(|| CmdErr::Internal("Boat CLI not found".to_owned()))?;
-                let client = client.ok_or_else(sign_in_unavailable)?;
-                let daemon = self.clone();
-                return self.start_attempt(SignInTarget::Boat, client, false, move |prompt, _, mut cancel| async move {
-                    daemon.set_busy(true);
-                    let phase = async {
-                        // Boat can reuse a pending code across daemon restarts. Start from a
-                        // signed-out account with any earlier pending code cleared.
-                        if !boat.account().await.is_ok_and(|account| !account.signed_in)
-                            || boat.sign_out().await.is_err()
-                        {
-                            return Phase::Failed;
-                        }
-                        let Ok(sign_in) = boat.start_sign_in().await else { return Phase::Failed };
-                        let next = match sign_in.code {
-                            Some(code) => Prompt::Device { url: sign_in.url, code },
-                            None => Prompt::Browser { url: sign_in.url },
-                        };
-                        let _ = prompt.send(next);
-                        let phase = tokio::select! {
-                            phase = boat.finish_sign_in() => phase,
-                            _ = &mut cancel => Phase::Cancelled,
-                            _ = tokio::time::sleep(Duration::from_secs(900)) => Phase::Expired,
-                        };
-                        if matches!(phase, Phase::Cancelled | Phase::Expired) && boat.sign_out().await.is_err() {
-                            return Phase::Failed;
-                        }
-                        phase
-                    }.await;
-                    daemon.recheck_setup().await;
-                    daemon.set_busy(false);
-                    phase
-                }).await;
+                return self.sign_in_boat_with(client, Boat::locate, install_boat).await;
             }
             "installT3" => {}
             "recheck" => {}
@@ -808,17 +867,18 @@ async fn mcp_status() -> McpStatus {
 }
 
 async fn install_boat() -> Result<()> {
-    let status = if cfg!(windows) {
-        crate::process::command("powershell")
-            .args(["-NoProfile", "-Command", "irm https://boat.dev/install.ps1 | iex"])
-            .status()
-            .await?
+    let mut cmd = if cfg!(windows) {
+        let mut cmd = crate::process::command("powershell");
+        cmd.args(["-NoProfile", "-Command", "irm https://boat.dev/install.ps1 | iex"]);
+        cmd
     } else {
-        crate::process::command("sh")
-            .args(["-c", "curl -fsSL https://boat.dev/install | sh"])
-            .status()
-            .await?
+        let mut cmd = crate::process::command("sh");
+        cmd.args(["-c", "curl -fsSL https://boat.dev/install | sh"]);
+        cmd
     };
+    let status = tokio::time::timeout(INSTALL_BOAT_TIMEOUT, cmd.kill_on_drop(true).status())
+        .await
+        .map_err(|_| anyhow::anyhow!("installing the Boat CLI timed out"))??;
     anyhow::ensure!(status.success(), "the Boat installer failed");
     Ok(())
 }
@@ -1628,5 +1688,126 @@ esac
         assert!(!is_loopback_host(Some("example.com:47731")));
         assert!(!is_loopback_host(Some("127.0.0.1.evil.com:47731")));
         assert!(!is_loopback_host(None));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sign_in_boat_auto_installs_missing_cli_before_starting_sign_in() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("boat");
+        let installed = Arc::new(AtomicBool::new(false));
+        let daemon = Daemon::new(TOKEN.to_owned(), dir.clone(), 0);
+
+        let locate_flag = installed.clone();
+        let locate_bin = bin.clone();
+        let install_flag = installed.clone();
+        let install_bin = bin.clone();
+
+        let reply = daemon
+            .sign_in_boat_with(
+                Some(signin_client("first")),
+                move || locate_flag.load(Ordering::SeqCst).then(|| Boat::at(locate_bin.clone())),
+                move || async move {
+                    std::fs::write(
+                        &install_bin,
+                        r#"#!/bin/sh
+case "$*" in
+  *"status"*) echo '{"account":{"signedIn":false}}' ;;
+  *"logout"*) exit 0 ;;
+  *"onboard --wait"*) sleep 60 ;;
+  *"onboard"*) echo '{"url":"https://auth.localtest.me/boat/device","userCode":"WXYZ-1234"}' ;;
+esac
+"#,
+                    )
+                    .unwrap();
+                    std::fs::set_permissions(&install_bin, std::fs::Permissions::from_mode(0o700))
+                        .unwrap();
+                    install_flag.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(installed.load(Ordering::SeqCst));
+        let sign_in = reply.sign_in.expect("sign_in prompt should be returned");
+        let attempt_id = sign_in["attemptId"].as_str().unwrap().to_owned();
+        assert_eq!(sign_in["prompt"]["code"], "WXYZ-1234");
+        assert_eq!(sign_in["prompt"]["url"], "https://auth.localtest.me/boat/device");
+
+        let mut phase = daemon.sign_ins.lock().await[&SignInTarget::Boat].phase.subscribe();
+        daemon
+            .manage_attempt(true, signin_client("first"), AttemptAction::Cancel { attempt_id })
+            .await
+            .unwrap();
+        phase.wait_for(|phase| *phase == Phase::Cancelled).await.unwrap();
+        assert!(!daemon.state().setup_busy);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn sign_in_boat_clears_busy_when_auto_install_fails() {
+        let dir = test_dir();
+        let daemon = Daemon::new(TOKEN.to_owned(), dir.clone(), 0);
+        let result = daemon
+            .sign_in_boat_with(
+                Some(signin_client("first")),
+                || None,
+                || async { anyhow::bail!("the Boat installer failed") },
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(!daemon.state().setup_busy);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sign_in_boat_skips_prompt_when_auto_installed_cli_is_already_signed_in() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("boat");
+        let installed = Arc::new(AtomicBool::new(false));
+        let daemon = Daemon::new(TOKEN.to_owned(), dir.clone(), 0);
+
+        let locate_flag = installed.clone();
+        let locate_bin = bin.clone();
+        let install_flag = installed.clone();
+        let install_bin = bin.clone();
+
+        let reply = daemon
+            .sign_in_boat_with(
+                Some(signin_client("first")),
+                move || locate_flag.load(Ordering::SeqCst).then(|| Boat::at(locate_bin.clone())),
+                move || async move {
+                    std::fs::write(
+                        &install_bin,
+                        r#"#!/bin/sh
+case "$*" in
+  *"status"*) echo '{"account":{"signedIn":true,"identifier":"sailor@example.com","plan":"pro"}}' ;;
+esac
+"#,
+                    )
+                    .unwrap();
+                    std::fs::set_permissions(&install_bin, std::fs::Permissions::from_mode(0o700))
+                        .unwrap();
+                    install_flag.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(installed.load(Ordering::SeqCst));
+        assert!(reply.sign_in.is_none());
+        assert!(!daemon.state().setup_busy);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
