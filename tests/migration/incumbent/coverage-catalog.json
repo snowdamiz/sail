@@ -741,6 +741,7 @@
       "states": ["accepted-reply-lost", "reconnected"],
       "check": "Drop the connection after server acceptance. Verify a single accepted turn and the same command receipt.",
       "evidenceProfile": "interaction",
+      "supplementalReceipts": ["observations/served-chromium-macos/send-once/receipt.json"],
       "sourceReferences": [
         "packages/contracts/src/rpc.ts",
         "packages/client-runtime/src/rpc/session.test.ts"

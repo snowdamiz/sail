@@ -17,3 +17,15 @@ The reconnect timer starts when the browser requests that the proxy restore acce
 After timing, the probe expands **Worked for…** and checks all three rendered messages in order. Each sample retains the checked browser text and table cells alongside the saved server projection.
 
 Discard two warmups and retain the raw outcomes for twelve measured turns. Use a fresh fixture and proxy to restart a failed series. Keep browser boot, pairing, thread creation, and screenshots outside the timers. [Published v0.1.17 receipt and samples](../observations/served-chromium-macos/chat-latency/receipt.json)
+
+## Verify a lost send receipt
+
+Use a fresh seeded thread and start the receipt gate in place of the timing proxy.
+
+```sh
+node tests/migration/incumbent/send-once-gate.mjs "$backend_port" latency-00
+```
+
+Pair through the gate's loopback origin. Open `latency-00`, type **Give me a short tour**, and click **Submit message** once. The gate drops the first successful send response and closes that socket. It checks that the client resends the same command on a new connection, then forwards the retry response after comparing it with the dropped receipt.
+
+After the reply settles, expand **Worked for…** and check all three messages in order. Verify one accepted dispatch receipt and one completed run in the scratch database. Check that the stored receipt sequence matches the two wire responses. [Published v0.1.17 send-once receipt](../observations/served-chromium-macos/send-once/receipt.json)
