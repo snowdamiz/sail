@@ -151,7 +151,6 @@ import * as ProviderAuthSync from "./provider/ProviderAuthSync.ts";
 import { boatRuntime } from "./cloud/boatLifecycle.ts";
 import * as ProjectCredentials from "./secrets/ProjectCredentials.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
-import * as FeedbackStore from "./feedback/FeedbackStore.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
 import {
   bufferShellLiveStream,
@@ -1552,7 +1551,6 @@ export const layerWsRpc = (
       );
       const providerAuthSyncOption = yield* Effect.serviceOption(ProviderAuthSync.ProviderAuthSync);
       const boatProviderSyncOption = yield* Effect.serviceOption(BoatProviderSync.BoatProviderSync);
-      const feedbackStore = yield* FeedbackStore.FeedbackStore;
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
       const issues = yield* IssueService.IssueService;
@@ -2596,7 +2594,6 @@ export const layerWsRpc = (
                     ),
                   ),
               }),
-        [WS_METHODS.agentFeedbackAnswerRequest]: (input) => feedbackStore.answer(input),
         [WS_METHODS.scheduledTasksListWebhookDeliveries]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.listWebhookDeliveries(input)),

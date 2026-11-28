@@ -4052,18 +4052,6 @@ const OrchestrationV2InternalCommand = Schema.Union([
     fields: Schema.optional(Schema.Array(OrchestrationV2SecretRequestField)),
     secretStatus: OrchestrationV2SecretRequestStatus,
   }),
-  /** Internal so no client can mark a report sent without it being stored and sent. */
-  Schema.Struct({
-    type: Schema.Literal("feedback_request.record"),
-    commandId: CommandId,
-    threadId: ThreadId,
-    runId: RunId,
-    nodeId: NodeId,
-    turnItemId: TurnItemId,
-    preview: AgentFeedbackPreview,
-    conversationTrace: Schema.optionalKey(AgentFeedbackTrace),
-    feedbackStatus: AgentFeedbackRequestStatus,
-  }),
   /**
    * Records or updates a link an agent asked the user to make. Internal so no
    * client can mark a request linked without the link being made.
