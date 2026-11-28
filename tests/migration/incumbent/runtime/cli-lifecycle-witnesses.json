@@ -1,0 +1,90 @@
+{
+  "37a34019-50e6-4528-be18-e771c0bd8416": {
+    "execution": "native",
+    "homeMode": "fresh",
+    "kernelProcessSha256": "1ceab4557ee520ec79c649d4717f1f76f4fb2cc3b1ece44add9e34c7206417e7",
+    "platform": "arm64",
+    "runtimeIdentity": {
+      "ownerSha256": "1749f0bb39f658c0e6ee0d7cf2acbc40baca9f12c62956058945a7702ea185e0",
+      "startedAt": "2026-11-28T15:32:00.090Z"
+    },
+    "runtimeSha256": "7da1cd42672d5e4fbb83c50179cf694441e3eef2d1cf6cf2e98f359c94bdec8e"
+  },
+  "574d9f3f-b179-41a9-909c-29f72a499584": {
+    "execution": "native",
+    "homeMode": "copied",
+    "kernelProcessSha256": "23d738710305b0b15986172098bdaeed980ca962a3124f18e49389c32fef29d5",
+    "platform": "arm64",
+    "runtimeIdentity": {
+      "ownerSha256": "7f365fe68ff5d9f935e218c4e31dee5a260ab5f7ef05d5f951c36a5c2b3944d1",
+      "startedAt": "2026-11-28T15:32:33.102Z"
+    },
+    "runtimeSha256": "7da1cd42672d5e4fbb83c50179cf694441e3eef2d1cf6cf2e98f359c94bdec8e"
+  },
+  "5cd07bc5-c648-48d4-8774-ded30ca866a8": {
+    "execution": "native",
+    "homeMode": "fresh",
+    "kernelProcessSha256": "8c737c686bd17b20ba75e911e20cbb397b606912709736292f0d147026d10704",
+    "platform": "arm64",
+    "runtimeIdentity": {
+      "ownerSha256": "9fbbe45783724350cebbaf711974cbb2038281511d09016b3abacf17002ef5d9",
+      "startedAt": "2026-11-28T15:32:16.931Z"
+    },
+    "runtimeSha256": "7da1cd42672d5e4fbb83c50179cf694441e3eef2d1cf6cf2e98f359c94bdec8e"
+  },
+  "68ee849d-9bb5-46cb-9820-48e06dc6d914": {
+    "execution": "emulated",
+    "homeMode": "copied",
+    "kernelProcessSha256": "724db27e133c21937366be13a6a7851aee58846d33874530a71382b0a84e9c7a",
+    "platform": "x64",
+    "runtimeIdentity": {
+      "ownerSha256": "1e5f8020b402032af29fa4bb9bc1f60fedbbc2d975228b4007ed10e236bb1941",
+      "startedAt": "2026-11-28T15:34:04.590Z"
+    },
+    "runtimeSha256": "71a95f081ed384dd7514e15d9cb10018998fa66033931d56bf7ebefb54278e18"
+  },
+  "6fabab92-743a-4900-b0d5-9c6e504e87f2": {
+    "execution": "emulated",
+    "homeMode": "copied",
+    "kernelProcessSha256": "feb41b2b51ce6c3a3af9d77ecb3b92d04dd574f0e9852747a8f45a802317a7f8",
+    "platform": "x64",
+    "runtimeIdentity": {
+      "ownerSha256": "c9cb8d9f7d3690d1bb8a4f78df5f89d253b330262dda6f02c80e0464de73dab1",
+      "startedAt": "2026-11-28T15:35:17.267Z"
+    },
+    "runtimeSha256": "71a95f081ed384dd7514e15d9cb10018998fa66033931d56bf7ebefb54278e18"
+  },
+  "ab72848f-9c88-413d-9433-1e1014822491": {
+    "execution": "native",
+    "homeMode": "copied",
+    "kernelProcessSha256": "43fb2e627a0495d63a4f47fe662cb6dda7fb1f1fa39f707de20cf44baf833ca1",
+    "platform": "arm64",
+    "runtimeIdentity": {
+      "ownerSha256": "6412a7ce116027042a72e5b7919ba92eba2d5db825e37eb18e55eff922e72bdd",
+      "startedAt": "2026-11-28T15:32:56.482Z"
+    },
+    "runtimeSha256": "7da1cd42672d5e4fbb83c50179cf694441e3eef2d1cf6cf2e98f359c94bdec8e"
+  },
+  "adb19ddb-56aa-4329-a997-297d8cc6f4dc": {
+    "execution": "emulated",
+    "homeMode": "fresh",
+    "kernelProcessSha256": "82644eb46c25a4eff8254d0669747bf94f901af7174abf56ac81952a36e49390",
+    "platform": "x64",
+    "runtimeIdentity": {
+      "ownerSha256": "7b46b03bba7b4cacffcf71e7d1510f367b8ad4cbaff2efa09a426cc7deccccb0",
+      "startedAt": "2026-11-28T15:32:25.163Z"
+    },
+    "runtimeSha256": "71a95f081ed384dd7514e15d9cb10018998fa66033931d56bf7ebefb54278e18"
+  },
+  "d2a53eba-0b68-440f-8051-a856f0dcfd3d": {
+    "execution": "emulated",
+    "homeMode": "fresh",
+    "kernelProcessSha256": "38284f955bf897369b304b6bcee1cc3208a065fb99fd9fd7d635994595ffa571",
+    "platform": "x64",
+    "runtimeIdentity": {
+      "ownerSha256": "f740cb7e1cae405810dc439b085d70db130db019b3db7d5e662af489cdcac35a",
+      "startedAt": "2026-11-28T15:33:05.055Z"
+    },
+    "runtimeSha256": "71a95f081ed384dd7514e15d9cb10018998fa66033931d56bf7ebefb54278e18"
+  }
+}

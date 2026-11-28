@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
@@ -82,11 +82,30 @@ struct Start {
     descriptor: Value,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeIdentity {
     owner_sha256: String,
     started_at: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeWitness {
+    platform: String,
+    execution: String,
+    home_mode: HomeMode,
+    runtime_sha256: String,
+    runtime_identity: RuntimeIdentity,
+    kernel_process_sha256: String,
+}
+
+struct VerifiedBoot {
+    boot_id: String,
+    runtime: RuntimeIdentity,
+    kernel_process: String,
+    process: Value,
+    state: Value,
 }
 
 #[derive(Deserialize)]
@@ -291,13 +310,32 @@ fn verify_state(evidence: &Evidence, state: &SavedState, boot: &Boot) -> Result<
     }
 }
 
+fn verify_runtime_witness(boot: &Boot) -> Result<String> {
+    let witnesses: BTreeMap<String, RuntimeWitness> = serde_json::from_str(include_str!(
+        "../../../incumbent/runtime/cli-lifecycle-witnesses.json"
+    ))?;
+    let witness = witnesses
+        .get(&boot.boot_id)
+        .context("CLI boot has no recorded process witness")?;
+    ensure!(
+        witness.platform == boot.platform.arch
+            && witness.execution == boot.platform.execution
+            && witness.home_mode == boot.home_mode
+            && witness.runtime_sha256 == boot.package.runtime_sha256
+            && witness.runtime_identity == boot.start.runtime_identity
+            && is_hex(&witness.kernel_process_sha256, 64),
+        "CLI receipt disagrees with the recorded process witness"
+    );
+    Ok(witness.kernel_process_sha256.clone())
+}
+
 fn verify_run(
     evidence: &Evidence,
     inventory: &Inventory,
     platform: &Platform,
     observation: &Observation,
     run: &Run,
-) -> Result<(String, RuntimeIdentity, Value, Value)> {
+) -> Result<VerifiedBoot> {
     let transcript = one_artifact(&run.artifacts, "process-transcript")?;
     let state = one_artifact(&run.artifacts, "state-receipt")?;
     let mut process: Value = read_json(&evidence.resolve(&transcript.path)?)?;
@@ -359,6 +397,7 @@ fn verify_run(
     let saved = serde_json::from_value(state.clone())?;
     verify_state(evidence, &saved, &boot)?;
     verify_image(evidence, run, &boot, &saved)?;
+    let kernel_process = verify_runtime_witness(&boot)?;
     process
         .as_object_mut()
         .context("expected a process object")?
@@ -375,7 +414,13 @@ fn verify_run(
         .as_object_mut()
         .context("expected a start object")?
         .remove("runtimeIdentity");
-    Ok((boot.boot_id, boot.start.runtime_identity, process, state))
+    Ok(VerifiedBoot {
+        boot_id: boot.boot_id,
+        runtime: boot.start.runtime_identity,
+        kernel_process,
+        process,
+        state,
+    })
 }
 
 pub(crate) fn verify_linux_cli_lifecycle(
@@ -391,16 +436,15 @@ pub(crate) fn verify_linux_cli_lifecycle(
         first.role == "incumbent-first" && repeat.role == "incumbent-repeat",
         "CLI release reference must use the first and repeat incumbent roles"
     );
-    let (first_id, first_runtime, first_process, first_state) =
-        verify_run(evidence, inventory, platform, observation, first)?;
-    let (repeat_id, repeat_runtime, repeat_process, repeat_state) =
-        verify_run(evidence, inventory, platform, observation, repeat)?;
+    let first = verify_run(evidence, inventory, platform, observation, first)?;
+    let repeat = verify_run(evidence, inventory, platform, observation, repeat)?;
     ensure!(
-        first_id != repeat_id
-            && first_runtime.owner_sha256 != repeat_runtime.owner_sha256
-            && first_runtime.started_at < repeat_runtime.started_at
-            && first_process == repeat_process
-            && first_state == repeat_state,
+        first.boot_id != repeat.boot_id
+            && first.kernel_process != repeat.kernel_process
+            && first.runtime.owner_sha256 != repeat.runtime.owner_sha256
+            && first.runtime.started_at < repeat.runtime.started_at
+            && first.process == repeat.process
+            && first.state == repeat.state,
         "CLI release reference lacks two matching independent boots"
     );
     Ok(())

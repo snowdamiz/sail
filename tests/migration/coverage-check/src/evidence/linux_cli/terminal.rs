@@ -1,8 +1,4 @@
-use std::{
-    fs,
-    io::{BufWriter, Cursor},
-    path::Path,
-};
+use std::{fs, io::Write, path::Path};
 
 use anyhow::{Context, Result, ensure};
 use font8x8::{BASIC_FONTS, UnicodeFonts};
@@ -90,6 +86,25 @@ fn render(boot: &Boot, state: &SavedState) -> Result<Vec<u8>> {
     Ok(pixels)
 }
 
+fn encode(
+    boot: &Boot,
+    state: &SavedState,
+    transcript_sha: &str,
+    state_sha: &str,
+) -> Result<Vec<u8>> {
+    let pixels = render(boot, state)?;
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, WIDTH as u32, HEIGHT as u32);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.add_text_chunk("SailBoot".to_owned(), boot.boot_id.clone())?;
+    encoder.add_text_chunk("SailTranscriptSha256".to_owned(), transcript_sha.to_owned())?;
+    encoder.add_text_chunk("SailStateSha256".to_owned(), state_sha.to_owned())?;
+    let mut writer = encoder.write_header()?;
+    writer.write_image_data(&pixels)?;
+    writer.finish()?;
+    Ok(bytes)
+}
+
 pub(crate) fn render_cli_terminal(directory: &Path) -> Result<()> {
     let transcript = fs::read(directory.join("process.json"))?;
     let state_bytes = fs::read(directory.join("state.json"))?;
@@ -99,22 +114,13 @@ pub(crate) fn render_cli_terminal(directory: &Path) -> Result<()> {
         state.boot_id == boot.boot_id,
         "CLI process and state belong to different boots"
     );
-    let pixels = render(&boot, &state)?;
-    let file = fs::File::create_new(directory.join("terminal.png"))?;
-    let mut encoder = png::Encoder::new(BufWriter::new(file), WIDTH as u32, HEIGHT as u32);
-    encoder.set_color(png::ColorType::Rgb);
-    encoder.add_text_chunk("SailBoot".to_owned(), boot.boot_id)?;
-    encoder.add_text_chunk(
-        "SailTranscriptSha256".to_owned(),
-        format!("{:x}", Sha256::digest(transcript)),
+    let bytes = encode(
+        &boot,
+        &state,
+        &format!("{:x}", Sha256::digest(transcript)),
+        &format!("{:x}", Sha256::digest(state_bytes)),
     )?;
-    encoder.add_text_chunk(
-        "SailStateSha256".to_owned(),
-        format!("{:x}", Sha256::digest(state_bytes)),
-    )?;
-    let mut writer = encoder.write_header()?;
-    writer.write_image_data(&pixels)?;
-    writer.finish()?;
+    fs::File::create_new(directory.join("terminal.png"))?.write_all(&bytes)?;
     Ok(())
 }
 
@@ -127,37 +133,11 @@ pub(super) fn verify_image(
     let transcript = one_artifact(&run.artifacts, "process-transcript")?;
     let state = one_artifact(&run.artifacts, "state-receipt")?;
     let image = one_artifact(&run.artifacts, "terminal-screenshot")?;
-    let mut decoder =
-        png::Decoder::new(Cursor::new(fs::read(evidence.resolve(&image.path)?)?)).read_info()?;
-    let info = decoder.info();
+    let expected = encode(boot, saved, &transcript.sha256, &state.sha256)?;
+    let actual = fs::read(evidence.resolve(&image.path)?)?;
     ensure!(
-        info.width == WIDTH as u32
-            && info.height == HEIGHT as u32
-            && info.color_type == png::ColorType::Rgb
-            && info.bit_depth == png::BitDepth::Eight
-            && info.animation_control.is_none(),
-        "unexpected CLI terminal image geometry"
-    );
-    for (key, expected) in [
-        ("SailBoot", boot.boot_id.as_str()),
-        ("SailTranscriptSha256", transcript.sha256.as_str()),
-        ("SailStateSha256", state.sha256.as_str()),
-    ] {
-        let mut values = info
-            .uncompressed_latin1_text
-            .iter()
-            .filter(|value| value.keyword == key);
-        ensure!(
-            values.next().is_some_and(|value| value.text == expected) && values.next().is_none(),
-            "terminal image is not bound to the CLI receipts"
-        );
-    }
-    let mut pixels = vec![0; WIDTH * HEIGHT * 3];
-    decoder.next_frame(&mut pixels)?;
-    decoder.finish()?;
-    ensure!(
-        pixels == render(boot, saved)?,
-        "terminal image does not render the CLI receipts"
+        actual == expected,
+        "terminal PNG does not match the encoded CLI receipts"
     );
     Ok(())
 }

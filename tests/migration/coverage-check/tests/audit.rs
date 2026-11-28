@@ -224,42 +224,49 @@ fn rejects_a_terminal_screenshot_from_another_boot() {
         .find(|artifact| artifact["kind"] == "terminal-screenshot")
         .unwrap();
     *first = repeat;
-    fixture.rejects("terminal image is not bound to the CLI receipts");
+    fixture.rejects("terminal PNG does not match the encoded CLI receipts");
 }
 
 #[test]
-fn rejects_a_blank_terminal_png_with_matching_metadata() {
-    let mut fixture = Fixture::cli("cli-open", "start", "arm64");
-    let image = fixture.catalog["observations"][0]["runs"][0]["artifacts"]
-        .as_array_mut()
-        .unwrap()
-        .iter_mut()
-        .find(|artifact| artifact["kind"] == "terminal-screenshot")
-        .unwrap();
-    let path = fixture
-        .directory
-        .path()
-        .join(image["path"].as_str().unwrap());
-    let png = png::Decoder::new(std::io::Cursor::new(fs::read(&path).unwrap()))
-        .read_info()
-        .unwrap();
-    let info = png.info();
-    let mut bytes = Vec::new();
-    let mut encoder = png::Encoder::new(&mut bytes, info.width, info.height);
-    encoder.set_color(png::ColorType::Rgb);
-    for entry in &info.uncompressed_latin1_text {
-        encoder
-            .add_text_chunk(entry.keyword.clone(), entry.text.clone())
+fn rejects_blank_or_transparent_terminal_images_with_matching_metadata() {
+    for transparent in [false, true] {
+        let mut fixture = Fixture::cli("cli-open", "start", "arm64");
+        let image = fixture.catalog["observations"][0]["runs"][0]["artifacts"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|artifact| artifact["kind"] == "terminal-screenshot")
             .unwrap();
+        let path = fixture
+            .directory
+            .path()
+            .join(image["path"].as_str().unwrap());
+        let mut png = png::Decoder::new(std::io::Cursor::new(fs::read(&path).unwrap()))
+            .read_info()
+            .unwrap();
+        let mut pixels = vec![0; png.output_buffer_size().unwrap()];
+        png.next_frame(&mut pixels).unwrap();
+        let info = png.info();
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, info.width, info.height);
+        encoder.set_color(png::ColorType::Rgb);
+        for entry in &info.uncompressed_latin1_text {
+            encoder
+                .add_text_chunk(entry.keyword.clone(), entry.text.clone())
+                .unwrap();
+        }
+        if transparent {
+            encoder.set_trns(vec![0, 220, 0, 229, 0, 237]);
+        } else {
+            pixels.fill(0);
+        }
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&pixels).unwrap();
+        writer.finish().unwrap();
+        fs::write(path, &bytes).unwrap();
+        image["sha256"] = json!(format!("{:x}", Sha256::digest(bytes)));
+        fixture.rejects("terminal PNG does not match the encoded CLI receipts");
     }
-    let mut writer = encoder.write_header().unwrap();
-    writer
-        .write_image_data(&vec![0; (info.width * info.height * 3) as usize])
-        .unwrap();
-    writer.finish().unwrap();
-    fs::write(path, &bytes).unwrap();
-    image["sha256"] = json!(format!("{:x}", Sha256::digest(bytes)));
-    fixture.rejects("terminal image does not render the CLI receipts");
 }
 
 #[test]
@@ -270,6 +277,20 @@ fn rejects_a_relabeled_cli_boot_with_regenerated_terminal_pixels() {
         .unwrap();
     let first = runs[0]["artifacts"].as_array().unwrap().clone();
     let repeat = runs[1]["artifacts"].as_array_mut().unwrap();
+    let observed = repeat
+        .iter()
+        .find(|record| record["kind"] == "process-transcript")
+        .unwrap();
+    let original_repeat: Value = serde_json::from_slice(
+        &fs::read(
+            fixture
+                .directory
+                .path()
+                .join(observed["path"].as_str().unwrap()),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let directory = fixture.directory.path().join("relabeled");
     fs::create_dir(&directory).unwrap();
     for (kind, filename) in [
@@ -285,7 +306,15 @@ fn rejects_a_relabeled_cli_boot_with_regenerated_terminal_pixels() {
             .path()
             .join(receipt["path"].as_str().unwrap());
         let mut editable: Value = serde_json::from_slice(&fs::read(original).unwrap()).unwrap();
-        editable["bootId"] = json!("a0000000-0000-4000-8000-000000000000");
+        editable["bootId"] = original_repeat["bootId"].clone();
+        if kind == "process-transcript" {
+            editable["start"]["runtimeIdentity"] = json!({
+                "ownerSha256": "0".repeat(64),
+                "startedAt": original_repeat["start"]["runtimeIdentity"]["startedAt"],
+            });
+        } else {
+            editable["runtimeOwnerSha256"] = json!("0".repeat(64));
+        }
         let bytes = serde_json::to_vec(&editable).unwrap();
         fs::write(directory.join(filename), &bytes).unwrap();
         let target = repeat
@@ -314,7 +343,7 @@ fn rejects_a_relabeled_cli_boot_with_regenerated_terminal_pixels() {
         "{:x}",
         Sha256::digest(fs::read(directory.join("terminal.png")).unwrap())
     ));
-    fixture.rejects("CLI release reference lacks two matching independent boots");
+    fixture.rejects("CLI receipt disagrees with the recorded process witness");
 }
 
 #[test]

@@ -106,6 +106,28 @@ def executable_proof(process, executable, execution):
     return {"kind": "proc-mapped-exe", "interpreter": actual.name}
 
 
+def runtime_witness(process, record, executable, boot_id, host, mode):
+    stat = Path(f"/proc/{process.pid}/stat").read_text()
+    prefix, separator, suffix = stat.rpartition(")")
+    require(separator and prefix.startswith(f"{process.pid} ("), "Kernel process record differs")
+    start_ticks = int(suffix.split()[19])
+    require(start_ticks > 0, "Missing kernel process start time")
+    kernel_boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    kernel_identity = hash_value(f"{kernel_boot}\0{process.pid}\0{start_ticks}".encode()).hexdigest()
+    owner = record["ownerId"]
+    require(isinstance(owner, str) and owner, "Missing runtime owner identity")
+    return {
+        "bootId": boot_id,
+        "platform": host["arch"],
+        "execution": host["execution"],
+        "homeMode": mode,
+        "runtimeSha256": sha256(executable),
+        "runtimeIdentity": {"ownerSha256": hash_value(owner.encode()).hexdigest(),
+                            "startedAt": record["startedAt"]},
+        "kernelProcessSha256": kernel_identity,
+    }
+
+
 def copied_thread(command, env, cwd, thread_id, seed):
     result = json.loads(cli([*command, "--json", thread_id], env, cwd))
     thread = result["thread"]
@@ -178,11 +200,10 @@ def boot(executable, package, host, seed_path, thread_id, mode):
                 require(record["pid"] == process.pid
                         and (record["host"], record["port"], record["origin"])
                         == (HOST, port, f"http://{HOST}:{port}"), "Runtime does not identify owned listener")
-                require(isinstance(record["ownerId"], str) and record["ownerId"], "Missing runtime owner identity")
-                runtime_owner = hash_value(record["ownerId"].encode()).hexdigest()
-                state["runtimeOwnerSha256"] = runtime_owner
-                runtime_identity = {"ownerSha256": runtime_owner, "startedAt": record["startedAt"]}
                 runtime_executable = executable_proof(process, executable, host["execution"])
+                witness = runtime_witness(process, record, executable, boot_id, host, mode)
+                runtime_identity = witness["runtimeIdentity"]
+                state["runtimeOwnerSha256"] = runtime_identity["ownerSha256"]
                 require(b"Pairing URL:" not in startup and database.is_file(), "Unexpected startup behavior")
                 require(not any((other / "userdata/server-runtime.json").exists() for other in (
                         Path(env["SAIL_HOME"]), Path(env["T3CODE_HOME"]), Path(env["HOME"]) / ".sail")),
@@ -245,7 +266,7 @@ def boot(executable, package, host, seed_path, thread_id, mode):
                      "exitCode": 0, "browserSession": grants},
             "stop": {"signal": "SIGINT", "exitCode": exit_code,
                      "listenerRefused": refused, "runtimeRecordRemoved": True},
-        }, state
+        }, state, witness
 
 
 def main():
@@ -262,11 +283,11 @@ def main():
     host = environment(arch, "emulated" if args.emulated else "native")
     for mode in ("fresh", "copied"):
         for ordinal in ("first", "repeat"):
-            process, state = boot(args.install / "t3", package, host, args.seed,
-                                  args.thread_id.read_text().strip(), mode)
+            process, state, witness = boot(args.install / "t3", package, host, args.seed,
+                                           args.thread_id.read_text().strip(), mode)
             output = args.output / f"{mode}-{ordinal}"
             output.mkdir()
-            for name, value in (("process", process), ("state", state)):
+            for name, value in (("process", process), ("state", state), ("witness", witness)):
                 (output / f"{name}.json").write_text(json.dumps(value, indent=2) + "\n")
             print(f"{arch} {mode} {ordinal}: CLI lifecycle passed", flush=True)
 
