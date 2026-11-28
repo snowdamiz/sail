@@ -959,7 +959,13 @@ export function AddProviderInstanceDialog({
         null,
       ] as const)
     : postCreateAuth !== null
-      ? ([driverOption.label, previewLabel, null, null] as const)
+      ? ([
+          driverOption.label,
+          settings.providerInstances[postCreateAuth.instanceId]?.displayName?.trim() ||
+            previewLabel,
+          null,
+          null,
+        ] as const)
       : ([driverOption.label, previewLabel, null] as const);
 
   const setConfigDraft = (config: Record<string, unknown> | undefined) => {
