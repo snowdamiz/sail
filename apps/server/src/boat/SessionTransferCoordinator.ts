@@ -1078,11 +1078,14 @@ export function makeLiveBoatRemoteClient(
         const startTargetUpload = (
           contentType: string,
           contentLength: number | undefined,
+          useChunkedEncoding: boolean,
         ): NodeHttp.ClientRequest => {
           const targetHeaders: NodeHttp.OutgoingHttpHeaders = {
             "content-type": contentType,
           };
-          if (contentLength !== undefined) {
+          if (useChunkedEncoding) {
+            targetHeaders["transfer-encoding"] = "chunked";
+          } else if (contentLength !== undefined) {
             targetHeaders["content-length"] = String(contentLength);
           }
           if (input.targetBearerToken !== undefined) {
@@ -1701,7 +1704,7 @@ export function makeLiveBoatRemoteClient(
                         ? input.expectedSizeBytes
                         : undefined;
 
-                  uploadReq = startTargetUpload(contentType, contentLength);
+                  uploadReq = startTargetUpload(contentType, contentLength, hasTransferEncoding);
                   phase = "body";
                   if (framing === "content-length" && remainingBodyBytes === 0) {
                     finishSourceBody();
@@ -1842,7 +1845,7 @@ export function makeLiveBoatRemoteClient(
                 ? input.expectedSizeBytes
                 : undefined));
 
-          const uploadReq = startTargetUpload(contentType, contentLength);
+          const uploadReq = startTargetUpload(contentType, contentLength, hasTransferEncoding);
           let inFlightWrite = false;
           let sourceEnded = false;
 
@@ -4782,32 +4785,52 @@ const make = Effect.gen(function* () {
         );
       }
       // resolution === "confirmed_not_committed": destination already aborted & verified uncommitted.
-      yield* abortSourceSide({
+      const sourceAbortOutcome = yield* abortSourceSide({
         transferId: current.transferId,
         direction: current.direction,
         sourceEnvironmentId: current.sourceEnvironmentId,
         sourceMachineId: current.sourceMachineId,
         sourceThreadId: current.sourceThreadId,
         reason: "Cancelled by user",
-      }).pipe(Effect.asVoid);
+      });
+      if (sourceAbortOutcome === "failed") {
+        return yield* toSessionTransferError(
+          "target_unavailable",
+          `Failed to abort source for session transfer ${input.transferId}; transfer remains non-terminal so cleanup can be retried.`,
+          input.transferId,
+        );
+      }
     } else {
-      // Pre-commit phase: best-effort abort both destination and source sides.
-      yield* abortDestinationSide({
+      // Pre-commit phase: abort both destination and source sides. Only transition to terminal
+      // `cancelled` once both sides confirm cleanup so unreachable endpoints remain non-terminal
+      // for a later cancel retry or startup reconciliation.
+      const destAbortOutcome = yield* abortDestinationSide({
         transferId: current.transferId,
         direction: current.direction,
         destinationEnvironmentId: current.destinationEnvironmentId,
         destinationMachineId: current.destinationMachineId,
         destinationThreadId: current.destinationThreadId,
         reason: "Cancelled by user",
-      }).pipe(Effect.asVoid);
-      yield* abortSourceSide({
+      });
+      const sourceAbortOutcome = yield* abortSourceSide({
         transferId: current.transferId,
         direction: current.direction,
         sourceEnvironmentId: current.sourceEnvironmentId,
         sourceMachineId: current.sourceMachineId,
         sourceThreadId: current.sourceThreadId,
         reason: "Cancelled by user",
-      }).pipe(Effect.asVoid);
+      });
+      if (destAbortOutcome === "failed" || sourceAbortOutcome === "failed") {
+        const failedSides = [
+          ...(destAbortOutcome === "failed" ? ["destination"] : []),
+          ...(sourceAbortOutcome === "failed" ? ["source"] : []),
+        ].join(" and ");
+        return yield* toSessionTransferError(
+          "target_unavailable",
+          `Failed to abort ${failedSides} for session transfer ${input.transferId}; transfer remains non-terminal so cleanup can be retried.`,
+          input.transferId,
+        );
+      }
     }
 
     const completedAt = yield* nowIso();

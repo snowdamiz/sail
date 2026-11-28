@@ -3092,6 +3092,220 @@ describe("SessionTransferCoordinator", () => {
   );
 
   it.effect(
+    "cancel keeps persisted transfers non-terminal when abortSourceSide or abortDestinationSide fails and recovers once Boat is reachable",
+    () =>
+      Effect.gen(function* () {
+        // (a) Persisted boat_to_local transfer in committing_target whose local destination is
+        // uncommitted, while Boat is unreachable so abortSourceSide returns "failed":
+        // cancel MUST fail and keep the record non-terminal; retrying cancel once Boat recovers
+        // releases the remote source lock and transitions cleanly to cancelled.
+        const txCommitting = SessionTransferId.make("tx-cancel-boat-source-unreachable-commit");
+        let boatReachableA = false;
+        const committingHarness = makeHarness({
+          onRemoteAbort: () =>
+            boatReachableA
+              ? Effect.succeed({ cleanedUp: true })
+              : Effect.fail(
+                  new SessionTransferError({
+                    code: "target_unavailable",
+                    message: "Boat unreachable while aborting source lock",
+                  }),
+                ),
+        });
+
+        yield* Effect.gen(function* () {
+          const repo = yield* SessionTransferRepository.SessionTransferRepository;
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+
+          yield* repo.upsert({
+            transferId: txCommitting,
+            direction: "boat_to_local",
+            sourceEnvironmentId: BOAT_ENV_ID,
+            sourceEnvironmentName: TrimmedNonEmptyString.make("dev-boat"),
+            sourceMachineId: TrimmedNonEmptyString.make("machine-1"),
+            sourceProjectId: BOAT_PROJECT_ID,
+            sourceThreadId: BOAT_THREAD_ID,
+            destinationEnvironmentId: LOCAL_ENV_ID,
+            destinationEnvironmentName: TrimmedNonEmptyString.make("MacBook Pro"),
+            destinationMachineId: null,
+            destinationProjectId: LOCAL_PROJECT_ID,
+            destinationThreadId: DEST_THREAD_ID,
+            phase: "committing_target",
+            phaseDetail: "Importing workspace and history on destination...",
+            sourceWasRunning: false,
+            autoResume: false,
+            hadPendingRuntimeRequest: false,
+            destinationBranch: GitRefName.make("feat/transfer"),
+            destinationWorktreePath: TrimmedNonEmptyString.make("/Users/dev/sail/.worktrees/wt-1"),
+            modelSelectionOverride: null,
+            cloneDestinationPath: null,
+            warnings: [],
+            errorMessage: null,
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+            completedAt: null,
+          });
+
+          const firstErr = yield* Effect.flip(coordinator.cancel({ transferId: txCommitting }));
+          expect(firstErr.code).toBe("target_unavailable");
+
+          const stillActive = yield* repo.getById(txCommitting);
+          expect(Option.isSome(stillActive) && stillActive.value.phase).toBe("committing_target");
+          expect(committingHarness.calls.localAbort).toHaveLength(1);
+          expect(committingHarness.calls.remoteAbort).toHaveLength(1);
+          expect(committingHarness.calls.remoteAbort[0]?.role).toBe("source");
+
+          // Boat recovers -> retrying cancel releases the source lock and marks cancelled.
+          boatReachableA = true;
+          const cancelled = yield* coordinator.cancel({ transferId: txCommitting });
+          expect(cancelled.phase).toBe("cancelled");
+
+          const finalRecord = yield* repo.getById(txCommitting);
+          expect(Option.isSome(finalRecord) && finalRecord.value.phase).toBe("cancelled");
+          expect(committingHarness.calls.remoteAbort).toHaveLength(2);
+          expect(committingHarness.calls.remoteAbort[1]?.role).toBe("source");
+          expect(committingHarness.calls.remoteAbort[1]?.threadId).toBe(BOAT_THREAD_ID);
+        }).pipe(Effect.scoped, Effect.provide(committingHarness.layer));
+
+        // (b) Persisted pre-commit boat_to_local transfer with unreachable Boat -> cancel stays
+        // non-terminal so startup reconciliation can clean up the remote source lock once reachable.
+        const txPreCommitSource = SessionTransferId.make("tx-cancel-boat-source-unreachable-pre");
+        let boatReachableB = false;
+        const preCommitSourceHarness = makeHarness({
+          onRemoteAbort: () =>
+            boatReachableB
+              ? Effect.succeed({ cleanedUp: true })
+              : Effect.fail(
+                  new SessionTransferError({
+                    code: "target_unavailable",
+                    message: "Boat unreachable",
+                  }),
+                ),
+        });
+
+        yield* Effect.gen(function* () {
+          const repo = yield* SessionTransferRepository.SessionTransferRepository;
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+
+          yield* repo.upsert({
+            transferId: txPreCommitSource,
+            direction: "boat_to_local",
+            sourceEnvironmentId: BOAT_ENV_ID,
+            sourceEnvironmentName: TrimmedNonEmptyString.make("dev-boat"),
+            sourceMachineId: TrimmedNonEmptyString.make("machine-1"),
+            sourceProjectId: BOAT_PROJECT_ID,
+            sourceThreadId: BOAT_THREAD_ID,
+            destinationEnvironmentId: LOCAL_ENV_ID,
+            destinationEnvironmentName: TrimmedNonEmptyString.make("MacBook Pro"),
+            destinationMachineId: null,
+            destinationProjectId: LOCAL_PROJECT_ID,
+            destinationThreadId: DEST_THREAD_ID,
+            phase: "transferring_workspace",
+            phaseDetail: "Streaming workspace bundle...",
+            sourceWasRunning: false,
+            autoResume: false,
+            hadPendingRuntimeRequest: false,
+            destinationBranch: GitRefName.make("feat/transfer"),
+            destinationWorktreePath: TrimmedNonEmptyString.make("/Users/dev/sail/.worktrees/wt-1"),
+            modelSelectionOverride: null,
+            cloneDestinationPath: null,
+            warnings: [],
+            errorMessage: null,
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+            completedAt: null,
+          });
+
+          const firstErr = yield* Effect.flip(
+            coordinator.cancel({ transferId: txPreCommitSource }),
+          );
+          expect(firstErr.code).toBe("target_unavailable");
+
+          const stillActive = yield* repo.getById(txPreCommitSource);
+          expect(Option.isSome(stillActive) && stillActive.value.phase).toBe(
+            "transferring_workspace",
+          );
+          expect(preCommitSourceHarness.calls.remoteAbort).toHaveLength(1);
+
+          // Boat recovers -> reconcileOnStartup releases the remote source lock and completes cleanly.
+          boatReachableB = true;
+          yield* coordinator.reconcileOnStartup;
+
+          const reconciled = yield* repo.getById(txPreCommitSource);
+          expect(Option.isSome(reconciled) && reconciled.value.phase).toBe("failed");
+          expect(preCommitSourceHarness.calls.remoteAbort).toHaveLength(2);
+          expect(preCommitSourceHarness.calls.remoteAbort[1]?.role).toBe("source");
+        }).pipe(Effect.scoped, Effect.provide(preCommitSourceHarness.layer));
+
+        // (c) Persisted pre-commit local_to_boat transfer where abortDestinationSide fails ->
+        // cancel fails and stays non-terminal until Boat recovers.
+        const txPreCommitDest = SessionTransferId.make("tx-cancel-boat-dest-unreachable-pre");
+        let boatReachableC = false;
+        const preCommitDestHarness = makeHarness({
+          onRemoteAbort: () =>
+            boatReachableC
+              ? Effect.succeed({ cleanedUp: true })
+              : Effect.fail(
+                  new SessionTransferError({
+                    code: "target_unavailable",
+                    message: "Boat destination unreachable",
+                  }),
+                ),
+        });
+
+        yield* Effect.gen(function* () {
+          const repo = yield* SessionTransferRepository.SessionTransferRepository;
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+
+          yield* repo.upsert({
+            transferId: txPreCommitDest,
+            direction: "local_to_boat",
+            sourceEnvironmentId: LOCAL_ENV_ID,
+            sourceEnvironmentName: TrimmedNonEmptyString.make("MacBook Pro"),
+            sourceMachineId: null,
+            sourceProjectId: LOCAL_PROJECT_ID,
+            sourceThreadId: LOCAL_THREAD_ID,
+            destinationEnvironmentId: BOAT_ENV_ID,
+            destinationEnvironmentName: TrimmedNonEmptyString.make("dev-boat"),
+            destinationMachineId: TrimmedNonEmptyString.make("machine-1"),
+            destinationProjectId: BOAT_PROJECT_ID,
+            destinationThreadId: DEST_THREAD_ID,
+            phase: "preparing_target_project",
+            phaseDetail: "Staging destination import...",
+            sourceWasRunning: false,
+            autoResume: false,
+            hadPendingRuntimeRequest: false,
+            destinationBranch: GitRefName.make("feat/transfer"),
+            destinationWorktreePath: TrimmedNonEmptyString.make("/home/sail/sail/.worktrees/wt-1"),
+            modelSelectionOverride: null,
+            cloneDestinationPath: null,
+            warnings: [],
+            errorMessage: null,
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+            completedAt: null,
+          });
+
+          const firstErr = yield* Effect.flip(coordinator.cancel({ transferId: txPreCommitDest }));
+          expect(firstErr.code).toBe("target_unavailable");
+
+          const stillActive = yield* repo.getById(txPreCommitDest);
+          expect(Option.isSome(stillActive) && stillActive.value.phase).toBe(
+            "preparing_target_project",
+          );
+          expect(preCommitDestHarness.calls.remoteAbort).toHaveLength(1);
+          expect(preCommitDestHarness.calls.remoteAbort[0]?.role).toBe("destination");
+
+          boatReachableC = true;
+          const cancelled = yield* coordinator.cancel({ transferId: txPreCommitDest });
+          expect(cancelled.phase).toBe("cancelled");
+          expect(preCommitDestHarness.calls.remoteAbort).toHaveLength(2);
+          expect(preCommitDestHarness.calls.remoteAbort[1]?.role).toBe("destination");
+        }).pipe(Effect.scoped, Effect.provide(preCommitDestHarness.layer));
+      }),
+  );
+
+  it.effect(
     "post-clone Boat project resolution fails with preflight_required when multiple refreshed projects share originProjectId",
     () => {
       const harness = makeHarness({
@@ -4218,6 +4432,106 @@ describe("makeLiveBoatRemoteClient", () => {
           expect(upload.transferEncodingHeader).toBe("chunked");
           expect(upload.byteLength).toBe(expectedPayload.byteLength);
           expect(upload.sha256).toBe(expectedSha256);
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "streamHttpTransfer explicitly sets Transfer-Encoding: chunked with no Content-Length for 0-byte chunked source responses",
+    () =>
+      Effect.gen(function* () {
+        const receivedUploads: Array<{
+          readonly contentLengthHeader: string | string[] | undefined;
+          readonly transferEncodingHeader: string | string[] | undefined;
+          readonly byteLength: number;
+        }> = [];
+
+        const servers = yield* Effect.acquireRelease(
+          Effect.promise(async () => {
+            const srcSrv = NodeNet.createServer((socket) => {
+              socket.once("data", (buf) => {
+                const reqLine = buf.toString("latin1").split("\r\n")[0] ?? "";
+                if (reqLine.includes("/empty-chunked-no-cl")) {
+                  socket.end(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n0\r\n\r\n",
+                  );
+                  return;
+                }
+                if (reqLine.includes("/empty-chunked-with-cl")) {
+                  socket.end(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\nContent-Length: 42\r\nConnection: close\r\n\r\n0\r\n\r\n",
+                  );
+                  return;
+                }
+                socket.end("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+              });
+            });
+
+            const dstSrv = NodeHttp.createServer((req, res) => {
+              const chunks: Buffer[] = [];
+              req.on("data", (chunk: Buffer) => chunks.push(chunk));
+              req.on("end", () => {
+                const body = Buffer.concat(chunks);
+                receivedUploads.push({
+                  contentLengthHeader: req.headers["content-length"],
+                  transferEncodingHeader: req.headers["transfer-encoding"],
+                  byteLength: body.byteLength,
+                });
+                res.writeHead(200);
+                res.end("ok");
+              });
+            });
+
+            await new Promise<void>((resolve) => srcSrv.listen(0, "127.0.0.1", () => resolve()));
+            await new Promise<void>((resolve) => dstSrv.listen(0, "127.0.0.1", () => resolve()));
+            const srcAddr = srcSrv.address();
+            const dstAddr = dstSrv.address();
+            if (
+              !srcAddr ||
+              typeof srcAddr === "string" ||
+              !dstAddr ||
+              typeof dstAddr === "string"
+            ) {
+              throw new Error("Expected numeric ports");
+            }
+            return { srcSrv, dstSrv, srcPort: srcAddr.port, dstPort: dstAddr.port };
+          }),
+          ({ srcSrv, dstSrv }) =>
+            Effect.promise(async () => {
+              dstSrv.closeAllConnections();
+              await new Promise<void>((resolve) => srcSrv.close(() => resolve()));
+              await new Promise<void>((resolve) => dstSrv.close(() => resolve()));
+            }),
+        );
+
+        const client = SessionTransferCoordinator.makeLiveBoatRemoteClient(Option.none());
+
+        const cases: ReadonlyArray<{
+          readonly path: string;
+          readonly expectedSizeBytes?: number;
+        }> = [
+          { path: "/empty-chunked-no-cl" },
+          { path: "/empty-chunked-no-cl", expectedSizeBytes: 0 },
+          { path: "/empty-chunked-with-cl", expectedSizeBytes: 42 },
+        ];
+
+        for (const testCase of cases) {
+          const result = yield* client.streamHttpTransfer({
+            sourceUrl: `http://127.0.0.1:${servers.srcPort}${testCase.path}`,
+            targetUrl: `http://127.0.0.1:${servers.dstPort}/upload`,
+            ...(testCase.expectedSizeBytes !== undefined
+              ? { expectedSizeBytes: testCase.expectedSizeBytes }
+              : {}),
+          });
+          expect(result.status).toBe(200);
+          expect(result.bytesTransferred).toBe(0);
+        }
+
+        expect(receivedUploads).toHaveLength(3);
+        for (const upload of receivedUploads) {
+          expect(upload.transferEncodingHeader).toBe("chunked");
+          expect(upload.contentLengthHeader).toBeUndefined();
+          expect(upload.byteLength).toBe(0);
         }
       }).pipe(Effect.scoped),
   );
