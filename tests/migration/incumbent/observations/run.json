@@ -169,6 +169,11 @@
     "result": "pass",
     "receipt": "../runtime/v0.1.17-macos-arm64.json"
   },
+  "macosPackageFormats": {
+    "result": "observed",
+    "receipt": "../runtime/v0.1.17-macos-package-formats.json",
+    "scope": "Published macOS ZIP and DMG payloads match by architecture. The translated desktop installer selected arm64. The Intel ZIP CLI served protocol 2 under Rosetta. Both DMG runs opened the saved thread and preserved the Replay payloads. The arm64 capture settled, and the translated Intel capture timed out waiting for highlighted code."
+  },
   "linuxInstallers": {
     "arm64Receipt": "../runtime/v0.1.17-linux-arm64.json",
     "x64Receipt": "../runtime/v0.1.17-linux-x64.json",

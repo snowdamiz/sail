@@ -596,6 +596,7 @@
       "check": "Exercise every published desktop install format and the shell install route using the matching architecture. Check installed version, boot and state preservation.",
       "evidenceProfile": "process",
       "supplementalReceipts": [
+        "runtime/v0.1.17-macos-package-formats.json",
         "runtime/v0.1.17-linux-arm64.json",
         "runtime/v0.1.17-linux-x64.json"
       ],

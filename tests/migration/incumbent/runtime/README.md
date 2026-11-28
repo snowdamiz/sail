@@ -29,6 +29,16 @@ At the time of this check, remote `main` was `bf6b9482a27bdae8e1f723bee173cedfc3
 
 The macOS receipt covers HTTP protocol rejection from the server. The wider live matrix, launchers on other hosts, server side channels, service launcher, remote pairing, and paired screenshot and trace timing remain open under P01. The run index links the separate client update interaction and desktop observations. [Run index](../observations/run.json)
 
+## Published macOS ZIP and DMG formats
+
+The [macOS package receipt](v0.1.17-macos-package-formats.json) records the archive digests and the runs on macOS arm64. Check each archive against the pinned release inventory, `SHA256SUMS`, and the matching SHA-512 entry in `latest-mac.yml`.
+
+Extract each ZIP with `ditto -x -k`. Attach each DMG read-only with `hdiutil attach -readonly -nobrowse`, copy `Sail.app` with `ditto`, and detach the image. Compare the copied app's entry types, file contents, and symlink targets with the ZIP for its architecture using `compare_bundle` from [check.py](check.py).
+
+On Apple silicon with Rosetta, run the published desktop installer from `arch -x86_64 /bin/sh` with a scratch home and loopback release mirror. The translated shell selected the arm64 ZIP and installed the same bundle as the direct arm64 extraction. For the manually extracted Intel ZIP, launch the bundled CLI in Electron Node mode with `arch -x86_64`, a fresh home, and `serve --host 127.0.0.1 --startup-pairing off`. Poll the environment descriptor on the selected port. Startup under translation took more than two minutes on the recorded host.
+
+For the DMG desktop run, copy the saved Replay database and environment ID into a scratch home. Pass the fixture's `sail://threads/…` link to the app executable at startup. Check the loopback listener's desktop parent, the desktop bootstrap session, the selected thread, and the full [saved-thread fingerprints](upgrade_state.py). Move the reply into view before capturing the settled window. The arm64 run reached that capture. The translated Intel run opened the saved thread and preserved the payloads, then timed out waiting for highlighted code. The settled Intel capture and a run on native Intel hardware remain open.
+
 ## Linux installer observations
 
 The [arm64 receipt](v0.1.17-linux-arm64.json) and [x64 receipt](v0.1.17-linux-x64.json) cover the published v0.1.17 CLI archive, AppImage, and Debian package. The CLI ran on Debian 12.15. Desktop ran as an unprivileged user on Debian 13.8 under Xvfb with Electron's sandbox disabled. The Docker engine ran on arm64 and emulated amd64 for x64 runs.

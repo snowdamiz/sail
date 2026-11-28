@@ -40,16 +40,8 @@ def digest(stream):
     return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def verify_artifact(fixture, inventory):
-    asset = next(
-        asset for asset in inventory["githubRelease"]["assets"]
-        if asset["name"] == "Sail-0.1.17-arm64.zip"
-    )
-    archive = fixture / asset["name"]
-    app = fixture / "installer-home/Applications/Sail.app"
-    with archive.open("rb") as file:
-        require("sha256:" + digest(file) == asset["digest"], "Release archive digest mismatch")
-    require(app.is_dir() and app.resolve() == app, "Expected the installed app directory")
+def compare_bundle(archive, app):
+    require(app.is_dir() and app.resolve() == app, "Expected the app bundle directory")
     with ZipFile(archive) as zipped:
         members = {}
         for member in zipped.infolist():
@@ -72,7 +64,19 @@ def verify_artifact(fixture, inventory):
             if stat.S_ISLNK(mode):
                 require(os.fsencode(os.readlink(path)) == zipped.read(member),
                         f"Installed app symlink differs: {relative}")
+    return len(members)
 
+
+def verify_artifact(fixture, inventory):
+    asset = next(
+        asset for asset in inventory["githubRelease"]["assets"]
+        if asset["name"] == "Sail-0.1.17-arm64.zip"
+    )
+    archive = fixture / asset["name"]
+    app = fixture / "installer-home/Applications/Sail.app"
+    with archive.open("rb") as file:
+        require("sha256:" + digest(file) == asset["digest"], "Release archive digest mismatch")
+    matched = compare_bundle(archive, app)
     launcher = fixture / "installer-home/bin/sail"
     require(launcher.is_file() and not launcher.is_symlink(), "Expected the installed launcher file")
     shebang, invocation = launcher.read_text().splitlines()
@@ -98,7 +102,7 @@ def verify_artifact(fixture, inventory):
         "assetId": asset["id"],
         "archive": asset["name"],
         "archiveDigest": asset["digest"],
-        "installedAppEntriesMatched": len(members),
+        "installedAppEntriesMatched": matched,
         "bundleVersion": plist["CFBundleShortVersionString"],
         "serverCommand": [str(Path(command[0]).relative_to(app)), str(Path(command[1]).relative_to(app))],
         "installedLauncherInspection": 'exec /usr/bin/open "$APP" --args "$@"',
