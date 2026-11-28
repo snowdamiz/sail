@@ -40,6 +40,11 @@ const TRANSFER_COMMIT_ENV: Readonly<Record<string, string>> = {
   GIT_COMMITTER_DATE: "1970-01-01T00:00:00Z",
 };
 
+const TRANSFER_REFLOG_ENV: Readonly<Record<string, string>> = {
+  GIT_COMMITTER_NAME: "T3 Session Transfer",
+  GIT_COMMITTER_EMAIL: "transfer@t3.local",
+};
+
 export const WorkspaceBundleErrorCode = Schema.Literals([
   "not_git_repo",
   "bundle_too_large",
@@ -753,12 +758,12 @@ const make = Effect.gen(function* () {
     const branchCheck = yield* runReadOnlyGit(
       "WorkspaceBundle.resolveBranch",
       repoTopLevel,
-      ["symbolic-ref", "--quiet", "--short", "HEAD"],
+      ["symbolic-ref", "-q", "HEAD"],
       { allowNonZeroExit: true },
     );
-    const rawBranch =
+    const rawHeadRef =
       branchCheck.exitCode === 0 ? stripTrailingAsciiLineEndings(branchCheck.stdout) : "";
-    const branch = rawBranch.length > 0 ? rawBranch : null;
+    const branch = stripSingleRefsHeadsPrefix(rawHeadRef);
     const isDetachedHead = branch === null;
 
     // Enumerate dirty & untracked files to pre-check size ceiling before staging or bundling.
@@ -1511,10 +1516,7 @@ const make = Effect.gen(function* () {
   });
 
   const detectActiveWorktreeOperation = Effect.fn("WorkspaceBundle.detectActiveWorktreeOperation")(
-    function* (
-      wtGitDir: string,
-      worktreePath: string,
-    ): Effect.fn.Return<string | null, WorkspaceBundleError> {
+    function* (wtGitDir: string): Effect.fn.Return<string | null, WorkspaceBundleError> {
       const markerOperation = yield* Effect.tryPromise({
         try: async () => {
           for (const entry of ACTIVE_WORKTREE_GIT_OPERATIONS) {
@@ -1541,12 +1543,35 @@ const make = Effect.gen(function* () {
         return markerOperation;
       }
 
-      const pathState = yield* inspectPathWithLstat(worktreePath);
-      if (pathState === "exists") {
+      // Inspect the administrative <wtGitDir>/index directly regardless of whether worktreePath
+      // still exists on disk (e.g. if the worktree directory was moved or renamed), so a
+      // conflicted index such as single-commit `git cherry-pick --no-commit` always blocks removal.
+      const indexPath = path.join(wtGitDir, "index");
+      const indexExists = yield* Effect.tryPromise({
+        try: async () => {
+          try {
+            await NodeFSP.stat(indexPath);
+            return true;
+          } catch (cause) {
+            if (isEnoentError(cause)) {
+              return false;
+            }
+            throw cause;
+          }
+        },
+        catch: (cause) =>
+          new WorkspaceBundleError({
+            code: "git_error",
+            message: `Failed to inspect Git worktree index '${indexPath}': ${cause instanceof Error ? cause.message : String(cause)}`,
+            cause,
+          }),
+      });
+      if (indexExists) {
         const unmergedResult = yield* runReadOnlyGit(
           "WorkspaceBundle.checkUnmergedWorktreeIndex",
-          worktreePath,
-          ["--git-dir", wtGitDir, "--work-tree", worktreePath, "ls-files", "--unmerged"],
+          wtGitDir,
+          ["--git-dir", wtGitDir, "--work-tree", wtGitDir, "ls-files", "--unmerged"],
+          { env: { GIT_INDEX_FILE: indexPath } },
         );
         if (unmergedResult.stdout.length > 0 || unmergedResult.stdoutTruncated) {
           return "unmerged index entries (conflict)";
@@ -1667,7 +1692,7 @@ const make = Effect.gen(function* () {
               if (wtGitDir === null) {
                 return null;
               }
-              return yield* detectActiveWorktreeOperation(wtGitDir, worktreePath);
+              return yield* detectActiveWorktreeOperation(wtGitDir);
             }),
           );
           if (Result.isFailure(activeOperationResult)) {
@@ -2224,12 +2249,164 @@ const make = Effect.gen(function* () {
         },
       );
 
+      const verifyPendingBranchRefCreatedByTransfer = Effect.fn(
+        "WorkspaceBundle.verifyPendingBranchRefCreatedByTransfer",
+      )(function* (
+        branch: string,
+        expectedHeadSha: string,
+        expectedReflogMessage: string,
+      ): Effect.fn.Return<"cleanup" | "skip" | "error"> {
+        const reverifyRepoResult = yield* Effect.result(
+          verifyExpectedGitCommonDir({
+            repoCwd: input.repoCwd,
+            expectedGitCommonDir: gitCommonDir,
+            expectedGitCommonDirIdentity: gitCommonDirIdentity,
+          }),
+        );
+        if (Result.isFailure(reverifyRepoResult)) {
+          yield* Effect.logWarning(
+            "Failed to re-verify git common dir while checking pending branch ref creation.",
+            {
+              repoCwd: input.repoCwd,
+              branch,
+              cause: reverifyRepoResult.failure,
+            },
+          );
+          return "error";
+        }
+
+        const refName = `refs/heads/${branch}`;
+        const symrefResult = yield* Effect.result(
+          runReadOnlyGit(
+            "WorkspaceBundle.checkPendingBranchRefSymbolicRef",
+            input.repoCwd,
+            ["--git-dir", gitCommonDir, "symbolic-ref", "-q", refName],
+            { allowNonZeroExit: true },
+          ),
+        );
+        if (Result.isFailure(symrefResult)) {
+          yield* Effect.logWarning(
+            "Failed to inspect symbolic-ref status while checking pending branch ref creation.",
+            {
+              repoCwd: input.repoCwd,
+              branch,
+              cause: symrefResult.failure,
+            },
+          );
+          return "error";
+        }
+        if (symrefResult.success.exitCode === 0) {
+          return "skip";
+        }
+        if (symrefResult.success.exitCode !== 1) {
+          yield* Effect.logWarning(
+            "Unexpected symbolic-ref exit code while checking pending branch ref creation.",
+            {
+              repoCwd: input.repoCwd,
+              branch,
+              exitCode: symrefResult.success.exitCode,
+            },
+          );
+          return "error";
+        }
+
+        const verifyRefResult = yield* Effect.result(
+          runReadOnlyGit(
+            "WorkspaceBundle.verifyPendingBranchRefExists",
+            input.repoCwd,
+            ["--git-dir", gitCommonDir, "rev-parse", "--verify", "--quiet", refName],
+            { allowNonZeroExit: true },
+          ),
+        );
+        if (Result.isFailure(verifyRefResult)) {
+          yield* Effect.logWarning("Failed to verify pending destination branch ref existence.", {
+            repoCwd: input.repoCwd,
+            branch,
+            cause: verifyRefResult.failure,
+          });
+          return "error";
+        }
+        if (verifyRefResult.success.exitCode === 1) {
+          return "skip";
+        }
+        if (verifyRefResult.success.exitCode !== 0) {
+          yield* Effect.logWarning(
+            "Unexpected rev-parse exit code while checking pending branch ref creation.",
+            {
+              repoCwd: input.repoCwd,
+              branch,
+              exitCode: verifyRefResult.success.exitCode,
+            },
+          );
+          return "error";
+        }
+        const actualSha = stripTrailingAsciiLineEndings(verifyRefResult.success.stdout);
+        if (actualSha.toLowerCase() !== expectedHeadSha.toLowerCase()) {
+          return "skip";
+        }
+
+        const reflogResult = yield* Effect.result(
+          runReadOnlyGit(
+            "WorkspaceBundle.checkPendingBranchReflog",
+            input.repoCwd,
+            [
+              "--git-dir",
+              gitCommonDir,
+              "log",
+              "-g",
+              "-n",
+              "1",
+              "--no-show-signature",
+              "--format=%H%x09%gs",
+              refName,
+              "--",
+            ],
+            { allowNonZeroExit: true },
+          ),
+        );
+        if (Result.isFailure(reflogResult)) {
+          yield* Effect.logWarning(
+            "Failed to inspect reflog while checking pending branch ref creation.",
+            {
+              repoCwd: input.repoCwd,
+              branch,
+              cause: reflogResult.failure,
+            },
+          );
+          return "error";
+        }
+        if (reflogResult.success.exitCode !== 0) {
+          yield* Effect.logWarning(
+            "Unexpected git log -g exit code while checking pending branch ref creation.",
+            {
+              repoCwd: input.repoCwd,
+              branch,
+              exitCode: reflogResult.success.exitCode,
+            },
+          );
+          return "error";
+        }
+
+        const reflogLine = stripTrailingAsciiLineEndings(reflogResult.success.stdout);
+        const tabIdx = reflogLine.indexOf("\t");
+        if (tabIdx <= 0) {
+          return "skip";
+        }
+        const loggedSha = reflogLine.slice(0, tabIdx);
+        const loggedMessage = reflogLine.slice(tabIdx + 1);
+        return loggedSha.toLowerCase() === expectedHeadSha.toLowerCase() &&
+          loggedMessage === expectedReflogMessage
+          ? "cleanup"
+          : "skip";
+      });
+
       const cleanupIncompleteAdd = Effect.fn("WorkspaceBundle.cleanupIncompleteAdd")(function* (
         allocation: AllocatedWorkspaceWorktree,
         options: {
           readonly gitWorktreeAddInvoked: boolean;
           readonly worktreePathPreExisted: boolean;
           readonly createdBranchRef: boolean;
+          readonly pendingBranchRefCreationMessage?: string | null;
           readonly isExternalCollision?: boolean;
         },
       ) {
@@ -2241,10 +2418,26 @@ const make = Effect.gen(function* () {
             ? input.onWorktreeAllocationCleared(allocation)
             : Effect.void;
         const finishBranchCleanupAndClear = Effect.gen(function* () {
-          const branchCleaned =
-            options.createdBranchRef && allocation.branch.length > 0
-              ? yield* cleanupCreatedBranchRef(allocation.branch, headSha)
-              : true;
+          let branchCleaned = true;
+          if (allocation.branch.length > 0) {
+            if (options.createdBranchRef) {
+              branchCleaned = yield* cleanupCreatedBranchRef(allocation.branch, headSha);
+            } else if (
+              options.pendingBranchRefCreationMessage !== undefined &&
+              options.pendingBranchRefCreationMessage !== null
+            ) {
+              const provenance = yield* verifyPendingBranchRefCreatedByTransfer(
+                allocation.branch,
+                headSha,
+                options.pendingBranchRefCreationMessage,
+              );
+              if (provenance === "cleanup") {
+                branchCleaned = yield* cleanupCreatedBranchRef(allocation.branch, headSha);
+              } else if (provenance === "error") {
+                branchCleaned = false;
+              }
+            }
+          }
           if (branchCleaned) {
             yield* clearOwnership;
           }
@@ -2334,6 +2527,7 @@ const make = Effect.gen(function* () {
         Effect.suspend(() => {
           let allocatedInLock: AllocatedWorkspaceWorktree | null = null;
           let createdBranchRef = false;
+          let pendingBranchRefCreationMessage: string | null = null;
           let gitWorktreeAddInvoked = false;
           let gitWorktreeAddSucceeded = false;
           let worktreePathPreExisted = false;
@@ -2575,6 +2769,8 @@ const make = Effect.gen(function* () {
             // against the zero OID, then attach the worktree with `git worktree add` (no `-b`).
             if (!branchAllocation.useExistingBranch) {
               const nullOid = "0".repeat(headSha.length);
+              const reflogMessage = `t3-session-transfer:create-branch:${NodeCrypto.randomUUID()}`;
+              pendingBranchRefCreationMessage = reflogMessage;
               const createRefResult = yield* Effect.result(
                 runGit(
                   "WorkspaceBundle.createDestinationBranchRef",
@@ -2583,12 +2779,18 @@ const make = Effect.gen(function* () {
                     "--git-dir",
                     gitCommonDir,
                     "update-ref",
+                    "--create-reflog",
                     "--no-deref",
+                    "-m",
+                    reflogMessage,
                     allocatedRefName,
                     headSha,
                     nullOid,
                   ],
-                  { allowNonZeroExit: true },
+                  {
+                    allowNonZeroExit: true,
+                    env: TRANSFER_REFLOG_ENV,
+                  },
                 ),
               );
               if (Result.isFailure(createRefResult)) {
@@ -2596,11 +2798,14 @@ const make = Effect.gen(function* () {
                   gitWorktreeAddInvoked: false,
                   worktreePathPreExisted: false,
                   createdBranchRef: false,
+                  pendingBranchRefCreationMessage,
                 });
+                pendingBranchRefCreationMessage = null;
                 allocatedInLock = null;
                 return yield* createRefResult.failure;
               }
               if (createRefResult.success.exitCode !== 0) {
+                pendingBranchRefCreationMessage = null;
                 const detail =
                   createRefResult.success.stderr.trim() ||
                   createRefResult.success.stdout.trim() ||
@@ -2617,6 +2822,7 @@ const make = Effect.gen(function* () {
                 });
               }
               createdBranchRef = true;
+              pendingBranchRefCreationMessage = null;
             }
 
             const addArgs = ["worktree", "add", "--", worktreePath, branchAllocation.branch];
@@ -2780,6 +2986,7 @@ const make = Effect.gen(function* () {
                     gitWorktreeAddInvoked,
                     worktreePathPreExisted,
                     createdBranchRef,
+                    pendingBranchRefCreationMessage,
                   })
                 : Effect.void,
             ),
