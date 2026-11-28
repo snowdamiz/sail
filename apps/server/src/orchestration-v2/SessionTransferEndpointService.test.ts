@@ -173,6 +173,11 @@ interface EndpointTestHooks {
     | ProjectionStore.ProjectionStoreThreadNotFoundError
     | TestHookError
   >;
+  readonly onGetThreadWorktreePaths?: (ctx: {
+    readonly next: ReturnType<
+      ProjectionStore.ProjectionStoreV2["Service"]["getThreadWorktreePaths"]
+    >;
+  }) => ReturnType<ProjectionStore.ProjectionStoreV2["Service"]["getThreadWorktreePaths"]>;
   readonly onImportWorkspaceBundle?: <A, E>(next: Effect.Effect<A, E>) => Effect.Effect<A, E>;
   readonly onExportWorkspaceBundle?: <A, E>(
     next: Effect.Effect<A, E>,
@@ -239,20 +244,34 @@ function makeEndpointTestLayer(options: {
   const eventStoreLayer = EventStore.layer.pipe(Layer.provideMerge(sqliteLayer));
   const rawProjectionStoreLayer = ProjectionStore.layer.pipe(Layer.provideMerge(eventStoreLayer));
   const projectionStoreLayer =
-    options.hooks?.onGetThreadRecords !== undefined
+    options.hooks?.onGetThreadRecords !== undefined ||
+    options.hooks?.onGetThreadWorktreePaths !== undefined
       ? Layer.effect(
           ProjectionStore.ProjectionStoreV2,
           Effect.gen(function* () {
             const inner = yield* ProjectionStore.ProjectionStoreV2;
-            const hook = options.hooks!.onGetThreadRecords!;
+            const getThreadRecordsHook = options.hooks?.onGetThreadRecords;
+            const getThreadWorktreePathsHook = options.hooks?.onGetThreadWorktreePaths;
             return {
               ...inner,
-              getThreadRecords: (threadId, fields, filter) =>
-                hook({
-                  threadId,
-                  fields,
-                  next: inner.getThreadRecords(threadId, fields, filter),
-                }) as never,
+              ...(getThreadRecordsHook !== undefined
+                ? {
+                    getThreadRecords: (threadId, fields, filter) =>
+                      getThreadRecordsHook({
+                        threadId,
+                        fields,
+                        next: inner.getThreadRecords(threadId, fields, filter),
+                      }) as never,
+                  }
+                : {}),
+              ...(getThreadWorktreePathsHook !== undefined
+                ? {
+                    getThreadWorktreePaths: (queryOptions) =>
+                      getThreadWorktreePathsHook({
+                        next: inner.getThreadWorktreePaths(queryOptions),
+                      }),
+                  }
+                : {}),
             } satisfies ProjectionStore.ProjectionStoreV2["Service"];
           }),
         ).pipe(Layer.provideMerge(rawProjectionStoreLayer))
@@ -7313,6 +7332,764 @@ describe("SessionTransferEndpointService", () => {
             const reconciled = yield* repo.getById(transferId);
             expect(Option.isSome(reconciled) && reconciled.value.phase).toBe("failed");
           }).pipe(Effect.scoped, Effect.provide(coordinator2Layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "prevents an interrupted pre-add allocation from colliding with another transfer and refuses to delete committed thread worktrees on abort",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-interrupted-alloc-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const dstRepo = NodePath.join(tmpRoot, "dst-repo");
+          initGitRepo(srcRepo);
+          NodeFS.cpSync(srcRepo, dstRepo, { recursive: true });
+
+          const sharedBranch = "feat/interrupted-alloc";
+          git(srcRepo, ["checkout", "-b", sharedBranch]);
+          NodeFS.writeFileSync(
+            NodePath.join(srcRepo, "interrupted-alloc.ts"),
+            "export const kept = 42;\n",
+          );
+          git(srcRepo, ["add", "interrupted-alloc.ts"]);
+          git(srcRepo, ["commit", "-m", "feature commit"]);
+
+          const srcProjectId = ProjectId.make("proj-int-alloc-src");
+          const dstProjectId = ProjectId.make("proj-int-alloc-dst");
+          const srcThreadA = ThreadId.make("thread-int-alloc-src-a");
+          const srcThreadB = ThreadId.make("thread-int-alloc-src-b");
+          const srcThreadA2 = ThreadId.make("thread-int-alloc-src-a2");
+          const transferA = SessionTransferId.make("xfer-int-alloc-a");
+          const transferB = SessionTransferId.make("xfer-int-alloc-b");
+          const transferA2 = SessionTransferId.make("xfer-int-alloc-a2");
+          const transferC = SessionTransferId.make("xfer-int-alloc-c-manual");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          };
+
+          const pauseAddEnteredA = yield* Deferred.make<void>();
+          const pauseAddEnteredA2 = yield* Deferred.make<void>();
+          let pauseAddMode: "none" | "pause-a" | "pause-a2" = "none";
+          let blockedOwnershipPath: string | null = null;
+          let failGetThreadWorktreePaths = false;
+
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-int-alloc",
+            environmentLabel: "Interrupted Allocation Env",
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onVcsRun: ({ input, next }) => {
+                if (
+                  input.operation === "WorkspaceBundle.addWorktree" &&
+                  pauseAddMode === "pause-a"
+                ) {
+                  pauseAddMode = "none";
+                  return Deferred.succeed(pauseAddEnteredA, undefined).pipe(
+                    Effect.andThen(Effect.never),
+                  );
+                }
+                if (
+                  input.operation === "WorkspaceBundle.addWorktree" &&
+                  pauseAddMode === "pause-a2"
+                ) {
+                  pauseAddMode = "none";
+                  return Deferred.succeed(pauseAddEnteredA2, undefined).pipe(
+                    Effect.andThen(Effect.never),
+                  );
+                }
+                return next;
+              },
+              onFileSystemRemove: ({ targetPath, next }) => {
+                if (blockedOwnershipPath !== null && targetPath === blockedOwnershipPath) {
+                  return Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "PermissionDenied",
+                      module: "FileSystem",
+                      method: "remove",
+                      pathOrDescriptor: targetPath,
+                    }),
+                  );
+                }
+                return next;
+              },
+              onGetThreadWorktreePaths: ({ next }) =>
+                failGetThreadWorktreePaths
+                  ? Effect.fail(
+                      new ProjectionStore.ProjectionStoreSetupError({
+                        cause: new Error("SQLITE_BUSY: simulated worktree lookup error"),
+                      }),
+                    )
+                  : next,
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: [
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThreadA,
+                  branch: sharedBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThreadB,
+                  branch: sharedBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThreadA2,
+                  branch: sharedBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+              ],
+            });
+
+            const prepA = yield* svc.prepareSource({
+              transferId: transferA,
+              threadId: srcThreadA,
+              direction: "boat_to_local",
+            });
+            const stagedA = yield* svc.stageImport({
+              transferId: transferA,
+              manifest: prepA.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferA, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferA, path)!,
+              resolveImportBundlePath(config.stateDir, transferA, path)!,
+            );
+
+            const prepB = yield* svc.prepareSource({
+              transferId: transferB,
+              threadId: srcThreadB,
+              direction: "boat_to_local",
+            });
+            const stagedB = yield* svc.stageImport({
+              transferId: transferB,
+              manifest: prepB.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferB, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferB, path)!,
+              resolveImportBundlePath(config.stateDir, transferB, path)!,
+            );
+
+            const ownershipPathA = resolveWorktreeOwnershipPath(config.stateDir, transferA, path)!;
+
+            // Part 1: Interrupt Transfer A immediately after persisting its ownership record and
+            // before `git worktree add` runs, while blocking ownership unlink to simulate a crash
+            // leaving A's persisted ownership record on disk.
+            blockedOwnershipPath = ownershipPathA;
+            pauseAddMode = "pause-a";
+            const fiberA = yield* Effect.forkChild(
+              svc.commitImport({
+                transferId: transferA,
+                destinationProjectId: stagedA.destinationProjectId,
+                destinationThreadId: stagedA.destinationThreadId,
+                manifest: prepA.manifest,
+                autoResume: false,
+              }),
+            );
+            yield* Deferred.await(pauseAddEnteredA);
+            expect(NodeFS.existsSync(ownershipPathA)).toBe(true);
+            yield* Fiber.interrupt(fiberA);
+
+            // Ownership record A survived on disk while neither worktree nor branch was created in git.
+            expect(NodeFS.existsSync(ownershipPathA)).toBe(true);
+            const ownershipA = JSON.parse(NodeFS.readFileSync(ownershipPathA, "utf8")) as {
+              readonly worktreePath: string;
+              readonly branch: string;
+              readonly gitCommonDir: string;
+              readonly importCompleted: boolean;
+            };
+            expect(ownershipA.importCompleted).toBe(false);
+            expect(ownershipA.branch).toBe(sharedBranch);
+            expect(ownershipA.gitCommonDir).toBe(
+              NodeFS.realpathSync(NodePath.join(dstRepo, ".git")),
+            );
+            expect(NodeFS.existsSync(ownershipA.worktreePath)).toBe(false);
+            expect(git(dstRepo, ["branch", "--list", ownershipA.branch])).toBe("");
+
+            // Now commit Transfer B with the SAME requested branch into the SAME repo:
+            // Layer 1 must observe A's persisted ownership record and pick a DIFFERENT path & branch!
+            const committedB = yield* svc.commitImport({
+              transferId: transferB,
+              destinationProjectId: stagedB.destinationProjectId,
+              destinationThreadId: stagedB.destinationThreadId,
+              manifest: prepB.manifest,
+              autoResume: false,
+            });
+            expect(committedB.destinationWorktreePath).not.toBeNull();
+            expect(committedB.destinationBranch).not.toBeNull();
+            expect(committedB.destinationWorktreePath).not.toBe(ownershipA.worktreePath);
+            expect(committedB.destinationBranch).not.toBe(ownershipA.branch);
+            expect(NodeFS.existsSync(committedB.destinationWorktreePath!)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", committedB.destinationBranch!])).not.toBe("");
+
+            // Unblock ownership unlink and abort Transfer A: A cleans up its own record and leaves
+            // Transfer B's committed worktree and branch completely intact!
+            blockedOwnershipPath = null;
+            const abortA = yield* svc.abort({
+              transferId: transferA,
+              role: "destination",
+            });
+            expect(abortA.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(ownershipPathA)).toBe(false);
+            expect(NodeFS.existsSync(committedB.destinationWorktreePath!)).toBe(true);
+            expect(
+              NodeFS.existsSync(
+                NodePath.join(committedB.destinationWorktreePath!, "interrupted-alloc.ts"),
+              ),
+            ).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", committedB.destinationBranch!])).not.toBe("");
+
+            // Part 2: Graceful Fiber.interrupt between onWorktreeAllocated and git worktree add
+            // clears ownership atomically under the repo lock (Layer 2).
+            const prepA2 = yield* svc.prepareSource({
+              transferId: transferA2,
+              threadId: srcThreadA2,
+              direction: "boat_to_local",
+            });
+            const stagedA2 = yield* svc.stageImport({
+              transferId: transferA2,
+              manifest: prepA2.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferA2, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferA2, path)!,
+              resolveImportBundlePath(config.stateDir, transferA2, path)!,
+            );
+
+            const ownershipPathA2 = resolveWorktreeOwnershipPath(
+              config.stateDir,
+              transferA2,
+              path,
+            )!;
+            pauseAddMode = "pause-a2";
+            const fiberA2 = yield* Effect.forkChild(
+              svc.commitImport({
+                transferId: transferA2,
+                destinationProjectId: stagedA2.destinationProjectId,
+                destinationThreadId: stagedA2.destinationThreadId,
+                manifest: prepA2.manifest,
+                autoResume: false,
+              }),
+            );
+            yield* Deferred.await(pauseAddEnteredA2);
+            expect(NodeFS.existsSync(ownershipPathA2)).toBe(true);
+            yield* Fiber.interrupt(fiberA2);
+            expect(NodeFS.existsSync(ownershipPathA2)).toBe(false);
+
+            // Part 3: Defense-in-depth in abort (Layer 3): even if an ownership file manually names
+            // Transfer B's committed worktree path, abort propagates DB read errors and refuses to
+            // delete Transfer B's committed worktree or branch!
+            const ownershipPathC = resolveWorktreeOwnershipPath(config.stateDir, transferC, path)!;
+            NodeFS.mkdirSync(NodePath.dirname(ownershipPathC), { recursive: true });
+            NodeFS.writeFileSync(
+              ownershipPathC,
+              JSON.stringify({
+                schemaVersion: 1,
+                transferId: transferC,
+                destinationProjectId: dstProjectId,
+                projectWorkspaceRoot: dstRepo,
+                gitCommonDir: NodeFS.realpathSync(NodePath.join(dstRepo, ".git")),
+                destinationThreadId: ThreadId.make("thread-uncommitted-c"),
+                worktreePath: committedB.destinationWorktreePath!,
+                branch: committedB.destinationBranch!,
+                createdBranch: true,
+                importCompleted: false,
+              }),
+            );
+
+            // DB read failure must propagate without deleting worktree, branch, or ownership file.
+            failGetThreadWorktreePaths = true;
+            const abortCFail = yield* Effect.result(
+              svc.abort({
+                transferId: transferC,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(abortCFail)).toBe(true);
+            if (Result.isFailure(abortCFail)) {
+              expect(abortCFail.failure.code).toBe("internal");
+            }
+            expect(NodeFS.existsSync(ownershipPathC)).toBe(true);
+            expect(NodeFS.existsSync(committedB.destinationWorktreePath!)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", committedB.destinationBranch!])).not.toBe("");
+
+            // Once DB reads succeed, abort refuses to delete B's committed worktree/branch and
+            // safely clears C's stale ownership record.
+            failGetThreadWorktreePaths = false;
+            const abortC = yield* svc.abort({
+              transferId: transferC,
+              role: "destination",
+            });
+            expect(abortC.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(ownershipPathC)).toBe(false);
+            expect(NodeFS.existsSync(committedB.destinationWorktreePath!)).toBe(true);
+            expect(
+              NodeFS.existsSync(
+                NodePath.join(committedB.destinationWorktreePath!, "interrupted-alloc.ts"),
+              ),
+            ).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", committedB.destinationBranch!])).not.toBe("");
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "fails destination abort on ownership-file unlink PermissionDenied, blocks name reuse while ownership survives, and recovers on retry",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-ownership-unlink-eacces-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const dstRepo = NodePath.join(tmpRoot, "dst-repo");
+          initGitRepo(srcRepo);
+          NodeFS.cpSync(srcRepo, dstRepo, { recursive: true });
+
+          const featureBranch = "feat/ownership-unlink-eacces";
+          git(srcRepo, ["checkout", "-b", featureBranch]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "owned.ts"), "export const owned = true;\n");
+          git(srcRepo, ["add", "owned.ts"]);
+          git(srcRepo, ["commit", "-m", "feature commit"]);
+
+          const srcProjectId = ProjectId.make("proj-own-eacces-src");
+          const dstProjectId = ProjectId.make("proj-own-eacces-dst");
+          const srcThreadA = ThreadId.make("thread-own-eacces-a");
+          const srcThreadB = ThreadId.make("thread-own-eacces-b");
+          const transferA = SessionTransferId.make("xfer-own-eacces-a");
+          const transferB = SessionTransferId.make("xfer-own-eacces-b");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          };
+
+          let failNextCommitEventWrite = false;
+          let blockedOwnershipPath: string | null = null;
+
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-own-eacces",
+            environmentLabel: "Ownership Unlink EACCES Env",
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onEventSinkWrite: (events) => {
+                if (failNextCommitEventWrite && events.some((e) => e.type === "thread.created")) {
+                  failNextCommitEventWrite = false;
+                  return Effect.fail(
+                    new TestHookError({ message: "Simulated commit failure after worktree" }),
+                  );
+                }
+                return Effect.void;
+              },
+              onFileSystemRemove: ({ targetPath, next }) => {
+                if (blockedOwnershipPath !== null && targetPath === blockedOwnershipPath) {
+                  return Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "PermissionDenied",
+                      module: "FileSystem",
+                      method: "remove",
+                      pathOrDescriptor: targetPath,
+                    }),
+                  );
+                }
+                return next;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: [
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThreadA,
+                  branch: featureBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThreadB,
+                  branch: featureBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+              ],
+            });
+
+            const prepA = yield* svc.prepareSource({
+              transferId: transferA,
+              threadId: srcThreadA,
+              direction: "boat_to_local",
+            });
+            const stagedA = yield* svc.stageImport({
+              transferId: transferA,
+              manifest: prepA.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferA, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferA, path)!,
+              resolveImportBundlePath(config.stateDir, transferA, path)!,
+            );
+
+            // Commit A creates worktree + branch + ownership record, then fails SQLite commit.
+            failNextCommitEventWrite = true;
+            const commitA = yield* Effect.result(
+              svc.commitImport({
+                transferId: transferA,
+                destinationProjectId: stagedA.destinationProjectId,
+                destinationThreadId: stagedA.destinationThreadId,
+                manifest: prepA.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitA)).toBe(true);
+
+            const ownershipPathA = resolveWorktreeOwnershipPath(config.stateDir, transferA, path)!;
+            expect(NodeFS.existsSync(ownershipPathA)).toBe(true);
+            const ownershipA = JSON.parse(NodeFS.readFileSync(ownershipPathA, "utf8")) as {
+              readonly worktreePath: string;
+              readonly branch: string;
+            };
+            expect(NodeFS.existsSync(ownershipA.worktreePath)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", ownershipA.branch])).not.toBe("");
+
+            // Inject PermissionDenied ONLY on ownership-file unlink during abort!
+            blockedOwnershipPath = ownershipPathA;
+            const abortA1 = yield* Effect.result(
+              svc.abort({
+                transferId: transferA,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(abortA1)).toBe(true);
+            if (Result.isFailure(abortA1)) {
+              expect(abortA1.failure.code).toBe("internal");
+            }
+            // Worktree & branch were cleaned, while the ownership file survived due to EACCES.
+            expect(NodeFS.existsSync(ownershipA.worktreePath)).toBe(false);
+            expect(git(dstRepo, ["branch", "--list", ownershipA.branch])).toBe("");
+            expect(NodeFS.existsSync(ownershipPathA)).toBe(true);
+
+            // While A's stale ownership file survives on disk, Transfer B CANNOT claim A's names!
+            const prepB = yield* svc.prepareSource({
+              transferId: transferB,
+              threadId: srcThreadB,
+              direction: "boat_to_local",
+            });
+            const stagedB = yield* svc.stageImport({
+              transferId: transferB,
+              manifest: prepB.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferB, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferB, path)!,
+              resolveImportBundlePath(config.stateDir, transferB, path)!,
+            );
+
+            const committedB = yield* svc.commitImport({
+              transferId: transferB,
+              destinationProjectId: stagedB.destinationProjectId,
+              destinationThreadId: stagedB.destinationThreadId,
+              manifest: prepB.manifest,
+              autoResume: false,
+            });
+            expect(committedB.destinationBranch).not.toBe(ownershipA.branch);
+            expect(committedB.destinationWorktreePath).not.toBe(ownershipA.worktreePath);
+
+            // Restore unlink permission and retry abort for A -> succeeds, deletes ownership file,
+            // and leaves Transfer B's committed worktree and branch intact!
+            blockedOwnershipPath = null;
+            const abortA2 = yield* svc.abort({
+              transferId: transferA,
+              role: "destination",
+            });
+            expect(abortA2.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(ownershipPathA)).toBe(false);
+            expect(NodeFS.existsSync(committedB.destinationWorktreePath!)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", committedB.destinationBranch!])).not.toBe("");
+
+            // Third abort is an idempotent no-op.
+            const abortA3 = yield* svc.abort({
+              transferId: transferA,
+              role: "destination",
+            });
+            expect(abortA3.cleanedUp).toBe(false);
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "serializes concurrent commitImport calls targeting a main checkout and a linked Git worktree on the same gitCommonDir mutex",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-linked-wt-mutex-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const dstMainRepo = NodePath.join(tmpRoot, "dst-main-repo");
+          const dstLinkedWt = NodePath.join(tmpRoot, "dst-linked-wt");
+          initGitRepo(srcRepo);
+          NodeFS.cpSync(srcRepo, dstMainRepo, { recursive: true });
+          git(dstMainRepo, ["worktree", "add", "-b", "linked-base", dstLinkedWt, "HEAD"]);
+
+          const sharedBranch = "feat/linked-wt-shared-mutex";
+          git(srcRepo, ["checkout", "-b", sharedBranch]);
+          NodeFS.writeFileSync(
+            NodePath.join(srcRepo, "linked-mutex.ts"),
+            "export const serialized = true;\n",
+          );
+          git(srcRepo, ["add", "linked-mutex.ts"]);
+          git(srcRepo, ["commit", "-m", "shared branch commit"]);
+
+          const srcProjectId = ProjectId.make("proj-linked-mutex-src");
+          const dstMainProjectId = ProjectId.make("proj-linked-mutex-main");
+          const dstLinkedProjectId = ProjectId.make("proj-linked-mutex-wt");
+          const srcThread1 = ThreadId.make("thread-linked-mutex-1");
+          const srcThread2 = ThreadId.make("thread-linked-mutex-2");
+          const transfer1 = SessionTransferId.make("xfer-linked-mutex-1");
+          const transfer2 = SessionTransferId.make("xfer-linked-mutex-2");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          };
+
+          let activeCriticalSections = 0;
+          let maxConcurrentCriticalSections = 0;
+          let listBranchesCount = 0;
+          const firstAddEntered = yield* Deferred.make<void>();
+          const allowFirstAdd = yield* Deferred.make<void>();
+          let delayedFirstAdd = false;
+
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-linked-wt-mutex",
+            environmentLabel: "Linked Worktree Mutex Env",
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstMainProjectId, title: "dst-main", workspaceRoot: dstMainRepo },
+              { id: dstLinkedProjectId, title: "dst-linked", workspaceRoot: dstLinkedWt },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onVcsRun: ({ input, next }) => {
+                if (input.operation === "WorkspaceBundle.listLocalBranches") {
+                  return Effect.sync(() => {
+                    listBranchesCount += 1;
+                    activeCriticalSections += 1;
+                    if (activeCriticalSections > maxConcurrentCriticalSections) {
+                      maxConcurrentCriticalSections = activeCriticalSections;
+                    }
+                  }).pipe(Effect.andThen(next));
+                }
+                if (input.operation === "WorkspaceBundle.addWorktree") {
+                  const shouldDelay = !delayedFirstAdd;
+                  if (shouldDelay) {
+                    delayedFirstAdd = true;
+                  }
+                  return Effect.gen(function* () {
+                    if (shouldDelay) {
+                      yield* Deferred.succeed(firstAddEntered, undefined);
+                      yield* Deferred.await(allowFirstAdd);
+                    }
+                    return yield* next;
+                  }).pipe(
+                    Effect.ensuring(
+                      Effect.sync(() => {
+                        activeCriticalSections = Math.max(0, activeCriticalSections - 1);
+                      }),
+                    ),
+                  );
+                }
+                return next;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: [
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThread1,
+                  branch: sharedBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThread2,
+                  branch: sharedBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+              ],
+            });
+
+            const prep1 = yield* svc.prepareSource({
+              transferId: transfer1,
+              threadId: srcThread1,
+              direction: "boat_to_local",
+            });
+            const staged1 = yield* svc.stageImport({
+              transferId: transfer1,
+              manifest: prep1.manifest,
+              targetProjectId: dstMainProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transfer1, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transfer1, path)!,
+              resolveImportBundlePath(config.stateDir, transfer1, path)!,
+            );
+
+            const prep2 = yield* svc.prepareSource({
+              transferId: transfer2,
+              threadId: srcThread2,
+              direction: "boat_to_local",
+            });
+            const staged2 = yield* svc.stageImport({
+              transferId: transfer2,
+              manifest: prep2.manifest,
+              targetProjectId: dstLinkedProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transfer2, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transfer2, path)!,
+              resolveImportBundlePath(config.stateDir, transfer2, path)!,
+            );
+
+            // Launch both commitImport calls concurrently: one targeting dstMainRepo and the other
+            // targeting its linked worktree dstLinkedWt with the SAME requested branch name!
+            const fiber1 = yield* Effect.forkChild(
+              svc.commitImport({
+                transferId: transfer1,
+                destinationProjectId: staged1.destinationProjectId,
+                destinationThreadId: staged1.destinationThreadId,
+                manifest: prep1.manifest,
+                autoResume: false,
+              }),
+            );
+            const fiber2 = yield* Effect.forkChild(
+              svc.commitImport({
+                transferId: transfer2,
+                destinationProjectId: staged2.destinationProjectId,
+                destinationThreadId: staged2.destinationThreadId,
+                manifest: prep2.manifest,
+                autoResume: false,
+              }),
+            );
+
+            // Once the first transfer enters git worktree add, give the second transfer plenty of
+            // turns to try to enter listLocalBranches; it must stay blocked on the shared gitCommonDir mutex.
+            yield* Deferred.await(firstAddEntered);
+            for (let i = 0; i < 10; i += 1) {
+              yield* Effect.yieldNow;
+            }
+            expect(activeCriticalSections).toBe(1);
+            expect(listBranchesCount).toBe(1);
+
+            yield* Deferred.succeed(allowFirstAdd, undefined);
+            const [res1, res2] = yield* Effect.all([Fiber.join(fiber1), Fiber.join(fiber2)]);
+
+            // Both imports must have serialized on the same gitCommonDir mutex (never overlapping).
+            expect(listBranchesCount).toBe(2);
+            expect(maxConcurrentCriticalSections).toBe(1);
+            expect(res1.destinationBranch).not.toBeNull();
+            expect(res2.destinationBranch).not.toBeNull();
+            expect(res1.destinationBranch).not.toBe(res2.destinationBranch);
+            expect(res1.destinationWorktreePath).not.toBeNull();
+            expect(res2.destinationWorktreePath).not.toBeNull();
+            expect(res1.destinationWorktreePath).not.toBe(res2.destinationWorktreePath);
+            expect(
+              NodeFS.existsSync(NodePath.join(res1.destinationWorktreePath!, "linked-mutex.ts")),
+            ).toBe(true);
+            expect(
+              NodeFS.existsSync(NodePath.join(res2.destinationWorktreePath!, "linked-mutex.ts")),
+            ).toBe(true);
+            expect(git(dstMainRepo, ["branch", "--list", res1.destinationBranch!])).not.toBe("");
+            expect(git(dstMainRepo, ["branch", "--list", res2.destinationBranch!])).not.toBe("");
+          }).pipe(Effect.provide(layer));
         } finally {
           NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
         }
