@@ -3026,9 +3026,14 @@ export const layerWsRpc = (
                   Effect.provide(deviceHostContext),
                 )
               : undefined;
+            const existingInstances =
+              patch.providerInstances !== undefined || providerInstanceMutation !== undefined
+                ? (yield* serverSettings.getSettings).providerInstances
+                : undefined;
             const nextPatch = withAutoIsolatedProviderInstancesPatch({
               stateDir: config.stateDir,
               patch: { ...patch, ...(deviceHosts ? { deviceHosts } : {}) },
+              existingInstances,
               path,
             });
             const nextMutation =
@@ -3037,6 +3042,7 @@ export const layerWsRpc = (
                 : withAutoIsolatedProviderInstanceMutation({
                     stateDir: config.stateDir,
                     mutation: providerInstanceMutation,
+                    existingInstances,
                     path,
                   });
             const settings = yield* nextMutation === undefined

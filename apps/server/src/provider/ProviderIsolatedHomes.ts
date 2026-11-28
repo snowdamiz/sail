@@ -4,6 +4,7 @@ import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
   type ProviderInstanceConfig,
+  type ProviderInstanceEnvironment,
   type ProviderInstanceId,
   type ProviderInstanceMutation,
   type ServerSettingsPatch,
@@ -12,8 +13,23 @@ import type * as Path from "effect/Path";
 
 const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
+const GROK_DRIVER = ProviderDriverKind.make("grok");
+const OPENCODE_DRIVER = ProviderDriverKind.make("opencode");
+const PI_DRIVER = ProviderDriverKind.make("pi");
+const MUSE_DRIVER = ProviderDriverKind.make("muse");
+
 const DEFAULT_CLAUDE_INSTANCE_ID = defaultInstanceIdForDriver(CLAUDE_DRIVER);
 const DEFAULT_CODEX_INSTANCE_ID = defaultInstanceIdForDriver(CODEX_DRIVER);
+
+const ENV_ISOLATED_DRIVERS: ReadonlyMap<
+  ProviderDriverKind,
+  { readonly envVar: string; readonly subdir: string }
+> = new Map([
+  [GROK_DRIVER, { envVar: "GROK_HOME", subdir: "grok" }],
+  [OPENCODE_DRIVER, { envVar: "XDG_DATA_HOME", subdir: "opencode" }],
+  [PI_DRIVER, { envVar: "PI_CODING_AGENT_DIR", subdir: "pi" }],
+  [MUSE_DRIVER, { envVar: "XDG_DATA_HOME", subdir: "muse" }],
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -22,6 +38,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function getTrimmedString(config: Record<string, unknown>, key: string): string {
   const value = config[key];
   return typeof value === "string" ? value.trim() : "";
+}
+
+function hasConfiguredEnvVar(
+  environment: ProviderInstanceEnvironment | undefined,
+  envVar: string,
+): boolean {
+  if (!environment || environment.length === 0) return false;
+  return environment.some((entry) => {
+    if (entry.name.trim() !== envVar) return false;
+    if (typeof entry.value === "string") return entry.value.trim().length > 0;
+    return true;
+  });
 }
 
 export function isolatedProviderHomeHash(instanceId: string): string {
@@ -54,22 +82,43 @@ export function resolveIsolatedCodexShadowHomePath(input: {
   );
 }
 
+export function resolveIsolatedEnvProviderHomePath(input: {
+  readonly stateDir: string;
+  readonly subdir: string;
+  readonly instanceId: ProviderInstanceId;
+  readonly path: Pick<Path.Path, "join">;
+}): string {
+  return input.path.join(
+    input.stateDir,
+    "providers",
+    input.subdir,
+    isolatedProviderHomeHash(input.instanceId),
+  );
+}
+
 /**
- * Assigns a deterministic isolated home path for non-default CLI accounts when no explicit path is
- * configured, preventing secondary accounts from overwriting `~/.claude` or `~/.codex`.
+ * Assigns a deterministic isolated home path or environment directory for newly created
+ * non-default CLI accounts when no explicit path/env override is configured, preventing secondary
+ * accounts from colliding with the primary account's credentials while never mutating already-saved
+ * instances during rename/edit operations.
  */
 export function withAutoIsolatedProviderHome(input: {
   readonly stateDir: string;
   readonly instanceId: ProviderInstanceId;
   readonly instance: ProviderInstanceConfig;
+  readonly existingInstance?: ProviderInstanceConfig | undefined;
   readonly path: Pick<Path.Path, "join">;
 }): ProviderInstanceConfig {
-  const { instanceId, instance, stateDir, path } = input;
+  const { instanceId, instance, existingInstance, stateDir, path } = input;
+  // Never change the home directory of an already-persisted instance on rename/edit.
+  if (existingInstance !== undefined) return instance;
+
   const existingConfig = isRecord(instance.config) ? instance.config : {};
 
   if (instance.driver === CLAUDE_DRIVER) {
     if (instanceId === DEFAULT_CLAUDE_INSTANCE_ID) return instance;
     if (getTrimmedString(existingConfig, "homePath").length > 0) return instance;
+    if (hasConfiguredEnvVar(instance.environment, "CLAUDE_CONFIG_DIR")) return instance;
     return {
       ...instance,
       config: {
@@ -84,7 +133,8 @@ export function withAutoIsolatedProviderHome(input: {
     if (existingConfig.setupMode === "managed") return instance;
     if (
       getTrimmedString(existingConfig, "homePath").length > 0 ||
-      getTrimmedString(existingConfig, "shadowHomePath").length > 0
+      getTrimmedString(existingConfig, "shadowHomePath").length > 0 ||
+      hasConfiguredEnvVar(instance.environment, "CODEX_HOME")
     ) {
       return instance;
     }
@@ -97,20 +147,46 @@ export function withAutoIsolatedProviderHome(input: {
     };
   }
 
+  const envIsolation = ENV_ISOLATED_DRIVERS.get(instance.driver);
+  if (envIsolation !== undefined) {
+    if (instanceId === defaultInstanceIdForDriver(instance.driver)) return instance;
+    if (hasConfiguredEnvVar(instance.environment, envIsolation.envVar)) return instance;
+    const isolatedDir = resolveIsolatedEnvProviderHomePath({
+      stateDir,
+      subdir: envIsolation.subdir,
+      instanceId,
+      path,
+    });
+    return {
+      ...instance,
+      environment: [
+        ...(instance.environment ?? []),
+        {
+          name: envIsolation.envVar,
+          value: isolatedDir,
+          sensitive: false,
+        },
+      ],
+    };
+  }
+
   return instance;
 }
 
 export function withAutoIsolatedProviderInstanceMutation(input: {
   readonly stateDir: string;
   readonly mutation: ProviderInstanceMutation;
+  readonly existingInstances?: Readonly<Record<string, ProviderInstanceConfig>> | undefined;
   readonly path: Pick<Path.Path, "join">;
 }): ProviderInstanceMutation {
-  const { mutation, stateDir, path } = input;
+  const { mutation, existingInstances, stateDir, path } = input;
   if (mutation.operation === "remove") return mutation;
   const nextInstance = withAutoIsolatedProviderHome({
     stateDir,
     instanceId: mutation.instanceId,
     instance: mutation.instance,
+    existingInstance:
+      mutation.operation === "create" ? undefined : existingInstances?.[mutation.instanceId],
     path,
   });
   if (nextInstance === mutation.instance) return mutation;
@@ -123,9 +199,10 @@ export function withAutoIsolatedProviderInstanceMutation(input: {
 export function withAutoIsolatedProviderInstancesPatch(input: {
   readonly stateDir: string;
   readonly patch: ServerSettingsPatch;
+  readonly existingInstances?: Readonly<Record<string, ProviderInstanceConfig>> | undefined;
   readonly path: Pick<Path.Path, "join">;
 }): ServerSettingsPatch {
-  const { patch, stateDir, path } = input;
+  const { patch, existingInstances, stateDir, path } = input;
   if (!patch.providerInstances) return patch;
 
   let changed = false;
@@ -139,6 +216,7 @@ export function withAutoIsolatedProviderInstancesPatch(input: {
       stateDir,
       instanceId: rawId as ProviderInstanceId,
       instance: entry,
+      existingInstance: existingInstances?.[rawId],
       path,
     });
     if (nextEntry !== entry) changed = true;

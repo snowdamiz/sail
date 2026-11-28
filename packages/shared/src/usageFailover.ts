@@ -430,95 +430,113 @@ export function resolveUsageLimitFailoverTarget(
   }
 
   // Tier 2: Cross-provider pass-off graph walk after all accounts of the current driver are exhausted.
+  // Rules matching the same (sourceDriver, sourceModel) are evaluated in configured order before
+  // driver-wide rules and fallbackModelSelection, so duplicate-source rules act as an ordered chain.
   const visitedSteps = new Set<string>();
-  let walkDriver: ProviderDriverKind = currentProvider.driver;
-  let walkModel = currentSelection.model;
+  const queue: Array<{
+    readonly driver: ProviderDriverKind;
+    readonly model: string;
+    readonly depth: number;
+  }> = [{ driver: currentProvider.driver, model: currentSelection.model, depth: 0 }];
 
-  for (let hop = 0; hop < MAX_PASS_OFF_HOPS; hop += 1) {
-    const stepKey = `${walkDriver}\0${normalizeModelSlug(walkModel, walkDriver) ?? walkModel}`;
-    if (visitedSteps.has(stepKey)) break;
-    visitedSteps.add(stepKey);
+  const matchingCandidatesFor = (
+    driver: ProviderDriverKind,
+    model: string,
+  ): ReadonlyArray<{ readonly target: ModelSelection; readonly ruleId: string | null }> => {
+    const exactMatches: UsageLimitPassOffRule[] = [];
+    const normalizedMatches: UsageLimitPassOffRule[] = [];
+    const driverWideMatches: UsageLimitPassOffRule[] = [];
 
-    const exactRule =
-      settings.usageLimitPassOffRules.find(
-        (rule) => rule.sourceDriver === walkDriver && rule.sourceModel === walkModel,
-      ) ??
-      settings.usageLimitPassOffRules.find(
-        (rule) =>
-          rule.sourceDriver === walkDriver &&
-          rule.sourceModel !== null &&
-          modelsMatchForDriver(walkDriver, rule.sourceModel, walkModel),
-      );
-    const driverWideRule =
-      exactRule ??
-      settings.usageLimitPassOffRules.find(
-        (rule) => rule.sourceDriver === walkDriver && rule.sourceModel === null,
-      );
+    for (const rule of settings.usageLimitPassOffRules) {
+      if (rule.sourceDriver !== driver) continue;
+      if (rule.sourceModel === null) {
+        driverWideMatches.push(rule);
+      } else if (rule.sourceModel === model) {
+        exactMatches.push(rule);
+      } else if (modelsMatchForDriver(driver, rule.sourceModel, model)) {
+        normalizedMatches.push(rule);
+      }
+    }
 
-    let matched: { readonly target: ModelSelection; readonly ruleId: string | null } | null = null;
-    if (driverWideRule) {
-      matched = { target: driverWideRule.target, ruleId: driverWideRule.id };
-    } else if (settings.fallbackModelSelection !== null) {
+    const ordered: Array<{ readonly target: ModelSelection; readonly ruleId: string | null }> = [
+      ...exactMatches,
+      ...normalizedMatches,
+      ...driverWideMatches,
+    ].map((rule) => ({ target: rule.target, ruleId: rule.id }));
+
+    if (ordered.length === 0 && settings.fallbackModelSelection !== null) {
       const fallbackDriver = resolveInstanceDriver(
         settings.fallbackModelSelection.instanceId,
         providers,
         settings,
       );
-      if (fallbackDriver !== undefined && fallbackDriver !== walkDriver) {
-        matched = { target: settings.fallbackModelSelection, ruleId: null };
+      if (fallbackDriver !== undefined && fallbackDriver !== driver) {
+        ordered.push({ target: settings.fallbackModelSelection, ruleId: null });
       }
     }
 
-    if (!matched) break;
+    return ordered;
+  };
 
-    const targetProvider = providers.find(
-      (entry) => entry.instanceId === matched.target.instanceId,
-    );
-    const targetDriver = resolveInstanceDriver(matched.target.instanceId, providers, settings);
+  while (queue.length > 0) {
+    const step = queue.shift()!;
+    if (step.depth >= MAX_PASS_OFF_HOPS) continue;
+    const stepKey = `${step.driver}\0${normalizeModelSlug(step.model, step.driver) ?? step.model}`;
+    if (visitedSteps.has(stepKey)) continue;
+    visitedSteps.add(stepKey);
 
-    if (targetProvider && isCandidateEligible(targetProvider, matched.target.model)) {
-      return {
-        kind: "cross_provider_handoff",
-        target: buildReconciledSelection(
-          targetProvider,
-          matched.target.model,
-          matched.target.options,
-        ),
-        fromProvider: currentProvider,
-        toProvider: targetProvider,
-        ruleId: matched.ruleId,
-      };
-    }
-
-    if (targetDriver !== undefined) {
-      const otherAccounts = sortCandidates(
-        providers.filter(
-          (candidate) =>
-            candidate.driver === targetDriver &&
-            candidate.instanceId !== matched.target.instanceId &&
-            isCandidateEligible(candidate, matched.target.model),
-        ),
-        matched.target.model,
+    const candidates = matchingCandidatesFor(step.driver, step.model);
+    for (const matched of candidates) {
+      const targetProvider = providers.find(
+        (entry) => entry.instanceId === matched.target.instanceId,
       );
-      const healthyAlternate = otherAccounts[0];
-      if (healthyAlternate) {
+      const targetDriver = resolveInstanceDriver(matched.target.instanceId, providers, settings);
+
+      if (targetProvider && isCandidateEligible(targetProvider, matched.target.model)) {
         return {
           kind: "cross_provider_handoff",
           target: buildReconciledSelection(
-            healthyAlternate,
+            targetProvider,
             matched.target.model,
             matched.target.options,
           ),
           fromProvider: currentProvider,
-          toProvider: healthyAlternate,
+          toProvider: targetProvider,
           ruleId: matched.ruleId,
         };
       }
 
-      walkDriver = targetDriver;
-      walkModel = matched.target.model;
-    } else {
-      break;
+      if (targetDriver !== undefined) {
+        const otherAccounts = sortCandidates(
+          providers.filter(
+            (candidate) =>
+              candidate.driver === targetDriver &&
+              candidate.instanceId !== matched.target.instanceId &&
+              isCandidateEligible(candidate, matched.target.model),
+          ),
+          matched.target.model,
+        );
+        const healthyAlternate = otherAccounts[0];
+        if (healthyAlternate) {
+          return {
+            kind: "cross_provider_handoff",
+            target: buildReconciledSelection(
+              healthyAlternate,
+              matched.target.model,
+              matched.target.options,
+            ),
+            fromProvider: currentProvider,
+            toProvider: healthyAlternate,
+            ruleId: matched.ruleId,
+          };
+        }
+
+        queue.push({
+          driver: targetDriver,
+          model: matched.target.model,
+          depth: step.depth + 1,
+        });
+      }
     }
   }
 

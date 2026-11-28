@@ -23,6 +23,7 @@ import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
@@ -998,6 +999,85 @@ describe("UsageLimitFailoverWorker end-to-end orchestration", () => {
           parentFinal.subagents[0]!.result ?? "",
           "Auth audit completed on account 2.",
         );
+      }).pipe(Effect.provide(makeFailoverTestLayer())),
+  );
+
+  it.effect(
+    "reconciles a persisted usage-limited run on worker startup without needing a live domain event",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+
+        const threadId = ThreadId.make("thread:restart-recovery-failover");
+        const projectId = ProjectId.make("project:restart-recovery");
+        yield* seedProject(projectId);
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`${threadId}:create`),
+          threadId,
+          projectId,
+          title: "Restart recovery failover test",
+          modelSelection: { instanceId: CLAUDE_1, model: CLAUDE_MODEL },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${threadId}:msg1`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:msg1`),
+          text: "Continue after crash",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+
+        const run1 = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+        // Persist the usage-limit failure BEFORE UsageLimitFailoverWorker.layer is started,
+        // simulating a crash right after failure persistence and before failover dispatch.
+        yield* failRunWithUsageLimit({
+          threadId,
+          run: run1,
+          suffix: "pre-restart",
+          assistantText: "Partial progress before restart.",
+        });
+
+        const pendingBeforeRestart =
+          yield* projectionStore.getUsageLimitFailoverCandidateThreadIds();
+        assert.deepEqual(pendingBeforeRestart, [threadId]);
+
+        // Start UsageLimitFailoverWorker.layer fresh; no new domain event is emitted.
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const failoverRunCreated = yield* Effect.forkScoped(
+              orchestrator.streamDomainEvents.pipe(
+                Stream.filter(
+                  (event) => event.type === "run.created" && event.threadId === threadId,
+                ),
+                Stream.runHead,
+              ),
+            );
+            yield* Layer.build(UsageLimitFailoverWorker.layer);
+            yield* Fiber.join(failoverRunCreated);
+          }),
+        );
+
+        const afterRestart = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(afterRestart.runs.length, 2);
+        const run2 = afterRestart.runs[1]!;
+        assert.equal(run2.providerInstanceId, CLAUDE_2);
+        assert.equal(run2.modelSelection.model, CLAUDE_MODEL);
+        assert.equal(run2.usageLimitFailoverOfRunId, run1.id);
+
+        const pendingAfterRestart =
+          yield* projectionStore.getUsageLimitFailoverCandidateThreadIds();
+        assert.deepEqual(pendingAfterRestart, []);
       }).pipe(Effect.provide(makeFailoverTestLayer())),
   );
 });

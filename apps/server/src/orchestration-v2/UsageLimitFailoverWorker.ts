@@ -291,6 +291,7 @@ export const makeFailoverProcessor = Effect.gen(function* () {
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
     const processThread = yield* makeFailoverProcessor;
     const worker = yield* makeKeyedCoalescingWorker<ThreadId, true, never, never>({
       merge: () => true,
@@ -311,6 +312,24 @@ export const layer = Layer.effectDiscard(
         const threadId = failoverTriggerThreadId(event);
         return threadId === null ? Effect.void : worker.enqueue(threadId, true);
       }),
+    );
+    yield* forkParked(
+      projections.getUsageLimitFailoverCandidateThreadIds().pipe(
+        withAdmission("root"),
+        Effect.catchTags({
+          ServerMaintenanceBusy: () => Effect.succeed([] as ReadonlyArray<ThreadId>),
+        }),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("orchestration-v2.limit-failover.startup-scan-failed", {
+            cause,
+          }).pipe(Effect.as([] as ReadonlyArray<ThreadId>)),
+        ),
+        Effect.flatMap((threadIds) =>
+          Effect.forEach(threadIds, (threadId) => worker.enqueue(threadId, true), {
+            discard: true,
+          }),
+        ),
+      ),
     );
   }),
 );

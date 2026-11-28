@@ -432,6 +432,57 @@ describe("resolveUsageLimitFailoverTarget", () => {
     expect(issues.get("c2")).toBe("cycle");
   });
 
+  it("falls through ordered duplicate-source pass-off rules when the first target is exhausted", () => {
+    const claude = makeProvider({
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      usageLimits: withUsage(100),
+    });
+    const codex = makeProvider({
+      instanceId: ProviderInstanceId.make("codex"),
+      driver: ProviderDriverKind.make("codex"),
+      models: [codexSolModel],
+      usageLimits: withUsage(100),
+    });
+    const antigravity = makeProvider({
+      instanceId: ProviderInstanceId.make("antigravity"),
+      driver: ProviderDriverKind.make("antigravity"),
+      models: [antigravityModel],
+      usageLimits: withUsage(15),
+    });
+
+    const rules: readonly UsageLimitPassOffRule[] = [
+      {
+        id: "first-choice",
+        sourceDriver: ProviderDriverKind.make("claudeAgent"),
+        sourceModel: "claude-opus-5-5",
+        target: { instanceId: codex.instanceId, model: "gpt-6.2-sol" },
+      },
+      {
+        id: "second-choice",
+        sourceDriver: ProviderDriverKind.make("claudeAgent"),
+        sourceModel: "claude-opus-5-5",
+        target: { instanceId: antigravity.instanceId, model: "gemini-3.5-pro" },
+      },
+    ];
+
+    const result = resolveUsageLimitFailoverTarget({
+      currentSelection: { instanceId: claude.instanceId, model: "claude-opus-5-5" },
+      providers: [claude, codex, antigravity],
+      settings: makeSettings({ usageLimitPassOffRules: rules }),
+      projectId: null,
+      now,
+    });
+
+    expect(result.kind).toBe("cross_provider_handoff");
+    if (result.kind !== "cross_provider_handoff")
+      throw new Error("expected cross-provider handoff");
+    expect(result.ruleId).toBe("second-choice");
+    expect(result.target).toEqual({
+      instanceId: antigravity.instanceId,
+      model: "gemini-3.5-pro",
+    });
+  });
+
   it("enforces attemptedInstanceIds loop protection across sequential failovers", () => {
     const claude1 = makeProvider({
       instanceId: ProviderInstanceId.make("claudeAgent"),

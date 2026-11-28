@@ -1795,6 +1795,15 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
         isolatedDirectoryToEnsure = resolved.CLAUDE_CONFIG_DIR;
       }
     }
+  } else if (instance.driver === "grok" && resolved.GROK_HOME?.trim()) {
+    isolatedDirectoryToEnsure = resolved.GROK_HOME.trim();
+  } else if (
+    (instance.driver === "opencode" || instance.driver === "muse") &&
+    resolved.XDG_DATA_HOME?.trim()
+  ) {
+    isolatedDirectoryToEnsure = resolved.XDG_DATA_HOME.trim();
+  } else if (instance.driver === "pi" && resolved.PI_CODING_AGENT_DIR?.trim()) {
+    isolatedDirectoryToEnsure = resolved.PI_CODING_AGENT_DIR.trim();
   }
 
   if (isolatedDirectoryToEnsure && input.fileSystem) {

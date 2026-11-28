@@ -17,6 +17,7 @@ import {
   isolatedProviderHomeHash,
   resolveIsolatedClaudeHomePath,
   resolveIsolatedCodexShadowHomePath,
+  resolveIsolatedEnvProviderHomePath,
   withAutoIsolatedProviderHome,
   withAutoIsolatedProviderInstanceMutation,
   withAutoIsolatedProviderInstancesPatch,
@@ -177,6 +178,121 @@ describe("ProviderIsolatedHomes", () => {
         path: NodePath,
       }),
     ).toBe(cursor);
+  });
+
+  it("auto-isolates Grok, OpenCode, Pi, and Muse secondary accounts via environment directories", () => {
+    const cases = [
+      { driver: "grok", instanceId: "grok_2", envVar: "GROK_HOME", subdir: "grok" },
+      { driver: "opencode", instanceId: "opencode_2", envVar: "XDG_DATA_HOME", subdir: "opencode" },
+      { driver: "pi", instanceId: "pi_2", envVar: "PI_CODING_AGENT_DIR", subdir: "pi" },
+      { driver: "muse", instanceId: "muse_2", envVar: "XDG_DATA_HOME", subdir: "muse" },
+    ] as const;
+
+    for (const entry of cases) {
+      const id = ProviderInstanceId.make(entry.instanceId);
+      const result = withAutoIsolatedProviderHome({
+        stateDir: STATE_DIR,
+        instanceId: id,
+        instance: {
+          driver: ProviderDriverKind.make(entry.driver),
+          enabled: true,
+        },
+        path: NodePath,
+      });
+      expect(result.environment).toEqual([
+        {
+          name: entry.envVar,
+          value: resolveIsolatedEnvProviderHomePath({
+            stateDir: STATE_DIR,
+            subdir: entry.subdir,
+            instanceId: id,
+            path: NodePath,
+          }),
+          sensitive: false,
+        },
+      ]);
+
+      // Default instance stays untouched.
+      const defaultInstance = {
+        driver: ProviderDriverKind.make(entry.driver),
+        enabled: true,
+      };
+      expect(
+        withAutoIsolatedProviderHome({
+          stateDir: STATE_DIR,
+          instanceId: ProviderInstanceId.make(entry.driver),
+          instance: defaultInstance,
+          path: NodePath,
+        }),
+      ).toBe(defaultInstance);
+
+      // Explicit env var stays untouched.
+      const customInstance = {
+        driver: ProviderDriverKind.make(entry.driver),
+        enabled: true,
+        environment: [{ name: entry.envVar, value: "/custom/dir", sensitive: false }],
+      };
+      expect(
+        withAutoIsolatedProviderHome({
+          stateDir: STATE_DIR,
+          instanceId: id,
+          instance: customInstance,
+          path: NodePath,
+        }),
+      ).toBe(customInstance);
+    }
+  });
+
+  it("never alters homePath/env when upserting or patching an already-existing instance", () => {
+    const claudeId = ProviderInstanceId.make("claudeAgent_legacy");
+    const existingInstance = {
+      driver: ProviderDriverKind.make("claudeAgent"),
+      displayName: "Old Name",
+      enabled: true,
+      config: { homePath: "" },
+    };
+    const renamed = {
+      ...existingInstance,
+      displayName: "New Name",
+    };
+
+    const upserted = withAutoIsolatedProviderInstanceMutation({
+      stateDir: STATE_DIR,
+      mutation: {
+        operation: "upsert",
+        instanceId: claudeId,
+        instance: renamed,
+      },
+      existingInstances: { [claudeId]: existingInstance },
+      path: NodePath,
+    });
+    expect(upserted.operation).toBe("upsert");
+    if (upserted.operation === "upsert") {
+      expect(upserted.instance).toBe(renamed);
+    }
+
+    const patched = withAutoIsolatedProviderInstancesPatch({
+      stateDir: STATE_DIR,
+      patch: { providerInstances: { [claudeId]: renamed } },
+      existingInstances: { [claudeId]: existingInstance },
+      path: NodePath,
+    });
+    expect(patched.providerInstances?.[claudeId]).toBe(renamed);
+
+    // Explicit CLAUDE_CONFIG_DIR on a brand-new instance is also preserved.
+    const envClaude = {
+      driver: ProviderDriverKind.make("claudeAgent"),
+      enabled: true,
+      environment: [{ name: "CLAUDE_CONFIG_DIR", value: "/custom/claude", sensitive: false }],
+    };
+    expect(
+      withAutoIsolatedProviderHome({
+        stateDir: STATE_DIR,
+        instanceId: ProviderInstanceId.make("claudeAgent_env"),
+        instance: envClaude,
+        path: NodePath,
+      }),
+    ).toBe(envClaude);
   });
 
   it("applies auto-isolation to provider instance mutations and settings patches", () => {
