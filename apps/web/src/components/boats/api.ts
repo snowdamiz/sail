@@ -3,7 +3,7 @@ import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtim
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useRouter } from "@tanstack/react-router";
 import { msg } from "gt-react";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 
 import { m } from "~/i18n/messages";
 import { readLocalApi } from "~/localApi";
@@ -109,6 +109,15 @@ export function useMachineDetails(
   const failing = useRef(false);
   const latest = useRef(0);
   const reportError = useEffectEvent(onError);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- fences in-flight details RPCs synchronously at commit time before passive cleanup runs
+  useLayoutEffect(
+    () => () => {
+      latest.current += 1;
+    },
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Any environment, machine, or version change invalidates the previous request generation at commit time.
+    [environmentId, id, version],
+  );
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- fetches machine details from the boat RPC endpoint when machine state changes
   useEffect(() => {

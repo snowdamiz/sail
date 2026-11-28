@@ -17,12 +17,15 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { GTProvider } from "gt-react";
+import { startTransition, useEffect, useLayoutEffect, useState } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import "~/index.css";
 import { page, userEvent } from "vite-plus/test/browser";
 
 import { act, fakeTimers, render } from "../../../test/render";
 import { environmentCatalog } from "../../connection/catalog";
+import { BoatAccessContext } from "./access";
+import { useMachineDetails } from "./api";
 import { AgentNames } from "./components/AgentLogos";
 import { useSecsLeft } from "./components/common";
 import type { MachineView, UiState } from "./types";
@@ -1620,4 +1623,283 @@ it("formats AgentNames conjunctions using the active GT locale", async () => {
     </GTProvider>,
   );
   expect(screen.container.textContent).toBe("Claude Code und Codex");
+});
+
+it("fences stale machine details rejections during the commit-to-passive-cleanup window", async () => {
+  setup({
+    state: uiState({
+      machines: [machine({ id: "m-1", name: "dory", state: "idle" })],
+    }),
+  });
+  const firstDeferred = Promise.withResolvers<unknown>();
+  const secondDeferred = Promise.withResolvers<unknown>();
+  let calls = 0;
+  state.replies.get_machine_details = () => {
+    calls += 1;
+    return calls === 1 ? firstDeferred.promise : secondDeferred.promise;
+  };
+
+  const onError = vi.fn();
+  const events: string[] = [];
+  const passiveCleanups = new Set<number>();
+  let onDepCommit: (() => void) | null = null;
+  let onListLayoutMount: (() => void) | null = null;
+  let updateHarness:
+    | ((next: { readonly view: "details" | "list"; readonly version: number }) => void)
+    | null = null;
+
+  function DetailsProbe({ version }: { readonly version: number }) {
+    const details = useMachineDetails("m-1", version, onError);
+    useLayoutEffect(() => {
+      onDepCommit?.();
+      onDepCommit = null;
+    }, [version]);
+    useEffect(
+      () => () => {
+        passiveCleanups.add(version);
+        events.push(`passive-cleanup:${version}`);
+      },
+      [version],
+    );
+    return <output data-testid="details-probe">{details?.t3Version ?? "loading"}</output>;
+  }
+
+  function ListProbe() {
+    useLayoutEffect(() => {
+      onListLayoutMount?.();
+      onListLayoutMount = null;
+    }, []);
+    return <div data-testid="list-probe">list</div>;
+  }
+
+  function Harness() {
+    const [harness, setHarness] = useState<{
+      readonly view: "details" | "list";
+      readonly version: number;
+    }>({ view: "details", version: 1 });
+    useLayoutEffect(() => {
+      updateHarness = setHarness;
+      return () => {
+        updateHarness = null;
+      };
+    }, []);
+    return harness.view === "details" ? <DetailsProbe version={harness.version} /> : <ListProbe />;
+  }
+
+  await using screen = await render(
+    <RegistryContext.Provider value={state.registry}>
+      <BoatAccessContext.Provider
+        value={{
+          environmentId: LOCAL_ENVIRONMENT,
+          can: () => true,
+          isPaired: () => false,
+          onHost: true,
+        }}
+      >
+        <Harness />
+      </BoatAccessContext.Provider>
+    </RegistryContext.Provider>,
+    { router: false },
+  );
+  await vi.waitFor(() => expect(calls).toBe(1));
+
+  // Dependency-change commit window: concurrent transition commits v2 layout effects
+  // before v1 passive cleanup runs; rejecting v1 inside v2 layout commit must be fenced.
+  onDepCommit = () => {
+    expect(passiveCleanups.has(1)).toBe(false);
+    events.push("layout-commit:2");
+    firstDeferred.reject(new Error("Stale dep-change details failure"));
+    void firstDeferred.promise.catch(() => {
+      events.push("rejected-microtask:1");
+    });
+  };
+  startTransition(() => updateHarness?.({ view: "details", version: 2 }));
+  await vi.waitFor(() => expect(calls).toBe(2));
+  await vi.waitFor(() => expect(passiveCleanups.has(1)).toBe(true));
+  expect(events.indexOf("rejected-microtask:1")).toBeGreaterThan(-1);
+  expect(events.indexOf("rejected-microtask:1")).toBeLessThan(events.indexOf("passive-cleanup:1"));
+  expect(onError).not.toHaveBeenCalled();
+
+  // Unmount commit window: concurrent transition commits ListProbe layout effect
+  // before v2 passive cleanup runs; rejecting v2 inside ListProbe layout commit must be fenced.
+  onListLayoutMount = () => {
+    expect(passiveCleanups.has(2)).toBe(false);
+    events.push("list-layout-mount");
+    secondDeferred.reject(new Error("Stale unmount details failure"));
+    void secondDeferred.promise.catch(() => {
+      events.push("rejected-microtask:2");
+    });
+  };
+  startTransition(() => updateHarness?.({ view: "list", version: 2 }));
+  await expect.element(screen.getByTestId("list-probe")).toBeVisible();
+  await vi.waitFor(() => expect(passiveCleanups.has(2)).toBe(true));
+  expect(events.indexOf("rejected-microtask:2")).toBeGreaterThan(-1);
+  expect(events.indexOf("rejected-microtask:2")).toBeLessThan(events.indexOf("passive-cleanup:2"));
+  expect(onError).not.toHaveBeenCalled();
+});
+
+it("disarms delete confirmation when delete intent changes across idle -> missing -> idle within 3s", async () => {
+  setup({
+    state: uiState({
+      machines: [machine({ id: "m-1", name: "dory", state: "idle" })],
+    }),
+  });
+  state.replies.delete_machine = { data: null };
+
+  await using screen = await mount();
+  await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Machine/ }));
+
+  await userEvent.click(screen.getByRole("button", { name: "Delete machine…" }));
+  await expect
+    .element(screen.getByRole("button", { name: "Click again to delete forever" }))
+    .toBeVisible();
+
+  await publish(
+    uiState({
+      machines: [machine({ id: "m-1", name: "dory", state: "missing" })],
+    }),
+  );
+  await expect.element(screen.getByRole("button", { name: "Remove machine…" })).toBeVisible();
+
+  await publish(
+    uiState({
+      machines: [machine({ id: "m-1", name: "dory", state: "idle" })],
+    }),
+  );
+  await expect
+    .element(screen.getByRole("button", { name: "Click again to delete forever" }))
+    .not.toBeInTheDocument();
+  await expect.element(screen.getByRole("button", { name: "Delete machine…" })).toBeVisible();
+
+  await userEvent.click(screen.getByRole("button", { name: "Delete machine…" }));
+  expect(state.invoked.map((item) => item.command)).not.toContain("delete_machine");
+  await expect
+    .element(screen.getByRole("button", { name: "Click again to delete forever" }))
+    .toBeVisible();
+
+  await userEvent.click(screen.getByRole("button", { name: "Click again to delete forever" }));
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({
+      command: "delete_machine",
+      args: { id: "m-1", discard: false },
+    }),
+  );
+});
+
+it("disarms row primary delete confirmation when an ordinary control replaces it within 3s", async () => {
+  setup({
+    state: uiState({
+      machines: [machine({ id: "m-1", name: "dory", state: "missing" })],
+    }),
+  });
+  state.replies.delete_machine = { data: null };
+
+  await using screen = await mount();
+  await userEvent.click(screen.getByRole("button", { name: "Remove" }));
+  await expect.element(screen.getByRole("button", { name: "Confirm" })).toBeVisible();
+
+  await publish(
+    uiState({
+      machines: [machine({ id: "m-1", name: "dory", state: "idle" })],
+    }),
+  );
+  await expect.element(screen.getByRole("button", { name: "Add to Sail" })).toBeVisible();
+
+  await publish(
+    uiState({
+      machines: [machine({ id: "m-1", name: "dory", state: "missing" })],
+    }),
+  );
+  await expect.element(screen.getByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+  await expect.element(screen.getByRole("button", { name: "Remove" })).toBeVisible();
+
+  await userEvent.click(screen.getByRole("button", { name: "Remove" }));
+  expect(state.invoked.map((item) => item.command)).not.toContain("delete_machine");
+  await expect.element(screen.getByRole("button", { name: "Confirm" })).toBeVisible();
+
+  await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({
+      command: "delete_machine",
+      args: { id: "m-1", discard: true },
+    }),
+  );
+});
+
+it("never strands a nonzero useSecsLeft snapshot or slips a minute when Date.now crosses a boundary between reads", async () => {
+  using _timers = fakeTimers({ now: 0 });
+  let now = 0;
+  let nextNowAfterRead: number | null = null;
+  const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
+    const current = now;
+    if (nextNowAfterRead !== null) {
+      now = nextNowAfterRead;
+      nextNowAfterRead = null;
+    }
+    return current;
+  });
+
+  let onAfterRender: (() => void) | null = null;
+  function CountdownProbe({ endsAt }: { readonly endsAt: number | null }) {
+    const secs = useSecsLeft(endsAt);
+    onAfterRender?.();
+    onAfterRender = null;
+    return <output data-testid="countdown-boundary">{secs}</output>;
+  }
+
+  try {
+    // 1) Expiry crossed between render getSnapshot (999) and subscribe init (1000).
+    now = 999;
+    onAfterRender = () => {
+      now = 1_000;
+    };
+    await using screen = await render(<CountdownProbe endsAt={1_000} />, { router: false });
+    const output = screen.getByTestId("countdown-boundary");
+    expect(output.element().textContent).toBe("0");
+    expect(vi.getTimerCount()).toBe(0);
+
+    // 2) Expiry crossed immediately after subscribe reads 1999: subscribe samples once
+    // (value=1, delay=1ms) instead of reading 2000 for scheduling and stranding value=1.
+    now = 1_999;
+    onAfterRender = () => {
+      nextNowAfterRead = 2_000;
+    };
+    await screen.rerender(<CountdownProbe endsAt={2_000} />);
+    expect(output.element().textContent).toBe("1");
+    expect(vi.getTimerCount()).toBe(1);
+    await act(() => vi.advanceTimersByTime(1));
+    expect(output.element().textContent).toBe("0");
+    expect(vi.getTimerCount()).toBe(0);
+
+    // 3) Timer callback wakes 1ms early (2999) just before expiry (3000), and clock jumps to 3000
+    // right after that read: callback samples once, schedules 1ms retry, then settles to 0.
+    now = 2_900;
+    await screen.rerender(<CountdownProbe endsAt={3_000} />);
+    expect(output.element().textContent).toBe("1");
+    expect(vi.getTimerCount()).toBe(1);
+    now = 2_999;
+    nextNowAfterRead = 3_000;
+    await act(() => vi.advanceTimersByTime(100));
+    expect(output.element().textContent).toBe("1");
+    expect(vi.getTimerCount()).toBe(1);
+    await act(() => vi.advanceTimersByTime(1));
+    expect(output.element().textContent).toBe("0");
+    expect(vi.getTimerCount()).toBe(0);
+
+    // 4) Minute boundary crossed immediately after subscribe reads 999 for endsAt=121_000:
+    // subscribe schedules a 1ms wake (not 60_000ms), so advancing 1ms updates 180 -> 120.
+    now = 999;
+    onAfterRender = () => {
+      nextNowAfterRead = 1_000;
+    };
+    await screen.rerender(<CountdownProbe endsAt={121_000} />);
+    expect(output.element().textContent).toBe("180");
+    expect(vi.getTimerCount()).toBe(1);
+    await act(() => vi.advanceTimersByTime(1));
+    expect(output.element().textContent).toBe("120");
+    expect(vi.getTimerCount()).toBe(1);
+  } finally {
+    nowSpy.mockRestore();
+  }
 });

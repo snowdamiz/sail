@@ -256,13 +256,21 @@ interface DeleteConfirmation {
   readonly disarm: () => void;
 }
 
-function useDeleteConfirmation(targetKey: string, disabled = false): DeleteConfirmation {
+function useDeleteConfirmation(
+  targetKey: string,
+  disabled: boolean,
+  intentKind: DeleteIntent["kind"] | null,
+): DeleteConfirmation {
   const [state, setState] = useState<ArmState>({ kind: "idle" });
+  const invalidated =
+    disabled ||
+    intentKind === null ||
+    (state.kind === "armed" && (state.targetKey !== targetKey || state.actionKind !== intentKind));
   const expired = useDeadlinePassed(
-    !disabled && state.kind === "armed" && state.targetKey === targetKey ? state.expiresAt : null,
+    !invalidated && state.kind === "armed" ? state.expiresAt : null,
   );
 
-  if (state.kind === "armed" && (disabled || state.targetKey !== targetKey || expired)) {
+  if (state.kind === "armed" && (invalidated || expired)) {
     setState({ kind: "idle" });
   }
 
@@ -271,18 +279,19 @@ function useDeleteConfirmation(targetKey: string, disabled = false): DeleteConfi
   };
 
   const isArmed = (deletion: DeleteIntent) =>
-    !disabled &&
+    !invalidated &&
     !expired &&
     state.kind === "armed" &&
     state.targetKey === targetKey &&
     state.actionKind === deletion.kind;
 
   const activate = (deletion: DeleteIntent, request: (event: ActionRequest) => void) => {
-    if (disabled) {
+    if (disabled || intentKind === null || deletion.kind !== intentKind) {
       disarm();
       return false;
     }
     if (
+      !invalidated &&
       !expired &&
       state.kind === "armed" &&
       state.targetKey === targetKey &&
@@ -324,7 +333,11 @@ export function MachineActionButton({
 }) {
   const gt = useGT();
   const actionLabel = useMachineActionLabel();
-  const confirmation = useDeleteConfirmation(targetKey, control?.disabled ?? true);
+  const confirmation = useDeleteConfirmation(
+    targetKey,
+    control?.disabled ?? true,
+    control?.kind === "armDelete" ? control.deletion.kind : null,
+  );
 
   if (pendingLabel !== null) {
     return (
@@ -401,7 +414,11 @@ export function MachineMenu({
   const gt = useGT();
   const actionLabel = useMachineActionLabel();
   const deleteControl = controls.deleteControl;
-  const confirmation = useDeleteConfirmation(targetKey, deleteControl.disabled);
+  const confirmation = useDeleteConfirmation(
+    targetKey,
+    deleteControl.disabled,
+    deleteControl.deletion.kind,
+  );
   const deleteArmed = confirmation.isArmed(deleteControl.deletion);
   const removing = deleteControl.deletion.kind === "removeMissing";
 

@@ -25,41 +25,51 @@ const ZERO_COUNTDOWN_STORE: CountdownStore = {
 
 const countdowns = new Map<number, CountdownEntry>();
 
-function readCountdownSecs(endsAt: number, now = Date.now()): number {
+export function sampleCountdown(
+  endsAt: number,
+  now = Date.now(),
+): { readonly value: number; readonly nextDelayMs: number | null } {
+  if (!Number.isFinite(endsAt) || !Number.isFinite(now)) {
+    return { value: 0, nextDelayMs: null };
+  }
   const remainingMs = endsAt - now;
-  if (remainingMs <= 0) return 0;
-  if (remainingMs <= 60_000) return Math.ceil(remainingMs / 1000);
-  return Math.ceil(remainingMs / 60_000) * 60;
-}
-
-function nextCountdownDelayMs(endsAt: number, now = Date.now()): number | null {
-  const remainingMs = endsAt - now;
-  if (remainingMs <= 0) return null;
+  if (remainingMs <= 0) return { value: 0, nextDelayMs: null };
   if (remainingMs <= 60_000) {
     const secs = Math.ceil(remainingMs / 1000);
-    return Math.min(Math.max(1, remainingMs - (secs - 1) * 1000), MAX_TIMEOUT_MS);
+    return {
+      value: secs,
+      nextDelayMs: Math.min(Math.max(1, remainingMs - (secs - 1) * 1000), MAX_TIMEOUT_MS),
+    };
   }
   const mins = Math.ceil(remainingMs / 60_000);
-  return Math.min(Math.max(1, remainingMs - (mins - 1) * 60_000), MAX_TIMEOUT_MS);
+  return {
+    value: mins * 60,
+    nextDelayMs: Math.min(Math.max(1, remainingMs - (mins - 1) * 60_000), MAX_TIMEOUT_MS),
+  };
 }
 
-function armCountdown(entry: CountdownEntry, endsAt: number) {
-  const delay = nextCountdownDelayMs(endsAt);
-  if (delay === null) {
+function scheduleCountdown(entry: CountdownEntry, endsAt: number, delayMs: number | null) {
+  if (delayMs === null) {
     entry.timer = undefined;
+    if (entry.value !== 0) {
+      entry.value = 0;
+      for (const listener of entry.listeners) listener();
+    }
     return;
   }
   entry.timer = setTimeout(() => {
     entry.timer = undefined;
-    const next = readCountdownSecs(endsAt);
-    if (next !== entry.value) {
-      entry.value = next;
+    if (entry.listeners.size === 0) return;
+    const sample = sampleCountdown(endsAt);
+    const changed = sample.value !== entry.value;
+    entry.value = sample.value;
+    if (changed) {
       for (const listener of entry.listeners) listener();
     }
-    if (entry.listeners.size > 0 && entry.timer === undefined && next > 0) {
-      armCountdown(entry, endsAt);
+    if (entry.listeners.size > 0 && entry.timer === undefined) {
+      scheduleCountdown(entry, endsAt, sample.nextDelayMs);
     }
-  }, delay);
+  }, delayMs);
 }
 
 function countdownStore(endsAt: number | null): CountdownStore {
@@ -71,17 +81,19 @@ function countdownStore(endsAt: number | null): CountdownStore {
     subscribe: (listener) => {
       let entry = countdowns.get(endsAt);
       if (entry === undefined) {
+        const sample = sampleCountdown(endsAt);
         entry = {
           store,
-          listeners: new Set(),
-          value: readCountdownSecs(endsAt),
+          listeners: new Set([listener]),
+          value: sample.value,
           timer: undefined,
         };
         countdowns.set(endsAt, entry);
-        if (entry.value > 0) armCountdown(entry, endsAt);
+        scheduleCountdown(entry, endsAt, sample.nextDelayMs);
+      } else {
+        entry.listeners.add(listener);
       }
       const joined = entry;
-      joined.listeners.add(listener);
       return () => {
         joined.listeners.delete(listener);
         if (joined.listeners.size > 0) return;
@@ -90,7 +102,7 @@ function countdownStore(endsAt: number | null): CountdownStore {
         if (countdowns.get(endsAt) === joined) countdowns.delete(endsAt);
       };
     },
-    getSnapshot: () => countdowns.get(endsAt)?.value ?? readCountdownSecs(endsAt),
+    getSnapshot: () => countdowns.get(endsAt)?.value ?? sampleCountdown(endsAt).value,
   };
   return store;
 }

@@ -1,6 +1,7 @@
 import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import type { BoatAccess } from "./access";
+import { sampleCountdown } from "./components/common";
 import { deriveMachineControls } from "./components/MachineActions";
 import { classifyBoatLink, errorText } from "./reply";
 import {
@@ -211,5 +212,21 @@ describe("Sail Boats helpers", () => {
     expect(classifyBoatLink("http://localhost:47732/", true)).toEqual({ kind: "ignored" });
     expect(classifyBoatLink("sail://", true)).toEqual({ kind: "ignored" });
     expect(classifyBoatLink(undefined, true)).toEqual({ kind: "ignored" });
+  });
+
+  it("samples countdown value and next wake delay consistently from one clock instant", () => {
+    expect(sampleCountdown(1_000, 1_000)).toEqual({ value: 0, nextDelayMs: null });
+    expect(sampleCountdown(1_000, 1_001)).toEqual({ value: 0, nextDelayMs: null });
+    expect(sampleCountdown(Number.NaN, 0)).toEqual({ value: 0, nextDelayMs: null });
+    expect(sampleCountdown(Number.POSITIVE_INFINITY, 0)).toEqual({ value: 0, nextDelayMs: null });
+
+    expect(sampleCountdown(1_000, 999)).toEqual({ value: 1, nextDelayMs: 1 });
+    expect(sampleCountdown(1_000, 750)).toEqual({ value: 1, nextDelayMs: 250 });
+
+    expect(sampleCountdown(61_000, 999)).toEqual({ value: 120, nextDelayMs: 1 });
+    expect(sampleCountdown(61_000, 1_000)).toEqual({ value: 60, nextDelayMs: 1_000 });
+
+    expect(sampleCountdown(121_000, 999)).toEqual({ value: 180, nextDelayMs: 1 });
+    expect(sampleCountdown(121_000, 1_000)).toEqual({ value: 120, nextDelayMs: 60_000 });
   });
 });
