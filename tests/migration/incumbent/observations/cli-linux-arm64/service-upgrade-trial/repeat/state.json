@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "containerSha256": "fb452a7da1982ac84f7a9a1d6e6f764fb7e2e5591e78584c091f695e6a9ae0be",
+  "environmentSha256": "16b5d7d1415d10593e69a7400ddd71d85b43788a413051a63c49edd97c20017f",
+  "trialUpdateSha256": "2e404c08eebbe94f29dcb52bd62b84ad33299838cbc0fd919ef12001227a96b2",
+  "committedUpdateSha256": "89f505181cc832dc8c625c8d764dabd5b8fff3629fa9d6cddc80083201b9dfc2",
+  "trialGateSha256": "f4dd1dfcbd8200c98343d63aba34399a8648f2ca6d927b28fe5f1fdc1533950d",
+  "finalPayloadSha256": {
+    "messages": "575ae62e5027b648775dcb0ab7eada7005d996a4c71223daff6948d104b6d4d6",
+    "runs": "a543ae94a7af7d28ce23d8149c516a62fd9fb4e1da3ce6ebfe152550aac6ef47"
+  }
+}

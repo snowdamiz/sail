@@ -3834,7 +3834,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/fresh-first/terminal.png",
-              "sha256": "abbf89b05cd8fb86587d03d1590e5b2e0b19cb2d9de5758be2cec336a44b17c8"
+              "sha256": "4acb0d3b1019d3333c798ae7cdac9c6960055052886e8dc146fff21b069ecb8a"
             }
           ]
         },
@@ -3866,7 +3866,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/fresh-repeat/terminal.png",
-              "sha256": "2f52784fe32150944522b2519bd58ba8beecfb65f0633f97b598412a67e3c2fa"
+              "sha256": "934065149db01026ebdca2f3d5e1d6caf1af45a91723dfb2c02a76fab766147a"
             }
           ]
         }
@@ -3909,7 +3909,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/fresh-first/terminal.png",
-              "sha256": "abbf89b05cd8fb86587d03d1590e5b2e0b19cb2d9de5758be2cec336a44b17c8"
+              "sha256": "4acb0d3b1019d3333c798ae7cdac9c6960055052886e8dc146fff21b069ecb8a"
             }
           ]
         },
@@ -3941,7 +3941,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/fresh-repeat/terminal.png",
-              "sha256": "2f52784fe32150944522b2519bd58ba8beecfb65f0633f97b598412a67e3c2fa"
+              "sha256": "934065149db01026ebdca2f3d5e1d6caf1af45a91723dfb2c02a76fab766147a"
             }
           ]
         }
@@ -3984,7 +3984,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/fresh-first/terminal.png",
-              "sha256": "abbf89b05cd8fb86587d03d1590e5b2e0b19cb2d9de5758be2cec336a44b17c8"
+              "sha256": "4acb0d3b1019d3333c798ae7cdac9c6960055052886e8dc146fff21b069ecb8a"
             }
           ]
         },
@@ -4016,7 +4016,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/fresh-repeat/terminal.png",
-              "sha256": "2f52784fe32150944522b2519bd58ba8beecfb65f0633f97b598412a67e3c2fa"
+              "sha256": "934065149db01026ebdca2f3d5e1d6caf1af45a91723dfb2c02a76fab766147a"
             }
           ]
         }
@@ -4059,7 +4059,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/fresh-first/terminal.png",
-              "sha256": "abbf89b05cd8fb86587d03d1590e5b2e0b19cb2d9de5758be2cec336a44b17c8"
+              "sha256": "4acb0d3b1019d3333c798ae7cdac9c6960055052886e8dc146fff21b069ecb8a"
             }
           ]
         },
@@ -4091,7 +4091,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/fresh-repeat/terminal.png",
-              "sha256": "2f52784fe32150944522b2519bd58ba8beecfb65f0633f97b598412a67e3c2fa"
+              "sha256": "934065149db01026ebdca2f3d5e1d6caf1af45a91723dfb2c02a76fab766147a"
             }
           ]
         }
@@ -4134,7 +4134,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/copied-first/terminal.png",
-              "sha256": "3c4d1e530a1342c84db4753cf91782e35eb3fbad8f7e638b76bcd59139d50656"
+              "sha256": "7de6f0c8ee75d37676be208221d372d8327ed68f71d53f2b8528aa44893cfefe"
             }
           ]
         },
@@ -4166,7 +4166,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "d23b4ca6d2bfd035bbcca0b242e4d072ac00003894120397b3dd2e9b33343906"
+              "sha256": "4dffaab84d689ddde26dfab8ac013e7b4e42f436d4fcd42032dd837d3c976127"
             }
           ]
         }
@@ -4209,7 +4209,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/copied-first/terminal.png",
-              "sha256": "3c4d1e530a1342c84db4753cf91782e35eb3fbad8f7e638b76bcd59139d50656"
+              "sha256": "7de6f0c8ee75d37676be208221d372d8327ed68f71d53f2b8528aa44893cfefe"
             }
           ]
         },
@@ -4241,7 +4241,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "d23b4ca6d2bfd035bbcca0b242e4d072ac00003894120397b3dd2e9b33343906"
+              "sha256": "4dffaab84d689ddde26dfab8ac013e7b4e42f436d4fcd42032dd837d3c976127"
             }
           ]
         }
@@ -4284,7 +4284,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/copied-first/terminal.png",
-              "sha256": "3c4d1e530a1342c84db4753cf91782e35eb3fbad8f7e638b76bcd59139d50656"
+              "sha256": "7de6f0c8ee75d37676be208221d372d8327ed68f71d53f2b8528aa44893cfefe"
             }
           ]
         },
@@ -4316,7 +4316,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "d23b4ca6d2bfd035bbcca0b242e4d072ac00003894120397b3dd2e9b33343906"
+              "sha256": "4dffaab84d689ddde26dfab8ac013e7b4e42f436d4fcd42032dd837d3c976127"
             }
           ]
         }
@@ -4359,7 +4359,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/copied-first/terminal.png",
-              "sha256": "3c4d1e530a1342c84db4753cf91782e35eb3fbad8f7e638b76bcd59139d50656"
+              "sha256": "7de6f0c8ee75d37676be208221d372d8327ed68f71d53f2b8528aa44893cfefe"
             }
           ]
         },
@@ -4391,7 +4391,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "d23b4ca6d2bfd035bbcca0b242e4d072ac00003894120397b3dd2e9b33343906"
+              "sha256": "4dffaab84d689ddde26dfab8ac013e7b4e42f436d4fcd42032dd837d3c976127"
             }
           ]
         }
@@ -4434,7 +4434,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/copied-first/terminal.png",
-              "sha256": "3c4d1e530a1342c84db4753cf91782e35eb3fbad8f7e638b76bcd59139d50656"
+              "sha256": "7de6f0c8ee75d37676be208221d372d8327ed68f71d53f2b8528aa44893cfefe"
             }
           ]
         },
@@ -4466,7 +4466,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-arm64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "d23b4ca6d2bfd035bbcca0b242e4d072ac00003894120397b3dd2e9b33343906"
+              "sha256": "4dffaab84d689ddde26dfab8ac013e7b4e42f436d4fcd42032dd837d3c976127"
             }
           ]
         }
@@ -4509,7 +4509,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/fresh-first/terminal.png",
-              "sha256": "c6d0853adfc855171aafc8bb85c9d5cc3bf90933ef50436d14c1a4b32195fa6c"
+              "sha256": "834245b5a1d3577d8de6942824326fab3e103e27df32806c5c87e2f83a4d9fe4"
             }
           ]
         },
@@ -4541,7 +4541,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/fresh-repeat/terminal.png",
-              "sha256": "f7c49ce805c607eb77d15eaa9c0eaa6ea9c8f91758849e0a8cb4fd021081649e"
+              "sha256": "437942c0c03dcb3bd5e5c61c1f6580d52c0439037dc66ab638b8311851c670bb"
             }
           ]
         }
@@ -4584,7 +4584,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/fresh-first/terminal.png",
-              "sha256": "c6d0853adfc855171aafc8bb85c9d5cc3bf90933ef50436d14c1a4b32195fa6c"
+              "sha256": "834245b5a1d3577d8de6942824326fab3e103e27df32806c5c87e2f83a4d9fe4"
             }
           ]
         },
@@ -4616,7 +4616,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/fresh-repeat/terminal.png",
-              "sha256": "f7c49ce805c607eb77d15eaa9c0eaa6ea9c8f91758849e0a8cb4fd021081649e"
+              "sha256": "437942c0c03dcb3bd5e5c61c1f6580d52c0439037dc66ab638b8311851c670bb"
             }
           ]
         }
@@ -4659,7 +4659,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/fresh-first/terminal.png",
-              "sha256": "c6d0853adfc855171aafc8bb85c9d5cc3bf90933ef50436d14c1a4b32195fa6c"
+              "sha256": "834245b5a1d3577d8de6942824326fab3e103e27df32806c5c87e2f83a4d9fe4"
             }
           ]
         },
@@ -4691,7 +4691,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/fresh-repeat/terminal.png",
-              "sha256": "f7c49ce805c607eb77d15eaa9c0eaa6ea9c8f91758849e0a8cb4fd021081649e"
+              "sha256": "437942c0c03dcb3bd5e5c61c1f6580d52c0439037dc66ab638b8311851c670bb"
             }
           ]
         }
@@ -4734,7 +4734,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/fresh-first/terminal.png",
-              "sha256": "c6d0853adfc855171aafc8bb85c9d5cc3bf90933ef50436d14c1a4b32195fa6c"
+              "sha256": "834245b5a1d3577d8de6942824326fab3e103e27df32806c5c87e2f83a4d9fe4"
             }
           ]
         },
@@ -4766,7 +4766,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/fresh-repeat/terminal.png",
-              "sha256": "f7c49ce805c607eb77d15eaa9c0eaa6ea9c8f91758849e0a8cb4fd021081649e"
+              "sha256": "437942c0c03dcb3bd5e5c61c1f6580d52c0439037dc66ab638b8311851c670bb"
             }
           ]
         }
@@ -4809,7 +4809,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/copied-first/terminal.png",
-              "sha256": "f13f63782311315b2e20c3db7e0f3409bc674f9953eef542f83fffa202666406"
+              "sha256": "bca5f07b8e05269b2814ca871f0457793e1aca1722da1a47f93f0785c2b54fbc"
             }
           ]
         },
@@ -4841,7 +4841,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "712dd9068b8d4b251e6d328391a55e7c96ea49e03b309e153df3e305aaf13d8b"
+              "sha256": "7d37885e59e7d64ae4068a7caac24c75ea3aa84a2127a5b5a0ea686f6d8e38c8"
             }
           ]
         }
@@ -4884,7 +4884,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/copied-first/terminal.png",
-              "sha256": "f13f63782311315b2e20c3db7e0f3409bc674f9953eef542f83fffa202666406"
+              "sha256": "bca5f07b8e05269b2814ca871f0457793e1aca1722da1a47f93f0785c2b54fbc"
             }
           ]
         },
@@ -4916,7 +4916,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "712dd9068b8d4b251e6d328391a55e7c96ea49e03b309e153df3e305aaf13d8b"
+              "sha256": "7d37885e59e7d64ae4068a7caac24c75ea3aa84a2127a5b5a0ea686f6d8e38c8"
             }
           ]
         }
@@ -4959,7 +4959,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/copied-first/terminal.png",
-              "sha256": "f13f63782311315b2e20c3db7e0f3409bc674f9953eef542f83fffa202666406"
+              "sha256": "bca5f07b8e05269b2814ca871f0457793e1aca1722da1a47f93f0785c2b54fbc"
             }
           ]
         },
@@ -4991,7 +4991,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "712dd9068b8d4b251e6d328391a55e7c96ea49e03b309e153df3e305aaf13d8b"
+              "sha256": "7d37885e59e7d64ae4068a7caac24c75ea3aa84a2127a5b5a0ea686f6d8e38c8"
             }
           ]
         }
@@ -5034,7 +5034,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/copied-first/terminal.png",
-              "sha256": "f13f63782311315b2e20c3db7e0f3409bc674f9953eef542f83fffa202666406"
+              "sha256": "bca5f07b8e05269b2814ca871f0457793e1aca1722da1a47f93f0785c2b54fbc"
             }
           ]
         },
@@ -5066,7 +5066,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "712dd9068b8d4b251e6d328391a55e7c96ea49e03b309e153df3e305aaf13d8b"
+              "sha256": "7d37885e59e7d64ae4068a7caac24c75ea3aa84a2127a5b5a0ea686f6d8e38c8"
             }
           ]
         }
@@ -5109,7 +5109,7 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/copied-first/terminal.png",
-              "sha256": "f13f63782311315b2e20c3db7e0f3409bc674f9953eef542f83fffa202666406"
+              "sha256": "bca5f07b8e05269b2814ca871f0457793e1aca1722da1a47f93f0785c2b54fbc"
             }
           ]
         },
@@ -5141,7 +5141,232 @@
             {
               "kind": "terminal-screenshot",
               "path": "observations/oci-linux-amd64/lifecycle/copied-repeat/terminal.png",
-              "sha256": "712dd9068b8d4b251e6d328391a55e7c96ea49e03b309e153df3e305aaf13d8b"
+              "sha256": "7d37885e59e7d64ae4068a7caac24c75ea3aa84a2127a5b5a0ea686f6d8e38c8"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "host-upgrade",
+      "platformId": "cli-linux-arm64",
+      "state": "available",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-arm64-service-launcher-trial",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "service-upgrade-trial",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "service launcher loopback",
+            "connectionMode": "loopback"
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/first/process.json",
+              "sha256": "aafcaf108fee1e8ac094a51ff91eb151f49e1e0a509dc406dedaf0563ef7cf0a"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/first/state.json",
+              "sha256": "668ce236c4af0d6c2e14b63b4fe1ae64e4dbbcd3e6cc858d667ab2c4110bb608"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/first/terminal.png",
+              "sha256": "082b474d61dabb8d51960be2c3e9a499b2961c7a23fbbd0df675584ab64c4582"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "service-upgrade-trial",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "service launcher loopback",
+            "connectionMode": "loopback"
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/repeat/process.json",
+              "sha256": "aafcaf108fee1e8ac094a51ff91eb151f49e1e0a509dc406dedaf0563ef7cf0a"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/repeat/state.json",
+              "sha256": "1e0d2ccbe2d72cdd8df7820f62192251b205ad07dc45794271d7b3333d454296"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/repeat/terminal.png",
+              "sha256": "fbfe1368ded641e548f5f5ebbce0092409599bb214d82e1cee5d1bbd6bc58cbd"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "host-upgrade",
+      "platformId": "cli-linux-arm64",
+      "state": "installed",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-arm64-service-launcher-trial",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "service-upgrade-trial",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "service launcher loopback",
+            "connectionMode": "loopback"
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/first/process.json",
+              "sha256": "aafcaf108fee1e8ac094a51ff91eb151f49e1e0a509dc406dedaf0563ef7cf0a"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/first/state.json",
+              "sha256": "668ce236c4af0d6c2e14b63b4fe1ae64e4dbbcd3e6cc858d667ab2c4110bb608"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/first/terminal.png",
+              "sha256": "082b474d61dabb8d51960be2c3e9a499b2961c7a23fbbd0df675584ab64c4582"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "service-upgrade-trial",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "service launcher loopback",
+            "connectionMode": "loopback"
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/repeat/process.json",
+              "sha256": "aafcaf108fee1e8ac094a51ff91eb151f49e1e0a509dc406dedaf0563ef7cf0a"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/repeat/state.json",
+              "sha256": "1e0d2ccbe2d72cdd8df7820f62192251b205ad07dc45794271d7b3333d454296"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/repeat/terminal.png",
+              "sha256": "fbfe1368ded641e548f5f5ebbce0092409599bb214d82e1cee5d1bbd6bc58cbd"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "host-upgrade",
+      "platformId": "cli-linux-arm64",
+      "state": "failed-recovery",
+      "entrypoint": "cli",
+      "configurationId": "debian-12.15-arm64-service-launcher-trial",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "service-upgrade-trial",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "service launcher loopback",
+            "connectionMode": "loopback"
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/first/process.json",
+              "sha256": "aafcaf108fee1e8ac094a51ff91eb151f49e1e0a509dc406dedaf0563ef7cf0a"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/first/state.json",
+              "sha256": "668ce236c4af0d6c2e14b63b4fe1ae64e4dbbcd3e6cc858d667ab2c4110bb608"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/first/terminal.png",
+              "sha256": "082b474d61dabb8d51960be2c3e9a499b2961c7a23fbbd0df675584ab64c4582"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "service-upgrade-trial",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "service launcher loopback",
+            "connectionMode": "loopback"
+          },
+          "artifacts": [
+            {
+              "kind": "process-transcript",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/repeat/process.json",
+              "sha256": "aafcaf108fee1e8ac094a51ff91eb151f49e1e0a509dc406dedaf0563ef7cf0a"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/repeat/state.json",
+              "sha256": "1e0d2ccbe2d72cdd8df7820f62192251b205ad07dc45794271d7b3333d454296"
+            },
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/cli-linux-arm64/service-upgrade-trial/repeat/terminal.png",
+              "sha256": "fbfe1368ded641e548f5f5ebbce0092409599bb214d82e1cee5d1bbd6bc58cbd"
             }
           ]
         }

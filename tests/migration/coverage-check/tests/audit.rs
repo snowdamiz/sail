@@ -245,6 +245,49 @@ fn rejects_an_edited_oci_receipt_even_with_updated_catalog_digest() {
 }
 
 #[test]
+fn verifies_published_service_upgrade_and_recovery_states() {
+    for state in ["available", "installed", "failed-recovery"] {
+        let fixture = Fixture::cli("host-upgrade", state, "arm64");
+        let output = fixture.run();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["verifiedServiceUpgradeObservations"], 1);
+    }
+}
+
+#[test]
+fn rejects_service_trial_evidence_without_snapshot_restoration() {
+    let mut fixture = Fixture::cli("host-upgrade", "failed-recovery", "arm64");
+    fixture.edit_process_json(0, "process-transcript", |receipt| {
+        receipt["rollback"]["snapshotRestored"] = json!(false);
+    });
+    fixture.rejects("service transcript does not match the published trial contract");
+}
+
+#[test]
+fn rejects_an_edited_service_witness_even_with_updated_catalog_digest() {
+    let mut fixture = Fixture::cli("host-upgrade", "installed", "arm64");
+    fixture.edit_process_json(0, "state-receipt", |receipt| {
+        receipt["committedUpdateSha256"] = json!("f".repeat(64));
+    });
+    fixture.rejects("service receipt bytes disagree with the observed trial witness");
+}
+
+#[test]
+fn rejects_reusing_the_first_service_trial_as_the_repeat() {
+    let mut fixture = Fixture::cli("host-upgrade", "installed", "arm64");
+    let runs = fixture.catalog["observations"][0]["runs"]
+        .as_array_mut()
+        .unwrap();
+    runs[1]["artifacts"] = runs[0]["artifacts"].clone();
+    fixture.rejects("expected two distinct service trials and retries");
+}
+
+#[test]
 fn rejects_a_rehashed_cli_transcript_named_for_a_different_package() {
     let mut fixture = Fixture::cli("cli-open", "version", "arm64");
     fixture.edit_process_json(0, "process-transcript", |data| {
@@ -585,6 +628,9 @@ fn rejects_a_rehashed_electron_reference_with_a_same_target_cli_archive() {
     let mut fixture =
         reference_with_linux_archive("electron-linux-arm64", "desktop local", "loopback");
     fixture.rejects("Electron reference requires a published desktop installer");
+    fixture.catalog["platforms"]["electron-linux-arm64"]["surface"] = json!("cli");
+    fixture.rejects("Electron platform ID conflicts with surface metadata");
+    fixture.catalog["platforms"]["electron-linux-arm64"]["surface"] = json!("electron");
     fixture.catalog["platforms"]["electron-linux-arm64"]
         .as_object_mut()
         .unwrap()

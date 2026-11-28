@@ -349,5 +349,10 @@
     "arm64": "oci-linux-arm64/lifecycle",
     "amd64": "oci-linux-amd64/lifecycle",
     "scope": "Two fresh and two copied-home boots per published v0.1.17 OCI platform manifest on Debian 12.15. The amd64 image ran under emulation on an arm64 Docker engine. Each container used the published entrypoint, owned loopback host port, and unprivileged server. One-time read-only cookie pairing and listener cleanup passed. Fresh homes passed the frozen v2 wire check. Copied homes reopened the saved Replay thread and preserved its full message and run payloads through shutdown."
+  },
+  "serviceLauncherTrialReferences": {
+    "result": "pass",
+    "captures": "cli-linux-arm64/service-upgrade-trial",
+    "scope": "Two independent published v0.1.17 to v0.1.18 service launcher trials beneath Docker init on Debian 12.15 arm64. Both staged the target while v0.1.17 kept serving, rejected the corrupt checksum, rolled back the failed activation with restored Replay payloads, and committed the unchanged target on retry. The original two bearer grants and environment identity survived restart."
   }
 }

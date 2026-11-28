@@ -13,7 +13,8 @@ use std::{
 use catalog::{Catalog, Cell, Inventory, OpenItem};
 use evidence::{
     Evidence, is_hex, oci_manifest, read_json, render_cli_terminal, render_oci_terminal,
-    verify_linux_cli_lifecycle, verify_oci_lifecycle, verify_reference_pair,
+    render_service_terminal, verify_linux_cli_lifecycle, verify_oci_lifecycle,
+    verify_reference_pair, verify_service_upgrade,
 };
 
 #[derive(Serialize)]
@@ -29,6 +30,7 @@ struct Report {
     verified_visual_reference_observations: usize,
     verified_cli_reference_observations: usize,
     verified_oci_reference_observations: usize,
+    verified_service_upgrade_observations: usize,
     supplemental_receipts: usize,
     open_matrix_items: Vec<OpenItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -221,6 +223,7 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
     let mut verified_visual_references = 0;
     let mut verified_cli_references = 0;
     let mut verified_oci_references = 0;
+    let mut verified_service_upgrades = 0;
     for observation in &catalog.observations {
         let cell = &observation.cell;
         let label = format!(
@@ -267,7 +270,12 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
                 "invalid OCI platform identity: {label}"
             );
         }
-        if pass && release_reference && platform.surface == "electron" {
+        let electron_target = cell.platform_id.strip_prefix("electron-");
+        ensure!(
+            (platform.surface == "electron") == electron_target.is_some(),
+            "Electron platform ID conflicts with surface metadata: {label}"
+        );
+        if let Some(target) = electron_target {
             let os = platform
                 .os
                 .as_deref()
@@ -278,7 +286,12 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
                 .context("missing Electron platform architecture")?;
             let expected = format!("{os}-{arch}");
             ensure!(
-                platform.inventory_target.as_deref() == Some(&expected),
+                target == expected,
+                "Electron platform ID conflicts with OS or architecture: {label}"
+            );
+            ensure!(
+                !(pass && release_reference)
+                    || platform.inventory_target.as_deref() == Some(target),
                 "Electron reference requires matching installer target {expected}: {label}"
             );
         }
@@ -366,7 +379,7 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
                         "installer asset {asset} is outside target {target_id}: {label}"
                     );
                     ensure!(
-                        platform.surface != "electron" || desktop_asset,
+                        electron_target.is_none() || desktop_asset,
                         "Electron reference requires a published desktop installer: {label}"
                     );
                 }
@@ -414,6 +427,15 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
                 .with_context(|| label.clone())?;
             verified_oci_references += 1;
         }
+        if pass
+            && release_reference
+            && cell.platform_id == "cli-linux-arm64"
+            && cell.case_id == "host-upgrade"
+        {
+            verify_service_upgrade(&evidence, &inventory, platform, observation)
+                .with_context(|| label.clone())?;
+            verified_service_upgrades += 1;
+        }
         let has_visual_reference = evidence_profiles[&cell.case_id]
             .iter()
             .any(|kind| kind == "screenshot")
@@ -440,6 +462,7 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
         verified_visual_reference_observations: verified_visual_references,
         verified_cli_reference_observations: verified_cli_references,
         verified_oci_reference_observations: verified_oci_references,
+        verified_service_upgrade_observations: verified_service_upgrades,
         supplemental_receipts: supplemental.len(),
         open_matrix_items: catalog.open_matrix_items,
         missing: list_missing.then(|| {
@@ -456,6 +479,7 @@ fn main() -> Result<()> {
     let render: Option<fn(&Path) -> Result<()>> = match args.peek().and_then(|arg| arg.to_str()) {
         Some("--render-cli") => Some(render_cli_terminal),
         Some("--render-oci") => Some(render_oci_terminal),
+        Some("--render-service") => Some(render_service_terminal),
         _ => None,
     };
     if let Some(render) = render {

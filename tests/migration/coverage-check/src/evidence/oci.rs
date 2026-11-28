@@ -6,7 +6,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::{
-    Evidence, Fingerprint, HomeMode, Seed, is_hex, one_artifact, process_terminal, read_json,
+    Evidence, Fingerprint, HomeMode, ReceiptWitness, Seed, is_hex, one_artifact, process_terminal,
+    read_json,
 };
 use crate::catalog::{Inventory, Observation, OciServer, Run};
 
@@ -86,13 +87,6 @@ enum SavedHome {
         thread_read: Value,
         after_stop: Fingerprint,
     },
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Witness {
-    process_sha256: String,
-    state_sha256: String,
 }
 
 pub(crate) fn oci_manifest<'a>(server: &'a OciServer, arch: &str) -> Result<&'a str> {
@@ -281,8 +275,8 @@ fn encode(process: &Process, state: &State, process_sha: &str, state_sha: &str) 
             process.start.descriptor["databaseMigration"]
         ),
         format!(
-            "Read-only cookie: issue {}, reuse {}.",
-            process.pair["status"], process.pair["reuseStatus"]
+            "Cookie auth {}. Pairing credential reuse {}.",
+            process.pair["cookieCheck"]["status"], process.pair["reuseStatus"]
         ),
     ];
     rows.push(match &state.home {
@@ -345,7 +339,7 @@ pub(crate) fn verify_oci_lifecycle(
             && first.environment == repeat.environment,
         "expected matching first and repeat OCI environments"
     );
-    let witnesses: BTreeMap<String, Witness> = serde_json::from_str(WITNESSES)?;
+    let witnesses: BTreeMap<String, ReceiptWitness> = serde_json::from_str(WITNESSES)?;
     let verify = |run: &Run| -> Result<Process> {
         let transcript = one_artifact(&run.artifacts, "process-transcript")?;
         let state = one_artifact(&run.artifacts, "state-receipt")?;

@@ -13,8 +13,17 @@ use crate::catalog::{Artifact, Cell, Observation, Run};
 mod linux_cli;
 mod oci;
 mod process_terminal;
+mod service_upgrade;
 pub(crate) use linux_cli::{render_cli_terminal, verify_linux_cli_lifecycle};
 pub(crate) use oci::{oci_manifest, render_oci_terminal, verify_oci_lifecycle};
+pub(crate) use service_upgrade::{render_service_terminal, verify_service_upgrade};
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReceiptWitness {
+    process_sha256: String,
+    state_sha256: String,
+}
 
 #[derive(Clone, Copy, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]

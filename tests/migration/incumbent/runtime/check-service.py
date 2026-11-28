@@ -374,6 +374,19 @@ def exercise(container, selection, runtime_file, database, thread, saved, scratc
     assert [session(*bearer) for bearer in bearer_sessions] == original_sessions
     debian_version = docker("exec", container, "cat", "/etc/debian_version")
     stop(container, origin, runtime_file)
+    if trial_gate is not None:
+        final_state = recorded_state(database, thread)
+        assert final_state == saved and not contains_trial_write(database)
+        witness = {
+            "schemaVersion": 1,
+            "containerSha256": hashlib.sha256(container.encode()).hexdigest(),
+            "environmentSha256": hashlib.sha256(environment_id.encode()).hexdigest(),
+            "trialUpdateSha256": hashlib.sha256(fault_id.encode()).hexdigest(),
+            "committedUpdateSha256": hashlib.sha256(update_id.encode()).hexdigest(),
+            "trialGateSha256": digest(trial_gate),
+            "finalPayloadSha256": state_fingerprint(final_state),
+        }
+        (scratch / "upgrade-witness.json").write_text(json.dumps(witness, indent=2) + "\n")
     return {
         "platform": "linux/arm64",
         "distribution": f"Debian {debian_version}",

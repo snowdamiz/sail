@@ -103,6 +103,10 @@ python3 tests/migration/incumbent/runtime/check-service.py \
 
 The probe stages the published target and places the gate at its executable entry point in scratch. Preflight still runs the published binary. The gate pauses the trial startup. Once the probe verifies the pending update ID and the launcher's snapshot, it changes the saved reply payload, adds a marker table to the copied database, and releases the gate. The published trial server exits before activation when it fails to bind. The v0.1.17 launcher restores the saved payloads and removes the marker through snapshot restoration. The probe restarts the launcher on the rolled-back selection, verifies both bearer grants, then retries with the unchanged published target executable. [Rollback receipt](v0.1.17-to-v0.1.18-rollback.json)
 
+For two independent captures, use a new `"$scratch/rollback"` for each run and save stdout as `process.json`. Copy `upgrade-witness.json` from each scratch directory as `state.json` beside its corresponding process receipt. The witness records hashes of the container, environment, failed and committed update IDs, and restored payloads after shutdown.
+
+Format both JSON files before running `cargo run --locked --manifest-path tests/migration/coverage-check/Cargo.toml -- --render-service "$capture"`. The [service upgrade witness ledger](service-upgrade-witnesses.json) pins the two observed receipts. Their catalog entries cover staging, successful installation and failed-trial recovery under Docker init on Debian 12.15 arm64.
+
 ## Published arm64 macOS archive update
 
 Extract the verified v0.1.17 arm64 ZIP into a writable scratch directory. Launch its executable with a scratch home and a copy of the Replay database and environment ID. Rerun the [macOS bundle comparison](check.py) after the update to verify the installed files against the published target ZIP.
