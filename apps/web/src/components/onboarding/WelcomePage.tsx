@@ -110,6 +110,7 @@ import { useThreadRunningTerminalIds } from "../../state/terminalSessions";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { getProviderSummary } from "../settings/providerStatus";
 import { AddProviderInstanceDialog } from "../settings/AddProviderInstanceDialog";
+import { AddEnvironmentDialog } from "../settings/AddEnvironmentDialog";
 import { useDesktopCliCommand } from "../settings/CliCommandSettingsRow";
 import { CodexSetupSection } from "../settings/CodexSetupSection";
 import { readCodexSetupMode } from "../settings/CodexSetupSection.logic";
@@ -155,6 +156,11 @@ export function WelcomePage({
 }) {
   const { environments } = useEnvironments();
   const gt = useGT();
+  const isDesktop = window.desktopBridge !== undefined;
+  const [remoteSignInOpen, setRemoteSignInOpen] = useState(false);
+  const savedEnvironments = environments.filter(
+    (environment) => environment.entry?.target._tag !== "PrimaryConnectionTarget",
+  );
   const label =
     environments.find((environment) => environment.environmentId === environmentId)?.label ??
     gt("this computer");
@@ -332,6 +338,28 @@ export function WelcomePage({
                 </T>
               )}
             </p>
+            {isDesktop ? (
+              <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-foreground">
+                    <T>Already using Sail on the web?</T>
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    <T>
+                      Sign in to your existing server instead of setting up this computer first.
+                    </T>
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={isImporting}
+                  onClick={() => setRemoteSignInOpen(true)}
+                >
+                  <T>Sign in to your server</T>
+                </Button>
+              </div>
+            ) : null}
             <div className="mt-10 border-t border-border/60">
               {isControlPlane ? <BoatsSection environmentId={environmentId} /> : null}
               <AgentsSection
@@ -387,6 +415,19 @@ export function WelcomePage({
           </div>
         </div>
       </div>
+      {isDesktop ? (
+        <AddEnvironmentDialog
+          open={remoteSignInOpen}
+          showTrigger={false}
+          openedFrom="welcome"
+          savedEnvironments={savedEnvironments}
+          onOpenChange={setRemoteSignInOpen}
+          onConnected={() => {
+            keepChoicesRef.current = true;
+            void finish();
+          }}
+        />
+      ) : null}
     </SidebarInset>
   );
 }

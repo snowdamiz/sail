@@ -42,22 +42,26 @@ An image name without a slash uses your local Docker daemon. Use `--build` to
 build the checkout on Fly's remote builder. Add `--dry-run` to preview your
 command without contacting Fly or GitHub.
 
-## Browser password
+## Owner sign-in password
 
 Fresh Fly deployments boot with password sign-in already configured via
 `SAIL_INITIAL_OWNER_PASSWORD`, so visiting `https://my-sail.fly.dev` opens
-directly to **Sign in to Sail**. Once signed in, you can change the password
-anytime in **Settings → Sharing & access** (15–256 characters). Your updated
-password is stored on the `/data` volume and is preserved across restarts and
-upgrades even while `SAIL_INITIAL_OWNER_PASSWORD` remains set in Fly secrets.
+directly to **Sign in to Sail**. You can use the same HTTPS URL and password
+in Sail Desktop from the welcome screen (**Sign in to your server**) or under
+**Settings → Environments → Add environment → Password**.
+
+Once signed in from the server's web app, you can change the password anytime
+in **Settings → Sharing & access** (15–256 characters). Your updated password
+is stored on the `/data` volume and is preserved across restarts and upgrades
+even while `SAIL_INITIAL_OWNER_PASSWORD` remains set in Fly secrets.
 
 If you forget your password, request fresh pairing links using the command under
 [Add another device](#add-another-device), open the HTTPS link, and change the
-password in Sharing & access. Changing your password signs out all browsers
-that previously signed in using the password, including this browser if it
-used that password. Independently paired devices stay signed in. Desktop and
-mobile can pair from **Settings → Sharing & access** (using **Open in Sail
-desktop** or a new pairing link) or with `--pair`.
+password in Sharing & access. Changing your password signs out every browser
+and Sail Desktop session that signed in using the password, including the
+current browser if it used that password. Independently paired devices stay
+signed in. Desktop and mobile can also pair from **Settings → Sharing & access**
+(using **Open in Sail desktop** or a new pairing link) or with `--pair`.
 
 ## Connect a Boat machine
 
@@ -95,6 +99,8 @@ Request fresh links without restarting Sail.
 deploy/fly/deploy.sh --app my-sail --pair
 ```
 
+On Sail Desktop, sign in directly with your HTTPS server address and owner
+password under **Add environment → Password**, or open the desktop pairing link.
 On mobile, use **Add environment** and paste the HTTPS pairing link or scan
 its QR code. To revoke a device, open **Settings → Sharing & access** on the
 server. See [Remote access](./remote-access.md) for more about device access.

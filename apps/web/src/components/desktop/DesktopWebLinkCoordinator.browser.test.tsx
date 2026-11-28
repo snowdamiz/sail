@@ -43,6 +43,9 @@ vi.mock(import("../../state/environments"), async (original) => ({
   useEnvironment: (() => ({
     connection: { phase: state.remoteConnected ? "connected" : "connecting" },
     entry: { target: { _tag: "BearerConnectionTarget", connectionId: "remote" } },
+    serverConfig: state.remoteConnected
+      ? { environment: { capabilities: { localSessions: true } } }
+      : null,
   })) as never,
   usePrimaryEnvironment: (() =>
     state.localEnvironmentDisabled
@@ -121,6 +124,7 @@ import {
 } from "../../rightPanelStore";
 import { LocalEnvironmentSetting } from "../settings/LocalEnvironmentSetting";
 import { DesktopWebLinkCoordinator } from "./DesktopWebLinkCoordinator";
+import { MainServerOfferHost, resetMainServerOfferForTests } from "./MainServerDialog";
 
 const discoverySettled = allReachableShellsLiveAtom as Atom.Writable<boolean>;
 const environmentId = EnvironmentId.make("local");
@@ -159,6 +163,7 @@ const pairLink = `sail://pair?pairingUrl=${encodeURIComponent(pairingUrl)}`;
 
 function setup() {
   vi.clearAllMocks();
+  resetMainServerOfferForTests();
   state.confirm.mockResolvedValue(true);
   state.localEnvironmentDisabled = false;
   state.remoteConnected = true;
@@ -197,6 +202,7 @@ async function mount(...urls: string[]) {
     await render(
       <AppAtomRegistryProvider>
         <DesktopWebLinkCoordinator />
+        <MainServerOfferHost />
       </AppAtomRegistryProvider>,
     ),
   );

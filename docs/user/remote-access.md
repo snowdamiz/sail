@@ -139,6 +139,21 @@ created in Settings can only be copied from the client that created them while
 its Sharing & access page stays open. If you leave or reload that page, create
 another link to share.
 
+### Sign in with owner password (Sail Desktop)
+
+When a remote HTTPS server has an **Owner sign-in password** configured in its
+web app (**Settings → Sharing & access**), Sail Desktop can connect directly
+without generating a pairing link. Open **Sign in to your server** from
+onboarding or **Settings → Environments → Add environment → Password**, enter
+the server's HTTPS address, confirm the address, and enter your password.
+
+Pasting a full pairing link into the server address field switches to
+**Pairing code** automatically. If the server does not have an owner password
+enabled, choose **Use a pairing code** to switch with the address preserved.
+Changing the owner password in the server's web app signs out every browser
+and Sail Desktop session that used that password, while independently paired
+devices stay signed in.
+
 ### Reach one machine several ways
 
 A machine can have more than one route: LAN, Tailscale, another VPN, a public
@@ -168,7 +183,8 @@ again, after the other routes, if none of them connect. While connected over a
 later route, T3 Code checks the earlier ones when your network changes, when you
 return to the app, and every minute, and moves back as soon as one works. A
 route whose machine refused this device's sign-in is marked **Sign-in
-refused**; pair that address again with **Add route** to use it.
+refused**; choose **Sign in again** on that route to re-authenticate with your
+owner password or a pairing code.
 
 On web and desktop, select the route count under the machine's name in
 **Settings → Environments** to see its routes. Drag a route to change the order,

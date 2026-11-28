@@ -19,7 +19,8 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 
 import "~/index.css";
-import { act, render } from "../../../test/render";
+import { page } from "vite-plus/test/browser";
+import { act, render, stubGlobal } from "../../../test/render";
 
 type SessionResult = AsyncResult.AsyncResult<AuthSessionState, Error>;
 type Project = { id: ProjectId; environmentId: EnvironmentId; workspaceRoot: string };
@@ -841,4 +842,28 @@ it("shows the Boats onboarding step and omits local project scans on a control-p
     (element) => element.textContent?.trim() === "Start",
   );
   expect(startButton?.disabled).toBe(true);
+});
+
+it("shows Sign in to your server on Desktop independent of local agent readiness and hides it on web", async () => {
+  using _now = setup();
+  // Even when no local agents are installed/ready, Desktop still offers direct server sign-in.
+  appAtomRegistry.set(state.providers as Atom.Writable<ReadonlyArray<ServerProvider>>, []);
+
+  {
+    using _bridge = stubGlobal("desktopBridge", {});
+    await using screen = await mountWelcome();
+    const signInButton = screen.getByRole("button", { name: "Sign in to your server" });
+    await expect.element(signInButton).toBeVisible();
+    await signInButton.click();
+    await expect.element(page.getByRole("dialog")).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: /^Password/ }))
+      .toHaveAttribute("aria-pressed", "true");
+  }
+
+  {
+    using _bridge = stubGlobal("desktopBridge", undefined);
+    await using screen = await mountWelcome();
+    expect(screen.getByRole("button", { name: "Sign in to your server" }).query()).toBeNull();
+  }
 });

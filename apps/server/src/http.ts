@@ -1,5 +1,6 @@
 import * as Mime from "effect/http/Mime";
 import {
+  AUTH_OWNER_PASSWORD_TOKEN_PATH,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
@@ -72,6 +73,8 @@ import {
   browserApiCorsAllowedHeaders,
   browserApiCorsAllowedMethods,
   DESKTOP_RENDERER_ORIGINS,
+  isAllowedOwnerPasswordTokenOrigin,
+  isDesktopLoopbackOriginAllowed,
   MCP_HTTP_PATH,
 } from "./httpCors.ts";
 import { requestUrl } from "./requestUrl.ts";
@@ -344,20 +347,57 @@ export const layerBrowserApiCors = Layer.unwrap(
           maxAge: 600,
         })
       : undefined;
+    const ownerPasswordTokenCors =
+      config.publicUrl?.protocol === "https:"
+        ? HttpMiddleware.cors({
+            allowedOrigins: [
+              config.publicUrl.origin,
+              ...(isDesktopLoopbackOriginAllowed({
+                devUrl: config.devUrl,
+                publicUrl: config.publicUrl,
+              })
+                ? DESKTOP_RENDERER_ORIGINS
+                : []),
+            ],
+            allowedMethods: browserApiCorsAllowedMethods,
+            allowedHeaders: browserApiCorsAllowedHeaders,
+            maxAge: 600,
+          })
+        : undefined;
     return HttpRouter.middleware(
       (httpEffect) => {
         const withWildcardCors = wildcardCors(httpEffect);
         const withDevCors = devCors ? devCors(httpEffect) : undefined;
+        const withOwnerPasswordTokenCors = ownerPasswordTokenCors
+          ? ownerPasswordTokenCors(httpEffect)
+          : undefined;
+        const withWildcardVaryOrigin = (request: HttpServerRequest.HttpServerRequest) =>
+          request.method === "OPTIONS"
+            ? Effect.map(withWildcardCors, withVaryOrigin)
+            : HttpEffect.appendPreResponseHandler((_request, response) =>
+                Effect.succeed(withVaryOrigin(response)),
+              ).pipe(Effect.andThen(withWildcardCors));
         return Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => {
-          if (request.url.split("?", 1)[0] === MCP_HTTP_PATH) return httpEffect;
+          const path = request.url.split("?", 1)[0];
+          if (path === MCP_HTTP_PATH) return httpEffect;
+          if (path === AUTH_OWNER_PASSWORD_TOKEN_PATH) {
+            const requestOrigin = request.headers.origin;
+            if (requestOrigin === undefined) return withWildcardVaryOrigin(request);
+            if (
+              isAllowedOwnerPasswordTokenOrigin({
+                requestOrigin,
+                publicUrl: config.publicUrl,
+                devUrl: config.devUrl,
+              })
+            ) {
+              if (withDevCors && requestOrigin !== config.publicUrl?.origin) return withDevCors;
+              if (withOwnerPasswordTokenCors) return withOwnerPasswordTokenCors;
+            }
+            return httpEffect;
+          }
           if (!withDevCors) return withWildcardCors;
           if (request.headers.origin !== undefined) return withDevCors;
-          if (request.method === "OPTIONS") {
-            return Effect.map(withWildcardCors, withVaryOrigin);
-          }
-          return HttpEffect.appendPreResponseHandler((_request, response) =>
-            Effect.succeed(withVaryOrigin(response)),
-          ).pipe(Effect.andThen(withWildcardCors));
+          return withWildcardVaryOrigin(request);
         });
       },
       { global: true },

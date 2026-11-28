@@ -9,6 +9,7 @@ import {
   AuthAccessWriteScope,
   AuthDiagnosticsReadScope,
   AuthOrchestrationReadScope,
+  AuthOwnerPasswordSubject,
   AuthFilesystemReadScope,
   AuthRelayConfigureScope,
   AuthStandardClientScopes,
@@ -524,7 +525,17 @@ const ConnectedClientListRow = memo(function ConnectedClientListRow({
     : lastConnectedAt
       ? gt("Last connected at {time}", { time: formatAccessTimestamp(lastConnectedAt) })
       : gt("Not connected yet.");
+  const isOwnerPasswordSession = clientSession.subject === AuthOwnerPasswordSubject;
+  const inferredClientLabel =
+    clientSession.client.label ??
+    ([clientSession.client.os, clientSession.client.browser].filter(Boolean).join(" · ") || null);
+  const primaryLabel =
+    inferredClientLabel ??
+    (isOwnerPasswordSession ? gt("Signed in with owner password") : clientSession.subject);
   const deviceInfoBits = [
+    isOwnerPasswordSession && inferredClientLabel !== null
+      ? gt("Signed in with owner password")
+      : null,
     clientSession.client.deviceType !== "unknown"
       ? clientSession.client.deviceType[0]?.toUpperCase() + clientSession.client.deviceType.slice(1)
       : null,
@@ -532,10 +543,6 @@ const ConnectedClientListRow = memo(function ConnectedClientListRow({
     clientSession.client.browser ?? null,
     clientSession.client.ipAddress ?? null,
   ].filter((value): value is string => value !== null);
-  const primaryLabel =
-    clientSession.client.label ??
-    ([clientSession.client.os, clientSession.client.browser].filter(Boolean).join(" · ") ||
-      clientSession.subject);
 
   return (
     <div className={ITEM_ROW_CLASSNAME}>

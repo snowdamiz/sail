@@ -1,5 +1,6 @@
 import {
   ConnectionTransientError,
+  DpopConnectionCredential,
   PrimaryConnectionTarget,
 } from "@t3tools/client-runtime/connection";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
@@ -283,5 +284,180 @@ describe("browser GitHub routing permissions", () => {
       );
       expect(yield* second.get(entry)).toBe("off");
     }),
+  );
+});
+
+describe("ConnectionStorage.makeCatalogCredentialStore", () => {
+  it.effect(
+    "replaces a renewed credential only when the stored credential still matches expectedPrevious",
+    () =>
+      Effect.gen(function* () {
+        const writes: string[] = [];
+        const catalog = yield* ConnectionStorage.makeCatalogStore({
+          read: Effect.succeed(null),
+          write: (raw) => Effect.sync(() => void writes.push(raw)),
+        });
+        const store = ConnectionStorage.makeCatalogCredentialStore(catalog);
+
+        const initial = new DpopConnectionCredential({
+          accessToken: "token-v1",
+          expiresAtEpochMs: 1_000,
+        });
+        const renewed = new DpopConnectionCredential({
+          accessToken: "token-v2",
+          expiresAtEpochMs: 2_000,
+        });
+        const reauthenticated = new DpopConnectionCredential({
+          accessToken: "token-reauth",
+          expiresAtEpochMs: 9_000,
+        });
+        const delayedRenewal = new DpopConnectionCredential({
+          accessToken: "token-stale-renewal",
+          expiresAtEpochMs: 3_000,
+        });
+
+        yield* store.put("direct-1", initial);
+        expect(writes).toHaveLength(1);
+
+        expect(yield* store.replaceRenewedCredential("direct-1", initial, renewed)).toBe(true);
+        expect(writes).toHaveLength(2);
+        expect(Option.getOrThrow(yield* store.get("direct-1"))).toEqual(renewed);
+
+        yield* store.put("direct-1", reauthenticated);
+        expect(writes).toHaveLength(3);
+
+        // Stale renewal targeting the pre-reauth credential must miss and skip disk writes.
+        expect(yield* store.replaceRenewedCredential("direct-1", renewed, delayedRenewal)).toBe(
+          false,
+        );
+        expect(writes).toHaveLength(3);
+        expect(Option.getOrThrow(yield* store.get("direct-1"))).toEqual(reauthenticated);
+
+        // Removing the credential and settling a delayed renewal must not revive it or write.
+        yield* store.remove("direct-1");
+        expect(writes).toHaveLength(4);
+        expect(
+          yield* store.replaceRenewedCredential("direct-1", reauthenticated, delayedRenewal),
+        ).toBe(false);
+        expect(writes).toHaveLength(4);
+        expect(Option.isNone(yield* store.get("direct-1"))).toBe(true);
+      }),
+  );
+
+  it.effect(
+    "checks live IndexedDB state atomically across tabs so stale cached renewals cannot clobber another tab",
+    () =>
+      Effect.gen(function* () {
+        vi.stubGlobal("window", {});
+        const persisted = new Map<string, unknown>();
+        const transactions: Array<{ readonly mode: string; readonly ops: Array<string> }> = [];
+        const sharedDatabase = {
+          transaction: (_storeName: string, mode: string) => {
+            const ops: Array<string> = [];
+            transactions.push({ mode, ops });
+            let aborted = false;
+            const tx = Object.assign(new EventTarget(), {
+              error: null as DOMException | null,
+              abort: () => {
+                aborted = true;
+                queueMicrotask(() => tx.dispatchEvent(new Event("abort")));
+              },
+              objectStore: () => ({
+                get: (key: string) => {
+                  ops.push(`get:${key}`);
+                  const request = Object.assign(new EventTarget(), {
+                    result: persisted.get(key),
+                    error: null,
+                  });
+                  queueMicrotask(() => {
+                    request.dispatchEvent(new Event("success"));
+                    if (!aborted) {
+                      tx.dispatchEvent(new Event("complete"));
+                    }
+                  });
+                  return request;
+                },
+                put: (value: unknown, key: string) => {
+                  ops.push(`put:${key}`);
+                  persisted.set(key, value);
+                  if (ops.length === 1) {
+                    queueMicrotask(() => {
+                      if (!aborted) {
+                        tx.dispatchEvent(new Event("complete"));
+                      }
+                    });
+                  }
+                },
+              }),
+            });
+            return tx;
+          },
+        } as unknown as IDBDatabase;
+
+        const catalogA = yield* ConnectionStorage.makeCatalogStore(
+          ConnectionStorage.makeCatalogBackend(fixedHandle(sharedDatabase)),
+        );
+        const catalogB = yield* ConnectionStorage.makeCatalogStore(
+          ConnectionStorage.makeCatalogBackend(fixedHandle(sharedDatabase)),
+        );
+        const storeA = ConnectionStorage.makeCatalogCredentialStore(catalogA);
+        const storeB = ConnectionStorage.makeCatalogCredentialStore(catalogB);
+
+        const initial = new DpopConnectionCredential({
+          accessToken: "token-v1",
+          expiresAtEpochMs: 1_000,
+        });
+        const reauthenticated = new DpopConnectionCredential({
+          accessToken: "token-reauth",
+          expiresAtEpochMs: 9_000,
+        });
+        const delayedRenewal = new DpopConnectionCredential({
+          accessToken: "token-stale-renewal",
+          expiresAtEpochMs: 2_000,
+        });
+        const nextRenewal = new DpopConnectionCredential({
+          accessToken: "token-reauth-renewed",
+          expiresAtEpochMs: 12_000,
+        });
+
+        yield* storeA.put("direct-1", initial);
+        // Prime both tabs' in-memory caches with the initial credential.
+        expect(Option.getOrThrow(yield* storeA.get("direct-1"))).toEqual(initial);
+        expect(Option.getOrThrow(yield* storeB.get("direct-1"))).toEqual(initial);
+
+        // Tab B re-authenticates while Tab A still holds `initial` in its cached Ref.
+        yield* storeB.put("direct-1", reauthenticated);
+        transactions.length = 0;
+
+        // Tab A tries to commit a delayed renewal against `initial`; it must read live IDB state
+        // in one readwrite transaction, see `reauthenticated`, return false, and skip put().
+        expect(yield* storeA.replaceRenewedCredential("direct-1", initial, delayedRenewal)).toBe(
+          false,
+        );
+        expect(transactions).toEqual([{ mode: "readwrite", ops: ["get:document"] }]);
+        expect(
+          decodeCatalog(persisted.get("document") as string).credentials.find(
+            (entry) => entry.connectionId === "direct-1",
+          )?.credential,
+        ).toEqual(reauthenticated);
+
+        // Matching renewal commits get+put in a single readwrite transaction.
+        transactions.length = 0;
+        expect(
+          yield* storeA.replaceRenewedCredential("direct-1", reauthenticated, nextRenewal),
+        ).toBe(true);
+        expect(transactions).toEqual([
+          { mode: "readwrite", ops: ["get:document", "put:document"] },
+        ]);
+
+        // Tab B removes the credential while Tab A caches `nextRenewal`; Tab A must not revive it.
+        yield* storeB.remove("direct-1");
+        transactions.length = 0;
+        expect(
+          yield* storeA.replaceRenewedCredential("direct-1", nextRenewal, delayedRenewal),
+        ).toBe(false);
+        expect(transactions).toEqual([{ mode: "readwrite", ops: ["get:document"] }]);
+        expect(decodeCatalog(persisted.get("document") as string).credentials).toEqual([]);
+      }),
   );
 });

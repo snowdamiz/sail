@@ -1,4 +1,5 @@
 import {
+  AUTH_OWNER_PASSWORD_TOKEN_PATH,
   AuthStandardClientScopes,
   EnvironmentId,
   type AuthEnvironmentScope,
@@ -9,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
@@ -21,6 +23,7 @@ import {
   BearerConnectionCredential,
   BearerConnectionProfile,
   BearerConnectionRegistration,
+  type ConnectionRegistration,
   PrimaryConnectionRegistration,
 } from "./catalog.ts";
 import * as Connectivity from "./connectivity.ts";
@@ -177,6 +180,7 @@ function layerPairingOnboarding(
     }),
     Layer.mock(Persistence.ConnectionRegistrationStore)({
       register: () => Effect.void,
+      setRoutes: () => Effect.void,
       setEnabled: () => Effect.void,
     }),
     Layer.mock(Persistence.EnvironmentCacheStore)({}),
@@ -746,5 +750,1044 @@ describe("connection onboarding", () => {
         credential: { token: "bearer-token" },
       });
     }),
+  );
+});
+
+describe("owner-password onboarding", () => {
+  function expectReadyHost(
+    host: Onboarding.OwnerPasswordHost,
+  ): Extract<Onboarding.OwnerPasswordHost, { readonly kind: "ready" }> {
+    if (host.kind !== "ready") {
+      assert.fail(`Expected ready owner-password host, got ${host.kind} (${host.reason})`);
+    }
+    return host;
+  }
+
+  interface OwnerPasswordTestOptions {
+    readonly environmentId?: string;
+    readonly label?: string;
+    readonly ownerPasswordToken?: boolean | undefined;
+    readonly accessTokenRenewal?: boolean;
+    readonly ownerPasswordState?: "configured" | "unset" | undefined;
+    readonly redirectDescriptor?: boolean;
+    readonly redirectSession?: boolean;
+    readonly redirectToken?: boolean;
+    readonly descriptorSequence?: ReadonlyArray<{
+      readonly environmentId?: string;
+      readonly label?: string;
+      readonly ownerPasswordToken?: boolean | undefined;
+      readonly accessTokenRenewal?: boolean;
+      readonly redirect?: boolean;
+    }>;
+    readonly tokenResponse?: (input: {
+      readonly url: string;
+      readonly init: RequestInit;
+      readonly hasDpop: boolean;
+    }) => Response;
+    readonly signer?: {
+      readonly proofs: Array<{
+        readonly method: string;
+        readonly url: string;
+        readonly accessToken?: string;
+      }>;
+    };
+    readonly failSetEnabled?: boolean;
+    readonly savedRegistrations?: Array<ConnectionRegistration>;
+    readonly enabledCalls?: Array<{
+      readonly environmentId: EnvironmentId;
+      readonly enabled: boolean;
+    }>;
+  }
+
+  function layerOwnerPasswordOnboarding(
+    calls: Array<{ readonly url: string; readonly init: RequestInit }>,
+    options: OwnerPasswordTestOptions = {},
+  ) {
+    let descriptorIndex = 0;
+    const fetchFn = ((input, init = {}) => {
+      const url = String(input);
+      calls.push({ url, init });
+
+      if (url.endsWith("/.well-known/t3/environment")) {
+        const step = options.descriptorSequence?.[descriptorIndex];
+        descriptorIndex += 1;
+        if (step?.redirect === true || options.redirectDescriptor === true) {
+          return Promise.resolve(
+            new Response(null, {
+              status: 302,
+              headers: { location: "https://redirected.example.test/.well-known/t3/environment" },
+            }),
+          );
+        }
+        const capabilityToken =
+          step !== undefined
+            ? "ownerPasswordToken" in step
+              ? step.ownerPasswordToken
+              : true
+            : "ownerPasswordToken" in options
+              ? options.ownerPasswordToken
+              : true;
+        const accessTokenRenewal = step?.accessTokenRenewal ?? options.accessTokenRenewal ?? true;
+        return Promise.resolve(
+          Response.json({
+            environmentId: step?.environmentId ?? options.environmentId ?? "environment-owner",
+            label: step?.label ?? options.label ?? "Sail Host",
+            platform: { os: "linux", arch: "x64" },
+            serverVersion: "0.0.0-test",
+            orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
+            capabilities: {
+              repositoryIdentity: true,
+              ...(capabilityToken !== undefined ? { ownerPasswordToken: capabilityToken } : {}),
+              ...(accessTokenRenewal ? { accessTokenRenewal: true } : {}),
+            },
+          }),
+        );
+      }
+
+      if (url.endsWith("/api/auth/session")) {
+        if (options.redirectSession === true) {
+          return Promise.resolve(
+            new Response(null, {
+              status: 307,
+              headers: { location: "https://redirected.example.test/api/auth/session" },
+            }),
+          );
+        }
+        const ownerPasswordState =
+          "ownerPasswordState" in options ? options.ownerPasswordState : "configured";
+        return Promise.resolve(
+          Response.json({
+            authenticated: false,
+            auth: {
+              policy: "remote-reachable",
+              bootstrapMethods: ["one-time-token"],
+              sessionMethods: ["bearer-access-token"],
+              sessionCookieName: "t3_session",
+              ...(ownerPasswordState !== undefined ? { ownerPassword: ownerPasswordState } : {}),
+            },
+            scopes: [],
+          }),
+        );
+      }
+
+      if (url.endsWith(AUTH_OWNER_PASSWORD_TOKEN_PATH)) {
+        if (options.redirectToken === true) {
+          return Promise.resolve(
+            new Response(null, {
+              status: 308,
+              headers: {
+                location: "https://redirected.example.test/api/auth/owner-password/token",
+              },
+            }),
+          );
+        }
+        const hasDpop = new Headers(init.headers).has("dpop");
+        if (options.tokenResponse !== undefined) {
+          return Promise.resolve(options.tokenResponse({ url, init, hasDpop }));
+        }
+        return Promise.resolve(
+          Response.json({
+            access_token: hasDpop ? "owner-dpop-token" : "owner-bearer-token",
+            issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+            token_type: hasDpop ? "DPoP" : "Bearer",
+            expires_in: 3600,
+            scope: AuthStandardClientScopes.join(" "),
+          }),
+        );
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }) satisfies typeof fetch;
+
+    const dependencies = Layer.mergeAll(
+      layerClientPresentation,
+      RpcHttp.layerRemoteHttpClient(fetchFn),
+      Layer.mock(Persistence.ConnectionTargetStore)({
+        list: Effect.succeed([]),
+        listDisabled: Effect.succeed([]),
+      }),
+      Layer.mock(Persistence.ConnectionRegistrationStore)({
+        register: (registration) =>
+          Effect.sync(() => {
+            options.savedRegistrations?.push(registration);
+          }),
+        setRoutes: () => Effect.void,
+        setEnabled: (environmentId, enabled) =>
+          options.failSetEnabled === true && enabled
+            ? Effect.fail(
+                new Persistence.ConnectionPersistenceError({
+                  operation: "set-connection-enabled",
+                  message: "disk full",
+                }),
+              )
+            : Effect.sync(() => {
+                options.enabledCalls?.push({ environmentId, enabled });
+              }),
+      }),
+      Layer.mock(Persistence.EnvironmentCacheStore)({}),
+      Layer.mock(ConnectionProfileStore.ConnectionProfileStore)({}),
+      Layer.mock(ConnectionCredentialStore.ConnectionCredentialStore)({
+        get: () => Effect.succeedNone,
+        put: () => Effect.void,
+        replaceRenewedCredential: () => Effect.succeed(false),
+      }),
+      Layer.mock(ClientCapabilities.SshEnvironmentGateway)({}),
+      Layer.succeed(
+        Connectivity.Connectivity,
+        Connectivity.Connectivity.of({ status: Effect.succeed("online"), changes: Stream.never }),
+      ),
+      Layer.mock(ConnectionDriver.ConnectionDriver)({ connect: () => Effect.never }),
+      Layer.succeed(
+        ConnectionWakeups.ConnectionWakeups,
+        ConnectionWakeups.ConnectionWakeups.of({ changes: Stream.never }),
+      ),
+      options.signer !== undefined
+        ? Layer.succeed(
+            ManagedRelay.ManagedRelayDpopSigner,
+            ManagedRelay.ManagedRelayDpopSigner.of({
+              thumbprint: Effect.succeed("device-key-thumbprint"),
+              createProof: (proof) =>
+                Effect.sync(() => {
+                  options.signer!.proofs.push(proof);
+                  return `dpop-proof:${proof.method}:${proof.url}`;
+                }),
+            }),
+          )
+        : Layer.empty,
+    );
+
+    return Onboarding.layer.pipe(
+      Layer.provideMerge(EnvironmentRegistry.layer.pipe(Layer.provideMerge(dependencies))),
+    );
+  }
+
+  it.effect(
+    "probes a ready HTTPS host from bare hostname or URL with path using non-redirecting anonymous requests",
+    () =>
+      Effect.gen(function* () {
+        const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+        const [bare, withPath] = yield* Effect.gen(function* () {
+          const onboarding = yield* Onboarding.ConnectionOnboarding;
+          return [
+            yield* onboarding.probeOwnerPasswordHost({ kind: "add", host: "my-sail.fly.dev" }),
+            yield* onboarding.probeOwnerPasswordHost({
+              kind: "add",
+              host: "https://my-sail.fly.dev/foo?bar=1#baz",
+            }),
+          ] as const;
+        }).pipe(Effect.provide(layerOwnerPasswordOnboarding(calls)));
+
+        expect(bare).toMatchObject({
+          kind: "ready",
+          environmentId: "environment-owner",
+          origin: "https://my-sail.fly.dev",
+          label: "Sail Host",
+        });
+        expect(withPath).toMatchObject({
+          kind: "ready",
+          environmentId: "environment-owner",
+          origin: "https://my-sail.fly.dev",
+          label: "Sail Host",
+        });
+        expect(calls).toHaveLength(4);
+        for (const call of calls) {
+          expect(call.init.credentials).toBe("omit");
+          expect(call.init.redirect).toBe("manual");
+          expect(new Headers(call.init.headers).has("authorization")).toBe(false);
+        }
+      }),
+  );
+
+  it.effect("classifies older servers before checking auth.ownerPassword", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+      const host = yield* Effect.gen(function* () {
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        return yield* onboarding.probeOwnerPasswordHost({ kind: "add", host: "older.fly.dev" });
+      }).pipe(
+        Effect.provide(
+          layerOwnerPasswordOnboarding(calls, {
+            ownerPasswordToken: undefined,
+            ownerPasswordState: undefined,
+          }),
+        ),
+      );
+
+      expect(host).toEqual({
+        kind: "unavailable",
+        reason: "older-server",
+        environmentId: "environment-owner",
+        origin: "https://older.fly.dev",
+        label: "Sail Host",
+      });
+    }),
+  );
+
+  it.effect("classifies unset and disabled owner-password states on capable servers", () =>
+    Effect.gen(function* () {
+      const unsetHost = yield* Effect.gen(function* () {
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        return yield* onboarding.probeOwnerPasswordHost({ kind: "add", host: "unset.fly.dev" });
+      }).pipe(
+        Effect.provide(
+          layerOwnerPasswordOnboarding([], {
+            ownerPasswordToken: true,
+            ownerPasswordState: "unset",
+          }),
+        ),
+      );
+      expect(unsetHost).toMatchObject({ kind: "unavailable", reason: "unset" });
+
+      const disabledHost = yield* Effect.gen(function* () {
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        return yield* onboarding.probeOwnerPasswordHost({ kind: "add", host: "disabled.fly.dev" });
+      }).pipe(
+        Effect.provide(
+          layerOwnerPasswordOnboarding([], {
+            ownerPasswordToken: true,
+            ownerPasswordState: undefined,
+          }),
+        ),
+      );
+      expect(disabledHost).toMatchObject({ kind: "unavailable", reason: "disabled" });
+    }),
+  );
+
+  it.effect("rejects plain http:// hosts without making network requests", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+      const error = yield* Effect.gen(function* () {
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        return yield* onboarding.probeOwnerPasswordHost({
+          kind: "add",
+          host: "http://my-sail.fly.dev",
+        });
+      }).pipe(Effect.provide(layerOwnerPasswordOnboarding(calls)), Effect.flip);
+
+      expect(error).toMatchObject({
+        _tag: "ConnectionBlockedError",
+        reason: "configuration",
+      });
+      expect(error.message).toContain("HTTPS");
+      expect(calls).toHaveLength(0);
+
+      const envId = EnvironmentId.make("environment-http");
+      const httpConnectionId = `bearer:${envId}:http://lan.example.test:3773`;
+      const reauthError = yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        yield* registry.register(
+          new BearerConnectionRegistration({
+            target: new BearerConnectionTarget({
+              environmentId: envId,
+              label: "LAN Host",
+              connectionId: httpConnectionId,
+            }),
+            profile: new BearerConnectionProfile({
+              connectionId: httpConnectionId,
+              environmentId: envId,
+              label: "LAN Host",
+              httpBaseUrl: "http://lan.example.test:3773/",
+              wsBaseUrl: "ws://lan.example.test:3773/",
+            }),
+            credential: new BearerConnectionCredential({ token: "lan-token" }),
+          }),
+        );
+        return yield* onboarding.probeOwnerPasswordHost({
+          kind: "reauthenticate",
+          environmentId: envId,
+          connectionId: httpConnectionId,
+        });
+      }).pipe(Effect.provide(layerOwnerPasswordOnboarding(calls)), Effect.flip);
+      expect(reauthError).toMatchObject({
+        _tag: "ConnectionBlockedError",
+        reason: "configuration",
+      });
+      expect(reauthError.message).toContain("HTTPS");
+      expect(calls).toHaveLength(0);
+    }),
+  );
+
+  it.effect("rejects 3xx redirects on probe and sign-in with zero password POSTs", () =>
+    Effect.gen(function* () {
+      const probeCalls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+      const probeError = yield* Effect.gen(function* () {
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        return yield* onboarding.probeOwnerPasswordHost({
+          kind: "add",
+          host: "redirect.fly.dev",
+        });
+      }).pipe(
+        Effect.provide(layerOwnerPasswordOnboarding(probeCalls, { redirectDescriptor: true })),
+        Effect.flip,
+      );
+      expect(probeError).toMatchObject({ _tag: "ConnectionBlockedError", reason: "configuration" });
+      expect(probeCalls.some((c) => c.url.endsWith(AUTH_OWNER_PASSWORD_TOKEN_PATH))).toBe(false);
+
+      const submitCalls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+      const submitError = yield* Effect.gen(function* () {
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        const host = expectReadyHost(
+          yield* onboarding.probeOwnerPasswordHost({
+            kind: "add",
+            host: "redirect-later.fly.dev",
+          }),
+        );
+        return yield* host.signIn(Redacted.make("correct horse battery staple"));
+      }).pipe(
+        Effect.provide(
+          layerOwnerPasswordOnboarding(submitCalls, {
+            descriptorSequence: [{}, { redirect: true }],
+          }),
+        ),
+        Effect.flip,
+      );
+      expect(submitError).toMatchObject({
+        _tag: "ConnectionBlockedError",
+        reason: "configuration",
+      });
+      expect(submitCalls.some((c) => c.url.endsWith(AUTH_OWNER_PASSWORD_TOKEN_PATH))).toBe(false);
+    }),
+  );
+
+  it.effect("rejects mismatched expectedEnvironmentId and known-address conflicts on probe", () =>
+    Effect.gen(function* () {
+      const mismatch = yield* Effect.gen(function* () {
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        return yield* onboarding.probeOwnerPasswordHost({
+          kind: "add-route",
+          host: "my-sail.fly.dev",
+          environmentId: EnvironmentId.make("environment-other"),
+        });
+      }).pipe(Effect.provide(layerOwnerPasswordOnboarding([])), Effect.flip);
+      expect(mismatch).toMatchObject({ _tag: "ConnectionBlockedError", reason: "configuration" });
+
+      const conflict = yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        const envId = EnvironmentId.make("environment-owner");
+        yield* registry.register(
+          new BearerConnectionRegistration({
+            target: new BearerConnectionTarget({
+              environmentId: envId,
+              label: "Saved Sail",
+              connectionId: `bearer:${envId}:https://first.fly.dev`,
+            }),
+            profile: new BearerConnectionProfile({
+              connectionId: `bearer:${envId}:https://first.fly.dev`,
+              environmentId: envId,
+              label: "Saved Sail",
+              httpBaseUrl: "https://first.fly.dev/",
+              wsBaseUrl: "wss://first.fly.dev/",
+            }),
+            credential: new BearerConnectionCredential({ token: "existing-token" }),
+          }),
+        );
+        return yield* onboarding.probeOwnerPasswordHost({
+          kind: "add",
+          host: "second.fly.dev",
+        });
+      }).pipe(Effect.provide(layerOwnerPasswordOnboarding([])), Effect.flip);
+      expect(conflict).toMatchObject({ _tag: "ConnectionBlockedError", reason: "configuration" });
+    }),
+  );
+
+  it.effect("signs in with DPoP when accessTokenRenewal and signer are available", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+      const proofs: Array<{
+        readonly method: string;
+        readonly url: string;
+        readonly accessToken?: string;
+      }> = [];
+      const savedRegistrations: Array<ConnectionRegistration> = [];
+      const enabledCalls: Array<{
+        readonly environmentId: EnvironmentId;
+        readonly enabled: boolean;
+      }> = [];
+
+      const [environmentId, entry] = yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        const host = expectReadyHost(
+          yield* onboarding.probeOwnerPasswordHost({
+            kind: "add",
+            host: "my-sail.fly.dev",
+          }),
+        );
+        const id = yield* host.signIn(Redacted.make("correct horse battery staple"));
+        return [id, (yield* SubscriptionRef.get(registry.entries)).get(id)] as const;
+      }).pipe(
+        Effect.provide(
+          layerOwnerPasswordOnboarding(calls, {
+            accessTokenRenewal: true,
+            signer: { proofs },
+            savedRegistrations,
+            enabledCalls,
+          }),
+        ),
+      );
+
+      expect(environmentId).toBe("environment-owner");
+      expect(entry?.enabled).toBe(true);
+      expect(proofs).toEqual([
+        {
+          method: "POST",
+          url: `https://my-sail.fly.dev${AUTH_OWNER_PASSWORD_TOKEN_PATH}`,
+        },
+      ]);
+      const tokenCall = calls.find((call) => call.url.endsWith(AUTH_OWNER_PASSWORD_TOKEN_PATH));
+      assert.isDefined(tokenCall);
+      expect(tokenCall.init.credentials).toBe("omit");
+      expect(tokenCall.init.redirect).toBe("manual");
+      expect(new Headers(tokenCall.init.headers).get("dpop")).toBe(
+        `dpop-proof:POST:https://my-sail.fly.dev${AUTH_OWNER_PASSWORD_TOKEN_PATH}`,
+      );
+      expect(savedRegistrations).toHaveLength(1);
+      expect(savedRegistrations[0]).toMatchObject({
+        _tag: "BearerConnectionRegistration",
+        credential: {
+          _tag: "DpopConnectionCredential",
+          accessToken: "owner-dpop-token",
+        },
+      });
+      expect(enabledCalls).toEqual([]);
+    }),
+  );
+
+  it.effect("falls back to Bearer when DPoP signer or accessTokenRenewal is absent", () =>
+    Effect.gen(function* () {
+      const noSignerCalls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+      const noSignerSaved: Array<ConnectionRegistration> = [];
+      yield* Effect.gen(function* () {
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        const host = expectReadyHost(
+          yield* onboarding.probeOwnerPasswordHost({
+            kind: "add",
+            host: "my-sail.fly.dev",
+          }),
+        );
+        yield* host.signIn(Redacted.make("correct horse battery staple"));
+      }).pipe(
+        Effect.provide(
+          layerOwnerPasswordOnboarding(noSignerCalls, {
+            accessTokenRenewal: true,
+            savedRegistrations: noSignerSaved,
+          }),
+        ),
+      );
+      const noSignerTokenCall = noSignerCalls.find((c) =>
+        c.url.endsWith(AUTH_OWNER_PASSWORD_TOKEN_PATH),
+      );
+      expect(new Headers(noSignerTokenCall?.init.headers).has("dpop")).toBe(false);
+      expect(noSignerSaved[0]).toMatchObject({
+        credential: { _tag: "BearerConnectionCredential", token: "owner-bearer-token" },
+      });
+
+      const noRenewalCalls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+      const noRenewalProofs: Array<{ readonly method: string; readonly url: string }> = [];
+      const noRenewalSaved: Array<ConnectionRegistration> = [];
+      yield* Effect.gen(function* () {
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        const host = expectReadyHost(
+          yield* onboarding.probeOwnerPasswordHost({
+            kind: "add",
+            host: "my-sail.fly.dev",
+          }),
+        );
+        yield* host.signIn(Redacted.make("correct horse battery staple"));
+      }).pipe(
+        Effect.provide(
+          layerOwnerPasswordOnboarding(noRenewalCalls, {
+            accessTokenRenewal: false,
+            signer: { proofs: noRenewalProofs },
+            savedRegistrations: noRenewalSaved,
+          }),
+        ),
+      );
+      expect(noRenewalProofs).toHaveLength(0);
+      const noRenewalTokenCall = noRenewalCalls.find((c) =>
+        c.url.endsWith(AUTH_OWNER_PASSWORD_TOKEN_PATH),
+      );
+      expect(new Headers(noRenewalTokenCall?.init.headers).has("dpop")).toBe(false);
+      expect(noRenewalSaved[0]).toMatchObject({
+        credential: { _tag: "BearerConnectionCredential", token: "owner-bearer-token" },
+      });
+    }),
+  );
+
+  it.effect("rejects token_type mismatches for both DPoP and Bearer exchanges", () =>
+    Effect.gen(function* () {
+      const savedOnDpopMismatch: Array<ConnectionRegistration> = [];
+      const dpopMismatch = yield* Effect.gen(function* () {
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        const host = expectReadyHost(
+          yield* onboarding.probeOwnerPasswordHost({
+            kind: "add",
+            host: "my-sail.fly.dev",
+          }),
+        );
+        return yield* host.signIn(Redacted.make("correct horse battery staple"));
+      }).pipe(
+        Effect.provide(
+          layerOwnerPasswordOnboarding([], {
+            accessTokenRenewal: true,
+            signer: { proofs: [] },
+            savedRegistrations: savedOnDpopMismatch,
+            tokenResponse: () =>
+              Response.json({
+                access_token: "unexpected-bearer",
+                issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+                token_type: "Bearer",
+                expires_in: 3600,
+                scope: AuthStandardClientScopes.join(" "),
+              }),
+          }),
+        ),
+        Effect.flip,
+      );
+      expect(dpopMismatch).toMatchObject({
+        _tag: "ConnectionBlockedError",
+        reason: "authentication",
+      });
+      expect(savedOnDpopMismatch).toHaveLength(0);
+
+      const savedOnBearerMismatch: Array<ConnectionRegistration> = [];
+      const bearerMismatch = yield* Effect.gen(function* () {
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        const host = expectReadyHost(
+          yield* onboarding.probeOwnerPasswordHost({
+            kind: "add",
+            host: "my-sail.fly.dev",
+          }),
+        );
+        return yield* host.signIn(Redacted.make("correct horse battery staple"));
+      }).pipe(
+        Effect.provide(
+          layerOwnerPasswordOnboarding([], {
+            accessTokenRenewal: false,
+            savedRegistrations: savedOnBearerMismatch,
+            tokenResponse: () =>
+              Response.json({
+                access_token: "unexpected-dpop",
+                issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+                token_type: "DPoP",
+                expires_in: 3600,
+                scope: AuthStandardClientScopes.join(" "),
+              }),
+          }),
+        ),
+        Effect.flip,
+      );
+      expect(bearerMismatch).toMatchObject({
+        _tag: "ConnectionBlockedError",
+        reason: "authentication",
+      });
+      expect(savedOnBearerMismatch).toHaveLength(0);
+    }),
+  );
+
+  it.effect(
+    "aborts with zero password POSTs if server identity changes between probe and submit",
+    () =>
+      Effect.gen(function* () {
+        const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+        const error = yield* Effect.gen(function* () {
+          const onboarding = yield* Onboarding.ConnectionOnboarding;
+          const host = expectReadyHost(
+            yield* onboarding.probeOwnerPasswordHost({
+              kind: "add",
+              host: "my-sail.fly.dev",
+            }),
+          );
+          return yield* host.signIn(Redacted.make("correct horse battery staple"));
+        }).pipe(
+          Effect.provide(
+            layerOwnerPasswordOnboarding(calls, {
+              descriptorSequence: [
+                { environmentId: "environment-owner", label: "Original Host" },
+                { environmentId: "environment-impostor", label: "Swapped Host" },
+              ],
+            }),
+          ),
+          Effect.flip,
+        );
+
+        expect(error).toMatchObject({
+          _tag: "ConnectionBlockedError",
+          reason: "configuration",
+        });
+        expect(calls.some((call) => call.url.endsWith(AUTH_OWNER_PASSWORD_TOKEN_PATH))).toBe(false);
+      }),
+  );
+
+  it.effect("maps 401 clock skew and wrong-password failures distinctly", () =>
+    Effect.gen(function* () {
+      const clockSkewError = yield* Effect.gen(function* () {
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        const host = expectReadyHost(
+          yield* onboarding.probeOwnerPasswordHost({
+            kind: "add",
+            host: "my-sail.fly.dev",
+          }),
+        );
+        return yield* host.signIn(Redacted.make("correct horse battery staple"));
+      }).pipe(
+        Effect.provide(
+          layerOwnerPasswordOnboarding([], {
+            accessTokenRenewal: true,
+            signer: { proofs: [] },
+            tokenResponse: () =>
+              Response.json(
+                {
+                  _tag: "EnvironmentAuthInvalidError",
+                  code: "auth_invalid",
+                  reason: "invalid_credential",
+                  dpopFailureReason: "time_window",
+                  traceId: "trace-clock-skew",
+                },
+                { status: 401 },
+              ),
+          }),
+        ),
+        Effect.flip,
+      );
+      expect(clockSkewError).toMatchObject({
+        _tag: "ConnectionBlockedError",
+        reason: "authentication",
+        failureCause: "clock_skew",
+        traceId: "trace-clock-skew",
+      });
+
+      const badPasswordError = yield* Effect.gen(function* () {
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        const host = expectReadyHost(
+          yield* onboarding.probeOwnerPasswordHost({
+            kind: "add",
+            host: "my-sail.fly.dev",
+          }),
+        );
+        return yield* host.signIn(Redacted.make("wrong password value"));
+      }).pipe(
+        Effect.provide(
+          layerOwnerPasswordOnboarding([], {
+            tokenResponse: () =>
+              Response.json(
+                {
+                  _tag: "EnvironmentAuthInvalidError",
+                  code: "auth_invalid",
+                  reason: "invalid_credential",
+                  traceId: "trace-bad-password",
+                },
+                { status: 401 },
+              ),
+          }),
+        ),
+        Effect.flip,
+      );
+      expect(badPasswordError).toMatchObject({
+        _tag: "ConnectionBlockedError",
+        reason: "authentication",
+        traceId: "trace-bad-password",
+      });
+      expect(badPasswordError).not.toHaveProperty("failureCause", "clock_skew");
+    }),
+  );
+
+  it.effect(
+    "preserves an exact non-first legacy connectionId during owner-password reauthentication",
+    () =>
+      Effect.gen(function* () {
+        const envId = EnvironmentId.make("environment-owner");
+        const firstRouteId = `bearer:${envId}:https://primary-direct.example.test`;
+        const legacyRouteId = "legacy-sail-https";
+        const savedRegistrations: Array<ConnectionRegistration> = [];
+
+        const routes = yield* Effect.gen(function* () {
+          const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+          const onboarding = yield* Onboarding.ConnectionOnboarding;
+          yield* registry.register(
+            new BearerConnectionRegistration({
+              target: new BearerConnectionTarget({
+                environmentId: envId,
+                label: "Sail Host",
+                connectionId: firstRouteId,
+              }),
+              profile: new BearerConnectionProfile({
+                connectionId: firstRouteId,
+                environmentId: envId,
+                label: "Sail Host",
+                httpBaseUrl: "https://primary-direct.example.test/",
+                wsBaseUrl: "wss://primary-direct.example.test/",
+              }),
+              credential: new BearerConnectionCredential({ token: "first-route-token" }),
+            }),
+          );
+          yield* registry.register(
+            new BearerConnectionRegistration({
+              target: new BearerConnectionTarget({
+                environmentId: envId,
+                label: "Sail Host",
+                connectionId: legacyRouteId,
+              }),
+              profile: new BearerConnectionProfile({
+                connectionId: legacyRouteId,
+                environmentId: envId,
+                label: "Sail Host",
+                httpBaseUrl: "https://my-sail.fly.dev/",
+                wsBaseUrl: "wss://my-sail.fly.dev/",
+              }),
+              credential: new BearerConnectionCredential({ token: "expired-legacy-token" }),
+            }),
+          );
+          yield* registry.reorderRoutes(envId, [firstRouteId, legacyRouteId]);
+          savedRegistrations.length = 0;
+
+          const host = expectReadyHost(
+            yield* onboarding.probeOwnerPasswordHost({
+              kind: "reauthenticate",
+              environmentId: envId,
+              connectionId: legacyRouteId,
+            }),
+          );
+          expect(host.origin).toBe("https://my-sail.fly.dev");
+          yield* host.signIn(Redacted.make("correct horse battery staple"));
+
+          const entry = (yield* SubscriptionRef.get(registry.entries)).get(envId);
+          assert.isDefined(entry);
+          return connectionRoutes(entry);
+        }).pipe(
+          Effect.provide(
+            layerOwnerPasswordOnboarding([], {
+              accessTokenRenewal: true,
+              signer: { proofs: [] },
+              savedRegistrations,
+            }),
+          ),
+        );
+
+        expect(
+          routes.map((route) =>
+            route.target._tag === "BearerConnectionTarget" ? route.target.connectionId : null,
+          ),
+        ).toEqual([firstRouteId, legacyRouteId]);
+        expect(savedRegistrations).toHaveLength(1);
+        expect(savedRegistrations[0]).toMatchObject({
+          target: { connectionId: legacyRouteId },
+          profile: { connectionId: legacyRouteId, httpBaseUrl: "https://my-sail.fly.dev/" },
+          credential: { _tag: "DpopConnectionCredential", accessToken: "owner-dpop-token" },
+        });
+      }),
+  );
+
+  it.effect(
+    "returns SavedConnectionActivationError when setEnabled fails after durable registration",
+    () =>
+      Effect.gen(function* () {
+        const envId = EnvironmentId.make("environment-owner");
+        const connectionId = `bearer:${envId}:https://my-sail.fly.dev`;
+        const savedRegistrations: Array<ConnectionRegistration> = [];
+        const [error, entry] = yield* Effect.gen(function* () {
+          const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+          const onboarding = yield* Onboarding.ConnectionOnboarding;
+          yield* registry.register(
+            new BearerConnectionRegistration({
+              target: new BearerConnectionTarget({
+                environmentId: envId,
+                label: "Sail Host",
+                connectionId,
+              }),
+              profile: new BearerConnectionProfile({
+                connectionId,
+                environmentId: envId,
+                label: "Sail Host",
+                httpBaseUrl: "https://my-sail.fly.dev/",
+                wsBaseUrl: "wss://my-sail.fly.dev/",
+              }),
+              credential: new BearerConnectionCredential({ token: "old-token" }),
+            }),
+          );
+          yield* registry.setEnabled(envId, false);
+          savedRegistrations.length = 0;
+
+          const host = expectReadyHost(
+            yield* onboarding.probeOwnerPasswordHost({
+              kind: "reauthenticate",
+              environmentId: envId,
+              connectionId,
+            }),
+          );
+          const signInError = yield* host
+            .signIn(Redacted.make("correct horse battery staple"))
+            .pipe(Effect.flip);
+          return [signInError, (yield* SubscriptionRef.get(registry.entries)).get(envId)] as const;
+        }).pipe(
+          Effect.provide(
+            layerOwnerPasswordOnboarding([], {
+              failSetEnabled: true,
+              savedRegistrations,
+            }),
+          ),
+        );
+
+        expect(error).toBeInstanceOf(Onboarding.SavedConnectionActivationError);
+        expect(error).toMatchObject({
+          _tag: "SavedConnectionActivationError",
+          environmentId: "environment-owner",
+        });
+        expect(savedRegistrations).toHaveLength(1);
+        expect(entry?.target.environmentId).toBe("environment-owner");
+      }),
+  );
+
+  it.effect("fails cleanly when register returns false for a platform-owned environment", () =>
+    Effect.gen(function* () {
+      const envId = EnvironmentId.make("environment-owner");
+      const error = yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        yield* registry.reconcilePlatform([
+          new PrimaryConnectionRegistration({
+            target: new PrimaryConnectionTarget({
+              environmentId: envId,
+              label: "Local Primary",
+              httpBaseUrl: "https://my-sail.fly.dev/",
+              wsBaseUrl: "wss://my-sail.fly.dev/",
+            }),
+          }),
+        ]);
+        const host = expectReadyHost(
+          yield* onboarding.probeOwnerPasswordHost({
+            kind: "add-route",
+            host: "my-sail.fly.dev",
+            environmentId: envId,
+          }),
+        );
+        return yield* host.signIn(Redacted.make("correct horse battery staple"));
+      }).pipe(Effect.provide(layerOwnerPasswordOnboarding([])), Effect.flip);
+
+      expect(error).toMatchObject({
+        _tag: "ConnectionBlockedError",
+        reason: "configuration",
+      });
+    }),
+  );
+
+  it.effect("preserves replaceConnectionId during pairing-code reauthentication", () =>
+    Effect.gen(function* () {
+      const envId = EnvironmentId.make("environment-paired");
+      const firstRouteId = `bearer:${envId}:https://primary-direct.example.test`;
+      const legacyRouteId = "legacy-pairing-route";
+
+      const routes = yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const onboarding = yield* Onboarding.ConnectionOnboarding;
+        yield* registry.register(
+          new BearerConnectionRegistration({
+            target: new BearerConnectionTarget({
+              environmentId: envId,
+              label: "Paired environment",
+              connectionId: firstRouteId,
+            }),
+            profile: new BearerConnectionProfile({
+              connectionId: firstRouteId,
+              environmentId: envId,
+              label: "Paired environment",
+              httpBaseUrl: "https://primary-direct.example.test/",
+              wsBaseUrl: "wss://primary-direct.example.test/",
+            }),
+            credential: new BearerConnectionCredential({ token: "first-token" }),
+          }),
+        );
+        yield* registry.register(
+          new BearerConnectionRegistration({
+            target: new BearerConnectionTarget({
+              environmentId: envId,
+              label: "Paired environment",
+              connectionId: legacyRouteId,
+            }),
+            profile: new BearerConnectionProfile({
+              connectionId: legacyRouteId,
+              environmentId: envId,
+              label: "Paired environment",
+              httpBaseUrl: "https://remote.example.test/",
+              wsBaseUrl: "wss://remote.example.test/",
+            }),
+            credential: new BearerConnectionCredential({ token: "old-token" }),
+          }),
+        );
+        yield* registry.reorderRoutes(envId, [firstRouteId, legacyRouteId]);
+
+        yield* onboarding.registerPairing({
+          host: "remote.example.test",
+          pairingCode: "pairing-token",
+          expectedEnvironmentId: envId,
+          replaceConnectionId: legacyRouteId,
+        });
+
+        const entry = (yield* SubscriptionRef.get(registry.entries)).get(envId);
+        assert.isDefined(entry);
+        return connectionRoutes(entry);
+      }).pipe(Effect.provide(layerPairingOnboarding()));
+
+      expect(
+        routes.map((route) =>
+          route.target._tag === "BearerConnectionTarget" ? route.target.connectionId : null,
+        ),
+      ).toEqual([firstRouteId, legacyRouteId]);
+    }),
+  );
+
+  it.effect(
+    "rejects a mismatched machine during add probe when expectedEnvironmentId is supplied",
+    () =>
+      Effect.gen(function* () {
+        const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+        const mismatchError = yield* Effect.gen(function* () {
+          const onboarding = yield* Onboarding.ConnectionOnboarding;
+          return yield* onboarding.probeOwnerPasswordHost({
+            kind: "add",
+            host: "https://linked.fly.dev",
+            expectedEnvironmentId: EnvironmentId.make("expected-linked-env"),
+          });
+        }).pipe(
+          Effect.provide(
+            layerOwnerPasswordOnboarding(calls, {
+              environmentId: "different-env",
+              label: "Other Machine",
+            }),
+          ),
+          Effect.flip,
+        );
+
+        expect(mismatchError).toMatchObject({
+          _tag: "ConnectionBlockedError",
+          reason: "configuration",
+        });
+        expect(mismatchError.message).toContain("Other Machine");
+        expect(calls.some((call) => call.url.endsWith(AUTH_OWNER_PASSWORD_TOKEN_PATH))).toBe(false);
+
+        const matchedHost = yield* Effect.gen(function* () {
+          const onboarding = yield* Onboarding.ConnectionOnboarding;
+          return yield* onboarding.probeOwnerPasswordHost({
+            kind: "add",
+            host: "https://linked.fly.dev",
+            expectedEnvironmentId: EnvironmentId.make("expected-linked-env"),
+          });
+        }).pipe(
+          Effect.provide(
+            layerOwnerPasswordOnboarding([], {
+              environmentId: "expected-linked-env",
+              label: "Linked Machine",
+            }),
+          ),
+        );
+
+        expect(matchedHost).toMatchObject({
+          kind: "ready",
+          environmentId: "expected-linked-env",
+          origin: "https://linked.fly.dev",
+        });
+      }),
   );
 });

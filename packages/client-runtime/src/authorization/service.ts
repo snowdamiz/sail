@@ -594,8 +594,21 @@ export const make = Effect.gen(function* () {
           accessToken: access.access_token,
           expiresAtEpochMs: (yield* Clock.currentTimeMillis) + access.expires_in * 1_000,
         });
-        yield* credentials.put(connection.connectionId, renewed);
-        return renewed;
+        const replaced = yield* credentials.replaceRenewedCredential(
+          connection.connectionId,
+          current,
+          renewed,
+        );
+        if (replaced) {
+          return renewed;
+        }
+        // Re-authentication or removal raced the renewal; adopt a newer DPoP credential
+        // rather than returning a stale renewal or reviving a deleted connection.
+        const latest = yield* credentials.get(connection.connectionId);
+        if (Option.isSome(latest) && latest.value._tag === "DpopConnectionCredential") {
+          return latest.value;
+        }
+        return yield* credentialMissingError(connection.connectionId);
       }),
     );
   });

@@ -25,6 +25,7 @@ import {
   connectionRoutes,
   isLearned,
   pendingRouteOrder,
+  routeHttpBaseUrl,
 } from "@t3tools/client-runtime/connection";
 import { GripVerticalIcon, PlusIcon, XIcon } from "lucide-react";
 import { T, useGT, useMessages } from "gt-react";
@@ -38,13 +39,16 @@ import { usePreparedConnection } from "~/state/session";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import type { ReauthenticateRouteTarget } from "./AddEnvironmentDialog";
 
 export function EnvironmentRoutesList({
   environment,
   onAddRoute,
+  onReauthenticateRoute,
 }: {
   readonly environment: EnvironmentPresentation;
   readonly onAddRoute: () => void;
+  readonly onReauthenticateRoute?: (target: ReauthenticateRouteTarget) => void;
 }) {
   const saved = connectionRoutes(environment.entry);
   const savedIds = saved.map((route) => connectionRouteId(route.target));
@@ -115,17 +119,37 @@ export function EnvironmentRoutesList({
               environment: environment.label,
             })}
           >
-            {routes.map((route, index) => (
-              <SortableRouteRow
-                key={connectionRouteId(route.target)}
-                route={route}
-                position={index + 1}
-                inUse={connectionRouteId(route.target) === activeRouteId}
-                refused={environment.refusedRouteIds.includes(connectionRouteId(route.target))}
-                removable={canRemoveRoute(routes, route)}
-                onRemove={() => void confirmRemove(route)}
-              />
-            ))}
+            {routes.map((route, index) => {
+              const routeId = connectionRouteId(route.target);
+              const refused = environment.refusedRouteIds.includes(routeId);
+              const httpBaseUrl = routeHttpBaseUrl(route);
+              const reauthTarget: ReauthenticateRouteTarget | null =
+                refused &&
+                onReauthenticateRoute !== undefined &&
+                route.target._tag === "BearerConnectionTarget" &&
+                !isLearned(route) &&
+                httpBaseUrl !== null
+                  ? {
+                      environment,
+                      connectionId: route.target.connectionId,
+                      httpBaseUrl,
+                    }
+                  : null;
+              return (
+                <SortableRouteRow
+                  key={routeId}
+                  route={route}
+                  position={index + 1}
+                  inUse={routeId === activeRouteId}
+                  refused={refused}
+                  removable={canRemoveRoute(routes, route)}
+                  onRemove={() => void confirmRemove(route)}
+                  onReauthenticate={
+                    reauthTarget !== null ? () => onReauthenticateRoute?.(reauthTarget) : null
+                  }
+                />
+              );
+            })}
           </ol>
         </SortableContext>
       </DndContext>
@@ -146,6 +170,7 @@ function SortableRouteRow({
   refused,
   removable,
   onRemove,
+  onReauthenticate,
 }: {
   readonly route: ConnectionRoute;
   readonly position: number;
@@ -153,6 +178,7 @@ function SortableRouteRow({
   readonly refused: boolean;
   readonly removable: boolean;
   readonly onRemove: () => void;
+  readonly onReauthenticate: (() => void) | null;
 }) {
   const gt = useGT();
   const messages = useMessages();
@@ -200,10 +226,24 @@ function SortableRouteRow({
         ) : null}
         {refused && address !== null ? (
           <p className="text-2xs text-muted-foreground">
-            <T>The host refused this device's sign-in. Pair this address again with Add route.</T>
+            {onReauthenticate !== null ? (
+              <T>
+                The host refused this device's sign-in. Sign in again to reconnect this address.
+              </T>
+            ) : (
+              <T>
+                The host refused this device's sign-in. Sign in again or add this address with a
+                fresh pairing code.
+              </T>
+            )}
           </p>
         ) : null}
       </div>
+      {onReauthenticate !== null ? (
+        <Button type="button" size="xs" variant="outline" onClick={onReauthenticate}>
+          <T>Sign in again</T>
+        </Button>
+      ) : null}
       <button
         type="button"
         ref={setActivatorNodeRef}

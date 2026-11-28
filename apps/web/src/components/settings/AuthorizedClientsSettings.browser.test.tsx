@@ -1,4 +1,5 @@
 import {
+  AuthOwnerPasswordSubject,
   EnvironmentId,
   managedCapabilityDenial,
   type ManagedPolicySummary,
@@ -123,4 +124,59 @@ it("offers the selected server's pairing link beside its QR code", async () => {
     httpBaseUrl: "https://selected.example.test/",
     credential,
   });
+});
+
+it("labels owner-password sessions consistently for Sail Desktop and metadata-less sessions", async () => {
+  const createdAt = "2026-01-01T00:00:00.000Z";
+  const expiresAt = "2026-02-01T00:00:00.000Z";
+  await using screen = await render(
+    <PairingClientsList
+      shareBaseUrl="https://selected.example.test"
+      endpoints={[]}
+      defaultEndpointKey={null}
+      isLoading={false}
+      pairingLinks={[]}
+      createdPairingCredentials={new Map()}
+      sharedPairingLinkId={null}
+      clientSessions={[
+        {
+          sessionId: "desktop-password-session" as never,
+          subject: AuthOwnerPasswordSubject,
+          method: "bearer-access-token",
+          client: {
+            label: "Sail Desktop",
+            os: "macOS",
+            deviceType: "desktop",
+          },
+          scopes: [],
+          issuedAt: createdAt,
+          expiresAt,
+          lastConnectedAt: null,
+          connected: false,
+          current: false,
+        },
+        {
+          sessionId: "bare-password-session" as never,
+          subject: AuthOwnerPasswordSubject,
+          method: "browser-session-cookie",
+          client: { deviceType: "unknown" },
+          scopes: [],
+          issuedAt: createdAt,
+          expiresAt,
+          lastConnectedAt: null,
+          connected: false,
+          current: false,
+        },
+      ]}
+      revokingPairingLinkId={null}
+      revokingClientSessionId={null}
+      onRevokePairingLink={() => {}}
+      onRevokeClientSession={() => {}}
+      canRevoke
+    />,
+  );
+
+  await expect.element(screen.getByText("Sail Desktop")).toBeVisible();
+  const ownerPasswordMatches = screen.getByText(/Signed in with owner password/).elements();
+  expect(ownerPasswordMatches).toHaveLength(2);
 });
