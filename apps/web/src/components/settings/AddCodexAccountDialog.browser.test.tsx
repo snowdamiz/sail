@@ -13,7 +13,7 @@ import { act, render } from "../../../test/render";
 import { AppAtomRegistryProvider, appAtomRegistry as registry } from "../../rpc/atomRegistry";
 
 const setup = vi.hoisted(() => ({
-  update: vi.fn(async () => ({ _tag: "Success" as const })),
+  mutate: vi.fn(async () => ({ _tag: "Success" as const, value: {} })),
 }));
 
 const providersAtom = vi.hoisted(() => ({ current: null as unknown }));
@@ -25,14 +25,9 @@ vi.mock(import("../../state/server"), async (original) => {
     serverEnvironment: {
       ...actual.serverEnvironment,
       providersValueAtom: (() => providersAtom.current) as never,
-      updateSettings: setup.update as never,
     },
   };
 });
-vi.mock(import("../../state/use-atom-command"), async (original) => ({
-  ...(await original()),
-  useAtomCommand: ((command: unknown) => command) as never,
-}));
 vi.mock(import("../../state/session"), async (original) => ({
   ...(await original()),
   useEnvironmentScope: () => true,
@@ -40,7 +35,7 @@ vi.mock(import("../../state/session"), async (original) => ({
 }));
 vi.mock(import("../../hooks/useSettings"), async (original) => ({
   ...(await original()),
-  useEnvironmentSettings: (() => ({ providerInstances: {} })) as never,
+  usePersistEnvironmentProviderInstanceMutation: (() => setup.mutate) as never,
 }));
 
 import { AddCodexAccountDialog } from "./AddCodexAccountDialog";
@@ -68,10 +63,11 @@ function codexProvider(
 }
 
 function createdInstanceId(): ProviderInstanceId {
-  const [call] = setup.update.mock.calls as unknown as [
-    [{ input: { patch: { providerInstances: Record<string, unknown> } } }],
+  const [call] = setup.mutate.mock.calls as unknown as [
+    [{ operation: "create"; instanceId: ProviderInstanceId; instance: unknown }],
   ];
-  return ProviderInstanceId.make(Object.keys(call[0].input.patch.providerInstances)[0]!);
+  expect(call[0].operation).toBe("create");
+  return call[0].instanceId;
 }
 
 function Owner({

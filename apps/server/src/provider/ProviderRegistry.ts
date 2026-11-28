@@ -39,6 +39,7 @@ import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderL
 import * as ModelManifest from "./ModelManifest.ts";
 import { applyProviderCompatibility } from "./providerCompatibility.ts";
 import * as ServerConfig from "../config.ts";
+import { materializeBuiltinPstack, mergeBuiltinSkills } from "../skills/BuiltinSkills.ts";
 import { refreshPathFromLoginShell, refreshWindowsPath } from "../os-jank.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
@@ -535,15 +536,41 @@ export const layer = Layer.effect(
         ),
       ),
     );
+    const builtinPstack = yield* materializeBuiltinPstack(config);
+    const builtinSkills = builtinPstack?.skills ?? [];
+    const attachBuiltinSkills = (provider: ServerProvider): ServerProvider => {
+      if (builtinSkills.length === 0) return provider;
+      const mergedSkills = mergeBuiltinSkills(provider.skills, builtinSkills);
+      const mergedWorkspaceSnapshots = provider.workspaceSnapshots?.map((snapshot) => {
+        const skills = mergeBuiltinSkills(snapshot.skills, builtinSkills);
+        return skills === snapshot.skills ? snapshot : { ...snapshot, skills };
+      });
+      const workspaceSnapshotsChanged =
+        mergedWorkspaceSnapshots !== undefined &&
+        provider.workspaceSnapshots !== undefined &&
+        mergedWorkspaceSnapshots.some((snap, i) => snap !== provider.workspaceSnapshots?.[i]);
+      if (mergedSkills === provider.skills && !workspaceSnapshotsChanged) {
+        return provider;
+      }
+      return {
+        ...provider,
+        skills: mergedSkills,
+        ...(mergedWorkspaceSnapshots === undefined
+          ? {}
+          : { workspaceSnapshots: mergedWorkspaceSnapshots }),
+      };
+    };
     const initialManifest = yield* manifestService.current;
     const classifyCompatibility = (
       provider: ServerProvider,
       manifest: ModelManifest.ModelManifestData,
     ) =>
-      applyProviderCompatibility(
-        provider,
-        manifest.compatibility,
-        ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
+      attachBuiltinSkills(
+        applyProviderCompatibility(
+          provider,
+          manifest.compatibility,
+          ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
+        ),
       );
     const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(
       bootProviders.map((provider) => classifyCompatibility(provider, initialManifest)),
@@ -580,7 +607,15 @@ export const layer = Layer.effect(
         workspaceRescannedAt: _workspaceRescannedAt,
         ...machineProvider
       } = provider;
-      yield* writeProviderStatusCache({ filePath, provider: machineProvider }).pipe(
+      // Built-in skills re-attach from the active materialization each boot.
+      const cacheProvider: ServerProvider =
+        builtinSkills.length === 0
+          ? machineProvider
+          : {
+              ...machineProvider,
+              skills: machineProvider.skills.filter((skill) => skill.scope !== "builtin"),
+            };
+      yield* writeProviderStatusCache({ filePath, provider: cacheProvider }).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
         Effect.tapError(Effect.logError),
@@ -1197,7 +1232,7 @@ export const layer = Layer.effect(
       update: (providers: ReadonlyArray<ServerProvider>) => ReadonlyArray<ServerProvider>,
     ) =>
       Ref.modify(providersRef, (currentProviders) => {
-        const nextProviders = update(currentProviders);
+        const nextProviders = update(currentProviders).map(attachBuiltinSkills);
         return [[currentProviders, nextProviders] as const, nextProviders];
       }).pipe(
         Effect.tap(([previousProviders, nextProviders]) =>

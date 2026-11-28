@@ -1,25 +1,30 @@
-import { AuthProvidersManageScope } from "@t3tools/contracts";
-import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { useAtomValue } from "@effect/atom-react";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
+import {
+  AuthProvidersManageScope,
   ProviderDriverKind,
   ProviderInstanceId,
   type EnvironmentId,
   type ServerProvider,
 } from "@t3tools/contracts";
+import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
 import { T, useGT } from "gt-react";
 import { useState, type ReactNode } from "react";
-import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
 
-import { useEnvironmentSettings } from "../../hooks/useSettings";
+import { usePersistEnvironmentProviderInstanceMutation } from "../../hooks/useSettings";
+import { m as resolveMessage } from "../../i18n/messages";
 import { randomUUID } from "../../lib/utils";
 import { serverEnvironment } from "../../state/server";
-import { useAtomCommand } from "../../state/use-atom-command";
+import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { toastManager } from "../ui/toast";
 import { WizardFooter, WizardHeader, WizardPanel, WizardPopup } from "../ui/wizard";
-import { MultipleAccountsNote } from "./MultipleAccountsNote";
 import { SettingsRow } from "./settingsLayout";
 
 const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
@@ -40,9 +45,8 @@ export function AddCodexAccountDialog({
 }) {
   const gt = useGT();
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
-  const settings = useEnvironmentSettings(environmentId);
   const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId));
-  const update = useAtomCommand(serverEnvironment.updateSettings, "Add ChatGPT account");
+  const persistProviderInstance = usePersistEnvironmentProviderInstanceMutation(environmentId);
   const [name, setName] = useState(() =>
     gt("Personal", { $context: "default name for a ChatGPT account" }),
   );
@@ -59,25 +63,29 @@ export function AddCodexAccountDialog({
       return;
     setPending(true);
     const id = ProviderInstanceId.make(`codex_${randomUUID()}`);
-    const result = await update({
-      environmentId,
-      input: {
-        patch: {
-          providerInstances: {
-            ...settings.providerInstances,
-            [id]: {
-              driver: CODEX_DRIVER_KIND,
-              displayName,
-              enabled: true,
-              config: { enabled: true, setupMode: "managed" },
-            },
-          },
-        },
+    const result = await persistProviderInstance({
+      operation: "create",
+      instanceId: id,
+      instance: {
+        driver: CODEX_DRIVER_KIND,
+        displayName,
+        enabled: true,
+        config: { enabled: true, setupMode: "managed" },
       },
     });
     if (result._tag === "Success") {
       onAccountCreated?.(id, displayName);
       setInstanceId(id);
+    } else if (!isAtomCommandInterrupted(result)) {
+      const error = squashAtomCommandFailure(result);
+      toastManager.add({
+        type: "error",
+        title: gt("Could not add ChatGPT account"),
+        description:
+          error instanceof Error
+            ? (thrownErrorMessage(error, resolveMessage) ?? error.message)
+            : gt("The settings update failed."),
+      });
     }
     setPending(false);
   };
@@ -131,7 +139,6 @@ export function AddCodexAccountDialog({
                   />
                 }
               />
-              <MultipleAccountsNote environmentId={environmentId} driver={CODEX_DRIVER_KIND} />
             </form>
           )}
         </WizardPanel>

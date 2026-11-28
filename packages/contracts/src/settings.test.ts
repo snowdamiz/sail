@@ -555,3 +555,56 @@ describe("server model preferences", () => {
     expect(decodeServerSettingsPatch(input)).toEqual(input);
   });
 });
+
+describe("usage limit failover settings", () => {
+  it("decodes legacy settings with autoFailoverOnUsageLimit enabled and empty pass-off rules", () => {
+    const decoded = decodeServerSettings({});
+    expect(decoded.autoFailoverOnUsageLimit).toBe(true);
+    expect(decoded.usageLimitPassOffRules).toEqual([]);
+    expect(DEFAULT_SERVER_SETTINGS.autoFailoverOnUsageLimit).toBe(true);
+    expect(DEFAULT_SERVER_SETTINGS.usageLimitPassOffRules).toEqual([]);
+  });
+
+  it("round-trips usage limit failover settings and patches", () => {
+    const rules = [
+      {
+        id: "rule-1",
+        sourceDriver: "claudeAgent",
+        sourceModel: "claude-opus-4-6",
+        target: {
+          instanceId: "codex",
+          model: "gpt-5.4",
+          options: [{ id: "reasoningEffort", value: "high" }],
+        },
+      },
+      {
+        id: "rule-2",
+        sourceDriver: "claudeAgent",
+        sourceModel: null,
+        target: {
+          instanceId: "codex",
+          model: "gpt-5.4",
+        },
+      },
+    ];
+    const decoded = decodeServerSettings({
+      autoFailoverOnUsageLimit: false,
+      usageLimitPassOffRules: rules,
+    });
+    expect(decoded.autoFailoverOnUsageLimit).toBe(false);
+    expect(decoded.usageLimitPassOffRules).toEqual(rules);
+    expect(encodeServerSettings(decoded)).toMatchObject({
+      autoFailoverOnUsageLimit: false,
+      usageLimitPassOffRules: rules,
+    });
+    expect(
+      decodeServerSettingsPatch({
+        autoFailoverOnUsageLimit: true,
+        usageLimitPassOffRules: rules,
+      }),
+    ).toEqual({
+      autoFailoverOnUsageLimit: true,
+      usageLimitPassOffRules: rules,
+    });
+  });
+});

@@ -26,6 +26,10 @@ import { ServerSettingsService } from "../serverSettings.ts";
 import { resolveAntigravityInstanceDirectories } from "./antigravityAuthSupport.ts";
 import * as ProviderAuthSync from "./ProviderAuthSync.ts";
 import * as ProviderCredentialStore from "./ProviderCredentialStore.ts";
+import {
+  resolveIsolatedClaudeHomePath,
+  resolveIsolatedCodexShadowHomePath,
+} from "./ProviderIsolatedHomes.ts";
 
 const ONE_PASSWORD_KIND = SecretProviderKind.make("one_password");
 const PORTABLE_VAULT_ID = SecretProviderId.make("portable-1p");
@@ -68,14 +72,16 @@ function makeMemorySecretStore() {
 function makeServerNode(options: {
   readonly homeDir: string;
   readonly stateDir: string;
+  readonly platform?: NodeJS.Platform;
+  readonly hostEnv?: NodeJS.ProcessEnv;
   readonly settingsOverrides?: Partial<ServerSettings>;
   readonly resolvedSecrets?: ReadonlyMap<string, string>;
 }) {
   const secretStore = makeMemorySecretStore();
   const hostLayer = Layer.mergeAll(
     Layer.succeed(HostProcess.HomeDirectory, options.homeDir),
-    Layer.succeed(HostProcess.Platform, "linux" as NodeJS.Platform),
-    Layer.succeed(HostProcess.Environment, {}),
+    Layer.succeed(HostProcess.Platform, options.platform ?? ("linux" as NodeJS.Platform)),
+    Layer.succeed(HostProcess.Environment, options.hostEnv ?? {}),
   );
   const configLayer = ServerConfig.ServerConfig.layerTest(options.stateDir, options.stateDir);
   const settingsLayer = ServerSettingsService.layerTest(options.settingsOverrides ?? {});
@@ -492,6 +498,677 @@ describe("ProviderAuthSync", () => {
             assert.strictEqual(
               yield* fs.readFileString(path.join(dstHome, ".claude", ".credentials.json")),
               olderCreds,
+            );
+          }).pipe(Effect.provide(dstNode.fullLayer));
+        }).pipe(Effect.provide(Layer.merge(NodeCrypto.layer, NodeServices.layer))),
+      ),
+  );
+
+  it.effect(
+    "exports and imports secondary Claude, Codex, OpenCode, Grok, and Pi accounts in isolated directories",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const nowMs = yield* Clock.currentTimeMillis;
+          const root = yield* fs.makeTempDirectoryScoped({ prefix: "sail-multi-account-sync-" });
+          const srcHome = path.join(root, "src-home");
+          const srcState = path.join(root, "src-state");
+          const dstHome = path.join(root, "dst-home");
+          const dstState = path.join(root, "dst-state");
+
+          const claudeWorkId = ProviderInstanceId.make("claudeAgent_work");
+          const codexWorkId = ProviderInstanceId.make("codex_work");
+          const opencodeWorkId = ProviderInstanceId.make("opencode_work");
+          const grokWorkId = ProviderInstanceId.make("grok_work");
+          const piWorkId = ProviderInstanceId.make("pi_work");
+
+          const srcClaudeWorkHome = resolveIsolatedClaudeHomePath({
+            stateDir: srcState,
+            instanceId: claudeWorkId,
+            path,
+          });
+          const srcCodexWorkShadow = resolveIsolatedCodexShadowHomePath({
+            stateDir: srcState,
+            instanceId: codexWorkId,
+            path,
+          });
+
+          const srcNode = makeServerNode({
+            homeDir: srcHome,
+            stateDir: srcState,
+            settingsOverrides: {
+              providerInstances: {
+                [claudeWorkId]: {
+                  driver: ProviderDriverKind.make("claudeAgent"),
+                  displayName: "Claude Work",
+                  enabled: true,
+                  config: { homePath: srcClaudeWorkHome },
+                },
+                [codexWorkId]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  displayName: "Codex Work",
+                  enabled: true,
+                  config: { setupMode: "existing", shadowHomePath: srcCodexWorkShadow },
+                },
+                [opencodeWorkId]: {
+                  driver: ProviderDriverKind.make("opencode"),
+                  displayName: "OpenCode Work",
+                  enabled: true,
+                  environment: [
+                    { name: "XDG_DATA_HOME", value: "~/opencode-work-data", sensitive: false },
+                  ],
+                },
+                [grokWorkId]: {
+                  driver: ProviderDriverKind.make("grok"),
+                  displayName: "Grok Work",
+                  enabled: true,
+                  environment: [{ name: "GROK_HOME", value: "~/grok-work-home", sensitive: false }],
+                },
+                [piWorkId]: {
+                  driver: ProviderDriverKind.make("pi"),
+                  displayName: "Pi Work",
+                  enabled: true,
+                  environment: [
+                    { name: "PI_CODING_AGENT_DIR", value: "~/pi-work-agent", sensitive: false },
+                  ],
+                },
+              },
+            },
+          });
+
+          const dstNode = makeServerNode({ homeDir: dstHome, stateDir: dstState });
+
+          // Seed default + secondary credentials on source.
+          const defaultClaudeCreds = JSON.stringify({
+            claudeAiOauth: {
+              accessToken: "claude-default",
+              refreshToken: "claude-default-r",
+              expiresAt: nowMs + 3_600_000,
+            },
+          });
+          const workClaudeCreds = JSON.stringify({
+            claudeAiOauth: {
+              accessToken: "claude-work",
+              refreshToken: "claude-work-r",
+              expiresAt: nowMs + 3_600_000,
+            },
+          });
+          yield* fs.makeDirectory(path.join(srcHome, ".claude"), { recursive: true });
+          yield* fs.writeFileString(
+            path.join(srcHome, ".claude", ".credentials.json"),
+            defaultClaudeCreds,
+          );
+          yield* fs.makeDirectory(srcClaudeWorkHome, { recursive: true });
+          yield* fs.writeFileString(
+            path.join(srcClaudeWorkHome, ".credentials.json"),
+            workClaudeCreds,
+          );
+
+          const defaultCodexAuth = JSON.stringify({
+            tokens: { access_token: "codex-default" },
+            last_refresh: "2026-11-27T12:00:00.000Z",
+          });
+          const workCodexAuth = JSON.stringify({
+            tokens: { access_token: "codex-work" },
+            last_refresh: "2026-11-27T12:05:00.000Z",
+          });
+          yield* fs.makeDirectory(path.join(srcHome, ".codex"), { recursive: true });
+          yield* fs.writeFileString(path.join(srcHome, ".codex", "auth.json"), defaultCodexAuth);
+          yield* fs.makeDirectory(srcCodexWorkShadow, { recursive: true });
+          yield* fs.writeFileString(path.join(srcCodexWorkShadow, "auth.json"), workCodexAuth);
+
+          yield* fs.makeDirectory(path.join(srcHome, ".local", "share", "opencode"), {
+            recursive: true,
+          });
+          yield* fs.writeFileString(
+            path.join(srcHome, ".local", "share", "opencode", "auth.json"),
+            JSON.stringify({ defaultKey: { type: "api", key: "oc-default" } }),
+          );
+          yield* fs.makeDirectory(path.join(srcHome, "opencode-work-data", "opencode"), {
+            recursive: true,
+          });
+          yield* fs.writeFileString(
+            path.join(srcHome, "opencode-work-data", "opencode", "auth.json"),
+            JSON.stringify({ workKey: { type: "api", key: "oc-work" } }),
+          );
+
+          yield* fs.makeDirectory(path.join(srcHome, ".grok"), { recursive: true });
+          yield* fs.writeFileString(
+            path.join(srcHome, ".grok", "auth.json"),
+            JSON.stringify({ default: { key: "grok-default" } }),
+          );
+          yield* fs.makeDirectory(path.join(srcHome, "grok-work-home"), { recursive: true });
+          yield* fs.writeFileString(
+            path.join(srcHome, "grok-work-home", "auth.json"),
+            JSON.stringify({ work: { key: "grok-work" } }),
+          );
+
+          yield* fs.makeDirectory(path.join(srcHome, ".pi", "agent"), { recursive: true });
+          yield* fs.writeFileString(
+            path.join(srcHome, ".pi", "agent", "auth.json"),
+            JSON.stringify({ default: { type: "api_key", key: "pi-default" } }),
+          );
+          yield* fs.makeDirectory(path.join(srcHome, "pi-work-agent"), { recursive: true });
+          yield* fs.writeFileString(
+            path.join(srcHome, "pi-work-agent", "auth.json"),
+            JSON.stringify({ work: { type: "api_key", key: "pi-work" } }),
+          );
+
+          const exported = yield* Effect.gen(function* () {
+            const sync = yield* ProviderAuthSync.ProviderAuthSync;
+            return yield* sync.exportBundle({ resolveSecretReferences: true });
+          }).pipe(Effect.provide(srcNode.fullLayer));
+
+          assert.isTrue(
+            exported.bundle.cliAuth.some(
+              (entry) => entry.kind === "opencode" && entry.instanceId === opencodeWorkId,
+            ),
+          );
+          assert.isTrue(
+            exported.bundle.cliAuth.some(
+              (entry) => entry.kind === "grok" && entry.instanceId === grokWorkId,
+            ),
+          );
+          assert.isTrue(
+            exported.bundle.cliAuth.some(
+              (entry) => entry.kind === "pi" && entry.instanceId === piWorkId,
+            ),
+          );
+
+          yield* Effect.gen(function* () {
+            const sync = yield* ProviderAuthSync.ProviderAuthSync;
+            const settings = yield* ServerSettingsService;
+            const dstConfig = yield* ServerConfig.ServerConfig;
+
+            const imported = yield* sync.importBundle({ bundle: exported.bundle });
+            assert.isTrue(imported.changed);
+
+            const nextSettings = yield* settings.getSettings;
+            const expectedDstClaudeWorkHome = resolveIsolatedClaudeHomePath({
+              stateDir: dstConfig.stateDir,
+              instanceId: claudeWorkId,
+              path,
+            });
+            const expectedDstCodexWorkShadow = resolveIsolatedCodexShadowHomePath({
+              stateDir: dstConfig.stateDir,
+              instanceId: codexWorkId,
+              path,
+            });
+
+            assert.strictEqual(
+              (nextSettings.providerInstances[claudeWorkId]?.config as { homePath?: string })
+                ?.homePath,
+              expectedDstClaudeWorkHome,
+            );
+            assert.strictEqual(
+              (nextSettings.providerInstances[codexWorkId]?.config as { shadowHomePath?: string })
+                ?.shadowHomePath,
+              expectedDstCodexWorkShadow,
+            );
+
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(dstHome, ".claude", ".credentials.json")),
+              defaultClaudeCreds,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(expectedDstClaudeWorkHome, ".credentials.json")),
+              workClaudeCreds,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(dstHome, ".codex", "auth.json")),
+              defaultCodexAuth,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(expectedDstCodexWorkShadow, "auth.json")),
+              workCodexAuth,
+            );
+
+            assert.include(
+              yield* fs.readFileString(
+                path.join(dstHome, ".local", "share", "opencode", "auth.json"),
+              ),
+              "oc-default",
+            );
+            assert.include(
+              yield* fs.readFileString(
+                path.join(dstHome, "opencode-work-data", "opencode", "auth.json"),
+              ),
+              "oc-work",
+            );
+            assert.include(
+              yield* fs.readFileString(path.join(dstHome, ".grok", "auth.json")),
+              "grok-default",
+            );
+            assert.include(
+              yield* fs.readFileString(path.join(dstHome, "grok-work-home", "auth.json")),
+              "grok-work",
+            );
+            assert.include(
+              yield* fs.readFileString(path.join(dstHome, ".pi", "agent", "auth.json")),
+              "pi-default",
+            );
+            assert.include(
+              yield* fs.readFileString(path.join(dstHome, "pi-work-agent", "auth.json")),
+              "pi-work",
+            );
+          }).pipe(Effect.provide(dstNode.fullLayer));
+        }).pipe(Effect.provide(Layer.merge(NodeCrypto.layer, NodeServices.layer))),
+      ),
+  );
+
+  it.effect(
+    "preserves explicit CLAUDE_CONFIG_DIR and CODEX_HOME environment overrides without injecting homePath or shadowHomePath on import",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const nowMs = yield* Clock.currentTimeMillis;
+          const root = yield* fs.makeTempDirectoryScoped({ prefix: "sail-env-auth-sync-" });
+          const dstHome = path.join(root, "dst-home");
+          const dstState = path.join(root, "dst-state");
+          const customClaudeDir = path.join(dstHome, "custom-claude-env");
+          const customCodexDir = path.join(dstHome, "custom-codex-env");
+
+          const claudeEnvId = ProviderInstanceId.make("claudeAgent_env");
+          const codexEnvId = ProviderInstanceId.make("codex_env");
+
+          const dstNode = makeServerNode({
+            homeDir: dstHome,
+            stateDir: dstState,
+            settingsOverrides: {
+              providerInstances: {
+                [claudeEnvId]: {
+                  driver: ProviderDriverKind.make("claudeAgent"),
+                  displayName: "Claude Env",
+                  enabled: true,
+                  environment: [
+                    { name: "CLAUDE_CONFIG_DIR", value: customClaudeDir, sensitive: false },
+                  ],
+                },
+                [codexEnvId]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  displayName: "Codex Env",
+                  enabled: true,
+                  environment: [{ name: "CODEX_HOME", value: customCodexDir, sensitive: false }],
+                },
+              },
+            },
+          });
+
+          const claudeCreds = JSON.stringify({
+            claudeAiOauth: {
+              accessToken: "claude-env-token",
+              refreshToken: "claude-env-refresh",
+              expiresAt: nowMs + 3_600_000,
+            },
+          });
+          const codexAuth = JSON.stringify({
+            tokens: { access_token: "codex-env-token" },
+            last_refresh: "2026-11-27T12:10:00.000Z",
+          });
+
+          yield* Effect.gen(function* () {
+            const sync = yield* ProviderAuthSync.ProviderAuthSync;
+            const settings = yield* ServerSettingsService;
+
+            const result = yield* sync.importBundle({
+              bundle: {
+                version: 1,
+                instances: [],
+                storeBlobs: [],
+                antigravityFiles: [],
+                cliAuth: [
+                  { kind: "claude", instanceId: claudeEnvId, credentialsJson: claudeCreds },
+                  { kind: "codex", instanceId: codexEnvId, authJson: codexAuth },
+                ],
+              },
+            });
+            assert.isTrue(result.changed);
+
+            const nextSettings = yield* settings.getSettings;
+            assert.isUndefined(
+              (nextSettings.providerInstances[claudeEnvId]?.config as { homePath?: string })
+                ?.homePath,
+            );
+            assert.isUndefined(
+              (nextSettings.providerInstances[codexEnvId]?.config as { shadowHomePath?: string })
+                ?.shadowHomePath,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(customClaudeDir, ".credentials.json")),
+              claudeCreds,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(customCodexDir, "auth.json")),
+              codexAuth,
+            );
+          }).pipe(Effect.provide(dstNode.fullLayer));
+        }).pipe(Effect.provide(Layer.merge(NodeCrypto.layer, NodeServices.layer))),
+      ),
+  );
+
+  it.effect(
+    "preserves mixed-case Claude_Config_Dir and Codex_Home environment overrides on win32 during import",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const nowMs = yield* Clock.currentTimeMillis;
+          const root = yield* fs.makeTempDirectoryScoped({ prefix: "sail-win-env-auth-sync-" });
+          const dstHome = path.join(root, "dst-home");
+          const dstState = path.join(root, "dst-state");
+          const customClaudeDir = path.join(dstHome, "custom-claude-win");
+          const customCodexDir = path.join(dstHome, "custom-codex-win");
+
+          const claudeEnvId = ProviderInstanceId.make("claudeAgent_win_env");
+          const codexEnvId = ProviderInstanceId.make("codex_win_env");
+
+          const dstNode = makeServerNode({
+            homeDir: dstHome,
+            stateDir: dstState,
+            platform: "win32",
+            settingsOverrides: {
+              providerInstances: {
+                [claudeEnvId]: {
+                  driver: ProviderDriverKind.make("claudeAgent"),
+                  displayName: "Claude Win Env",
+                  enabled: true,
+                  environment: [
+                    { name: "Claude_Config_Dir", value: customClaudeDir, sensitive: false },
+                  ],
+                },
+                [codexEnvId]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  displayName: "Codex Win Env",
+                  enabled: true,
+                  environment: [{ name: "Codex_Home", value: customCodexDir, sensitive: false }],
+                },
+              },
+            },
+          });
+
+          const claudeCreds = JSON.stringify({
+            claudeAiOauth: {
+              accessToken: "claude-win-token",
+              refreshToken: "claude-win-refresh",
+              expiresAt: nowMs + 3_600_000,
+            },
+          });
+          const codexAuth = JSON.stringify({
+            tokens: { access_token: "codex-win-token" },
+            last_refresh: "2026-11-27T12:15:00.000Z",
+          });
+
+          yield* Effect.gen(function* () {
+            const sync = yield* ProviderAuthSync.ProviderAuthSync;
+            const settings = yield* ServerSettingsService;
+
+            const result = yield* sync.importBundle({
+              bundle: {
+                version: 1,
+                instances: [],
+                storeBlobs: [],
+                antigravityFiles: [],
+                cliAuth: [
+                  { kind: "claude", instanceId: claudeEnvId, credentialsJson: claudeCreds },
+                  { kind: "codex", instanceId: codexEnvId, authJson: codexAuth },
+                ],
+              },
+            });
+            assert.isTrue(result.changed);
+
+            const nextSettings = yield* settings.getSettings;
+            assert.isUndefined(
+              (nextSettings.providerInstances[claudeEnvId]?.config as { homePath?: string })
+                ?.homePath,
+            );
+            assert.isUndefined(
+              (nextSettings.providerInstances[codexEnvId]?.config as { shadowHomePath?: string })
+                ?.shadowHomePath,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(customClaudeDir, ".credentials.json")),
+              claudeCreds,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(customCodexDir, "auth.json")),
+              codexAuth,
+            );
+          }).pipe(Effect.provide(dstNode.fullLayer));
+        }).pipe(Effect.provide(Layer.merge(NodeCrypto.layer, NodeServices.layer))),
+      ),
+  );
+
+  it.effect(
+    "reconciles mixed-case Codex_Home vs CODEX_HOME on win32 without duplicating env vars or misrouting auth.json",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = yield* fs.makeTempDirectoryScoped({ prefix: "sail-win-reconcile-sync-" });
+          const dstHome = path.join(root, "dst-home");
+          const dstState = path.join(root, "dst-state");
+          const existingCodexDir = path.join(dstHome, "existing-codex");
+          const incomingCodexDir = path.join(dstHome, "incoming-codex");
+          const codexEnvId = ProviderInstanceId.make("codex_win_reconcile");
+
+          const dstNode = makeServerNode({
+            homeDir: dstHome,
+            stateDir: dstState,
+            platform: "win32",
+            settingsOverrides: {
+              providerInstances: {
+                [codexEnvId]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  displayName: "Codex Win Reconcile",
+                  enabled: true,
+                  environment: [{ name: "Codex_Home", value: existingCodexDir, sensitive: false }],
+                },
+              },
+            },
+          });
+
+          const codexAuth = JSON.stringify({
+            tokens: { access_token: "codex-reconcile-token" },
+            last_refresh: "2026-11-27T12:20:00.000Z",
+          });
+
+          yield* Effect.gen(function* () {
+            const sync = yield* ProviderAuthSync.ProviderAuthSync;
+            const settings = yield* ServerSettingsService;
+
+            const result = yield* sync.importBundle({
+              preferExistingNewer: true,
+              bundle: {
+                version: 1,
+                instances: [
+                  {
+                    instanceId: codexEnvId,
+                    driver: ProviderDriverKind.make("codex"),
+                    displayName: "Codex Win Reconcile",
+                    enabled: true,
+                    environment: [
+                      { name: "CODEX_HOME", value: incomingCodexDir, sensitive: false },
+                    ],
+                  },
+                ],
+                storeBlobs: [],
+                antigravityFiles: [],
+                cliAuth: [{ kind: "codex", instanceId: codexEnvId, authJson: codexAuth }],
+              },
+            });
+            assert.isTrue(result.changed);
+
+            const nextSettings = yield* settings.getSettings;
+            const instance = nextSettings.providerInstances[codexEnvId];
+            assert.strictEqual(instance?.environment?.length, 1);
+            assert.strictEqual(instance?.environment?.[0]?.name, "Codex_Home");
+            assert.strictEqual(instance?.environment?.[0]?.value, existingCodexDir);
+            assert.isUndefined(
+              (instance?.config as { shadowHomePath?: string } | undefined)?.shadowHomePath,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(existingCodexDir, "auth.json")),
+              codexAuth,
+            );
+            assert.isFalse(yield* fs.exists(path.join(incomingCodexDir, "auth.json")));
+          }).pipe(Effect.provide(dstNode.fullLayer));
+        }).pipe(Effect.provide(Layer.merge(NodeCrypto.layer, NodeServices.layer))),
+      ),
+  );
+
+  it.effect(
+    "resolves secret-backed Claude_Config_Dir and Codex_Home on win32 without generating isolated homes, and skips unresolvable secret homes",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const nowMs = yield* Clock.currentTimeMillis;
+          const root = yield* fs.makeTempDirectoryScoped({ prefix: "sail-win-secret-home-sync-" });
+          const dstHome = path.join(root, "dst-home");
+          const dstState = path.join(root, "dst-state");
+          const hostClaudeDir = path.join(dstHome, "host-claude");
+          const hostCodexDir = path.join(dstHome, "host-codex");
+          const secretClaudeDir = path.join(dstHome, "secret-claude");
+          const secretCodexDir = path.join(dstHome, "secret-codex");
+
+          const hostCodexAuth = JSON.stringify({
+            tokens: { access_token: "host-codex-token" },
+            last_refresh: "2026-11-27T10:00:00.000Z",
+          });
+          yield* fs.makeDirectory(hostCodexDir, { recursive: true });
+          yield* fs.writeFileString(path.join(hostCodexDir, "auth.json"), hostCodexAuth);
+
+          const claudeSecretId = ProviderInstanceId.make("claudeAgent_secret_home");
+          const codexSecretId = ProviderInstanceId.make("codex_secret_home");
+          const codexUnresolvedId = ProviderInstanceId.make("codex_unresolved_secret_home");
+
+          const dstNode = makeServerNode({
+            homeDir: dstHome,
+            stateDir: dstState,
+            platform: "win32",
+            hostEnv: {
+              CLAUDE_CONFIG_DIR: hostClaudeDir,
+              CODEX_HOME: hostCodexDir,
+            },
+            resolvedSecrets: new Map([
+              ["op://vault/claude/home", secretClaudeDir],
+              ["op://vault/codex/home", secretCodexDir],
+            ]),
+            settingsOverrides: {
+              secretProviders: {
+                [PORTABLE_VAULT_ID]: {
+                  kind: ONE_PASSWORD_KIND,
+                  label: "1Password SA",
+                  config: { serviceAccountToken: "ops_token" },
+                },
+              },
+              providerInstances: {
+                [claudeSecretId]: {
+                  driver: ProviderDriverKind.make("claudeAgent"),
+                  displayName: "Claude Secret Home",
+                  enabled: true,
+                  environment: [
+                    {
+                      name: "Claude_Config_Dir",
+                      value: { provider: PORTABLE_VAULT_ID, reference: "op://vault/claude/home" },
+                      sensitive: true,
+                    },
+                  ],
+                },
+                [codexSecretId]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  displayName: "Codex Secret Home",
+                  enabled: true,
+                  environment: [
+                    {
+                      name: "Codex_Home",
+                      value: { provider: PORTABLE_VAULT_ID, reference: "op://vault/codex/home" },
+                      sensitive: true,
+                    },
+                  ],
+                },
+                [codexUnresolvedId]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  displayName: "Codex Unresolved Secret Home",
+                  enabled: true,
+                  environment: [
+                    {
+                      name: "Codex_Home",
+                      value: { provider: PORTABLE_VAULT_ID, reference: "op://vault/codex/missing" },
+                      sensitive: true,
+                    },
+                  ],
+                },
+              },
+            },
+          });
+
+          const claudeCreds = JSON.stringify({
+            claudeAiOauth: {
+              accessToken: "claude-secret-home-token",
+              refreshToken: "claude-secret-home-refresh",
+              expiresAt: nowMs + 3_600_000,
+            },
+          });
+          const codexAuth = JSON.stringify({
+            tokens: { access_token: "codex-secret-home-token" },
+            last_refresh: "2026-11-27T12:25:00.000Z",
+          });
+
+          yield* Effect.gen(function* () {
+            const sync = yield* ProviderAuthSync.ProviderAuthSync;
+            const settings = yield* ServerSettingsService;
+
+            const result = yield* sync.importBundle({
+              bundle: {
+                version: 1,
+                instances: [],
+                storeBlobs: [],
+                antigravityFiles: [],
+                cliAuth: [
+                  { kind: "claude", instanceId: claudeSecretId, credentialsJson: claudeCreds },
+                  { kind: "codex", instanceId: codexSecretId, authJson: codexAuth },
+                  { kind: "codex", instanceId: codexUnresolvedId, authJson: codexAuth },
+                ],
+              },
+            });
+            assert.isTrue(result.changed);
+
+            const nextSettings = yield* settings.getSettings;
+            assert.isUndefined(
+              (nextSettings.providerInstances[claudeSecretId]?.config as { homePath?: string })
+                ?.homePath,
+            );
+            assert.isUndefined(
+              (nextSettings.providerInstances[codexSecretId]?.config as { shadowHomePath?: string })
+                ?.shadowHomePath,
+            );
+            assert.isUndefined(
+              (
+                nextSettings.providerInstances[codexUnresolvedId]?.config as {
+                  shadowHomePath?: string;
+                }
+              )?.shadowHomePath,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(secretClaudeDir, ".credentials.json")),
+              claudeCreds,
+            );
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(secretCodexDir, "auth.json")),
+              codexAuth,
+            );
+            assert.isFalse(yield* fs.exists(path.join(dstHome, ".codex", "auth.json")));
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(hostCodexDir, "auth.json")),
+              hostCodexAuth,
             );
           }).pipe(Effect.provide(dstNode.fullLayer));
         }).pipe(Effect.provide(Layer.merge(NodeCrypto.layer, NodeServices.layer))),

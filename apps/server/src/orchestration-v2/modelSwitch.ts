@@ -1,10 +1,13 @@
 import {
   isCompactionCommandMessage,
+  PROVIDER_DISPLAY_NAMES,
   type ModelSelection,
+  type OrchestrationV2FailoverNotice,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
+  type ServerProvider,
 } from "@t3tools/contracts";
-import { modelSelectionsEqual } from "@t3tools/shared/model";
+import { formatModelSlugName, modelSelectionsEqual } from "@t3tools/shared/model";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 
 /**
@@ -52,4 +55,39 @@ export function modelSwitchSince(
   }
   const from = previous?.modelSelection ?? baseline;
   return from === undefined || modelSelectionsEqual(from, to) ? {} : { modelSwitch: { from, to } };
+}
+
+function providerLabel(instanceId: string, provider: ServerProvider | undefined): string {
+  const customName = provider?.displayName?.trim();
+  if (customName) return customName;
+  if (provider) {
+    return PROVIDER_DISPLAY_NAMES[provider.driver] ?? provider.instanceId;
+  }
+  return instanceId;
+}
+
+function modelLabel(model: string, provider: ServerProvider | undefined): string {
+  const matched = provider?.models.find(
+    (entry) => entry.slug === model || entry.aliases?.includes(model),
+  );
+  return matched?.name ?? formatModelSlugName(model);
+}
+
+export function formatFailoverNotice(
+  notice: OrchestrationV2FailoverNotice,
+  providers: readonly ServerProvider[] = [],
+): string {
+  const fromProvider = providers.find((entry) => entry.instanceId === notice.fromInstanceId);
+  const toProvider = providers.find((entry) => entry.instanceId === notice.toInstanceId);
+  const fromName = providerLabel(notice.fromInstanceId, fromProvider);
+  const toName = providerLabel(notice.toInstanceId, toProvider);
+  const toModel = modelLabel(notice.toModel, toProvider);
+
+  if (notice.kind === "same_provider_account") {
+    return `Usage limit reached on ${fromName} → continued on ${toName} (${toModel})`;
+  }
+  const fromDriverName = fromProvider
+    ? (PROVIDER_DISPLAY_NAMES[fromProvider.driver] ?? fromName)
+    : fromName;
+  return `All ${fromDriverName} accounts reached usage limit → handed off to ${toName} (${toModel})`;
 }

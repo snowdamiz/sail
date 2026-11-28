@@ -816,6 +816,15 @@ export const OrchestrationV2RunOutput = Schema.Struct({
 });
 export type OrchestrationV2RunOutput = typeof OrchestrationV2RunOutput.Type;
 
+export const OrchestrationV2FailoverNotice = Schema.Struct({
+  kind: Schema.Literals(["same_provider_account", "cross_provider_handoff"]),
+  fromInstanceId: ProviderInstanceId,
+  fromModel: TrimmedNonEmptyString,
+  toInstanceId: ProviderInstanceId,
+  toModel: TrimmedNonEmptyString,
+});
+export type OrchestrationV2FailoverNotice = typeof OrchestrationV2FailoverNotice.Type;
+
 export const OrchestrationV2Run = Schema.Struct({
   id: RunId,
   threadId: ThreadId,
@@ -838,6 +847,9 @@ export const OrchestrationV2Run = Schema.Struct({
   restartContinuationOfRunId: Schema.optional(RunId),
   manualContinuationOfRunId: Schema.optional(RunId),
   usageLimitContinuationOfRunId: Schema.optional(RunId),
+  usageLimitFailoverOfRunId: Schema.optional(RunId),
+  failoverAttemptedInstanceIds: Schema.optional(Schema.Array(ProviderInstanceId)),
+  failoverNotice: Schema.optional(OrchestrationV2FailoverNotice),
   delegatedTaskId: Schema.optional(NodeId),
   workStartedAt: Schema.optional(Schema.DateTimeUtc),
   restartCancelledBackgroundWork: Schema.optional(
@@ -3619,6 +3631,9 @@ export const OrchestrationV2Command = Schema.Union([
     sourcePlanRef: Schema.optional(Schema.Struct({ threadId: ThreadId, planId: PlanId })),
     restartContinuationOfRunId: Schema.optional(RunId),
     usageLimitContinuationOfRunId: Schema.optional(RunId),
+    usageLimitFailoverOfRunId: Schema.optional(RunId),
+    failoverAttemptedInstanceIds: Schema.optional(Schema.Array(ProviderInstanceId)),
+    failoverNotice: Schema.optional(OrchestrationV2FailoverNotice),
     manualContinuationOfRunId: Schema.optional(RunId),
     steerFollowUpOfRunId: Schema.optional(RunId),
     steerFollowUpAfterRunOrdinal: Schema.optional(NonNegativeInt),

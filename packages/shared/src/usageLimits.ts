@@ -3,7 +3,6 @@ import {
   type ModelSelection,
   type ServerSettings,
   type ProjectId,
-  resolveProjectProviderInstanceEnabled,
   type UsageLimitsReport,
   type ProviderInstanceId,
   type ProviderConsumeResetCreditInput,
@@ -21,60 +20,17 @@ import {
 import * as DateTime from "effect/DateTime";
 
 import { isLocalLoopbackHost, isWildcardHost } from "./hostClassification.ts";
+import {
+  accountKeyResolver,
+  exhaustedUsageWindow,
+  nativeAccountReport,
+  resolveUsageLimitFailoverTarget,
+  type UsageLimitFailoverSettings,
+} from "./usageFailover.ts";
+
+export { exhaustedUsageWindow };
 
 const MINUTE = 60_000;
-
-export function exhaustedUsageWindow(
-  provider: ServerProvider | undefined,
-  now: number,
-  model?: string,
-) {
-  const windows = provider?.usageLimits?.windows ?? [];
-  const exhausted = windows.filter(
-    (window) =>
-      (window.usedPercent ?? 0) >= 100 &&
-      (model === undefined || window.modelIds === undefined || window.modelIds.includes(model)) &&
-      (model === undefined ||
-        window.providerIds === undefined ||
-        window.providerIds.includes(model.split("/")[0] ?? "")) &&
-      (!window.resetsAt ||
-        !Number.isFinite(Date.parse(window.resetsAt)) ||
-        Date.parse(window.resetsAt) > now),
-  );
-  if (model === undefined) return exhausted[0];
-  switch (provider?.driver) {
-    case "cursor": {
-      const api = exhausted.find((window) => window.id === "apiPercentUsed");
-      const auto = exhausted.find((window) => window.id === "autoPercentUsed");
-      return /^(auto|default|grok|composer)/.test(model) ? auto && api : api;
-    }
-    case "antigravity": {
-      const family = model.match(/^(gemini|claude|gpt)-/)?.[1];
-      return exhausted.find((window) => {
-        const pool = window.id.match(/^(gemini|claude|gpt|3p)-/)?.[1];
-        return (
-          pool === undefined ||
-          family === undefined ||
-          pool === family ||
-          (pool === "3p" && (family === "claude" || family === "gpt"))
-        );
-      });
-    }
-    case "codex": {
-      // Seat-based plans spend credits only past their plan windows, so the credit cap blocks only plans without them.
-      const hasPlanWindows = windows.some(
-        (window) => window.id === "primary" || window.id === "secondary",
-      );
-      return exhausted.find((window) => window.id !== "individual" || !hasPlanWindows);
-    }
-    case "opencode":
-      return exhausted.find(
-        (window) => !window.id.startsWith("go_") || model.startsWith("opencode-go/"),
-      );
-    default:
-      return exhausted[0];
-  }
-}
 
 export function resolveNewThreadModelSelection(input: {
   readonly defaultSelection: ModelSelection | null;
@@ -87,30 +43,35 @@ export function resolveNewThreadModelSelection(input: {
 }) {
   const selection = input.explicitSelection ?? input.defaultSelection;
   const unchanged = { selection, fallback: null };
-  if (input.explicitSelection || !selection || !input.fallbackSelection) return unchanged;
+  if (input.explicitSelection || !selection) return unchanged;
   const provider = input.providers.find((entry) => entry.instanceId === selection.instanceId);
   const window = exhaustedUsageWindow(provider, input.now, selection.model);
-  const fallback = input.providers.find(
-    (entry) => entry.instanceId === input.fallbackSelection?.instanceId,
-  );
-  if (
-    !provider ||
-    !window ||
-    !fallback?.enabled ||
-    !fallback.installed ||
-    fallback.auth.status === "unauthenticated" ||
-    !isProviderAvailable(fallback) ||
-    exhaustedUsageWindow(fallback, input.now, input.fallbackSelection.model) ||
-    (input.settings &&
-      !resolveProjectProviderInstanceEnabled(
-        input.settings,
-        input.projectId ?? null,
-        fallback.instanceId,
-      ))
-  )
-    return unchanged;
+  if (!provider || !window) return unchanged;
+
+  const failoverSettings: UsageLimitFailoverSettings = input.settings
+    ? {
+        ...input.settings,
+        fallbackModelSelection: input.fallbackSelection,
+      }
+    : {
+        autoFailoverOnUsageLimit: true,
+        usageLimitPassOffRules: [],
+        fallbackModelSelection: input.fallbackSelection,
+        providerInstances: {},
+        projectSettingsOverrides: {},
+      };
+
+  const resolved = resolveUsageLimitFailoverTarget({
+    currentSelection: selection,
+    providers: input.providers,
+    settings: failoverSettings,
+    projectId: input.projectId ?? null,
+    now: input.now,
+  });
+  if (resolved.kind === "none") return unchanged;
+
   return {
-    selection: input.fallbackSelection,
+    selection: resolved.target,
     fallback: { provider, resetsAt: window.resetsAt ?? null },
   };
 }
@@ -214,51 +175,6 @@ export function collectExternalUsageLinks(
   return [...links.values()];
 }
 
-function accountKey(
-  driver: ServerProvider["driver"],
-  email: string | undefined,
-  limits?: ServerProviderUsageLimits,
-): string | null {
-  const normalizedEmail = email?.trim().toLowerCase();
-  if (normalizedEmail) return `${driver}:${normalizedEmail}`;
-  return limits?.credentialFingerprint
-    ? `${driver}:credential:${limits.credentialFingerprint}`
-    : null;
-}
-
-interface AccountReport {
-  readonly driver: ServerProvider["driver"];
-  readonly email?: string | undefined;
-  readonly workspaceId?: string | undefined;
-  readonly usageLimits?: ServerProviderUsageLimits | undefined;
-}
-
-const nativeReport = (provider: ServerProvider): AccountReport => ({
-  driver: provider.driver,
-  email: provider.auth.email,
-  workspaceId: provider.auth.workspaceId,
-  usageLimits: provider.usageLimits,
-});
-
-// Include every enabled login, even unreadable workspaces.
-function accountKeyResolver(reports: Iterable<AccountReport>) {
-  const workspaces = new Map<string, Set<string>>();
-  for (const report of reports) {
-    const key = accountKey(report.driver, report.email, report.usageLimits);
-    if (key && report.workspaceId) {
-      workspaces.set(key, (workspaces.get(key) ?? new Set()).add(report.workspaceId));
-    }
-  }
-  return (report: AccountReport): string | null => {
-    const key = accountKey(report.driver, report.email, report.usageLimits);
-    if (!key) return null;
-    if (report.workspaceId) return `${key}:${report.workspaceId}`;
-    const known = workspaces.get(key);
-    if (!known) return key;
-    return known.size === 1 ? `${key}:${[...known][0]}` : null;
-  };
-}
-
 const hubAccountName = (account: { readonly id: string }) => account.id.replace(/\.json$/i, "");
 
 function limitAccountKeyResolver(presentations: LimitPresentations) {
@@ -266,7 +182,7 @@ function limitAccountKeyResolver(presentations: LimitPresentations) {
     [...presentations.values()].flatMap((presentation) => [
       ...(presentation.serverConfig?.providers ?? [])
         .filter((provider) => provider.enabled)
-        .map(nativeReport),
+        .map(nativeAccountReport),
       ...(presentation.serverConfig?.usageLimitSources ?? []).flatMap((source) => source.accounts),
     ]),
   );
@@ -276,7 +192,7 @@ const nativeRowKey = (
   resolveKey: ReturnType<typeof accountKeyResolver>,
   environmentId: EnvironmentId,
   provider: ServerProvider,
-) => resolveKey(nativeReport(provider)) ?? `${environmentId}:${provider.instanceId}`;
+) => resolveKey(nativeAccountReport(provider)) ?? `${environmentId}:${provider.instanceId}`;
 
 const hubRowKey = (
   resolveKey: ReturnType<typeof accountKeyResolver>,
@@ -1002,7 +918,7 @@ export function collectProviderUsageLimits(
     return null;
   }
   const resolveKey = accountKeyResolver([
-    ...providers.filter((provider) => provider.enabled).map(nativeReport),
+    ...providers.filter((provider) => provider.enabled).map(nativeAccountReport),
     ...sources.flatMap((source) => source.accounts),
   ]);
   // Behind a hub, a local login counts only when it is one of the accounts the hub routes to.
@@ -1017,7 +933,7 @@ export function collectProviderUsageLimits(
   >();
   for (const provider of providersWithLimits(providers)) {
     if (!drivers.has(provider.driver) || !provider.usageLimits) continue;
-    const accountKey = resolveKey(nativeReport(provider));
+    const accountKey = resolveKey(nativeAccountReport(provider));
     if (routedKeys && (accountKey === null || !routedKeys.has(accountKey))) continue;
     const snapshot = { provider, limits: provider.usageLimits };
     const key = accountKey ?? `instance:${provider.instanceId}`;
@@ -1044,7 +960,7 @@ export function collectProviderUsageLimits(
   const native = [...nativeByAccount.values()];
   const nativeAccountKeys = new Set(
     native.flatMap(({ usage: { provider, limits } }) => {
-      const key = resolveKey(nativeReport(provider));
+      const key = resolveKey(nativeAccountReport(provider));
       return key && limits.windows.length && !limits.unavailable ? [key] : [];
     }),
   );
@@ -1054,7 +970,7 @@ export function collectProviderUsageLimits(
     usage: { provider, limits },
     credits,
   } of native) {
-    const key = resolveKey(nativeReport(provider));
+    const key = resolveKey(nativeAccountReport(provider));
     // Only a hub this instance reaches may redeem a credit for its thread.
     const hubCredits = shownHubs
       .flatMap((source) => source.accounts.map((account) => ({ source, account })))

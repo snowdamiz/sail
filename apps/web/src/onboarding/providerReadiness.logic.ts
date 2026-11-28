@@ -73,13 +73,15 @@ export function resolveOnboardingProviderLoginCommand(
 
   if (provider.driver === "claudeAgent") {
     const config = decodeClaudeSettings(instance?.config ?? {});
-    const binaryPath = Option.isSome(config) ? config.value.binaryPath : "claude";
+    const rawBinaryPath = Option.isSome(config) ? config.value.binaryPath.trim() : "";
+    const binaryPath = rawBinaryPath.length > 0 ? rawBinaryPath : "claude";
     return `${quoteProviderBinary(binaryPath, "claude", platform)} auth login`;
   }
 
   if (provider.driver === "codex") {
     const config = decodeCodexSettings(instance?.config ?? {});
-    const binaryPath = Option.isSome(config) ? config.value.binaryPath : "codex";
+    const rawBinaryPath = Option.isSome(config) ? config.value.binaryPath.trim() : "";
+    const binaryPath = rawBinaryPath.length > 0 ? rawBinaryPath : "codex";
     return `${quoteProviderBinary(binaryPath, "codex", platform)} login`;
   }
 

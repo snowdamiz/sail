@@ -190,6 +190,11 @@ import {
   type CompiledClaudeModelSelection,
 } from "../../claudeModelOptions.ts";
 import * as ServerConfig from "../../config.ts";
+import {
+  type MaterializedBuiltinSkillPack,
+  materializeBuiltinPstack,
+  rewriteUnprefixedBuiltinClaudeCommand,
+} from "../../skills/BuiltinSkills.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import * as ServerSettings from "../../serverSettings.ts";
@@ -2550,6 +2555,7 @@ export function makeClaudeQueryOptions(input: {
   readonly supportedDialogKinds?: ClaudeQueryOptions["supportedDialogKinds"];
   readonly allowDangerouslySkipPermissions?: boolean;
   readonly appendSystemPromptFileText?: string;
+  readonly builtinPluginDirectories?: ReadonlyArray<string>;
   // Flag settings, because a user's settings.json env beats the process env in Claude Code.
   readonly toolSearchOverride?: "true";
 }): ClaudeAgentSdkQueryOptions {
@@ -2582,8 +2588,11 @@ export function makeClaudeQueryOptions(input: {
   if (requestThinkingSummaries && extraArgs["thinking-display"] === undefined) {
     extraArgs["thinking-display"] = "summarized";
   }
-  const pluginDirectories =
+  const launchPluginDirectories =
     input.settings === undefined ? [] : claudeLaunchArgPluginDirectories(input.settings.launchArgs);
+  const pluginDirectories = [
+    ...new Set([...launchPluginDirectories, ...(input.builtinPluginDirectories ?? [])]),
+  ];
   // A bare --plugin-dir still reaches Claude, which reports the missing path.
   if (launchArgPluginDir === null) extraArgs["plugin-dir"] = null;
   const threadIdentity: ClaudeAgentSdkThreadIdentity = input.resume
@@ -3232,7 +3241,10 @@ function isSupportedClaudeImageMimeType(
 export function makeClaudeUserMessage(input: {
   readonly text: string;
   readonly priority?: SDKUserMessage["priority"];
-  readonly skills?: ReadonlyMap<string, ClaudeSkillTarget>;
+  readonly skills?: ReadonlyMap<
+    string,
+    ClaudeSkillTarget & { readonly scope?: string | undefined }
+  >;
   readonly skillMentionsFrom?: number;
   readonly uuid?: SDKUserMessage["uuid"];
 }): SDKUserMessage {
@@ -3242,6 +3254,16 @@ export function makeClaudeUserMessage(input: {
     input.skills === undefined
       ? undefined
       : planClaudeSkillDispatch(input.text, input.skills, input.skillMentionsFrom);
+  const commandText =
+    dispatch === undefined
+      ? undefined
+      : input.skills === undefined
+        ? dispatch.commandText
+        : rewriteUnprefixedBuiltinClaudeCommand(dispatch.commandText, input.skills);
+  const fallbackText =
+    input.skills === undefined
+      ? input.text
+      : rewriteUnprefixedBuiltinClaudeCommand(input.text, input.skills);
   // Claude runs `/goal` only when it opens the prompt, so a goal stays one block.
   const isGoalCommand = parseGoalCommand({ text: input.text }) !== null;
   return {
@@ -3250,14 +3272,14 @@ export function makeClaudeUserMessage(input: {
       role: "user",
       content: isGoalCommand
         ? (dispatch?.leadingText ?? input.text)
-        : dispatch
+        : dispatch && commandText !== undefined
           ? [
               ...(dispatch.leadingText === undefined
                 ? []
                 : [{ type: "text" as const, text: dispatch.leadingText }]),
-              { type: "text" as const, text: dispatch.commandText },
+              { type: "text" as const, text: commandText },
             ]
-          : input.text,
+          : fallbackText,
     },
     parent_tool_use_id: null,
     ...(input.priority === undefined ? {} : { priority: input.priority }),
@@ -3447,7 +3469,10 @@ const makeClaudeUserMessageWithAttachments = Effect.fnUntraced(function* (input:
   readonly attachmentsDir: string;
   readonly fileSystem: FileSystem.FileSystem;
   readonly pdfReservation: Effect.Success<ReturnType<typeof reserveClaudePdfBudget>>;
-  readonly skills?: ReadonlyMap<string, ClaudeSkillTarget>;
+  readonly skills?: ReadonlyMap<
+    string,
+    ClaudeSkillTarget & { readonly scope?: string | undefined }
+  >;
   readonly skillMentionsFrom?: number;
 }) {
   if (input.attachments.length === 0) {
@@ -3477,10 +3502,26 @@ const makeClaudeUserMessageWithAttachments = Effect.fnUntraced(function* (input:
       resolveAttachmentPath({ attachmentsDir: input.attachmentsDir, attachment }),
   });
 
-  const dispatch =
+  const rawDispatch =
     input.skills === undefined
       ? undefined
       : planClaudeSkillDispatch(textWithAttachmentPaths, input.skills, input.skillMentionsFrom);
+  const dispatch =
+    rawDispatch === undefined
+      ? undefined
+      : input.skills === undefined
+        ? rawDispatch
+        : {
+            ...rawDispatch,
+            commandText: rewriteUnprefixedBuiltinClaudeCommand(
+              rawDispatch.commandText,
+              input.skills,
+            ),
+          };
+  const rewrittenTextWithAttachmentPaths =
+    input.skills === undefined
+      ? textWithAttachmentPaths
+      : rewriteUnprefixedBuiltinClaudeCommand(textWithAttachmentPaths, input.skills);
   const content: Array<ClaudeUserContentBlock> = [];
   // Base64 adds a third to the payload. Leave room below Anthropic's 32 MB
   // request limit for text, instructions, and SDK framing. The SDK does not
@@ -3502,7 +3543,7 @@ const makeClaudeUserMessageWithAttachments = Effect.fnUntraced(function* (input:
               : [{ type: "text", text: dispatch.leadingText }]),
             { type: "text", text: dispatch.commandText },
           ]
-        : [{ type: "text", text: textWithAttachmentPaths }],
+        : [{ type: "text", text: rewrittenTextWithAttachmentPaths }],
     ),
   );
   input.pdfReservation.budget.pending.bytes += textBytes;
@@ -3611,8 +3652,8 @@ const makeClaudeUserMessageWithAttachments = Effect.fnUntraced(function* (input:
   // Images must precede the command block for skill expansion.
   if (dispatch) {
     content.push({ type: "text", text: dispatch.commandText });
-  } else if (textWithAttachmentPaths.length > 0) {
-    content.push({ type: "text", text: textWithAttachmentPaths });
+  } else if (rewrittenTextWithAttachmentPaths.length > 0) {
+    content.push({ type: "text", text: rewrittenTextWithAttachmentPaths });
   }
 
   return {
@@ -5999,6 +6040,7 @@ export interface ClaudeAdapterV2Options {
     ) => Effect.Effect<void>;
   };
   readonly installationGate?: ProviderInstallationGate.ProviderInstallationGate["Service"];
+  readonly builtinSkillsPack?: MaterializedBuiltinSkillPack | undefined;
 }
 
 export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
@@ -6228,14 +6270,20 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
       cwd ?? undefined,
       adapterOptions.environment,
     ).pipe(
-      Effect.map(
-        (skills) =>
-          new Map(
-            skills
-              .filter((skill) => skill.enabled && skill.userInvocable !== false)
-              .map((skill) => [skill.name, skill]),
-          ),
-      ),
+      Effect.map((skills) => {
+        const map = new Map<string, ClaudeSkillTarget & { readonly scope?: string | undefined }>(
+          skills
+            .filter((skill) => skill.enabled && skill.userInvocable !== false)
+            .map((skill) => [skill.name, skill]),
+        );
+        for (const builtin of adapterOptions.builtinSkillsPack?.skills ?? []) {
+          if (!builtin.enabled || builtin.userInvocable === false) continue;
+          const prefixedName = `pstack:${builtin.name}`;
+          if (!map.has(prefixedName)) map.set(prefixedName, builtin);
+          if (!map.has(builtin.name)) map.set(builtin.name, builtin);
+        }
+        return map;
+      }),
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
     );
@@ -13712,6 +13760,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? {}
               : { workspace: turnInput.runtimePolicy.workspace }),
             attachmentsDir,
+            ...(adapterOptions.builtinSkillsPack === undefined
+              ? {}
+              : { builtinPluginDirectories: [adapterOptions.builtinSkillsPack.pluginDir] }),
             settings: adapterOptions.settings,
             // Delegated threads have no one typing, so they never ask for suggestions.
             promptSuggestions:
@@ -15594,11 +15645,13 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
       expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
       claudeEnvironment,
     );
+    const builtinSkillsPack = yield* materializeBuiltinPstack(serverConfig);
     return yield* makeClaudeAdapterV2({
       instanceId,
       settings: { ...config, enabled, binaryPath },
       environment: claudeEnvironment,
       attachmentsDir: serverConfig.attachmentsDir,
+      builtinSkillsPack,
       fileSystem,
       path,
       random,

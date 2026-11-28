@@ -71,13 +71,17 @@ import {
   resolveOnboardingProviderLoginCommand,
 } from "../../onboarding/providerReadiness.logic";
 import {
+  canAddAnyProviderInWelcome,
+  canAddProviderAccountInWelcome,
   cliTerminalStep,
   codexCardProvider,
   codexNeedsSetup,
   groupWelcomeAgents,
+  inlineAuthCardProvider,
   isBrokenVersion,
   turnedOnInstance,
   welcomeAgentState,
+  welcomeNeedsInlineAuth,
   welcomeOffersPhone,
 } from "../../onboarding/welcomePage.logic";
 import {
@@ -109,6 +113,8 @@ import { AddProviderInstanceDialog } from "../settings/AddProviderInstanceDialog
 import { useDesktopCliCommand } from "../settings/CliCommandSettingsRow";
 import { CodexSetupSection } from "../settings/CodexSetupSection";
 import { readCodexSetupMode } from "../settings/CodexSetupSection.logic";
+import { ProviderAuthenticationSection } from "../settings/ProviderAuthenticationSection";
+import { ProviderSetupSection, readAntigravityAuthMethod } from "../settings/ProviderSetupSection";
 import { TerminalViewport } from "../ThreadTerminalDrawer";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { type BoatAccess, BoatAccessContext, useBoatAccess } from "../boats/access";
@@ -117,6 +123,7 @@ import { errorText } from "../boats/reply";
 import type { MachineView, SetupAction, UiState } from "../boats/types";
 import { ACPRegistryIcon } from "../Icons";
 import { SailBrandMark } from "../SailBrandMark";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Checkbox } from "../ui/checkbox";
@@ -931,8 +938,18 @@ function AgentsSection({
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
   const [terminalSession, setTerminalSession] = useState<AgentTerminalSession | null>(null);
   const [moreOpen, setMoreOpen] = useState<boolean | null>(null);
-  const [addingProvider, setAddingProvider] = useState(false);
+  const [addDialogState, setAddDialogState] = useState<
+    | { readonly open: false }
+    | {
+        readonly open: true;
+        readonly initialDriver?: ProviderDriverKind;
+        readonly mode?: "provider" | "account";
+        readonly showMoreProviders?: boolean;
+      }
+  >({ open: false });
   const [codexSetupId, setCodexSetupId] = useState<ProviderInstanceId | null>(null);
+  const [inlineAuthId, setInlineAuthId] = useState<ProviderInstanceId | null>(null);
+  const [lastInlineAuth, setLastInlineAuth] = useState<ServerProvider | null>(null);
   const [cliTerminalFor, setCliTerminalFor] = useState<ProviderInstanceId | null>(null);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- asks the environment to refresh its provider list when the environment changes
@@ -972,6 +989,21 @@ function AgentsSection({
   });
   // Once the card closes, a later status change does not reopen it and move the page.
   if (listedCodex !== undefined && codexSetupProvider === null) setCodexSetupId(null);
+
+  const listedInlineAuth =
+    inlineAuthId === null
+      ? undefined
+      : providers?.find((provider) => provider.instanceId === inlineAuthId);
+  if (listedInlineAuth !== undefined && listedInlineAuth !== lastInlineAuth) {
+    setLastInlineAuth(listedInlineAuth);
+  }
+  const inlineAuthProvider = inlineAuthCardProvider({
+    providers,
+    instanceId: inlineAuthId,
+    last: lastInlineAuth,
+    settings: serverConfig?.settings,
+  });
+  if (listedInlineAuth !== undefined && inlineAuthProvider === null) setInlineAuthId(null);
 
   const openTerminal = (provider: ServerProvider) => {
     if (
@@ -1085,6 +1117,21 @@ function AgentsSection({
         </Button>
       );
     }
+    if (serverConfig !== null && welcomeNeedsInlineAuth(provider, serverConfig.settings)) {
+      const open = inlineAuthId === provider.instanceId;
+      const actionLabel = state === "signIn" ? gt("Sign in") : gt("Set up");
+      return (
+        <Button
+          size="xs"
+          variant="outline"
+          aria-label={gt("{action}: {agent}", { action: actionLabel, agent: name })}
+          aria-expanded={open}
+          onClick={() => setInlineAuthId(open ? null : provider.instanceId)}
+        >
+          {actionLabel}
+        </Button>
+      );
+    }
     if (needsInstallOrSignIn(provider)) {
       return (
         <TerminalAction
@@ -1136,6 +1183,26 @@ function AgentsSection({
           provider={provider}
           state={stateOf(provider)}
           action={actionFor(provider)}
+          secondaryAction={
+            canAddProviderAccountInWelcome(provider, serverConfig?.managedPolicy) ? (
+              <Button
+                size="xs"
+                variant="ghost-muted"
+                disabled={!canManageProviders}
+                aria-label={gt("Add another {provider} account", { provider: agentName(provider) })}
+                onClick={() =>
+                  setAddDialogState({
+                    open: true,
+                    initialDriver: provider.driver,
+                    mode: "account",
+                  })
+                }
+              >
+                <PlusIcon className="size-3.5" />
+                <T>Add account</T>
+              </Button>
+            ) : undefined
+          }
         />
       ))}
       {checking && found.length === 0 ? (
@@ -1190,7 +1257,13 @@ function AgentsSection({
                 size="xs"
                 variant="outline"
                 disabled={!canManageProviders}
-                onClick={() => setAddingProvider(true)}
+                onClick={() =>
+                  setAddDialogState({
+                    open: true,
+                    showMoreProviders: true,
+                    mode: "provider",
+                  })
+                }
               >
                 <T>Browse</T>
               </Button>
@@ -1198,6 +1271,25 @@ function AgentsSection({
           ) : null}
         </CollapsiblePanel>
       </Collapsible>
+      {canAddAnyProviderInWelcome(serverConfig?.managedPolicy) ? (
+        <div className="flex min-h-10 items-center gap-3 py-1">
+          <RowIcon>
+            <PlusIcon className="size-4" />
+          </RowIcon>
+          <span className="min-w-0 flex-1 text-sm text-muted-foreground">
+            <T>Connect another account or provider</T>
+          </span>
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={!canManageProviders}
+            onClick={() => setAddDialogState({ open: true, mode: "account" })}
+          >
+            <PlusIcon className="size-3.5" />
+            <T>Add account</T>
+          </Button>
+        </div>
+      ) : null}
       {codexSetupProvider !== null && serverConfig !== null ? (
         <div key={codexSetupProvider.instanceId} ref={revealOnMount} className="mt-2">
           <OnboardingCodexSetup
@@ -1208,6 +1300,19 @@ function AgentsSection({
             onUseCliChange={(useCli) =>
               setCliTerminalFor(useCli ? codexSetupProvider.instanceId : null)
             }
+          />
+        </div>
+      ) : null}
+      {inlineAuthProvider !== null && serverConfig !== null ? (
+        <div key={inlineAuthProvider.instanceId} ref={revealOnMount} className="mt-2">
+          <OnboardingInlineProviderAuth
+            environmentId={environmentId}
+            environmentLabel={label}
+            provider={inlineAuthProvider}
+            serverConfig={serverConfig}
+            readOnly={!canManageProviders}
+            onTurnOn={() => void turnOn(inlineAuthProvider)}
+            onClose={() => setInlineAuthId(null)}
           />
         </div>
       ) : null}
@@ -1228,13 +1333,20 @@ function AgentsSection({
           }}
         />
       ) : null}
-      {addingProvider ? (
+      {addDialogState.open ? (
         <AddProviderInstanceDialog
+          key={`${addDialogState.mode ?? "provider"}:${addDialogState.initialDriver ?? "any"}:${addDialogState.showMoreProviders ? "more" : "base"}`}
           open
           environmentId={environmentId}
           environmentLabel={label}
-          showMoreProviders
-          onOpenChange={setAddingProvider}
+          {...(addDialogState.initialDriver !== undefined
+            ? { initialDriver: addDialogState.initialDriver }
+            : {})}
+          {...(addDialogState.mode !== undefined ? { mode: addDialogState.mode } : {})}
+          {...(addDialogState.showMoreProviders ? { showMoreProviders: true } : {})}
+          onOpenChange={(open) => {
+            if (!open) setAddDialogState({ open: false });
+          }}
           onCreated={(_instanceId, driver) => {
             void refreshProviders({ environmentId, input: {} });
             // A new Claude Code, Codex, or Pi instance can bring more history to import.
@@ -1695,19 +1807,90 @@ function TerminalAction({
   );
 }
 
+function OnboardingInlineProviderAuth({
+  environmentId,
+  environmentLabel,
+  provider,
+  serverConfig,
+  readOnly,
+  onTurnOn,
+  onClose,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly environmentLabel: string;
+  readonly provider: ServerProvider;
+  readonly serverConfig: ServerConfig;
+  readonly readOnly: boolean;
+  readonly onTurnOn: () => void;
+  readonly onClose: () => void;
+}) {
+  const name = agentName(provider);
+  const instance = serverConfig.settings.providerInstances[provider.instanceId];
+  const config =
+    instance?.config !== null && typeof instance?.config === "object" ? instance.config : {};
+  const binaryPath =
+    "binaryPath" in config && typeof config.binaryPath === "string" && config.binaryPath.trim()
+      ? config.binaryPath.trim()
+      : undefined;
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-border/60 bg-muted/20">
+      <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <ProviderInstanceIcon
+            driverKind={provider.driver}
+            displayName={name}
+            iconClassName="size-4"
+          />
+          <span className="truncate text-sm font-medium text-foreground">{name}</span>
+        </div>
+        <Button size="xs" variant="ghost-muted" onClick={onClose}>
+          <T>Close</T>
+        </Button>
+      </div>
+      <div className="px-3 py-1">
+        {provider.driver === "antigravity" ? (
+          <ProviderSetupSection
+            environmentId={environmentId}
+            environmentLabel={environmentLabel}
+            instanceId={provider.instanceId}
+            provider={provider}
+            binaryPath={binaryPath}
+            authMethod={readAntigravityAuthMethod(config)}
+            enabled={provider.enabled}
+            readOnly={readOnly}
+            onEnable={onTurnOn}
+          />
+        ) : (
+          <ProviderAuthenticationSection
+            environmentId={environmentId}
+            environmentLabel={environmentLabel}
+            instanceId={provider.instanceId}
+            provider={provider}
+            readOnly={readOnly}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AgentRow({
   provider,
   state,
   action,
+  secondaryAction,
   compact = false,
 }: {
   readonly provider: ServerProvider;
   readonly state: ReturnType<typeof welcomeAgentState>;
   readonly action?: ReactNode;
+  readonly secondaryAction?: ReactNode;
   // A row in the "Add more agents" grid: the button carries the state, so no detail line.
   readonly compact?: boolean;
 }) {
   const name = agentName(provider);
+  const authEmail = provider.auth.email?.trim() || null;
   const gt = useGT();
   const messages = useMessages();
   // Claude Code and Codex tiles show Install or Set up; other agents that are on say why not.
@@ -1737,16 +1920,23 @@ function AgentRow({
         />
       </RowIcon>
       <div className="min-w-0 flex-1">
-        <span className={cn("block truncate text-sm text-foreground", !compact && "font-medium")}>
-          {name}
-        </span>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className={cn("truncate text-sm text-foreground", !compact && "font-medium")}>
+            {name}
+          </span>
+          {!compact && authEmail ? (
+            <Badge variant="outline" size="sm">
+              <span className="max-w-44 truncate">{authEmail}</span>
+            </Badge>
+          ) : null}
+        </div>
         {detail ? (
           <p className="line-clamp-2 text-xs leading-relaxed break-words text-muted-foreground">
             {detail}
           </p>
         ) : null}
       </div>
-      <div className="shrink-0">
+      <div className="flex shrink-0 items-center gap-1.5">
         {state === "ready" ? (
           <span className="inline-flex items-center gap-1.5 text-xs font-medium text-success-foreground">
             <CheckIcon className="size-3.5" />
@@ -1759,6 +1949,7 @@ function AgentRow({
         ) : (
           action
         )}
+        {secondaryAction}
       </div>
     </div>
   );

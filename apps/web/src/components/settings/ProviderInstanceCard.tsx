@@ -715,6 +715,7 @@ interface ProviderInstanceCardProps {
   readonly canWriteSettings?: boolean;
   readonly onUpdate: (nextInstance: ProviderInstanceConfig) => Promise<boolean>;
   readonly onDelete?: (() => void) | undefined;
+  readonly onAddAccount?: (() => void) | undefined;
   readonly headerAction?: ReactNode | undefined;
   readonly setup?: ReactNode;
   readonly runtime?: ReactNode;
@@ -789,6 +790,7 @@ export function ProviderInstanceCard({
   canWriteSettings = true,
   onUpdate,
   onDelete,
+  onAddAccount,
   headerAction,
   setup,
   runtime,
@@ -1270,6 +1272,20 @@ export function ProviderInstanceCard({
         // Empty, it would still add a flex gap and pull the version off the column edge.
         className={cn("inline-flex items-center gap-1 empty:hidden", readOnly && "opacity-50")}
       >
+        {onAddAccount && !readOnly ? (
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            onClick={onAddAccount}
+            aria-label={gt("Add another {provider} account", {
+              provider: driverOption?.label ?? String(instance.driver),
+            })}
+          >
+            <PlusIcon className="size-3.5" />
+            <T>Add account</T>
+          </Button>
+        ) : null}
         {titleTailNode}
         {onDelete ? (
           <Button

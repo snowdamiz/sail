@@ -36,6 +36,10 @@ import * as Semaphore from "effect/Semaphore";
 
 import * as ServerConfig from "../config.ts";
 import {
+  materializeBuiltinPstack,
+  resolveBuiltinSkillPromptHint,
+} from "../skills/BuiltinSkills.ts";
+import {
   CLAUDE_PROVIDER,
   CLAUDE_QUERY_ENDED_BEFORE_TURN_DETAIL,
 } from "./Adapters/ClaudeAdapterV2.ts";
@@ -314,6 +318,8 @@ export const layer: Layer.Layer<
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const serverConfig = yield* ServerConfig.ServerConfig;
+    const builtinPstack = yield* materializeBuiltinPstack(serverConfig);
     const projects = yield* ProjectService.ProjectService;
     const setupScripts = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
@@ -2222,7 +2228,13 @@ export const layer: Layer.Layer<
           // A resume that must be prompted still needs a request, or the agent has nothing to do.
           const requestText =
             turnInput.resume && prompted && userText === "" ? RESUME_PROMPT : userText;
-          const text = slashCommand ? userText : withInlineContext(context, requestText);
+          const builtinSkillHint =
+            session.driver === CLAUDE_PROVIDER
+              ? undefined
+              : resolveBuiltinSkillPromptHint(requestText, builtinPstack);
+          const baseText = slashCommand ? userText : withInlineContext(context, requestText);
+          const text =
+            builtinSkillHint === undefined ? baseText : `${builtinSkillHint}\n\n${baseText}`;
           const operation =
             turnInput.resume && !prompted
               ? (session.resumeTurn?.({ ...resumeInput, messageId: resumeMessage.messageId }) ??

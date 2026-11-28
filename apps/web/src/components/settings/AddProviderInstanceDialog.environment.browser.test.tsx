@@ -291,6 +291,43 @@ describe("AddProviderInstanceDialog environment routing", () => {
     expect(signInStep()).toBeNull();
   });
 
+  it("pre-selects driver and suggests a friendly account name in account mode, advancing to inline auth", async () => {
+    setup();
+    settingsHooks.read.mockReturnValue({
+      providerInstances: {
+        claudeAgent: { driver: "claudeAgent", enabled: true, displayName: "Claude" },
+      },
+    });
+    await using _screen = await render(
+      <AddProviderInstanceDialog
+        open
+        environmentId={remoteEnvironmentId}
+        environmentLabel="Remote device"
+        initialDriver={ProviderDriverKind.make("claudeAgent")}
+        mode="account"
+        onOpenChange={actions.onOpenChange}
+      />,
+    );
+
+    expect(input("#add-provider-label").value).toBe("Claude 2");
+    await click("Next");
+    await click("Continue to sign-in");
+
+    expect(settingsHooks.mutate).toHaveBeenCalledWith({
+      operation: "create",
+      instanceId: "claudeAgent_2",
+      instance: {
+        driver: "claudeAgent",
+        enabled: true,
+        displayName: "Claude 2",
+      },
+    });
+    expect(actions.onOpenChange).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("ANTHROPIC_API_KEY");
+    await click("Skip for now");
+    expect(actions.onOpenChange).toHaveBeenCalledWith(false);
+  });
+
   it("rejects a queued save after the provider grant is revoked", async () => {
     setup();
     await using screen = await prepareCodexInstance();

@@ -1,4 +1,5 @@
 import {
+  isManagedDriverAllowed,
   isProviderAvailable,
   managedCapabilityDenial,
   type ManagedPolicySummary,
@@ -135,6 +136,60 @@ export function codexNeedsSetup(
     state === "signIn" ||
     (state === "attention" && isProviderAvailable(provider))
   );
+}
+
+/**
+ * Whether a non-Codex provider can authenticate or set up inline inside onboarding instead of
+ * bouncing the user out to Settings (e.g. Cursor, Antigravity, ACP Registry agents).
+ */
+export function welcomeNeedsInlineAuth(
+  provider: ServerProvider,
+  settings: ComputerSettings | null | undefined,
+) {
+  if (
+    provider.driver === "codex" ||
+    provider.auth.status === "authenticated" ||
+    isBrokenVersion(provider) ||
+    provider.setup?.canAuthenticate !== true
+  ) {
+    return false;
+  }
+  const state = welcomeAgentState(provider, settings);
+  if (state === "signIn") return true;
+  if (state === "attention" && isProviderAvailable(provider)) return true;
+  if (state === "install" && provider.setup?.canInstall === true) return true;
+  return false;
+}
+
+/**
+ * Keeps the inline auth card open across transient refreshes and closes it once authenticated.
+ */
+export function inlineAuthCardProvider(input: {
+  readonly providers: ReadonlyArray<ServerProvider> | null | undefined;
+  readonly instanceId: ProviderInstanceId | null;
+  readonly last: ServerProvider | null;
+  readonly settings: ComputerSettings | null | undefined;
+}) {
+  if (input.instanceId === null) return null;
+  const provider =
+    input.providers?.find((candidate) => candidate.instanceId === input.instanceId) ??
+    (input.last?.instanceId === input.instanceId ? input.last : undefined);
+  if (provider === undefined) return null;
+  const open =
+    welcomeNeedsInlineAuth(provider, input.settings) ||
+    welcomeAgentState(provider, input.settings) === "checking";
+  return open ? provider : null;
+}
+
+export function canAddProviderAccountInWelcome(
+  provider: ServerProvider,
+  policy: ManagedPolicySummary | undefined,
+) {
+  return provider.driver !== ACP_REGISTRY_DRIVER && isManagedDriverAllowed(policy, provider.driver);
+}
+
+export function canAddAnyProviderInWelcome(policy: ManagedPolicySummary | undefined) {
+  return policy?.limits?.providers?.allowedDrivers?.length !== 0;
 }
 
 /**
