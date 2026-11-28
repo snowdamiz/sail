@@ -570,9 +570,17 @@ const make = Effect.gen(function* () {
   )(function* (
     environment: ProviderInstanceConfig["environment"],
     baseEnv: NodeJS.ProcessEnv,
-  ): Effect.fn.Return<NodeJS.ProcessEnv> {
+  ): Effect.fn.Return<{
+    readonly env: NodeJS.ProcessEnv;
+    readonly unresolvedKeys: ReadonlySet<string>;
+  }> {
+    const isWindows = (yield* HostProcess.Platform) === "win32";
+    const unresolvedKeys = new Set<string>();
     if (!environment || environment.length === 0) {
-      return yield* mergeProviderInstanceEnvironment(environment, baseEnv);
+      return {
+        env: yield* mergeProviderInstanceEnvironment(environment, baseEnv),
+        unresolvedKeys,
+      };
     }
     const references: Array<SecretReference> = [];
     const referenceIndexes: Array<number> = [];
@@ -583,26 +591,44 @@ const make = Effect.gen(function* () {
         referenceIndexes.push(index);
       }
     }
-    if (references.length === 0 || Option.isNone(resolverOption)) {
-      return yield* mergeProviderInstanceEnvironment(environment, baseEnv);
-    }
-    const resolvedValues = yield* resolverOption.value
-      .read(references)
-      .pipe(
-        Effect.orElseSucceed((): ReadonlyArray<string | undefined> =>
-          references.map(() => undefined),
-        ),
-      );
-    const resolvedEnvironment = environment.map((entry) => entry);
-    for (let index = 0; index < referenceIndexes.length; index += 1) {
-      const targetIndex = referenceIndexes[index]!;
-      const literal = resolvedValues[index];
-      if (typeof literal === "string" && literal.length > 0 && literal !== SECRET_REDACTED) {
-        const entry = resolvedEnvironment[targetIndex]!;
-        resolvedEnvironment[targetIndex] = { ...entry, value: literal };
+    const resolvedByIndex = new Map<number, string | undefined>();
+    if (references.length > 0 && Option.isSome(resolverOption)) {
+      const resolvedValues = yield* resolverOption.value
+        .read(references)
+        .pipe(
+          Effect.orElseSucceed((): ReadonlyArray<string | undefined> =>
+            references.map(() => undefined),
+          ),
+        );
+      for (let index = 0; index < referenceIndexes.length; index += 1) {
+        resolvedByIndex.set(referenceIndexes[index]!, resolvedValues[index]);
       }
     }
-    return yield* mergeProviderInstanceEnvironment(resolvedEnvironment, baseEnv);
+    const resolvedEnvironment = environment.map((entry, index) => {
+      const key = envVarMatchKey(entry.name, isWindows);
+      if (isSecretReference(entry.value)) {
+        const literal = resolvedByIndex.get(index);
+        if (typeof literal === "string" && literal.length > 0 && literal !== SECRET_REDACTED) {
+          unresolvedKeys.delete(key);
+          return { ...entry, value: literal };
+        }
+        unresolvedKeys.add(key);
+        return entry;
+      }
+      if (typeof entry.value === "string" && entry.value.trim().length > 0) {
+        unresolvedKeys.delete(key);
+      }
+      return entry;
+    });
+    const merged = { ...(yield* mergeProviderInstanceEnvironment(resolvedEnvironment, baseEnv)) };
+    if (unresolvedKeys.size > 0) {
+      for (const existingKey of Object.keys(merged)) {
+        if (unresolvedKeys.has(envVarMatchKey(existingKey, isWindows))) {
+          delete merged[existingKey];
+        }
+      }
+    }
+    return { env: merged, unresolvedKeys };
   });
 
   const resolveClaudePathsForInstance = Effect.fn("ProviderAuthSync.resolveClaudePathsForInstance")(
@@ -613,7 +639,10 @@ const make = Effect.gen(function* () {
     ) {
       const env = yield* HostProcess.Environment;
       const isWindows = (yield* HostProcess.Platform) === "win32";
-      const instanceEnv = yield* resolveInstanceEnvironmentForAuth(instance?.environment, env);
+      const { env: instanceEnv, unresolvedKeys } = yield* resolveInstanceEnvironmentForAuth(
+        instance?.environment,
+        env,
+      );
       const configuredHome = getStringField(instance?.config, "homePath").trim();
       const hasExplicitEnvHome = hasInstanceEnvironmentVar(
         instance,
@@ -623,7 +652,11 @@ const make = Effect.gen(function* () {
       const explicitEnvHome = hasExplicitEnvHome
         ? (instanceEnv.CLAUDE_CONFIG_DIR?.trim() ?? "")
         : "";
-      if (!configuredHome && hasExplicitEnvHome && explicitEnvHome.length === 0) {
+      if (
+        !configuredHome &&
+        (unresolvedKeys.has(envVarMatchKey("CLAUDE_CONFIG_DIR", isWindows)) ||
+          (hasExplicitEnvHome && explicitEnvHome.length === 0))
+      ) {
         return undefined;
       }
       const isDefault =
@@ -663,14 +696,20 @@ const make = Effect.gen(function* () {
     const env = yield* HostProcess.Environment;
     const home = yield* HostProcess.HomeDirectory;
     const isWindows = (yield* HostProcess.Platform) === "win32";
-    const instanceEnv = yield* resolveInstanceEnvironmentForAuth(instance?.environment, env);
+    const { env: instanceEnv, unresolvedKeys } = yield* resolveInstanceEnvironmentForAuth(
+      instance?.environment,
+      env,
+    );
     const configuredHome = getStringField(instance?.config, "homePath").trim();
     const configuredShadow = getStringField(instance?.config, "shadowHomePath").trim();
     const hasExplicitEnvHome = hasInstanceEnvironmentVar(instance, "CODEX_HOME", isWindows);
     const explicitEnvHome = hasExplicitEnvHome ? (instanceEnv.CODEX_HOME?.trim() ?? "") : "";
     const isDefault = instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make("codex"));
     if (!configuredHome && !configuredShadow && hasExplicitEnvHome) {
-      if (explicitEnvHome.length === 0) {
+      if (
+        unresolvedKeys.has(envVarMatchKey("CODEX_HOME", isWindows)) ||
+        explicitEnvHome.length === 0
+      ) {
         return undefined;
       }
       return {
@@ -906,10 +945,14 @@ const make = Effect.gen(function* () {
       settings,
       ProviderDriverKind.make("opencode"),
     )) {
-      const instanceEnv = yield* resolveInstanceEnvironmentForAuth(instance?.environment, env);
+      const { env: instanceEnv, unresolvedKeys } = yield* resolveInstanceEnvironmentForAuth(
+        instance?.environment,
+        env,
+      );
       if (
-        hasInstanceEnvironmentVar(instance, "XDG_DATA_HOME", isWindows) &&
-        !instanceEnv.XDG_DATA_HOME?.trim()
+        unresolvedKeys.has(envVarMatchKey("XDG_DATA_HOME", isWindows)) ||
+        (hasInstanceEnvironmentVar(instance, "XDG_DATA_HOME", isWindows) &&
+          !instanceEnv.XDG_DATA_HOME?.trim())
       ) {
         continue;
       }
@@ -927,10 +970,14 @@ const make = Effect.gen(function* () {
       settings,
       ProviderDriverKind.make("grok"),
     )) {
-      const instanceEnv = yield* resolveInstanceEnvironmentForAuth(instance?.environment, env);
+      const { env: instanceEnv, unresolvedKeys } = yield* resolveInstanceEnvironmentForAuth(
+        instance?.environment,
+        env,
+      );
       if (
-        hasInstanceEnvironmentVar(instance, "GROK_HOME", isWindows) &&
-        !instanceEnv.GROK_HOME?.trim()
+        unresolvedKeys.has(envVarMatchKey("GROK_HOME", isWindows)) ||
+        (hasInstanceEnvironmentVar(instance, "GROK_HOME", isWindows) &&
+          !instanceEnv.GROK_HOME?.trim())
       ) {
         continue;
       }
@@ -948,10 +995,14 @@ const make = Effect.gen(function* () {
       settings,
       ProviderDriverKind.make("pi"),
     )) {
-      const instanceEnv = yield* resolveInstanceEnvironmentForAuth(instance?.environment, env);
+      const { env: instanceEnv, unresolvedKeys } = yield* resolveInstanceEnvironmentForAuth(
+        instance?.environment,
+        env,
+      );
       if (
-        hasInstanceEnvironmentVar(instance, "PI_CODING_AGENT_DIR", isWindows) &&
-        !instanceEnv.PI_CODING_AGENT_DIR?.trim()
+        unresolvedKeys.has(envVarMatchKey("PI_CODING_AGENT_DIR", isWindows)) ||
+        (hasInstanceEnvironmentVar(instance, "PI_CODING_AGENT_DIR", isWindows) &&
+          !instanceEnv.PI_CODING_AGENT_DIR?.trim())
       ) {
         continue;
       }
@@ -1291,7 +1342,10 @@ const make = Effect.gen(function* () {
 
         if (entry.kind === "opencode" || entry.kind === "grok" || entry.kind === "pi") {
           const instance = nextInstances[entry.instanceId];
-          const instanceEnv = yield* resolveInstanceEnvironmentForAuth(instance?.environment, env);
+          const { env: instanceEnv, unresolvedKeys } = yield* resolveInstanceEnvironmentForAuth(
+            instance?.environment,
+            env,
+          );
           const envVarName =
             entry.kind === "opencode"
               ? "XDG_DATA_HOME"
@@ -1299,8 +1353,9 @@ const make = Effect.gen(function* () {
                 ? "GROK_HOME"
                 : "PI_CODING_AGENT_DIR";
           if (
-            hasInstanceEnvironmentVar(instance, envVarName, isWindows) &&
-            !instanceEnv[envVarName]?.trim()
+            unresolvedKeys.has(envVarMatchKey(envVarName, isWindows)) ||
+            (hasInstanceEnvironmentVar(instance, envVarName, isWindows) &&
+              !instanceEnv[envVarName]?.trim())
           ) {
             continue;
           }

@@ -73,6 +73,7 @@ function makeServerNode(options: {
   readonly homeDir: string;
   readonly stateDir: string;
   readonly platform?: NodeJS.Platform;
+  readonly hostEnv?: NodeJS.ProcessEnv;
   readonly settingsOverrides?: Partial<ServerSettings>;
   readonly resolvedSecrets?: ReadonlyMap<string, string>;
 }) {
@@ -80,7 +81,7 @@ function makeServerNode(options: {
   const hostLayer = Layer.mergeAll(
     Layer.succeed(HostProcess.HomeDirectory, options.homeDir),
     Layer.succeed(HostProcess.Platform, options.platform ?? ("linux" as NodeJS.Platform)),
-    Layer.succeed(HostProcess.Environment, {}),
+    Layer.succeed(HostProcess.Environment, options.hostEnv ?? {}),
   );
   const configLayer = ServerConfig.ServerConfig.layerTest(options.stateDir, options.stateDir);
   const settingsLayer = ServerSettingsService.layerTest(options.settingsOverrides ?? {});
@@ -1032,8 +1033,17 @@ describe("ProviderAuthSync", () => {
           const root = yield* fs.makeTempDirectoryScoped({ prefix: "sail-win-secret-home-sync-" });
           const dstHome = path.join(root, "dst-home");
           const dstState = path.join(root, "dst-state");
+          const hostClaudeDir = path.join(dstHome, "host-claude");
+          const hostCodexDir = path.join(dstHome, "host-codex");
           const secretClaudeDir = path.join(dstHome, "secret-claude");
           const secretCodexDir = path.join(dstHome, "secret-codex");
+
+          const hostCodexAuth = JSON.stringify({
+            tokens: { access_token: "host-codex-token" },
+            last_refresh: "2026-11-27T10:00:00.000Z",
+          });
+          yield* fs.makeDirectory(hostCodexDir, { recursive: true });
+          yield* fs.writeFileString(path.join(hostCodexDir, "auth.json"), hostCodexAuth);
 
           const claudeSecretId = ProviderInstanceId.make("claudeAgent_secret_home");
           const codexSecretId = ProviderInstanceId.make("codex_secret_home");
@@ -1043,6 +1053,10 @@ describe("ProviderAuthSync", () => {
             homeDir: dstHome,
             stateDir: dstState,
             platform: "win32",
+            hostEnv: {
+              CLAUDE_CONFIG_DIR: hostClaudeDir,
+              CODEX_HOME: hostCodexDir,
+            },
             resolvedSecrets: new Map([
               ["op://vault/claude/home", secretClaudeDir],
               ["op://vault/codex/home", secretCodexDir],
@@ -1152,6 +1166,10 @@ describe("ProviderAuthSync", () => {
               codexAuth,
             );
             assert.isFalse(yield* fs.exists(path.join(dstHome, ".codex", "auth.json")));
+            assert.strictEqual(
+              yield* fs.readFileString(path.join(hostCodexDir, "auth.json")),
+              hostCodexAuth,
+            );
           }).pipe(Effect.provide(dstNode.fullLayer));
         }).pipe(Effect.provide(Layer.merge(NodeCrypto.layer, NodeServices.layer))),
       ),
