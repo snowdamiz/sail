@@ -116,6 +116,19 @@ function cloneGitRepo(srcRepo: string, dstRepo: string): void {
   git(dstRepo, ["config", "user.email", "transfer@example.com"]);
 }
 
+function readGitCommonDirIdentitySync(repoDir: string) {
+  const commonDir = NodeFS.realpathSync(NodePath.join(repoDir, ".git"));
+  const commonStat = NodeFS.lstatSync(commonDir, { bigint: true });
+  const objectsStat = NodeFS.lstatSync(NodePath.join(commonDir, "objects"), { bigint: true });
+  return {
+    deviceId: commonStat.dev.toString(),
+    inode: commonStat.ino.toString(),
+    birthtimeNs: commonStat.birthtimeNs > 0n ? commonStat.birthtimeNs.toString() : null,
+    objectsInode: objectsStat.ino.toString(),
+    objectsBirthtimeNs: objectsStat.birthtimeNs > 0n ? objectsStat.birthtimeNs.toString() : null,
+  };
+}
+
 function decodeSignedAssetExpiresAt(relativeUrl: string): number {
   const segments = relativeUrl.split("/");
   // /api/assets/<encoded>.<sig>/<filename>
@@ -7657,9 +7670,14 @@ describe("SessionTransferEndpointService", () => {
                 destinationProjectId: dstProjectId,
                 projectWorkspaceRoot: dstRepo,
                 gitCommonDir: NodeFS.realpathSync(NodePath.join(dstRepo, ".git")),
+                gitCommonDirIdentity: readGitCommonDirIdentitySync(dstRepo),
                 destinationThreadId: ThreadId.make("thread-uncommitted-c"),
                 worktreePath: committedB.destinationWorktreePath!,
                 branch: committedB.destinationBranch!,
+                branchHeadSha: git(dstRepo, [
+                  "rev-parse",
+                  `refs/heads/${committedB.destinationBranch!}`,
+                ]),
                 createdBranch: true,
                 importCompleted: false,
               }),
@@ -8303,9 +8321,11 @@ describe("SessionTransferEndpointService", () => {
                 projectWorkspaceRoot: dstRepo,
                 repoRoot: dstRepo,
                 gitCommonDir: NodeFS.realpathSync(NodePath.join(dstRepo, ".git")),
+                gitCommonDirIdentity: readGitCommonDirIdentitySync(dstRepo),
                 destinationThreadId: ThreadId.make("thread-ext-probe-restart"),
                 worktreePath: nonexistentWorktreePath,
                 branch: externalBranch,
+                branchHeadSha: null,
                 createdBranch: true,
                 worktreeCreated: false,
                 importCompleted: false,
@@ -8343,9 +8363,11 @@ describe("SessionTransferEndpointService", () => {
                 projectWorkspaceRoot: dstRepo,
                 repoRoot: dstRepo,
                 gitCommonDir: NodeFS.realpathSync(NodePath.join(dstRepo, ".git")),
+                gitCommonDirIdentity: readGitCommonDirIdentitySync(dstRepo),
                 destinationThreadId: ThreadId.make("thread-ext-probe-reg-crash"),
                 worktreePath: boundWorktreePath,
                 branch: boundBranch,
+                branchHeadSha: null,
                 createdBranch: true,
                 worktreeCreated: false,
                 importCompleted: false,
@@ -8569,9 +8591,11 @@ describe("SessionTransferEndpointService", () => {
                 projectWorkspaceRoot: repoA,
                 repoRoot: repoA,
                 gitCommonDir: NodeFS.realpathSync(NodePath.join(repoA, ".git")),
+                gitCommonDirIdentity: readGitCommonDirIdentitySync(repoA),
                 destinationThreadId: ThreadId.make("thread-cross-2-dst"),
                 worktreePath: NodePath.join(tmpRoot, "repo-a-uncreated-wt"),
                 branch: sharedBranchName,
+                branchHeadSha: null,
                 createdBranch: true,
                 worktreeCreated: false,
                 importCompleted: false,
@@ -8757,9 +8781,11 @@ describe("SessionTransferEndpointService", () => {
                 projectWorkspaceRoot: dstRepo,
                 repoRoot: dstRepo,
                 gitCommonDir: NodeFS.realpathSync(NodePath.join(dstRepo, ".git")),
+                gitCommonDirIdentity: readGitCommonDirIdentitySync(dstRepo),
                 destinationThreadId: ThreadId.make("thread-diff-branch-false"),
                 worktreePath: independentWt1,
                 branch: expectedBranch1,
+                branchHeadSha: null,
                 createdBranch: true,
                 worktreeCreated: false,
                 importCompleted: false,
@@ -8812,9 +8838,11 @@ describe("SessionTransferEndpointService", () => {
                 projectWorkspaceRoot: dstRepo,
                 repoRoot: dstRepo,
                 gitCommonDir: NodeFS.realpathSync(NodePath.join(dstRepo, ".git")),
+                gitCommonDirIdentity: readGitCommonDirIdentitySync(dstRepo),
                 destinationThreadId: ThreadId.make("thread-diff-branch-true"),
                 worktreePath: independentWt2,
                 branch: expectedBranch2,
+                branchHeadSha: git(dstRepo, ["rev-parse", "HEAD"]),
                 createdBranch: true,
                 worktreeCreated: true,
                 importCompleted: false,
@@ -9093,9 +9121,11 @@ describe("SessionTransferEndpointService", () => {
                 projectWorkspaceRoot: repoLink,
                 repoRoot: repoLink,
                 gitCommonDir: repoACommonDir,
+                gitCommonDirIdentity: readGitCommonDirIdentitySync(repoAReal),
                 destinationThreadId: ThreadId.make("thread-repoid-dst"),
                 worktreePath: NodePath.join(tmpRoot, "missing-wt-in-a"),
                 branch: sharedBranch,
+                branchHeadSha: repoBBranchSha,
                 createdBranch: true,
                 worktreeCreated: true,
                 importCompleted: false,
@@ -9381,6 +9411,8 @@ describe("SessionTransferEndpointService", () => {
             const config = yield* ServerConfig.ServerConfig;
             const path = yield* Path.Path;
 
+            const validCommonDir = NodeFS.realpathSync(NodePath.join(dstRepo, ".git"));
+            const validIdentity = readGitCommonDirIdentitySync(dstRepo);
             const variants: ReadonlyArray<{
               readonly label: string;
               readonly transferId: SessionTransferId;
@@ -9389,22 +9421,35 @@ describe("SessionTransferEndpointService", () => {
               {
                 label: "omitted",
                 transferId: SessionTransferId.make("xfer-missing-gcd-omitted"),
-                extraFields: {},
+                extraFields: { gitCommonDirIdentity: validIdentity },
               },
               {
                 label: "null",
                 transferId: SessionTransferId.make("xfer-missing-gcd-null"),
-                extraFields: { gitCommonDir: null },
+                extraFields: { gitCommonDir: null, gitCommonDirIdentity: validIdentity },
               },
               {
                 label: "empty",
                 transferId: SessionTransferId.make("xfer-missing-gcd-empty"),
-                extraFields: { gitCommonDir: "" },
+                extraFields: { gitCommonDir: "", gitCommonDirIdentity: validIdentity },
               },
               {
                 label: "whitespace",
                 transferId: SessionTransferId.make("xfer-missing-gcd-whitespace"),
-                extraFields: { gitCommonDir: "   " },
+                extraFields: { gitCommonDir: "   ", gitCommonDirIdentity: validIdentity },
+              },
+              {
+                label: "missing-identity",
+                transferId: SessionTransferId.make("xfer-missing-gcd-identity"),
+                extraFields: { gitCommonDir: validCommonDir },
+              },
+              {
+                label: "blank-identity-inode",
+                transferId: SessionTransferId.make("xfer-blank-gcd-identity-inode"),
+                extraFields: {
+                  gitCommonDir: validCommonDir,
+                  gitCommonDirIdentity: { ...validIdentity, inode: "  " },
+                },
               },
             ];
 
@@ -9426,6 +9471,7 @@ describe("SessionTransferEndpointService", () => {
                   destinationThreadId: ThreadId.make(`thread-missing-gcd-${variant.label}`),
                   worktreePath: NodePath.join(tmpRoot, `nonexistent-wt-${variant.label}`),
                   branch: protectedBranch,
+                  branchHeadSha: protectedBranchSha,
                   createdBranch: true,
                   worktreeCreated: true,
                   importCompleted: false,
@@ -9448,6 +9494,313 @@ describe("SessionTransferEndpointService", () => {
                 protectedBranchSha,
               );
             }
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "never deletes a same-named branch in a replacement repository re-cloned or re-initialized at the exact same path (same SHA or different SHA) or a branch whose tip moved",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-reclone-same-path-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const repoSamePath = NodePath.join(tmpRoot, "dst-repo");
+          const sharedBranch = "feat/reclone-same-path-branch";
+
+          initGitRepo(srcRepo);
+          cloneGitRepo(srcRepo, repoSamePath);
+
+          git(srcRepo, ["checkout", "-b", sharedBranch]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "feature.ts"), "export const f = 1;\n");
+          git(srcRepo, ["add", "-A"]);
+          git(srcRepo, ["commit", "-m", "feature commit"]);
+          const featureCommitSha = git(srcRepo, ["rev-parse", "HEAD"]);
+
+          const srcProjectId = ProjectId.make("proj-reclone-src");
+          const dstProjectId = ProjectId.make("proj-reclone-dst");
+          const srcThreadId = ThreadId.make("thread-reclone-src");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.4",
+          };
+
+          let failCommitEventWrite = false;
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-reclone-same-path",
+            environmentLabel: "Reclone Same Path Env",
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: repoSamePath },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onEventSinkWrite: (events) => {
+                if (failCommitEventWrite && events.some((e) => e.type === "thread.created")) {
+                  failCommitEventWrite = false;
+                  return Effect.fail(new TestHookError({ message: "simulated commit fail" }));
+                }
+                return Effect.void;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: sharedBranch,
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            // Scenario 1: Re-clone from the SAME origin at the EXACT SAME PATH with the EXACT SAME
+            // commit SHA on the same-named branch!
+            const transferReclone = SessionTransferId.make("xfer-reclone-same-sha");
+            const prep1 = yield* svc.prepareSource({
+              transferId: transferReclone,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const staged1 = yield* svc.stageImport({
+              transferId: transferReclone,
+              manifest: prep1.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferReclone, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferReclone, path)!,
+              resolveImportBundlePath(config.stateDir, transferReclone, path)!,
+            );
+
+            failCommitEventWrite = true;
+            const commitFail1 = yield* Effect.result(
+              svc.commitImport({
+                transferId: transferReclone,
+                destinationProjectId: staged1.destinationProjectId,
+                destinationThreadId: staged1.destinationThreadId,
+                manifest: prep1.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitFail1)).toBe(true);
+
+            const ownershipPath1 = resolveWorktreeOwnershipPath(
+              config.stateDir,
+              transferReclone,
+              path,
+            )!;
+            expect(NodeFS.existsSync(ownershipPath1)).toBe(true);
+            const ownership1 = JSON.parse(NodeFS.readFileSync(ownershipPath1, "utf8")) as {
+              readonly gitCommonDir: string;
+              readonly gitCommonDirIdentity: WorkspaceBundle.GitCommonDirIdentity;
+              readonly worktreePath: string;
+              readonly branch: string;
+              readonly branchHeadSha: string | null;
+              readonly worktreeCreated: boolean;
+            };
+            expect(ownership1.worktreeCreated).toBe(true);
+            expect(ownership1.branch).toBe(sharedBranch);
+            expect(ownership1.branchHeadSha).toBe(featureCommitSha);
+
+            // Remove the worktree so registration is absent, rm -rf Repo A, and re-clone Repo B
+            // from srcRepo at the EXACT SAME PATH with the same-named branch at the EXACT SAME SHA!
+            NodeFS.rmSync(ownership1.worktreePath, { recursive: true, force: true });
+            NodeFS.rmSync(repoSamePath, { recursive: true, force: true });
+            cloneGitRepo(srcRepo, repoSamePath);
+            git(repoSamePath, ["checkout", "-B", "main", "origin/main"]);
+            git(repoSamePath, ["branch", "-f", sharedBranch, featureCommitSha]);
+            expect(NodeFS.realpathSync(NodePath.join(repoSamePath, ".git"))).toBe(
+              ownership1.gitCommonDir,
+            );
+            expect(git(repoSamePath, ["rev-parse", `refs/heads/${sharedBranch}`])).toBe(
+              featureCommitSha,
+            );
+
+            // Destination abort MUST detect gitCommonDirIdentity mismatch, NOT delete the
+            // replacement clone's branch, and cleanly clear the stale ownership record!
+            const abortReclone = yield* svc.abort({
+              transferId: transferReclone,
+              role: "destination",
+            });
+            expect(abortReclone.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(ownershipPath1)).toBe(false);
+            expect(git(repoSamePath, ["rev-parse", `refs/heads/${sharedBranch}`])).toBe(
+              featureCommitSha,
+            );
+            yield* svc.abort({
+              transferId: transferReclone,
+              role: "source",
+            });
+
+            // Scenario 2: Fresh re-init repository at the EXACT SAME PATH with a DIFFERENT commit SHA.
+            // First reset repoSamePath to a clean clone of main so commitImport creates sharedBranch.
+            NodeFS.rmSync(repoSamePath, { recursive: true, force: true });
+            cloneGitRepo(srcRepo, repoSamePath);
+            git(repoSamePath, ["checkout", "-B", "main", "origin/main"]);
+            git(repoSamePath, ["branch", "-D", sharedBranch]);
+
+            const transferFreshInit = SessionTransferId.make("xfer-reinit-diff-sha");
+            const prep2 = yield* svc.prepareSource({
+              transferId: transferFreshInit,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const staged2 = yield* svc.stageImport({
+              transferId: transferFreshInit,
+              manifest: prep2.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferFreshInit, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferFreshInit, path)!,
+              resolveImportBundlePath(config.stateDir, transferFreshInit, path)!,
+            );
+
+            failCommitEventWrite = true;
+            const commitFail2 = yield* Effect.result(
+              svc.commitImport({
+                transferId: transferFreshInit,
+                destinationProjectId: staged2.destinationProjectId,
+                destinationThreadId: staged2.destinationThreadId,
+                manifest: prep2.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitFail2)).toBe(true);
+
+            const ownershipPath2 = resolveWorktreeOwnershipPath(
+              config.stateDir,
+              transferFreshInit,
+              path,
+            )!;
+            const ownership2 = JSON.parse(NodeFS.readFileSync(ownershipPath2, "utf8")) as {
+              readonly gitCommonDir: string;
+              readonly worktreePath: string;
+              readonly branchHeadSha: string | null;
+            };
+            expect(ownership2.branchHeadSha).toBe(featureCommitSha);
+
+            NodeFS.rmSync(ownership2.worktreePath, { recursive: true, force: true });
+            NodeFS.rmSync(repoSamePath, { recursive: true, force: true });
+            initGitRepo(repoSamePath);
+            NodeFS.writeFileSync(NodePath.join(repoSamePath, "replacement.txt"), "brand new\n");
+            git(repoSamePath, ["add", "-A"]);
+            git(repoSamePath, ["commit", "-m", "brand new repo commit"]);
+            git(repoSamePath, ["branch", sharedBranch]);
+            const freshRepoBranchSha = git(repoSamePath, [
+              "rev-parse",
+              `refs/heads/${sharedBranch}`,
+            ]);
+            expect(freshRepoBranchSha).not.toBe(featureCommitSha);
+            expect(NodeFS.realpathSync(NodePath.join(repoSamePath, ".git"))).toBe(
+              ownership2.gitCommonDir,
+            );
+
+            const abortFreshInit = yield* svc.abort({
+              transferId: transferFreshInit,
+              role: "destination",
+            });
+            expect(abortFreshInit.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(ownershipPath2)).toBe(false);
+            expect(git(repoSamePath, ["rev-parse", `refs/heads/${sharedBranch}`])).toBe(
+              freshRepoBranchSha,
+            );
+            yield* svc.abort({
+              transferId: transferFreshInit,
+              role: "source",
+            });
+
+            // Scenario 3 (CAS layer in SAME repo): Even in the exact same repository (matching
+            // gitCommonDir + gitCommonDirIdentity), if the worktree was removed and someone moved
+            // the branch to a DIFFERENT commit SHA, atomic CAS refuses to delete the moved branch
+            // and safely clears stale ownership.
+            NodeFS.rmSync(repoSamePath, { recursive: true, force: true });
+            cloneGitRepo(srcRepo, repoSamePath);
+            git(repoSamePath, ["checkout", "-B", "main", "origin/main"]);
+            git(repoSamePath, ["branch", "-D", sharedBranch]);
+
+            const transferMovedBranch = SessionTransferId.make("xfer-cas-moved-branch");
+            const prep3 = yield* svc.prepareSource({
+              transferId: transferMovedBranch,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const staged3 = yield* svc.stageImport({
+              transferId: transferMovedBranch,
+              manifest: prep3.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(
+                resolveImportBundlePath(config.stateDir, transferMovedBranch, path)!,
+              ),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferMovedBranch, path)!,
+              resolveImportBundlePath(config.stateDir, transferMovedBranch, path)!,
+            );
+
+            failCommitEventWrite = true;
+            const commitFail3 = yield* Effect.result(
+              svc.commitImport({
+                transferId: transferMovedBranch,
+                destinationProjectId: staged3.destinationProjectId,
+                destinationThreadId: staged3.destinationThreadId,
+                manifest: prep3.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitFail3)).toBe(true);
+
+            const ownershipPath3 = resolveWorktreeOwnershipPath(
+              config.stateDir,
+              transferMovedBranch,
+              path,
+            )!;
+            const ownership3 = JSON.parse(NodeFS.readFileSync(ownershipPath3, "utf8")) as {
+              readonly worktreePath: string;
+              readonly branchHeadSha: string | null;
+            };
+            expect(ownership3.branchHeadSha).toBe(featureCommitSha);
+
+            // Remove the worktree cleanly, then move the same-named branch to a new commit SHA.
+            git(repoSamePath, ["worktree", "remove", "--force", ownership3.worktreePath]);
+            NodeFS.writeFileSync(NodePath.join(repoSamePath, "moved.txt"), "user commit\n");
+            git(repoSamePath, ["add", "-A"]);
+            git(repoSamePath, ["commit", "-m", "independent user commit"]);
+            const movedSha = git(repoSamePath, ["rev-parse", "HEAD"]);
+            git(repoSamePath, ["branch", "-f", sharedBranch, movedSha]);
+            expect(movedSha).not.toBe(featureCommitSha);
+
+            const abortMoved = yield* svc.abort({
+              transferId: transferMovedBranch,
+              role: "destination",
+            });
+            expect(abortMoved.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(ownershipPath3)).toBe(false);
+            expect(git(repoSamePath, ["rev-parse", `refs/heads/${sharedBranch}`])).toBe(movedSha);
           }).pipe(Effect.provide(layer));
         } finally {
           NodeFS.rmSync(tmpRoot, { recursive: true, force: true });

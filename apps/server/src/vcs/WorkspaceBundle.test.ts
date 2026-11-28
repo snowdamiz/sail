@@ -11,7 +11,6 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
-import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
 import { describe } from "vite-plus/test";
 
@@ -173,8 +172,11 @@ describe("WorkspaceBundle", () => {
         // Cleanup helper removes the created worktree cleanly.
         yield* bundleService.removeWorktree({
           repoCwd: dstRepo,
+          expectedGitCommonDir: imported.gitCommonDir,
+          expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
           worktreePath: imported.worktreePath,
           branch: imported.branch,
+          expectedBranchHeadSha: imported.branchHeadSha,
         });
         expect(yield* fs.exists(imported.worktreePath)).toBe(false);
       }).pipe(Effect.provide(makeTestLayer())),
@@ -384,6 +386,8 @@ describe("WorkspaceBundle", () => {
         // Removing the worktree without passing branch preserves the pre-existing branch.
         yield* bundleService.removeWorktree({
           repoCwd: dstRepo,
+          expectedGitCommonDir: imported.gitCommonDir,
+          expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
           worktreePath: imported.worktreePath,
         });
         const branchRef = (yield* git(dstRepo, [
@@ -742,19 +746,13 @@ describe("WorkspaceBundle", () => {
         expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
 
         let blockWorktreeRemoval = true;
+        const fsRemoveCalls: Array<string> = [];
         const wrappedFsLayer = Layer.succeed(FileSystem.FileSystem, {
           ...baseFs,
           remove: (targetPath, removeOptions) =>
-            blockWorktreeRemoval && targetPath === imported.worktreePath
-              ? Effect.fail(
-                  PlatformError.systemError({
-                    _tag: "PermissionDenied",
-                    module: "FileSystem",
-                    method: "remove",
-                    pathOrDescriptor: targetPath,
-                  }),
-                )
-              : baseFs.remove(targetPath, removeOptions),
+            Effect.sync(() => {
+              fsRemoveCalls.push(targetPath);
+            }).pipe(Effect.andThen(baseFs.remove(targetPath, removeOptions))),
         });
         const wrappedVcsLayer = Layer.succeed(VcsProcess.VcsProcess, {
           run: (runInput) =>
@@ -772,24 +770,29 @@ describe("WorkspaceBundle", () => {
           Layer.provide(Layer.merge(wrappedFsLayer, wrappedVcsLayer)),
         );
 
-        // 1. Worktree directory removal failure (PermissionDenied) must propagate as WorkspaceBundleError.
+        // 1. Worktree removal failure while directory still exists must fail with git_error and
+        //    NEVER fall back to recursive fileSystem.remove!
         const worktreeFail = yield* Effect.gen(function* () {
           const svc = yield* WorkspaceBundle.WorkspaceBundle;
           return yield* Effect.result(
             svc.removeWorktree({
               repoCwd: dstRepo,
+              expectedGitCommonDir: imported.gitCommonDir,
+              expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
               worktreePath: imported.worktreePath,
             }),
           );
         }).pipe(Effect.provide(faultBundleLayer));
         expect(Result.isFailure(worktreeFail)).toBe(true);
         if (Result.isFailure(worktreeFail)) {
-          expect(worktreeFail.failure.code).toBe("io_error");
+          expect(worktreeFail.failure.code).toBe("git_error");
         }
+        expect(fsRemoveCalls).toEqual([]);
         expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
 
-        // 2. Unblock worktree removal, but lock the created branch ref so git branch -D fails while
-        //    the branch still exists. removeWorktree must remove the worktree and report branch failure.
+        // 2. Unblock worktree removal, but lock the created branch ref so atomic CAS
+        //    git update-ref -d fails while the branch still exists at expectedBranchHeadSha.
+        //    removeWorktree must remove the worktree and report retryable git_error for the branch.
         blockWorktreeRemoval = false;
         const branchLockPath = path.join(
           dstRepo,
@@ -806,8 +809,11 @@ describe("WorkspaceBundle", () => {
             return yield* Effect.result(
               svc.removeWorktree({
                 repoCwd: dstRepo,
+                expectedGitCommonDir: imported.gitCommonDir,
+                expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
                 worktreePath: imported.worktreePath,
                 branch: imported.branch,
+                expectedBranchHeadSha: imported.branchHeadSha,
               }),
             );
           }).pipe(Effect.provide(faultBundleLayer));
@@ -815,6 +821,7 @@ describe("WorkspaceBundle", () => {
           if (Result.isFailure(branchFail)) {
             expect(branchFail.failure.code).toBe("git_error");
           }
+          expect(fsRemoveCalls).toEqual([]);
           expect(yield* baseFs.exists(imported.worktreePath)).toBe(false);
           expect((yield* git(dstRepo, ["branch", "--list", "feat/remove-err"])).trim()).not.toBe(
             "",
@@ -823,19 +830,26 @@ describe("WorkspaceBundle", () => {
           yield* baseFs.remove(branchLockPath, { force: true }).pipe(Effect.ignore);
         }
 
-        // 3. Retry once the branch lock is cleared: treats missing worktree as already gone and deletes branch.
+        // 3. Retry once the branch lock is cleared: treats missing worktree as already gone and
+        //    deletes branch via atomic CAS.
         yield* baseBundleService.removeWorktree({
           repoCwd: dstRepo,
+          expectedGitCommonDir: imported.gitCommonDir,
+          expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
           worktreePath: imported.worktreePath,
           branch: imported.branch,
+          expectedBranchHeadSha: imported.branchHeadSha,
         });
         expect((yield* git(dstRepo, ["branch", "--list", "feat/remove-err"])).trim()).toBe("");
 
         // 4. Subsequent call when both worktree and branch are already gone succeeds idempotently.
         yield* baseBundleService.removeWorktree({
           repoCwd: dstRepo,
+          expectedGitCommonDir: imported.gitCommonDir,
+          expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
           worktreePath: imported.worktreePath,
           branch: imported.branch,
+          expectedBranchHeadSha: imported.branchHeadSha,
         });
       }).pipe(Effect.provide(makeTestLayer())),
   );
@@ -888,8 +902,11 @@ describe("WorkspaceBundle", () => {
           const lockedResult = yield* Effect.result(
             bundleService.removeWorktree({
               repoCwd: dstRepo,
+              expectedGitCommonDir: imported.gitCommonDir,
+              expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
               worktreePath: imported.worktreePath,
               branch: imported.branch,
+              expectedBranchHeadSha: imported.branchHeadSha,
             }),
           );
           expect(Result.isFailure(lockedResult)).toBe(true);
@@ -914,8 +931,11 @@ describe("WorkspaceBundle", () => {
 
           yield* bundleService.removeWorktree({
             repoCwd: dstRepo,
+            expectedGitCommonDir: imported.gitCommonDir,
+            expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
             worktreePath: imported.worktreePath,
             branch: imported.branch,
+            expectedBranchHeadSha: imported.branchHeadSha,
           });
           expect(yield* fs.exists(imported.worktreePath)).toBe(false);
           const afterPorcelain = yield* git(dstRepo, ["worktree", "list", "--porcelain"]);
@@ -985,8 +1005,11 @@ describe("WorkspaceBundle", () => {
           const lockedResult = yield* Effect.result(
             bundleService.removeWorktree({
               repoCwd: dstRepo,
+              expectedGitCommonDir: imported.gitCommonDir,
+              expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
               worktreePath: imported.worktreePath,
               branch: imported.branch,
+              expectedBranchHeadSha: imported.branchHeadSha,
             }),
           );
           expect(Result.isFailure(lockedResult)).toBe(true);
@@ -1014,8 +1037,11 @@ describe("WorkspaceBundle", () => {
 
           yield* bundleService.removeWorktree({
             repoCwd: dstRepo,
+            expectedGitCommonDir: imported.gitCommonDir,
+            expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
             worktreePath: imported.worktreePath,
             branch: imported.branch,
+            expectedBranchHeadSha: imported.branchHeadSha,
           });
           expect(yield* fs.exists(imported.worktreePath)).toBe(false);
           const afterPorcelainZ = yield* git(dstRepo, ["worktree", "list", "--porcelain", "-z"]);
@@ -1103,8 +1129,11 @@ describe("WorkspaceBundle", () => {
           return yield* Effect.result(
             svc.removeWorktree({
               repoCwd: dstRepo,
+              expectedGitCommonDir: imported.gitCommonDir,
+              expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
               worktreePath: imported.worktreePath,
               branch: imported.branch,
+              expectedBranchHeadSha: imported.branchHeadSha,
             }),
           );
         }).pipe(Effect.provide(truncatedBundleLayer));
@@ -1446,12 +1475,20 @@ describe("WorkspaceBundle", () => {
 
           // Probe 3: removeWorktree with expectedBranch mismatch MUST refuse to force-remove
           // the worktree and leave its directory, file, and branch untouched!
+          const dstRepoInfo = (yield* baseBundleService.resolveGitCommonDirIdentity(dstRepo))!;
+          const otherBranchSha = (yield* git(dstRepo, [
+            "rev-parse",
+            `refs/heads/${otherBranch}`,
+          ])).trim();
           const wrongBranchRemove = yield* Effect.result(
             baseBundleService.removeWorktree({
               repoCwd: dstRepo,
+              expectedGitCommonDir: dstRepoInfo.gitCommonDir,
+              expectedGitCommonDirIdentity: dstRepoInfo.identity,
               worktreePath: allocatedPath2,
               branch: otherBranch,
               expectedBranch: "feat/unreg-dir-guard",
+              expectedBranchHeadSha: otherBranchSha,
             }),
           );
           expect(Result.isFailure(wrongBranchRemove)).toBe(true);
@@ -1463,7 +1500,9 @@ describe("WorkspaceBundle", () => {
           expect((yield* git(dstRepo, ["branch", "--list", otherBranch])).trim()).not.toBe("");
         }).pipe(Effect.provide(pausedBundleLayer2));
 
-        // Probe 4: removeWorktree on unregistered directories:
+        const dstRepoInfo = (yield* baseBundleService.resolveGitCommonDirIdentity(dstRepo))!;
+
+        // Probe 4: removeWorktree on unregistered directories NEVER calls recursive fs.remove:
         // (a) Plain directory without `.git` -> refuses with git_error, leaves untouched.
         const plainDir = path.join(root, "plain-user-dir");
         yield* baseFs.makeDirectory(plainDir, { recursive: true });
@@ -1471,10 +1510,15 @@ describe("WorkspaceBundle", () => {
         const plainFail = yield* Effect.result(
           baseBundleService.removeWorktree({
             repoCwd: dstRepo,
+            expectedGitCommonDir: dstRepoInfo.gitCommonDir,
+            expectedGitCommonDirIdentity: dstRepoInfo.identity,
             worktreePath: plainDir,
           }),
         );
         expect(Result.isFailure(plainFail)).toBe(true);
+        if (Result.isFailure(plainFail)) {
+          expect(plainFail.failure.code).toBe("git_error");
+        }
         expect(yield* baseFs.readFileString(path.join(plainDir, "keep.txt"))).toBe("precious\n");
 
         // (b) Directory with `.git` gitfile pointing to a DIFFERENT repo's worktrees dir -> refuses!
@@ -1488,60 +1532,77 @@ describe("WorkspaceBundle", () => {
         const foreignFail = yield* Effect.result(
           baseBundleService.removeWorktree({
             repoCwd: dstRepo,
+            expectedGitCommonDir: dstRepoInfo.gitCommonDir,
+            expectedGitCommonDirIdentity: dstRepoInfo.identity,
             worktreePath: foreignDir,
           }),
         );
         expect(Result.isFailure(foreignFail)).toBe(true);
+        if (Result.isFailure(foreignFail)) {
+          expect(foreignFail.failure.code).toBe("git_error");
+        }
         expect(yield* baseFs.readFileString(path.join(foreignDir, "foreign.txt"))).toBe(
           "other repo\n",
         );
 
-        // (c) Orphaned worktree directory must have a matching `<adminDir>/gitdir` backlink
-        //     pointing to `<orphanDir>/.git`; even then, removal is refused when
-        //     allowUnregisteredGitWorktreeFallback is false and allowed when true (default).
+        // (c) Even an unregistered directory with a bidirectional `<adminDir>/gitdir` backlink
+        //     is ALWAYS refused with git_error (zero recursive fs.remove fallback!).
         const orphanDir = path.join(root, "orphan-wt-dir");
         const orphanAdminDir = path.join(dstRepo, ".git", "worktrees", "orphan-wt");
         yield* baseFs.makeDirectory(orphanDir, { recursive: true });
         yield* baseFs.writeFileString(path.join(orphanDir, ".git"), `gitdir: ${orphanAdminDir}\n`);
         yield* baseFs.writeFileString(path.join(orphanDir, "orphan.txt"), "stale\n");
-
-        // Without <adminDir>/gitdir backlink: MUST be refused even with fallback enabled.
-        const missingBacklinkResult = yield* Effect.result(
-          baseBundleService.removeWorktree({
-            repoCwd: dstRepo,
-            worktreePath: orphanDir,
-          }),
-        );
-        expect(Result.isFailure(missingBacklinkResult)).toBe(true);
-        expect(yield* baseFs.exists(orphanDir)).toBe(true);
-
-        // Create matching bidirectional admin backlink pointing back to <orphanDir>/.git.
         yield* baseFs.makeDirectory(orphanAdminDir, { recursive: true });
         yield* baseFs.writeFileString(
           path.join(orphanAdminDir, "gitdir"),
           `${path.join(orphanDir, ".git")}\n`,
         );
 
-        const disallowedOrphan = yield* Effect.result(
+        const refusedOrphan = yield* Effect.result(
           baseBundleService.removeWorktree({
             repoCwd: dstRepo,
+            expectedGitCommonDir: dstRepoInfo.gitCommonDir,
+            expectedGitCommonDirIdentity: dstRepoInfo.identity,
             worktreePath: orphanDir,
-            allowUnregisteredGitWorktreeFallback: false,
           }),
         );
-        expect(Result.isFailure(disallowedOrphan)).toBe(true);
+        expect(Result.isFailure(refusedOrphan)).toBe(true);
+        if (Result.isFailure(refusedOrphan)) {
+          expect(refusedOrphan.failure.code).toBe("git_error");
+        }
         expect(yield* baseFs.exists(orphanDir)).toBe(true);
+        expect(yield* baseFs.readFileString(path.join(orphanDir, "orphan.txt"))).toBe("stale\n");
+
+        // (d) Stale registered worktree whose directory is already ENOENT on disk: cleanly prunes
+        //     its Git admin registration and deletes its branch via atomic CAS!
+        const staleWtPath = path.join(root, "stale-enoent-wt");
+        const staleBranch = "feat/stale-enoent-prune";
+        yield* git(dstRepo, ["worktree", "add", "-b", staleBranch, staleWtPath, "HEAD"]);
+        const staleBranchSha = (yield* git(dstRepo, [
+          "rev-parse",
+          `refs/heads/${staleBranch}`,
+        ])).trim();
+        NodeFS.rmSync(staleWtPath, { recursive: true, force: true });
+        expect(
+          yield* baseBundleService.findRegisteredWorktree(dstRepo, staleWtPath),
+        ).not.toBeNull();
 
         yield* baseBundleService.removeWorktree({
           repoCwd: dstRepo,
-          worktreePath: orphanDir,
+          expectedGitCommonDir: dstRepoInfo.gitCommonDir,
+          expectedGitCommonDirIdentity: dstRepoInfo.identity,
+          worktreePath: staleWtPath,
+          branch: staleBranch,
+          expectedBranch: staleBranch,
+          expectedBranchHeadSha: staleBranchSha,
         });
-        expect(yield* baseFs.exists(orphanDir)).toBe(false);
+        expect(yield* baseBundleService.findRegisteredWorktree(dstRepo, staleWtPath)).toBeNull();
+        expect((yield* git(dstRepo, ["branch", "--list", staleBranch])).trim()).toBe("");
       }).pipe(Effect.provide(makeTestLayer())),
   );
 
   it.effect(
-    "never calls recursive fs.remove on worktreePath after git worktree remove succeeds (for both allowUnregisteredGitWorktreeFallback false and true)",
+    "never calls recursive fs.remove on worktreePath after git worktree remove succeeds or fails, or on unregistered directories/symlinks",
     () =>
       Effect.gen(function* () {
         const baseFs = yield* FileSystem.FileSystem;
@@ -1549,11 +1610,11 @@ describe("WorkspaceBundle", () => {
         const baseVcsProcess = yield* VcsProcess.VcsProcess;
 
         const root = yield* baseFs.makeTempDirectoryScoped({
-          prefix: "t3-wb-post-success-no-rm-",
+          prefix: "t3-wb-never-fs-rm-",
         });
         const srcRepo = path.join(root, "src");
         const dstRepo = path.join(root, "dst");
-        const bundlePath = path.join(root, "post-success.bundle");
+        const bundlePath = path.join(root, "never-fs-rm.bundle");
 
         yield* baseFs.makeDirectory(srcRepo, { recursive: true });
         yield* git(srcRepo, ["init", "-b", "main"]);
@@ -1562,182 +1623,339 @@ describe("WorkspaceBundle", () => {
         yield* git(srcRepo, ["commit", "-m", "init"]);
         yield* git(root, ["clone", srcRepo, dstRepo]);
 
-        yield* git(srcRepo, ["checkout", "-b", "feat/post-success-no-rm"]);
+        yield* git(srcRepo, ["checkout", "-b", "feat/never-fs-rm"]);
         yield* baseFs.writeFileString(path.join(srcRepo, "file.txt"), "feature\n");
         yield* git(srcRepo, ["add", "-A"]);
         yield* git(srcRepo, ["commit", "-m", "feature"]);
 
         const baseBundleService = yield* WorkspaceBundle.WorkspaceBundle;
         const exported = yield* baseBundleService.exportWorkspaceBundle({
-          transferId: "xfer-post-success-no-rm",
+          transferId: "xfer-never-fs-rm",
           cwd: srcRepo,
           outputPath: bundlePath,
         });
+        const imported = yield* baseBundleService.importWorkspaceBundle({
+          transferId: "xfer-never-fs-rm",
+          repoCwd: dstRepo,
+          bundlePath,
+          sourceBranch: exported.branch,
+          targetLabel: "boat",
+        });
+        expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
 
-        for (const allowFallback of [false, true]) {
-          const imported = yield* baseBundleService.importWorkspaceBundle({
-            transferId: "xfer-post-success-no-rm",
-            repoCwd: dstRepo,
-            bundlePath,
-            sourceBranch: exported.branch,
-            targetLabel: "boat",
-          });
-          expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
-
-          const fsRemoveTargets: Array<string> = [];
-          const wrappedFsLayer = Layer.succeed(FileSystem.FileSystem, {
-            ...baseFs,
-            remove: (targetPath, removeOptions) =>
-              Effect.sync(() => {
-                fsRemoveTargets.push(targetPath);
-              }).pipe(Effect.andThen(baseFs.remove(targetPath, removeOptions))),
-          });
-          const wrappedVcsLayer = Layer.succeed(VcsProcess.VcsProcess, {
-            run: (runInput) => {
-              if (runInput.operation === "WorkspaceBundle.removeWorktree") {
-                return baseVcsProcess.run(runInput).pipe(
-                  Effect.tap((output) =>
-                    output.exitCode === 0
-                      ? Effect.sync(() => {
-                          // Simulate a new unrelated directory being created at worktreePath
-                          // immediately after `git worktree remove --force` succeeds.
-                          NodeFS.mkdirSync(imported.worktreePath, { recursive: true });
-                          NodeFS.writeFileSync(
-                            path.join(imported.worktreePath, "fresh-independent.txt"),
-                            `recreated-${String(allowFallback)}\n`,
-                          );
-                        })
-                      : Effect.void,
-                  ),
-                );
+        const fsRemoveTargets: Array<string> = [];
+        let failNextGitRemove = true;
+        const wrappedFsLayer = Layer.succeed(FileSystem.FileSystem, {
+          ...baseFs,
+          remove: (targetPath, removeOptions) =>
+            Effect.sync(() => {
+              fsRemoveTargets.push(targetPath);
+            }).pipe(Effect.andThen(baseFs.remove(targetPath, removeOptions))),
+        });
+        const wrappedVcsLayer = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) => {
+            if (runInput.operation === "WorkspaceBundle.removeWorktree") {
+              if (failNextGitRemove) {
+                failNextGitRemove = false;
+                return Effect.succeed({
+                  exitCode: 128 as VcsProcess.VcsProcessOutput["exitCode"],
+                  stdout: "",
+                  stderr: "fatal: simulated git worktree remove failure",
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                });
               }
-              return baseVcsProcess.run(runInput);
-            },
-          });
-          const spyBundleLayer = Layer.fresh(WorkspaceBundle.layer).pipe(
-            Layer.provide(Layer.merge(wrappedFsLayer, wrappedVcsLayer)),
-          );
+              return baseVcsProcess.run(runInput).pipe(
+                Effect.tap((output) =>
+                  output.exitCode === 0
+                    ? Effect.sync(() => {
+                        // Simulate a new unrelated directory being created at worktreePath
+                        // immediately after `git worktree remove --force` succeeds.
+                        NodeFS.mkdirSync(imported.worktreePath, { recursive: true });
+                        NodeFS.writeFileSync(
+                          path.join(imported.worktreePath, "fresh-independent.txt"),
+                          "recreated-after-remove\n",
+                        );
+                      })
+                    : Effect.void,
+                ),
+              );
+            }
+            return baseVcsProcess.run(runInput);
+          },
+        });
+        const spyBundleLayer = Layer.fresh(WorkspaceBundle.layer).pipe(
+          Layer.provide(Layer.merge(wrappedFsLayer, wrappedVcsLayer)),
+        );
 
-          yield* Effect.gen(function* () {
-            const svc = yield* WorkspaceBundle.WorkspaceBundle;
-            yield* svc.removeWorktree({
+        // Case 1: git worktree remove fails while directory still exists -> fails with git_error,
+        // NEVER invokes fs.remove, leaves worktree and branch untouched.
+        const failRes = yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          return yield* Effect.result(
+            svc.removeWorktree({
               repoCwd: dstRepo,
               expectedGitCommonDir: imported.gitCommonDir,
+              expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
               worktreePath: imported.worktreePath,
               branch: imported.branch,
               expectedBranch: imported.branch,
-              allowUnregisteredGitWorktreeFallback: allowFallback,
-            });
-          }).pipe(Effect.provide(spyBundleLayer));
-
-          // Recursive fs.remove MUST NEVER be invoked on worktreePath after git worktree remove succeeded!
-          expect(fsRemoveTargets).not.toContain(imported.worktreePath);
-          expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
-          expect(
-            yield* baseFs.readFileString(path.join(imported.worktreePath, "fresh-independent.txt")),
-          ).toBe(`recreated-${String(allowFallback)}\n`);
-          // Branch was still deleted cleanly.
-          expect((yield* git(dstRepo, ["branch", "--list", imported.branch])).trim()).toBe("");
+              expectedBranchHeadSha: imported.branchHeadSha,
+            }),
+          );
+        }).pipe(Effect.provide(spyBundleLayer));
+        expect(Result.isFailure(failRes)).toBe(true);
+        if (Result.isFailure(failRes)) {
+          expect(failRes.failure.code).toBe("git_error");
         }
+        expect(fsRemoveTargets).toEqual([]);
+        expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
+        expect((yield* git(dstRepo, ["branch", "--list", imported.branch])).trim()).not.toBe("");
+
+        // Case 2: git worktree remove succeeds -> NEVER invokes fs.remove even if an unrelated dir
+        // appears immediately at worktreePath, and still deletes the branch cleanly.
+        yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          yield* svc.removeWorktree({
+            repoCwd: dstRepo,
+            expectedGitCommonDir: imported.gitCommonDir,
+            expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+            worktreePath: imported.worktreePath,
+            branch: imported.branch,
+            expectedBranch: imported.branch,
+            expectedBranchHeadSha: imported.branchHeadSha,
+          });
+        }).pipe(Effect.provide(spyBundleLayer));
+
+        expect(fsRemoveTargets).toEqual([]);
+        expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
+        expect(
+          yield* baseFs.readFileString(path.join(imported.worktreePath, "fresh-independent.txt")),
+        ).toBe("recreated-after-remove\n");
+        expect((yield* git(dstRepo, ["branch", "--list", imported.branch])).trim()).toBe("");
+
+        // Case 3: Calling removeWorktree again on the now-unregistered directory refuses with
+        // git_error and NEVER calls fs.remove!
+        const unregRes = yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          return yield* Effect.result(
+            svc.removeWorktree({
+              repoCwd: dstRepo,
+              expectedGitCommonDir: imported.gitCommonDir,
+              expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+              worktreePath: imported.worktreePath,
+            }),
+          );
+        }).pipe(Effect.provide(spyBundleLayer));
+        expect(Result.isFailure(unregRes)).toBe(true);
+        if (Result.isFailure(unregRes)) {
+          expect(unregRes.failure.code).toBe("git_error");
+        }
+        expect(fsRemoveTargets).toEqual([]);
+        expect(
+          yield* baseFs.readFileString(path.join(imported.worktreePath, "fresh-independent.txt")),
+        ).toBe("recreated-after-remove\n");
       }).pipe(Effect.provide(makeTestLayer())),
   );
 
-  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
-    "refuses unregistered fallback when .git is a symlink to another worktree, when .git points to another worktree admin dir with mismatched gitdir backlink, or when worktreePath is a symlink",
+  it.effect(
+    "enforces atomic CAS branch deletion (expectedBranchHeadSha) and required gitCommonDir + GitCommonDirIdentity guards",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-
-        const root = yield* fs.makeTempDirectoryScoped({
-          prefix: "t3-wb-unreg-symlink-backlink-",
-        });
-        const dstRepo = path.join(root, "dst");
-        yield* fs.makeDirectory(dstRepo, { recursive: true });
-        yield* git(dstRepo, ["init", "-b", "main"]);
-        yield* fs.writeFileString(path.join(dstRepo, "file.txt"), "base\n");
-        yield* git(dstRepo, ["add", "-A"]);
-        yield* git(dstRepo, ["commit", "-m", "init"]);
-
-        // Create a real sibling worktree in dstRepo whose admin dir lives in <dstRepo>/.git/worktrees/.
-        const realSiblingWt = path.join(root, "real-sibling-wt");
-        yield* git(dstRepo, ["worktree", "add", "-b", "feat/real-sibling", realSiblingWt, "HEAD"]);
-        const realSiblingGitFile = path.join(realSiblingWt, ".git");
-        const realSiblingGitFileContent = yield* fs.readFileString(realSiblingGitFile);
-        expect(realSiblingGitFileContent.trim().startsWith("gitdir:")).toBe(true);
-
         const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
 
-        // Attack 1: Unregistered directory whose `.git` is a SYMLINK to another real worktree's `.git` file.
-        const symlinkGitDir = path.join(root, "unreg-symlink-dotgit");
-        yield* fs.makeDirectory(symlinkGitDir, { recursive: true });
-        yield* fs.writeFileString(path.join(symlinkGitDir, "precious-1.txt"), "keep 1\n");
-        NodeFS.symlinkSync(realSiblingGitFile, path.join(symlinkGitDir, ".git"));
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-cas-and-identity-",
+        });
+        const repoPath = path.join(root, "repo");
+        const otherRepoPath = path.join(root, "other-repo");
 
-        const symlinkGitResult = yield* Effect.result(
+        yield* fs.makeDirectory(repoPath, { recursive: true });
+        yield* git(repoPath, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(repoPath, "file.txt"), "base\n");
+        yield* git(repoPath, ["add", "-A"]);
+        yield* git(repoPath, ["commit", "-m", "init"]);
+
+        yield* git(root, ["clone", repoPath, otherRepoPath]);
+
+        const repoInfo = (yield* bundleService.resolveGitCommonDirIdentity(repoPath))!;
+        const otherRepoInfo = (yield* bundleService.resolveGitCommonDirIdentity(otherRepoPath))!;
+
+        // Create two commits on a test branch to test CAS semantics.
+        const casBranch = "feat/cas-delete-test";
+        yield* git(repoPath, ["branch", casBranch, "HEAD"]);
+        const originalSha = (yield* git(repoPath, ["rev-parse", `refs/heads/${casBranch}`])).trim();
+
+        // Create a second commit on main so we have a distinct valid commit SHA.
+        yield* fs.writeFileString(path.join(repoPath, "file.txt"), "v2\n");
+        yield* git(repoPath, ["add", "-A"]);
+        yield* git(repoPath, ["commit", "-m", "second"]);
+        const secondSha = (yield* git(repoPath, ["rev-parse", "HEAD"])).trim();
+        expect(secondSha).not.toBe(originalSha);
+
+        // Guard 1: Empty expectedGitCommonDir fails closed without touching branch.
+        const emptyCommonDir = yield* Effect.result(
           bundleService.removeWorktree({
-            repoCwd: dstRepo,
-            worktreePath: symlinkGitDir,
-            allowUnregisteredGitWorktreeFallback: true,
+            repoCwd: repoPath,
+            expectedGitCommonDir: "   ",
+            expectedGitCommonDirIdentity: repoInfo.identity,
+            branch: casBranch,
+            expectedBranchHeadSha: originalSha,
           }),
         );
-        expect(Result.isFailure(symlinkGitResult)).toBe(true);
-        if (Result.isFailure(symlinkGitResult)) {
-          expect(symlinkGitResult.failure.code).toBe("git_error");
+        expect(Result.isFailure(emptyCommonDir)).toBe(true);
+        if (Result.isFailure(emptyCommonDir)) {
+          expect(emptyCommonDir.failure.code).toBe("git_error");
         }
-        expect(yield* fs.exists(symlinkGitDir)).toBe(true);
-        expect(yield* fs.readFileString(path.join(symlinkGitDir, "precious-1.txt"))).toBe(
-          "keep 1\n",
+        expect((yield* git(repoPath, ["rev-parse", `refs/heads/${casBranch}`])).trim()).toBe(
+          originalSha,
         );
-        expect(yield* fs.exists(realSiblingWt)).toBe(true);
 
-        // Attack 2: Unregistered directory whose `.git` is a REGULAR FILE containing `gitdir:`
-        // pointing to the other real worktree's `<gitCommonDir>/worktrees/<sibling>` admin dir
-        // (whose `gitdir` backlink points to `realSiblingWt/.git`, NOT this directory).
-        const copiedGitFileDir = path.join(root, "unreg-copied-dotgit");
-        yield* fs.makeDirectory(copiedGitFileDir, { recursive: true });
-        yield* fs.writeFileString(path.join(copiedGitFileDir, "precious-2.txt"), "keep 2\n");
-        yield* fs.writeFileString(path.join(copiedGitFileDir, ".git"), realSiblingGitFileContent);
-
-        const copiedGitFileResult = yield* Effect.result(
+        // Guard 2: Mismatched expectedGitCommonDir fails closed without touching branch.
+        const wrongCommonDir = yield* Effect.result(
           bundleService.removeWorktree({
-            repoCwd: dstRepo,
-            worktreePath: copiedGitFileDir,
-            allowUnregisteredGitWorktreeFallback: true,
+            repoCwd: repoPath,
+            expectedGitCommonDir: otherRepoInfo.gitCommonDir,
+            expectedGitCommonDirIdentity: repoInfo.identity,
+            branch: casBranch,
+            expectedBranchHeadSha: originalSha,
           }),
         );
-        expect(Result.isFailure(copiedGitFileResult)).toBe(true);
-        if (Result.isFailure(copiedGitFileResult)) {
-          expect(copiedGitFileResult.failure.code).toBe("git_error");
+        expect(Result.isFailure(wrongCommonDir)).toBe(true);
+        if (Result.isFailure(wrongCommonDir)) {
+          expect(wrongCommonDir.failure.code).toBe("git_error");
         }
-        expect(yield* fs.exists(copiedGitFileDir)).toBe(true);
-        expect(yield* fs.readFileString(path.join(copiedGitFileDir, "precious-2.txt"))).toBe(
-          "keep 2\n",
+        expect((yield* git(repoPath, ["rev-parse", `refs/heads/${casBranch}`])).trim()).toBe(
+          originalSha,
         );
-        expect(yield* fs.exists(realSiblingWt)).toBe(true);
 
-        // Attack 3: Symlinked worktreePath pointing to an unrelated directory (or real worktree).
-        const symlinkTargetDir = path.join(root, "symlink-target-dir");
-        yield* fs.makeDirectory(symlinkTargetDir, { recursive: true });
-        yield* fs.writeFileString(path.join(symlinkTargetDir, "precious-3.txt"), "keep 3\n");
-        const symlinkWtPath = path.join(root, "unreg-symlink-wtpath");
-        NodeFS.symlinkSync(symlinkTargetDir, symlinkWtPath);
-
-        const symlinkWtResult = yield* Effect.result(
+        // Guard 3: Mismatched expectedGitCommonDirIdentity (e.g., different repo inode/birthtime)
+        // fails closed without touching branch.
+        const wrongIdentity = yield* Effect.result(
           bundleService.removeWorktree({
-            repoCwd: dstRepo,
-            worktreePath: symlinkWtPath,
-            allowUnregisteredGitWorktreeFallback: true,
+            repoCwd: repoPath,
+            expectedGitCommonDir: repoInfo.gitCommonDir,
+            expectedGitCommonDirIdentity: otherRepoInfo.identity,
+            branch: casBranch,
+            expectedBranchHeadSha: originalSha,
           }),
         );
-        expect(Result.isFailure(symlinkWtResult)).toBe(true);
-        if (Result.isFailure(symlinkWtResult)) {
-          expect(symlinkWtResult.failure.code).toBe("git_error");
+        expect(Result.isFailure(wrongIdentity)).toBe(true);
+        if (Result.isFailure(wrongIdentity)) {
+          expect(wrongIdentity.failure.code).toBe("git_error");
         }
-        expect(NodeFS.lstatSync(symlinkWtPath).isSymbolicLink()).toBe(true);
-        expect(yield* fs.readFileString(path.join(symlinkTargetDir, "precious-3.txt"))).toBe(
-          "keep 3\n",
+        expect((yield* git(repoPath, ["rev-parse", `refs/heads/${casBranch}`])).trim()).toBe(
+          originalSha,
         );
+
+        // Guard 4: Missing/empty expectedBranchHeadSha fails closed without deleting branch!
+        const missingSha = yield* Effect.result(
+          bundleService.removeWorktree({
+            repoCwd: repoPath,
+            expectedGitCommonDir: repoInfo.gitCommonDir,
+            expectedGitCommonDirIdentity: repoInfo.identity,
+            branch: casBranch,
+          }),
+        );
+        expect(Result.isFailure(missingSha)).toBe(true);
+        if (Result.isFailure(missingSha)) {
+          expect(missingSha.failure.code).toBe("git_error");
+        }
+        expect((yield* git(repoPath, ["rev-parse", `refs/heads/${casBranch}`])).trim()).toBe(
+          originalSha,
+        );
+
+        // Guard 5: Branch tip moved to a different commit SHA -> CAS refuses to delete it and
+        // returns cleanly without touching the moved branch!
+        yield* git(repoPath, ["branch", "-f", casBranch, secondSha]);
+        yield* bundleService.removeWorktree({
+          repoCwd: repoPath,
+          expectedGitCommonDir: repoInfo.gitCommonDir,
+          expectedGitCommonDirIdentity: repoInfo.identity,
+          branch: casBranch,
+          expectedBranchHeadSha: originalSha,
+        });
+        expect((yield* git(repoPath, ["rev-parse", `refs/heads/${casBranch}`])).trim()).toBe(
+          secondSha,
+        );
+
+        // Guard 6: Transient ref .lock file while tip still matches expectedBranchHeadSha ->
+        // fails with retryable git_error so cleanup retries once lock clears.
+        const lockFile = path.join(
+          repoPath,
+          ".git",
+          "refs",
+          "heads",
+          "feat",
+          "cas-delete-test.lock",
+        );
+        yield* fs.writeFileString(lockFile, "locked\n");
+        try {
+          const lockedCas = yield* Effect.result(
+            bundleService.removeWorktree({
+              repoCwd: repoPath,
+              expectedGitCommonDir: repoInfo.gitCommonDir,
+              expectedGitCommonDirIdentity: repoInfo.identity,
+              branch: casBranch,
+              expectedBranchHeadSha: secondSha,
+            }),
+          );
+          expect(Result.isFailure(lockedCas)).toBe(true);
+          if (Result.isFailure(lockedCas)) {
+            expect(lockedCas.failure.code).toBe("git_error");
+          }
+          expect((yield* git(repoPath, ["rev-parse", `refs/heads/${casBranch}`])).trim()).toBe(
+            secondSha,
+          );
+        } finally {
+          yield* fs.remove(lockFile, { force: true }).pipe(Effect.ignore);
+        }
+
+        // Guard 6b: Branch currently checked out in another worktree -> refuses with git_error
+        // even when expectedBranchHeadSha matches!
+        const siblingWt = path.join(root, "sibling-checked-out-wt");
+        yield* git(repoPath, ["worktree", "add", siblingWt, casBranch]);
+        try {
+          const checkedOutRes = yield* Effect.result(
+            bundleService.removeWorktree({
+              repoCwd: repoPath,
+              expectedGitCommonDir: repoInfo.gitCommonDir,
+              expectedGitCommonDirIdentity: repoInfo.identity,
+              branch: casBranch,
+              expectedBranchHeadSha: secondSha,
+            }),
+          );
+          expect(Result.isFailure(checkedOutRes)).toBe(true);
+          if (Result.isFailure(checkedOutRes)) {
+            expect(checkedOutRes.failure.code).toBe("git_error");
+          }
+          expect((yield* git(repoPath, ["rev-parse", `refs/heads/${casBranch}`])).trim()).toBe(
+            secondSha,
+          );
+        } finally {
+          yield* git(repoPath, ["worktree", "remove", "--force", siblingWt]).pipe(Effect.ignore);
+        }
+
+        // Guard 7: Matching expectedBranchHeadSha with no lock -> deletes branch atomically!
+        yield* bundleService.removeWorktree({
+          repoCwd: repoPath,
+          expectedGitCommonDir: repoInfo.gitCommonDir,
+          expectedGitCommonDirIdentity: repoInfo.identity,
+          branch: casBranch,
+          expectedBranchHeadSha: secondSha,
+        });
+        expect((yield* git(repoPath, ["branch", "--list", casBranch])).trim()).toBe("");
+
+        // Guard 8: Already absent branch -> succeeds idempotently!
+        yield* bundleService.removeWorktree({
+          repoCwd: repoPath,
+          expectedGitCommonDir: repoInfo.gitCommonDir,
+          expectedGitCommonDirIdentity: repoInfo.identity,
+          branch: casBranch,
+          expectedBranchHeadSha: secondSha,
+        });
       }).pipe(Effect.provide(makeTestLayer())),
   );
 });

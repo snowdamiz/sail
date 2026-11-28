@@ -141,6 +141,26 @@ const NonEmptyGitCommonDir = Schema.String.check(
   }),
 );
 
+const NonEmptyIdentityString = Schema.String.check(
+  Schema.makeFilter((value: string) => value.trim().length > 0, {
+    expected: "a non-empty filesystem identity value",
+  }),
+);
+
+const NonEmptyCommitSha = Schema.String.check(
+  Schema.makeFilter((value: string) => value.trim().length > 0, {
+    expected: "a non-empty git commit SHA",
+  }),
+);
+
+const PersistedGitCommonDirIdentity = Schema.Struct({
+  deviceId: NonEmptyIdentityString,
+  inode: NonEmptyIdentityString,
+  birthtimeNs: Schema.NullOr(NonEmptyIdentityString),
+  objectsInode: NonEmptyIdentityString,
+  objectsBirthtimeNs: Schema.NullOr(NonEmptyIdentityString),
+});
+
 const PersistedWorktreeOwnership = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   transferId: SessionTransferId,
@@ -148,9 +168,11 @@ const PersistedWorktreeOwnership = Schema.Struct({
   projectWorkspaceRoot: Schema.String,
   repoRoot: Schema.optionalKey(Schema.String),
   gitCommonDir: NonEmptyGitCommonDir,
+  gitCommonDirIdentity: PersistedGitCommonDirIdentity,
   destinationThreadId: ThreadId,
   worktreePath: Schema.NullOr(Schema.String),
   branch: Schema.NullOr(GitRefName),
+  branchHeadSha: Schema.NullOr(NonEmptyCommitSha),
   createdBranch: Schema.Boolean,
   worktreeCreated: Schema.optionalKey(Schema.Boolean),
   importCompleted: Schema.Boolean,
@@ -174,8 +196,10 @@ function persistedOwnershipWorktreeCreated(ownership: PersistedWorktreeOwnership
 interface StagedWorktreeAllocation {
   readonly repoRoot: string;
   readonly gitCommonDir: string;
+  readonly gitCommonDirIdentity: WorkspaceBundle.GitCommonDirIdentity;
   readonly worktreePath: string | null;
   readonly branch: GitRefNameValue | null;
+  readonly branchHeadSha: string | null;
   readonly createdBranch: boolean;
   readonly worktreeCreated: boolean;
   readonly importCompleted: boolean;
@@ -204,8 +228,10 @@ function resolveExistingAllocation(
     return {
       repoRoot: persistedOwnershipRepoRoot(persistedOwnership),
       gitCommonDir: persistedOwnership.gitCommonDir,
+      gitCommonDirIdentity: persistedOwnership.gitCommonDirIdentity,
       worktreePath: persistedOwnership.worktreePath,
       branch: persistedOwnership.branch,
+      branchHeadSha: persistedOwnership.branchHeadSha,
       createdBranch: persistedOwnership.createdBranch,
       worktreeCreated: persistedOwnershipWorktreeCreated(persistedOwnership),
       importCompleted: persistedOwnership.importCompleted,
@@ -865,6 +891,7 @@ const make = Effect.gen(function* () {
   )(function* (input: {
     readonly excludeTransferId: SessionTransferId;
     readonly gitCommonDir: string;
+    readonly gitCommonDirIdentity: WorkspaceBundle.GitCommonDirIdentity;
   }): Effect.fn.Return<WorkspaceBundle.ReservedWorktreeAllocations, SessionTransferError> {
     const ownershipDir = resolveWorktreeOwnershipDir(serverConfig.stateDir, path);
     const ownOwnershipPath = resolveWorktreeOwnershipPath(
@@ -950,7 +977,11 @@ const make = Effect.gen(function* () {
 
       if (decoded.branch !== null && decoded.branch.length > 0) {
         const sameRepo =
-          normalizeStoredCanonicalPath(decoded.gitCommonDir) === normalizedTargetGitCommonDir;
+          normalizeStoredCanonicalPath(decoded.gitCommonDir) === normalizedTargetGitCommonDir &&
+          WorkspaceBundle.isSameGitCommonDirIdentity(
+            decoded.gitCommonDirIdentity,
+            input.gitCommonDirIdentity,
+          );
         if (sameRepo) {
           reservedBranchNames.add(decoded.branch);
         }
@@ -1113,18 +1144,24 @@ const make = Effect.gen(function* () {
   const isSameGitRepository = Effect.fn("SessionTransferEndpointService.isSameGitRepository")(
     function* (
       allocation: StagedWorktreeAllocation,
-      targetGitCommonDir: string | null,
+      targetRepo: WorkspaceBundle.ResolvedGitCommonDir | null,
     ): Effect.fn.Return<boolean> {
       if (
-        targetGitCommonDir === null ||
-        targetGitCommonDir.trim().length === 0 ||
+        targetRepo === null ||
+        targetRepo.gitCommonDir.trim().length === 0 ||
         allocation.gitCommonDir.trim().length === 0
       ) {
         return false;
       }
-      const normalizedTarget = yield* normalizePathForComparison(targetGitCommonDir);
+      const normalizedTarget = yield* normalizePathForComparison(targetRepo.gitCommonDir);
       const expectedAllocationCommonDir = normalizeStoredCanonicalPath(allocation.gitCommonDir);
-      return expectedAllocationCommonDir === normalizedTarget;
+      return (
+        expectedAllocationCommonDir === normalizedTarget &&
+        WorkspaceBundle.isSameGitCommonDirIdentity(
+          allocation.gitCommonDirIdentity,
+          targetRepo.identity,
+        )
+      );
     },
   );
 
@@ -1175,22 +1212,25 @@ const make = Effect.gen(function* () {
         let skipRepoDeletion = false;
         let nextWorktreePath = allocation.worktreePath;
         let nextBranch = allocation.branch;
+        let nextBranchHeadSha = allocation.branchHeadSha;
         let nextCreatedBranch = allocation.createdBranch;
         let nextWorktreeCreated = allocation.worktreeCreated;
+        let latestPersistedOwnership = persistedOwnership;
 
-        // Defense-in-depth (fail-closed): NEVER run worktree/branch deletion against
-        // allocation.repoRoot unless allocation.gitCommonDir is present (non-empty) AND
-        // freshly resolved resolveGitCommonDir(allocation.repoRoot) strictly matches the stored
-        // canonical allocation.gitCommonDir (syntactically normalized only — NEVER re-realpath).
+        // Fail closed: never delete unless resolveGitCommonDirIdentity(repoRoot) matches both
+        // the stored literal gitCommonDir (never re-realpath) and recorded filesystem identity.
         const expectedGitCommonDir =
           allocation.gitCommonDir.trim().length > 0
             ? normalizeStoredCanonicalPath(allocation.gitCommonDir)
             : null;
-        if (expectedGitCommonDir === null) {
+        if (
+          expectedGitCommonDir === null ||
+          !WorkspaceBundle.isValidGitCommonDirIdentity(allocation.gitCommonDirIdentity)
+        ) {
           const missingIdentityError = new SessionTransferError({
             code: "internal",
             transferId,
-            message: `Refusing to clean up destination worktree/branch during ${contextLabel} for transfer '${transferId}' because stored gitCommonDir is missing.`,
+            message: `Refusing to clean up destination worktree/branch during ${contextLabel} for transfer '${transferId}' because stored gitCommonDir or gitCommonDirIdentity is missing.`,
           });
           return {
             cleanedWorktree: false,
@@ -1200,14 +1240,14 @@ const make = Effect.gen(function* () {
             failures: [missingIdentityError],
           } satisfies CleanupUncommittedAllocationResult;
         }
-        const resolvedGitCommonDirResult = yield* Effect.result(
-          workspaceBundle.resolveGitCommonDir(allocation.repoRoot),
+        const resolvedRepoResult = yield* Effect.result(
+          workspaceBundle.resolveGitCommonDirIdentity(allocation.repoRoot),
         );
-        const resolvedGitCommonDir = Result.isSuccess(resolvedGitCommonDirResult)
-          ? resolvedGitCommonDirResult.success
+        const resolvedRepo = Result.isSuccess(resolvedRepoResult)
+          ? resolvedRepoResult.success
           : null;
 
-        if (Result.isFailure(resolvedGitCommonDirResult) || resolvedGitCommonDir === null) {
+        if (Result.isFailure(resolvedRepoResult) || resolvedRepo === null) {
           const repoRootExistsResult = yield* Effect.result(
             fileSystem.exists(allocation.repoRoot).pipe(
               Effect.catchIf(
@@ -1220,15 +1260,15 @@ const make = Effect.gen(function* () {
             Result.isSuccess(repoRootExistsResult) && !repoRootExistsResult.success;
 
           if (!repoRootGone) {
-            const detail = Result.isFailure(resolvedGitCommonDirResult)
-              ? resolvedGitCommonDirResult.failure.message
+            const detail = Result.isFailure(resolvedRepoResult)
+              ? resolvedRepoResult.failure.message
               : "git rev-parse --git-common-dir returned no repository";
             const verifyError = new SessionTransferError({
               code: "internal",
               transferId,
               message: `Failed to verify destination repository identity for '${allocation.repoRoot}' during ${contextLabel} for transfer '${transferId}': ${detail}`,
-              ...(Result.isFailure(resolvedGitCommonDirResult)
-                ? { cause: resolvedGitCommonDirResult.failure }
+              ...(Result.isFailure(resolvedRepoResult)
+                ? { cause: resolvedRepoResult.failure }
                 : {}),
             });
             return {
@@ -1279,14 +1319,15 @@ const make = Effect.gen(function* () {
           skipRepoDeletion = true;
           nextWorktreePath = null;
           nextBranch = null;
+          nextBranchHeadSha = null;
           nextCreatedBranch = false;
-        } else if (resolvedGitCommonDir !== expectedGitCommonDir) {
+        } else if (resolvedRepo.gitCommonDir !== expectedGitCommonDir) {
           yield* Effect.logWarning(
             `Refusing to clean up destination worktree/branch during ${contextLabel} because '${allocation.repoRoot}' resolved to a different Git repository.`,
             {
               transferId,
               repoRoot: allocation.repoRoot,
-              resolvedGitCommonDir,
+              resolvedGitCommonDir: resolvedRepo.gitCommonDir,
               expectedGitCommonDir,
             },
           );
@@ -1304,7 +1345,7 @@ const make = Effect.gen(function* () {
             const mismatchError = new SessionTransferError({
               code: "workspace_error",
               transferId,
-              message: `Refusing to clean up destination worktree/branch during ${contextLabel} for transfer '${transferId}' because '${allocation.repoRoot}' resolved to git common dir '${resolvedGitCommonDir}' instead of expected '${expectedGitCommonDir}'.`,
+              message: `Refusing to clean up destination worktree/branch during ${contextLabel} for transfer '${transferId}' because '${allocation.repoRoot}' resolved to git common dir '${resolvedRepo.gitCommonDir}' instead of expected '${expectedGitCommonDir}'.`,
             });
             return {
               cleanedWorktree: false,
@@ -1320,6 +1361,32 @@ const make = Effect.gen(function* () {
           skipRepoDeletion = true;
           nextWorktreePath = null;
           nextBranch = null;
+          nextBranchHeadSha = null;
+          nextCreatedBranch = false;
+        } else if (
+          !WorkspaceBundle.isSameGitCommonDirIdentity(
+            allocation.gitCommonDirIdentity,
+            resolvedRepo.identity,
+          )
+        ) {
+          // Same canonical gitCommonDir path, DIFFERENT filesystem identity: proves the original
+          // repository at that path was removed and replaced/re-cloned. NEVER run worktree or
+          // branch deletion against the replacement repository; log a warning and clear stale
+          // ownership safely.
+          yield* Effect.logWarning(
+            `Skipping git worktree/branch deletion during ${contextLabel} because repository at '${allocation.repoRoot}' was replaced with a different filesystem gitCommonDir identity.`,
+            {
+              transferId,
+              repoRoot: allocation.repoRoot,
+              expectedGitCommonDir,
+              expectedIdentity: allocation.gitCommonDirIdentity,
+              actualIdentity: resolvedRepo.identity,
+            },
+          );
+          skipRepoDeletion = true;
+          nextWorktreePath = null;
+          nextBranch = null;
+          nextBranchHeadSha = null;
           nextCreatedBranch = false;
         }
 
@@ -1343,6 +1410,7 @@ const make = Effect.gen(function* () {
             );
             nextWorktreePath = null;
             nextBranch = null;
+            nextBranchHeadSha = null;
             nextCreatedBranch = false;
           } else {
             let worktreeToRemove: string | null = null;
@@ -1399,6 +1467,14 @@ const make = Effect.gen(function* () {
                       allocation.createdBranch && allocation.branch !== null
                         ? allocation.branch
                         : null;
+                    if (
+                      registeredEntry !== null &&
+                      registeredEntry.headSha !== null &&
+                      registeredEntry.headSha.trim().length > 0 &&
+                      (expectedBranch === null || registeredEntry.branch === expectedBranch)
+                    ) {
+                      nextBranchHeadSha = registeredEntry.headSha.trim();
+                    }
                   }
                 }
               } else {
@@ -1436,12 +1512,19 @@ const make = Effect.gen(function* () {
                   registeredEntry.branch === expectedBranch;
                 if (matchesOwnedWorktree) {
                   worktreeToRemove = allocation.worktreePath;
+                  if (
+                    registeredEntry.headSha !== null &&
+                    registeredEntry.headSha.trim().length > 0
+                  ) {
+                    nextBranchHeadSha = registeredEntry.headSha.trim();
+                  }
                   if (allocation.createdBranch && allocation.branch !== null) {
                     branchToDelete = allocation.branch;
                     // Positively verified that this transfer bound createdBranch to worktreePath.
                     nextWorktreeCreated = true;
                   } else {
                     nextBranch = null;
+                    nextBranchHeadSha = null;
                     nextCreatedBranch = false;
                   }
                 } else {
@@ -1460,13 +1543,44 @@ const make = Effect.gen(function* () {
                   // Neither worktreePath nor createdBranch was created/bound by this transfer.
                   nextWorktreePath = null;
                   nextBranch = null;
+                  nextBranchHeadSha = null;
                   nextCreatedBranch = false;
                 }
               }
             } else {
               // worktreeCreated !== true and no worktreePath to verify: never touch branch.
               nextBranch = null;
+              nextBranchHeadSha = null;
               nextCreatedBranch = false;
+            }
+
+            // Persist any refreshed branchHeadSha / promoted worktreeCreated BEFORE invoking
+            // removeWorktree so a crash between git worktree remove and atomic CAS branch deletion
+            // still retains the verified commit SHA.
+            if (
+              !worktreeOrBranchFailed &&
+              (worktreeToRemove !== null || branchToDelete !== null) &&
+              latestPersistedOwnership !== null &&
+              (nextBranchHeadSha !== latestPersistedOwnership.branchHeadSha ||
+                nextWorktreeCreated !== persistedOwnershipWorktreeCreated(latestPersistedOwnership))
+            ) {
+              const updatedOwnership: PersistedWorktreeOwnership = {
+                ...latestPersistedOwnership,
+                repoRoot: allocation.repoRoot,
+                gitCommonDir: allocation.gitCommonDir,
+                gitCommonDirIdentity: allocation.gitCommonDirIdentity,
+                branchHeadSha: nextBranchHeadSha,
+                worktreeCreated: nextWorktreeCreated,
+              };
+              const persistRefreshedResult = yield* Effect.result(
+                writeWorktreeOwnership(updatedOwnership),
+              );
+              if (Result.isSuccess(persistRefreshedResult)) {
+                latestPersistedOwnership = updatedOwnership;
+              } else {
+                worktreeOrBranchFailed = true;
+                failures.push(persistRefreshedResult.failure);
+              }
             }
 
             if (!worktreeOrBranchFailed && worktreeToRemove !== null) {
@@ -1475,9 +1589,9 @@ const make = Effect.gen(function* () {
                   .removeWorktree({
                     repoCwd: allocation.repoRoot,
                     expectedGitCommonDir,
+                    expectedGitCommonDirIdentity: allocation.gitCommonDirIdentity,
                     worktreePath: worktreeToRemove,
                     expectedBranch,
-                    allowUnregisteredGitWorktreeFallback: allocation.worktreeCreated,
                   })
                   .pipe(
                     Effect.mapError(
@@ -1496,6 +1610,7 @@ const make = Effect.gen(function* () {
                 nextWorktreePath = null;
                 if (branchToDelete === null) {
                   nextBranch = null;
+                  nextBranchHeadSha = null;
                 }
               } else {
                 worktreeOrBranchFailed = true;
@@ -1509,7 +1624,9 @@ const make = Effect.gen(function* () {
                   .removeWorktree({
                     repoCwd: allocation.repoRoot,
                     expectedGitCommonDir,
+                    expectedGitCommonDirIdentity: allocation.gitCommonDirIdentity,
                     branch: branchToDelete,
+                    expectedBranchHeadSha: nextBranchHeadSha,
                   })
                   .pipe(
                     Effect.mapError(
@@ -1526,6 +1643,7 @@ const make = Effect.gen(function* () {
               if (Result.isSuccess(branchResult)) {
                 cleanedWorktree = true;
                 nextBranch = null;
+                nextBranchHeadSha = null;
                 nextCreatedBranch = false;
               } else {
                 worktreeOrBranchFailed = true;
@@ -1543,21 +1661,25 @@ const make = Effect.gen(function* () {
             failures.push(ownershipResult.failure);
           }
         } else if (
-          persistedOwnership !== null &&
-          (nextWorktreePath !== persistedOwnership.worktreePath ||
-            nextBranch !== persistedOwnership.branch ||
-            nextCreatedBranch !== persistedOwnership.createdBranch ||
-            nextWorktreeCreated !== persistedOwnershipWorktreeCreated(persistedOwnership))
+          latestPersistedOwnership !== null &&
+          (nextWorktreePath !== latestPersistedOwnership.worktreePath ||
+            nextBranch !== latestPersistedOwnership.branch ||
+            nextBranchHeadSha !== latestPersistedOwnership.branchHeadSha ||
+            nextCreatedBranch !== latestPersistedOwnership.createdBranch ||
+            nextWorktreeCreated !== persistedOwnershipWorktreeCreated(latestPersistedOwnership))
         ) {
           yield* writeWorktreeOwnership({
-            ...persistedOwnership,
+            ...latestPersistedOwnership,
             repoRoot: allocation.repoRoot,
             gitCommonDir: allocation.gitCommonDir,
+            gitCommonDirIdentity: allocation.gitCommonDirIdentity,
             worktreePath: nextWorktreePath,
             branch: nextBranch,
+            branchHeadSha: nextBranchHeadSha,
             createdBranch: nextCreatedBranch,
             worktreeCreated: nextWorktreeCreated,
-            importCompleted: nextWorktreePath === null ? false : persistedOwnership.importCompleted,
+            importCompleted:
+              nextWorktreePath === null ? false : latestPersistedOwnership.importCompleted,
           }).pipe(
             Effect.tapError((cause) =>
               Effect.logWarning(
@@ -1575,8 +1697,10 @@ const make = Effect.gen(function* () {
             : {
                 repoRoot: allocation.repoRoot,
                 gitCommonDir: allocation.gitCommonDir,
+                gitCommonDirIdentity: allocation.gitCommonDirIdentity,
                 worktreePath: nextWorktreePath,
                 branch: nextBranch,
+                branchHeadSha: nextBranchHeadSha,
                 createdBranch: nextCreatedBranch,
                 worktreeCreated: nextWorktreeCreated,
                 importCompleted: nextWorktreePath === null ? false : allocation.importCompleted,
@@ -2569,7 +2693,7 @@ const make = Effect.gen(function* () {
           ),
         );
 
-        let targetGitCommonDir: string | null = null;
+        let targetGitRepo: WorkspaceBundle.ResolvedGitCommonDir | null = null;
         if (input.manifest.workspace.mode === "git_bundle") {
           // Verify destination project has a git repository before accepting a git bundle.
           const gitMarkerExists = yield* fileSystem
@@ -2582,8 +2706,8 @@ const make = Effect.gen(function* () {
               message: `Destination project '${project.title}' at '${project.workspaceRoot}' is not a Git repository.`,
             });
           }
-          targetGitCommonDir = yield* workspaceBundle
-            .resolveGitCommonDir(project.workspaceRoot)
+          targetGitRepo = yield* workspaceBundle
+            .resolveGitCommonDirIdentity(project.workspaceRoot)
             .pipe(
               Effect.mapError(
                 (cause) =>
@@ -2595,7 +2719,7 @@ const make = Effect.gen(function* () {
                   }),
               ),
             );
-          if (targetGitCommonDir === null) {
+          if (targetGitRepo === null) {
             return yield* new SessionTransferError({
               code: "workspace_error",
               transferId: input.transferId,
@@ -2614,7 +2738,7 @@ const make = Effect.gen(function* () {
         if (existingAllocation !== null) {
           const sameRepo =
             input.manifest.workspace.mode === "git_bundle" &&
-            (yield* isSameGitRepository(existingAllocation, targetGitCommonDir));
+            (yield* isSameGitRepository(existingAllocation, targetGitRepo));
           if (sameRepo) {
             nextWorktreeAllocation = existingAllocation;
           } else {
@@ -2944,10 +3068,10 @@ const make = Effect.gen(function* () {
             warnings: replayWarnings,
           };
 
-          const replayedGitCommonDir =
+          const replayedGitRepo =
             existingStaged?.worktreeAllocation === undefined && thread.worktreePath !== null
               ? yield* workspaceBundle
-                  .resolveGitCommonDir(thread.worktreePath)
+                  .resolveGitCommonDirIdentity(thread.worktreePath)
                   .pipe(Effect.orElseSucceed(() => null))
               : null;
 
@@ -2965,12 +3089,14 @@ const make = Effect.gen(function* () {
               warnings: replayWarnings,
               worktreeAllocation:
                 prev?.worktreeAllocation ??
-                (thread.worktreePath !== null && replayedGitCommonDir !== null
+                (thread.worktreePath !== null && replayedGitRepo !== null
                   ? {
                       repoRoot: prev?.projectWorkspaceRoot ?? "",
-                      gitCommonDir: replayedGitCommonDir,
+                      gitCommonDir: replayedGitRepo.gitCommonDir,
+                      gitCommonDirIdentity: replayedGitRepo.identity,
                       worktreePath: thread.worktreePath,
                       branch: thread.branch,
+                      branchHeadSha: null,
                       createdBranch: false,
                       worktreeCreated: true,
                       importCompleted: true,
@@ -3021,6 +3147,8 @@ const make = Effect.gen(function* () {
         let destinationBranch: GitRefNameValue | null = null;
         let destinationWorktreePath: TrimmedNonEmptyStringValue | null = null;
         let destinationGitCommonDir: string | null = null;
+        let destinationGitCommonDirIdentity: WorkspaceBundle.GitCommonDirIdentity | null = null;
+        let destinationBranchHeadSha: string | null = null;
         let createdBranch = existingStaged?.worktreeAllocation?.createdBranch ?? false;
 
         // 3. Apply uploaded git workspace bundle into a fresh isolated worktree,
@@ -3029,8 +3157,8 @@ const make = Effect.gen(function* () {
         if (input.manifest.workspace.mode === "git_bundle") {
           const persistedOwnership = yield* readWorktreeOwnership(input.transferId);
           const existingAllocation = resolveExistingAllocation(persistedOwnership, existingStaged);
-          const targetGitCommonDir = yield* workspaceBundle
-            .resolveGitCommonDir(project.workspaceRoot)
+          const targetGitRepo = yield* workspaceBundle
+            .resolveGitCommonDirIdentity(project.workspaceRoot)
             .pipe(
               Effect.mapError(
                 (cause) =>
@@ -3044,7 +3172,7 @@ const make = Effect.gen(function* () {
             );
           const sameRepoAllocation =
             existingAllocation !== null &&
-            (yield* isSameGitRepository(existingAllocation, targetGitCommonDir));
+            (yield* isSameGitRepository(existingAllocation, targetGitRepo));
 
           const canReuseWorktree =
             sameRepoAllocation &&
@@ -3059,6 +3187,8 @@ const make = Effect.gen(function* () {
             destinationBranch = existingAllocation.branch;
             destinationWorktreePath = TrimmedNonEmptyString.make(existingAllocation.worktreePath);
             destinationGitCommonDir = existingAllocation.gitCommonDir;
+            destinationGitCommonDirIdentity = existingAllocation.gitCommonDirIdentity;
+            destinationBranchHeadSha = existingAllocation.branchHeadSha;
             createdBranch = existingAllocation.createdBranch;
           } else {
             // If an earlier interrupted/crashed/incomplete or cross-repo attempt left worktree or
@@ -3144,8 +3274,10 @@ const make = Effect.gen(function* () {
               allocation: {
                 readonly repoCwd: string;
                 readonly gitCommonDir: string;
+                readonly gitCommonDirIdentity: WorkspaceBundle.GitCommonDirIdentity;
                 readonly worktreePath: string;
                 readonly branch: string;
+                readonly branchHeadSha: string | null;
                 readonly createdBranch: boolean;
               },
               worktreeCreated: boolean,
@@ -3154,8 +3286,10 @@ const make = Effect.gen(function* () {
               const stagedAllocation: StagedWorktreeAllocation = {
                 repoRoot: allocation.repoCwd,
                 gitCommonDir: allocation.gitCommonDir,
+                gitCommonDirIdentity: allocation.gitCommonDirIdentity,
                 worktreePath: allocation.worktreePath,
                 branch: allocatedBranch,
+                branchHeadSha: allocation.branchHeadSha,
                 createdBranch: allocation.createdBranch,
                 worktreeCreated,
                 importCompleted: false,
@@ -3167,9 +3301,11 @@ const make = Effect.gen(function* () {
                 projectWorkspaceRoot: allocation.repoCwd,
                 repoRoot: allocation.repoCwd,
                 gitCommonDir: allocation.gitCommonDir,
+                gitCommonDirIdentity: allocation.gitCommonDirIdentity,
                 destinationThreadId: input.destinationThreadId,
                 worktreePath: allocation.worktreePath,
                 branch: allocatedBranch,
+                branchHeadSha: allocation.branchHeadSha,
                 createdBranch: allocation.createdBranch,
                 worktreeCreated,
                 importCompleted: false,
@@ -3217,10 +3353,11 @@ const make = Effect.gen(function* () {
                   withRepoLock(project.workspaceRoot, effect, {
                     gitCommonDir: lockCtx?.gitCommonDir ?? null,
                   }),
-                resolveReservedAllocations: ({ gitCommonDir }) =>
+                resolveReservedAllocations: ({ gitCommonDir, gitCommonDirIdentity }) =>
                   readReservedWorktreeAllocations({
                     excludeTransferId: input.transferId,
                     gitCommonDir,
+                    gitCommonDirIdentity,
                   }).pipe(
                     Effect.mapError(
                       (cause) =>
@@ -3281,6 +3418,8 @@ const make = Effect.gen(function* () {
             destinationBranch = GitRefName.make(importedWorkspace.branch);
             destinationWorktreePath = TrimmedNonEmptyString.make(importedWorkspace.worktreePath);
             destinationGitCommonDir = importedWorkspace.gitCommonDir;
+            destinationGitCommonDirIdentity = importedWorkspace.gitCommonDirIdentity;
+            destinationBranchHeadSha = importedWorkspace.branchHeadSha;
             createdBranch = importedWorkspace.createdBranch;
             warnings.push(...importedWorkspace.warnings, ...setupWarnings);
 
@@ -3292,9 +3431,11 @@ const make = Effect.gen(function* () {
               projectWorkspaceRoot: project.workspaceRoot,
               repoRoot: project.workspaceRoot,
               gitCommonDir: importedWorkspace.gitCommonDir,
+              gitCommonDirIdentity: importedWorkspace.gitCommonDirIdentity,
               destinationThreadId: input.destinationThreadId,
               worktreePath: importedWorkspace.worktreePath,
               branch: destinationBranch,
+              branchHeadSha: importedWorkspace.branchHeadSha,
               createdBranch,
               worktreeCreated: true,
               importCompleted: true,
@@ -3316,8 +3457,10 @@ const make = Effect.gen(function* () {
                 worktreeAllocation: {
                   repoRoot: project.workspaceRoot,
                   gitCommonDir: importedWorkspace.gitCommonDir,
+                  gitCommonDirIdentity: importedWorkspace.gitCommonDirIdentity,
                   worktreePath: importedWorkspace.worktreePath,
                   branch: destinationBranch,
+                  branchHeadSha: importedWorkspace.branchHeadSha,
                   createdBranch,
                   worktreeCreated: true,
                   importCompleted: true,
@@ -3867,12 +4010,16 @@ const make = Effect.gen(function* () {
             claimedAttachmentIds: claimedAttachmentIdsRecord,
             warnings,
             worktreeAllocation:
-              destinationWorktreePath !== null && destinationGitCommonDir !== null
+              destinationWorktreePath !== null &&
+              destinationGitCommonDir !== null &&
+              destinationGitCommonDirIdentity !== null
                 ? {
                     repoRoot: prev?.worktreeAllocation?.repoRoot ?? project.workspaceRoot,
                     gitCommonDir: destinationGitCommonDir,
+                    gitCommonDirIdentity: destinationGitCommonDirIdentity,
                     worktreePath: destinationWorktreePath,
                     branch: destinationBranch,
+                    branchHeadSha: destinationBranchHeadSha,
                     createdBranch,
                     worktreeCreated: true,
                     importCompleted: true,
