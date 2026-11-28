@@ -12,6 +12,7 @@ import {
   machineKey,
   menuActions,
   primaryAction,
+  shortDate,
   suggestName,
 } from "./machine";
 import type { MachineState, MachineView, Size } from "./types";
@@ -83,6 +84,8 @@ describe("Sail Boats helpers", () => {
     expect(cleanName("My Boat_01!")).toBe("my-boat-01");
     expect(suggestName(["skiff"])).toBe("dinghy");
     expect(duration(7500)).toBe("2h 5m");
+    expect(shortDate(1767225600, "en-US")).not.toBe("Invalid Date");
+    expect(shortDate(1767225600, "de-DE")).not.toBe(shortDate(1767225600, "en-US"));
   });
 
   it("covers every machine state in MACHINE_STATUS", () => {
@@ -128,6 +131,7 @@ describe("Sail Boats helpers", () => {
       signingIn: false,
     });
     expect(remoteControls.canOpen).toBe(true);
+    expect(remoteControls.canResize).toBe(true);
     expect(remoteControls.rowPrimary).toMatchObject({
       kind: "ordinary",
       action: ACTIONS.wake,
@@ -146,6 +150,17 @@ describe("Sail Boats helpers", () => {
     ).toBe(false);
     expect(remoteControls.needsProject).toBe(false);
 
+    const readOnlyControls = deriveMachineControls({
+      machine: asleep,
+      sizes: SIZES,
+      access: { ...access, can: (cmd) => cmd !== "resize_machine" },
+      supportsLocalProjects: true,
+      pending: null,
+      deleteRefusal: null,
+      signingIn: false,
+    });
+    expect(readOnlyControls.canResize).toBe(false);
+
     const busyControls = deriveMachineControls({
       machine: asleep,
       sizes: SIZES,
@@ -156,6 +171,7 @@ describe("Sail Boats helpers", () => {
       signingIn: false,
     });
     expect(busyControls.canAddProject).toBe(false);
+    expect(busyControls.canResize).toBe(false);
 
     const missingControls = deriveMachineControls({
       machine: makeMachine({ id: "m-3", state: "missing" }),
@@ -176,6 +192,7 @@ describe("Sail Boats helpers", () => {
       deletion: { kind: "removeMissing", action: ACTIONS.remove },
       disabled: false,
     });
+    expect(missingControls.canResize).toBe(false);
     expect(missingControls.menuItems).toEqual([]);
     expect(missingControls.power).toBeNull();
   });

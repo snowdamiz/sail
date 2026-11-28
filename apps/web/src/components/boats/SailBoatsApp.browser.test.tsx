@@ -12,22 +12,33 @@ import {
   type BoatCommand,
   type BoatInvokeInput,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
+import { GTProvider } from "gt-react";
 import { expect, it, vi } from "vite-plus/test";
 import "~/index.css";
 import { page, userEvent } from "vite-plus/test/browser";
 
-import { act, render } from "../../../test/render";
+import { act, fakeTimers, render } from "../../../test/render";
 import { environmentCatalog } from "../../connection/catalog";
+import { AgentNames } from "./components/AgentLogos";
+import { useSecsLeft } from "./components/common";
 import type { MachineView, UiState } from "./types";
+
+class MockBoatInvokeError extends Schema.TaggedError<
+  MockBoatInvokeError,
+  { readonly brand: unique symbol }
+>()("MockBoatInvokeError", {
+  message: Schema.String,
+}) {}
 
 const state = vi.hoisted(() => ({
   registry: null as unknown as AtomRegistry.AtomRegistry,
   view: null as unknown as Atom.Writable<AsyncResult.AsyncResult<BoatsView>>,
   remoteViews: new Map<EnvironmentId, Atom.Atom<AsyncResult.AsyncResult<BoatsView>>>(),
-  allowed: null as unknown as Atom.Atom<ReadonlySet<string>>,
+  allowed: null as unknown as Atom.Writable<ReadonlySet<string>>,
   onHost: null as unknown as Atom.Atom<boolean>,
   replies: {} as Partial<Record<string, unknown>>,
   invoked: [] as BoatInvokeInput[],
@@ -58,7 +69,13 @@ vi.mock(import("../../state/boats"), async (original) => ({
               : reply;
           if (resolved instanceof Error) return Effect.fail(resolved);
           if (resolved instanceof Promise) {
-            return Effect.promise(() => resolved);
+            return Effect.tryPromise({
+              try: () => resolved,
+              catch: (error) =>
+                new MockBoatInvokeError({
+                  message: error instanceof Error ? error.message : String(error),
+                }),
+            });
           }
           return Effect.succeed(resolved ?? { data: null });
         })) as never,
@@ -1026,7 +1043,7 @@ it("marks only the signing-in agent as busy when multiple agents are signed out"
       costMonth: 1.5,
       awakeSecsToday: 300,
       t3Version: "1.0.0",
-      createdAt: "2026-01-01T00:00:00.000Z",
+      createdAt: 1767225600,
       agents: [
         { name: "Claude Code", signedIn: false },
         { name: "Codex", signedIn: false },
@@ -1233,4 +1250,374 @@ it("renders the SignInPanel paste-code input as a styled Sail Input and submits 
       args: { action: "submit", attemptId: "attempt-1", code: "boat-code-123" },
     }),
   );
+});
+
+it("does not show a stale details error after unmounting MachineDetails with a pending failure", async () => {
+  setup({
+    state: uiState({
+      machines: [
+        machine({ id: "m-1", name: "dory", state: "idle" }),
+        machine({ id: "m-2", name: "yawl", state: "idle" }),
+      ],
+    }),
+  });
+  const doryDetailsDeferred = Promise.withResolvers<unknown>();
+  state.replies.get_machine_details = (input: BoatInvokeInput) => {
+    const id =
+      input.command === "get_machine_details"
+        ? (input.args as { readonly id?: string } | undefined)?.id
+        : undefined;
+    if (id === "m-1") return doryDetailsDeferred.promise;
+    return {
+      data: {
+        id: "m-2",
+        costToday: 0,
+        costMonth: 0,
+        awakeSecsToday: 0,
+        agents: [],
+        t3Version: "2.0.0",
+        createdAt: 1767225600,
+        connect: false,
+      },
+    };
+  };
+
+  await using screen = await mount();
+  await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({
+      command: "get_machine_details",
+      args: { id: "m-1" },
+    }),
+  );
+
+  await userEvent.click(screen.getByRole("button", { name: "Back" }));
+  await userEvent.click(screen.getByRole("button", { name: "Details for yawl" }));
+  await expect.element(screen.getByText("Sail 2.0.0")).toBeVisible();
+
+  await act(async () => {
+    doryDetailsDeferred.reject(new Error("Stale details failure"));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  await expect.element(screen.getByText(/Stale details failure/)).not.toBeInTheDocument();
+  await expect.element(screen.getByText(/Couldn't load details/)).not.toBeInTheDocument();
+});
+
+it("disarms delete confirmation when an unrelated action disables and re-enables the button", async () => {
+  setup({
+    state: uiState({
+      machines: [machine({ id: "m-1", name: "dory", state: "idle" })],
+    }),
+  });
+  const sleepDeferred = Promise.withResolvers<{ data: null }>();
+  state.replies.sleep_machine = () => sleepDeferred.promise;
+
+  await using screen = await mount();
+  await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Machine/ }));
+
+  await userEvent.click(screen.getByRole("button", { name: "Delete machine…" }));
+  await expect
+    .element(screen.getByRole("button", { name: "Click again to delete forever" }))
+    .toBeVisible();
+
+  await userEvent.click(screen.getByRole("button", { name: "Sleep now" }));
+  await expect.element(screen.getByRole("button", { name: "Sleeping…" })).toBeVisible();
+
+  sleepDeferred.resolve({ data: null });
+  await expect.element(screen.getByText("Sleeping…")).not.toBeInTheDocument();
+
+  await expect
+    .element(screen.getByRole("button", { name: "Click again to delete forever" }))
+    .not.toBeInTheDocument();
+  await expect.element(screen.getByRole("button", { name: "Delete machine…" })).toBeVisible();
+
+  await userEvent.click(screen.getByRole("button", { name: "Delete machine…" }));
+  expect(state.invoked.map((item) => item.command)).not.toContain("delete_machine");
+  await expect
+    .element(screen.getByRole("button", { name: "Click again to delete forever" }))
+    .toBeVisible();
+});
+
+it("keeps keyboard focus on MachineDetails resize radios without firing resize until Resize is clicked", async () => {
+  const sizes = [
+    { id: "small", spec: "1 CPU · 2 GB", hourly: 0.025 },
+    { id: "default", spec: "2 CPU · 4 GB", hourly: 0.05 },
+    { id: "large", spec: "4 CPU · 8 GB", hourly: 0.1 },
+  ];
+  setup({
+    state: uiState({
+      sizes,
+      machines: [machine({ id: "m-1", name: "dory", size: "small", state: "idle" })],
+    }),
+  });
+  const resizeDeferred = Promise.withResolvers<{ data: null }>();
+  state.replies.resize_machine = () => resizeDeferred.promise;
+
+  await using screen = await mount();
+  await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Machine/ }));
+
+  const smallRadio = screen.getByRole("radio", { name: /^small/ });
+  const defaultRadio = screen.getByRole("radio", { name: /^default/ });
+  const largeRadio = screen.getByRole("radio", { name: /^large/ });
+
+  (smallRadio.element() as HTMLInputElement).focus();
+  expect(document.activeElement).toBe(smallRadio.element());
+
+  await userEvent.keyboard("{ArrowRight}");
+  await expect.element(defaultRadio).toBeChecked();
+  expect(document.activeElement).toBe(defaultRadio.element());
+  expect(state.invoked.map((item) => item.command)).not.toContain("resize_machine");
+
+  await userEvent.keyboard("{ArrowRight}");
+  await expect.element(largeRadio).toBeChecked();
+  expect(document.activeElement).toBe(largeRadio.element());
+  expect(state.invoked.map((item) => item.command)).not.toContain("resize_machine");
+
+  await expect.element(screen.getByRole("button", { name: "Resize to large" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  await expect.element(smallRadio).toBeChecked();
+  await expect
+    .element(screen.getByRole("button", { name: "Resize to large" }))
+    .not.toBeInTheDocument();
+
+  await userEvent.click(screen.getByText("large"));
+  await userEvent.click(screen.getByRole("button", { name: "Resize to large" }));
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({
+      command: "resize_machine",
+      args: { id: "m-1", size: "large" },
+    }),
+  );
+  const resizingButtons = screen.getByRole("button", { name: "Resizing…" });
+  await expect.element(resizingButtons.nth(0)).toBeDisabled();
+  await expect.element(resizingButtons.nth(1)).toBeDisabled();
+  await expect.element(smallRadio).toBeDisabled();
+  await expect.element(defaultRadio).toBeDisabled();
+  await expect.element(largeRadio).toBeDisabled();
+
+  resizeDeferred.resolve({ data: null });
+  await publish(
+    uiState({
+      sizes,
+      machines: [machine({ id: "m-1", name: "dory", size: "large", state: "idle" })],
+    }),
+  );
+  await expect.element(screen.getByRole("button", { name: "Resizing…" })).not.toBeInTheDocument();
+  await expect.element(largeRadio).toBeChecked();
+  await expect.element(largeRadio).toBeEnabled();
+});
+
+it("disables all MachineDetails size options including the current size when resize is not permitted", async () => {
+  setup({
+    state: uiState({
+      sizes: [
+        { id: "small", spec: "1 CPU · 2 GB", hourly: 0.025 },
+        { id: "large", spec: "4 CPU · 8 GB", hourly: 0.1 },
+      ],
+      machines: [machine({ id: "m-1", name: "dory", size: "small", state: "idle" })],
+    }),
+    allowed: READ_COMMANDS,
+  });
+
+  await using screen = await mount();
+  await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Machine/ }));
+
+  await expect.element(screen.getByRole("radio", { name: /^small/ })).toBeDisabled();
+  await expect.element(screen.getByRole("radio", { name: /^large/ })).toBeDisabled();
+});
+
+it("disables Sign in and Connect on other machines while sign_in_agent is in flight", async () => {
+  setup({
+    state: uiState({
+      machines: [
+        machine({ id: "m-1", name: "dory", state: "idle", signedOut: ["Claude Code"] }),
+        machine({ id: "m-2", name: "yawl", state: "idle", signedOut: ["Codex"] }),
+      ],
+    }),
+  });
+  const signInDeferred = Promise.withResolvers<unknown>();
+  state.replies.sign_in_agent = () => signInDeferred.promise;
+  state.replies.get_machine_details = (input: BoatInvokeInput) => {
+    const id =
+      input.command === "get_machine_details"
+        ? (input.args as { readonly id?: string } | undefined)?.id
+        : undefined;
+    return {
+      data: {
+        id: id ?? "m-2",
+        costToday: 0,
+        costMonth: 0,
+        awakeSecsToday: 0,
+        t3Version: "1.0.0",
+        createdAt: 1767225600,
+        agents: [{ name: id === "m-1" ? "Claude Code" : "Codex", signedIn: false }],
+        connect: false,
+      },
+    };
+  };
+
+  await using screen = await mount();
+  const listSignInButtons = screen.getByRole("button", { name: "Sign in" });
+  await userEvent.click(listSignInButtons.nth(0));
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({
+      command: "sign_in_agent",
+      args: { id: "m-1", agent: "Claude Code" },
+    }),
+  );
+
+  await userEvent.click(screen.getByRole("button", { name: "Back" }));
+  await expect.element(screen.getByRole("button", { name: "Sign in" }).nth(1)).toBeDisabled();
+
+  await userEvent.click(screen.getByRole("button", { name: "Details for yawl" }));
+  await expect.element(screen.getByRole("button", { name: "Sign in" })).toBeDisabled();
+  await expect.element(screen.getByRole("button", { name: "Turn on" })).toBeDisabled();
+
+  signInDeferred.reject(new Error("Sign-in cancelled"));
+  await expect.element(screen.getByRole("button", { name: "Sign in" })).toBeEnabled();
+  await expect.element(screen.getByRole("button", { name: "Turn on" })).toBeEnabled();
+});
+
+it("keeps ProjectPicker closed when re-enabled after being disabled while open", async () => {
+  setup({
+    state: uiState({
+      machines: [machine({ id: "m-1", name: "dory", state: "idle" })],
+    }),
+  });
+  state.replies.local_projects = {
+    data: [
+      {
+        id: "p-1",
+        title: "Alpha Repo",
+        path: "/Users/me/alpha",
+        repoKey: "org/alpha",
+        icon: null,
+      },
+    ],
+  };
+
+  await using screen = await mount();
+  await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+  await userEvent.click(screen.getByRole("button", { name: "Add a project…" }));
+
+  const filterInput = page.getByRole("combobox", { name: "Filter projects" });
+  await expect.element(filterInput).toBeVisible();
+
+  await act(() =>
+    state.registry.set(
+      state.allowed,
+      new Set(ALL_COMMANDS.filter((command) => command !== "add_project")),
+    ),
+  );
+  await expect.element(filterInput).not.toBeInTheDocument();
+  await expect.element(screen.getByRole("button", { name: "Add a project…" })).toBeDisabled();
+
+  await act(() => state.registry.set(state.allowed, new Set(ALL_COMMANDS)));
+  await expect.element(screen.getByRole("button", { name: "Add a project…" })).toBeEnabled();
+  await expect.element(filterInput).not.toBeInTheDocument();
+});
+
+it("ignores modified Escape chords including Shift+Escape before navigating back on unmodified Escape", async () => {
+  setup({
+    state: uiState({
+      machines: [machine({ id: "m-1", name: "dory", state: "idle" })],
+    }),
+  });
+
+  await using screen = await mount();
+  await userEvent.click(screen.getByRole("button", { name: "New machine" }));
+  await expect.element(screen.getByRole("heading", { name: "New machine" })).toBeVisible();
+
+  for (const modifiers of [
+    { shiftKey: true },
+    { metaKey: true },
+    { ctrlKey: true },
+    { altKey: true },
+  ]) {
+    await act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, ...modifiers }),
+      );
+    });
+    await expect.element(screen.getByRole("heading", { name: "New machine" })).toBeVisible();
+  }
+
+  await userEvent.keyboard("{Escape}");
+  await expect.element(screen.getByRole("button", { name: "Details for dory" })).toBeVisible();
+});
+
+it("updates useSecsLeft on minute boundaries above 60s and stops scheduling timers after expiry", async () => {
+  using _timers = fakeTimers({ now: 10_000 });
+  let renders = 0;
+
+  function CountdownProbe({ endsAt }: { readonly endsAt: number | null }) {
+    renders += 1;
+    const secs = useSecsLeft(endsAt);
+    return <output data-testid="countdown-secs">{secs}</output>;
+  }
+
+  await using screen = await render(<CountdownProbe endsAt={10_000 + 180_000} />, {
+    router: false,
+  });
+
+  const output = screen.getByTestId("countdown-secs");
+  expect(output.element().textContent).toBe("180");
+  expect(renders).toBe(1);
+
+  await act(() => vi.advanceTimersByTime(59_000));
+  expect(output.element().textContent).toBe("180");
+  expect(renders).toBe(1);
+
+  await act(() => vi.advanceTimersByTime(1_000));
+  expect(output.element().textContent).toBe("120");
+  expect(renders).toBe(2);
+
+  await act(() => vi.advanceTimersByTime(59_000));
+  expect(output.element().textContent).toBe("120");
+  expect(renders).toBe(2);
+
+  await act(() => vi.advanceTimersByTime(1_000));
+  expect(output.element().textContent).toBe("60");
+  expect(renders).toBe(3);
+
+  await act(() => vi.advanceTimersByTime(1_000));
+  expect(output.element().textContent).toBe("59");
+  expect(renders).toBe(4);
+
+  await act(() => vi.advanceTimersByTime(59_000));
+  expect(output.element().textContent).toBe("0");
+  const rendersAtExpiry = renders;
+
+  await act(() => vi.advanceTimersByTime(10_000));
+  expect(renders).toBe(rendersAtExpiry);
+  expect(vi.getTimerCount()).toBe(0);
+
+  // Exact deadline-relative arithmetic near expiry (250ms left -> 1s, then 0s at deadline).
+  await screen.rerender(<CountdownProbe endsAt={200_250} />);
+  expect(output.element().textContent).toBe("1");
+  await act(() => vi.advanceTimersByTime(250));
+  expect(output.element().textContent).toBe("0");
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("formats AgentNames conjunctions using the active GT locale", async () => {
+  await using screen = await render(
+    <GTProvider locale="en" translations={{}}>
+      <AgentNames names={["Claude Code", "Codex"]} />
+    </GTProvider>,
+    { router: false },
+  );
+  expect(screen.container.textContent).toBe("Claude Code and Codex");
+
+  await screen.rerender(
+    <GTProvider locale="de" translations={{}}>
+      <AgentNames names={["Claude Code", "Codex"]} />
+    </GTProvider>,
+  );
+  expect(screen.container.textContent).toBe("Claude Code und Codex");
 });
