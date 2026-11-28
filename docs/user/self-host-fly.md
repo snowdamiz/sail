@@ -1,8 +1,14 @@
 # Run a Sail server on Fly.io
 
-A personal Sail server keeps running when you close Sail or turn off your
-computer. It stores threads, files, settings, and provider sign-ins on a Fly
+A personal Sail server on Fly.io is an always-on **control plane** that stays
+online when you close Sail or turn off your computer. It manages **Boats**,
+synced preferences, device access, and synced provider credentials on a Fly
 volume mounted at `/data`.
+
+Coding sessions, local projects, and terminals do **not** run on the Fly VM
+itself (`SAIL_LOCAL_SESSIONS=off`). Run coding sessions on **Boat** cloud
+machines managed from the Fly server or on a **Local** computer paired with
+Sail.
 
 ## Deploy
 
@@ -16,12 +22,13 @@ Fly.io. To select a region for the new volume, add `--region` with a
 deploy/fly/deploy.sh --app my-sail
 ```
 
-The script starts one Machine, creates a 10 GB volume, and stages a generated
-initial sign-in password in Fly secrets (`SAIL_INITIAL_OWNER_PASSWORD`) before
-booting the server. Open the printed **Sail URL** (`https://my-sail.fly.dev`)
-in any browser and sign in with the printed **Initial password** — no pairing
-token or local command is needed. To supply your own 15–256 character initial
-password instead of generating one, pass `--password-file FILE`.
+The script starts one lightweight Machine, creates a 3 GB volume, and stages a
+generated initial sign-in password in Fly secrets
+(`SAIL_INITIAL_OWNER_PASSWORD`) before booting the server. Open the printed
+**Sail URL** (`https://my-sail.fly.dev`) in any browser and sign in with the
+printed **Initial password** — no pairing token or local command is needed. To
+supply your own 15–256 character initial password instead of generating one, pass
+`--password-file FILE`.
 
 When run in a local terminal with Sail Desktop installed, the script also opens
 a pairing prompt in the desktop app and prints one-time desktop/browser pairing
@@ -52,20 +59,18 @@ used that password. Independently paired devices stay signed in. Desktop and
 mobile can pair from **Settings → Sharing & access** (using **Open in Sail
 desktop** or a new pairing link) or with `--pair`.
 
-## Sign in to providers
+## Connect a Boat machine
 
-Open the in-app terminal on your Fly environment and sign in where your
-agents will run. For Claude, run `claude auth login` and follow the browser
-instructions. For Codex, run `codex login --device-auth` and follow its
-device-code instructions. Then select the provider when you start a thread.
+On first visit, Sail walks you through setting up **Boats** directly from the
+welcome screen: install/sign in to Boat if needed, connect an existing Boat
+machine, or launch a new one from **Boats**.
 
-## Use Boats from a remote client
-
-Open **Boats** from your browser or Sail Desktop while connected to your Fly
-server. If you have several servers, choose your Fly server in **Boats server**.
-Enable **Linked environments** in the Fly server's **Settings → Labs**.
-On the machine's row, choose **Add to Sail** and confirm its Boat HTTPS address.
-Your client saves a direct connection to that machine.
+You can also open **Boats** anytime from your browser or Sail Desktop while
+connected to your Fly server. If you have several servers, choose your Fly
+server in **Boats server**. On a machine's row, choose **Add to Sail** (or
+**Connect**) and confirm its Boat HTTPS address. Your client saves a direct
+connection to that Boat machine, where your projects, terminals, and coding
+sessions run.
 
 When an added machine is asleep, open **Boats** on the Fly server and choose
 **Wake now** on the machine's row. Open a thread from the machine's details
@@ -74,6 +79,13 @@ use **Settings → Sharing & access** on the Boat machine.
 
 If Boat restores the machine from a snapshot at a new address, use
 **Add to Sail again** from the machine's menu to save its new address.
+
+## Sync provider credentials to Boats
+
+Manage provider API keys and supported OAuth sign-ins (such as Codex ChatGPT
+sign-in) in **Settings → Providers** on your Fly server (or during onboarding).
+Configured provider credentials sync down to your Boat machines automatically so
+you do not need to manage agent CLIs on each Boat by hand.
 
 ## Add another device
 
@@ -119,7 +131,7 @@ fly volumes snapshots list VOLUME_ID --app my-sail
 
 To restore in the same app, choose a completed snapshot. Use the original
 volume's region and a size at least as large as the original volume. The
-example assumes a 10 GB volume in `iad` and a restore target named
+example assumes a 3 GB volume in `iad` and a restore target named
 `sail_restore`. Keep an independent backup of data you cannot lose.
 [Fly volume restore reference](https://docs.fly.io/volumes/volume-manage/#restore-a-deleted-volume)
 
@@ -127,22 +139,23 @@ example assumes a 10 GB volume in `iad` and a restore target named
    can switch back if needed.
 
    ```bash
-   fly volumes create sail_restore --app my-sail --region iad --size 10 --snapshot-id SNAPSHOT_ID
+   fly volumes create sail_restore --app my-sail --region iad --size 3 --snapshot-id SNAPSHOT_ID
    ```
 
 2. Set `source = "sail_restore"` in the `[[mounts]]` section of
    `deploy/fly/fly.toml` and keep `destination = "/data"`.
 3. Find the old Machine with `fly machine list --app my-sail`. Stop and
-   destroy that Machine with `--force`. This interrupts running turns. The
-   volume stays in the app and is available for rollback.
+   destroy that Machine with `--force`. The volume stays in the app and is
+   available for rollback.
 
    ```bash
    fly machine destroy MACHINE_ID --app my-sail --force
    ```
 
 4. Deploy with the image that created the snapshot. Pair a client if needed,
-   then check your threads, attachments, and settings. Keep the new mount
-   source in your deployment config for future upgrades and snapshots.
+   then check your settings, Boats setup, and provider sync configuration. Keep
+   the new mount source in your deployment config for future upgrades and
+   snapshots.
 
    ```bash
    deploy/fly/deploy.sh --app my-sail --image IMAGE
@@ -150,9 +163,10 @@ example assumes a 10 GB volume in `iad` and a restore target named
 
 ## Cost and removal
 
-The default Machine runs continuously with two shared CPUs and 4 GB of RAM.
-Fly bills for compute, the 10 GB provisioned volume, snapshot storage, and
-network usage. Use the region where you plan to deploy to estimate your bill.
+Because coding sessions run on Boat machines rather than the Fly VM, the
+default Machine runs continuously with one shared CPU and 1 GB of RAM. Fly bills
+for compute, the 3 GB provisioned volume, snapshot storage, and network usage.
+Use the region where you plan to deploy to estimate your bill.
 [Fly pricing calculator](https://fly.io/calculator/)
 
 To stop billing for the app, first copy any data you want to keep, then destroy

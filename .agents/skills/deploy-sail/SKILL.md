@@ -5,6 +5,7 @@ description: Deploy or upgrade a personal Sail server on Fly.io, pair another de
 
 Use [the Fly deployment guide](../../../docs/user/self-host-fly.md) for prerequisites, pricing, and recovery. Run the script from the user's Sail checkout with their chosen app name.
 
+- A Fly.io Sail server runs as a **control plane** (`SAIL_LOCAL_SESSIONS=off`, `shared-cpu-1x` / `1 GB` RAM / `3 GB` volume): it manages **Boats**, synced preferences, device access, and synced provider credentials (`Settings → Providers`), and does **not** run coding sessions, local projects, or local terminals on the Fly VM. Mention that coding sessions run on Boat machines (set up during onboarding or from **Boats**) or on a paired Local computer.
 - Deploy or upgrade with `deploy/fly/deploy.sh --app NAME`. Pass the requested `--region`, `--image`, `--build`, or `--password-file` when deploying.
 - Use `--pair` for fresh pairing links from a running deployment and `--snapshot` to request a volume snapshot.
 - Use `--dry-run` when the user asks for a preview.

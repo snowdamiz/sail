@@ -1,5 +1,8 @@
+import { useAtomValue } from "@effect/atom-react";
+import { environmentSupportsLocalSessions } from "@t3tools/contracts";
 import { useGT } from "gt-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { serverEnvironment } from "~/state/server";
 import { useBoatAccess } from "../access";
 import { useMachineDetails } from "../api";
 import type { MachineDetails as Details, LocalProject, MachineView, Size } from "../types";
@@ -452,6 +455,9 @@ function Projects({
   pickProject: boolean;
   onAddProject: (p: LocalProject) => void;
 }) {
+  const access = useBoatAccess();
+  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(access.environmentId));
+  const supportsLocalProjects = environmentSupportsLocalSessions(serverConfig);
   const gone = m.state === "missing";
   if (gone && !m.projects.length) return null;
   return (
@@ -472,11 +478,13 @@ function Projects({
         {!m.projects.length && !gone ? (
           <li className="line">
             <span className="line-main line-dim">
-              Cloned from its git remote, .env files included
+              {supportsLocalProjects
+                ? "Cloned from its git remote, .env files included"
+                : "Add projects after connecting to this Boat"}
             </span>
           </li>
         ) : null}
-        {gone ? null : (
+        {gone || !supportsLocalProjects ? null : (
           <li className="line line-send">
             <ProjectPicker m={m} initialOpen={pickProject} onAdd={onAddProject} />
           </li>

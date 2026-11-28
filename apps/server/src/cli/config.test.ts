@@ -57,6 +57,7 @@ const minimalDesktopFlags = (baseDir: string) => ({
   lan: Option.none<boolean>(),
   publicUrl: Option.none(),
   startupPairing: Option.none(),
+  localSessions: Option.none(),
 });
 
 const encodeDesktopBootstrap = Schema.encodeEffect(Schema.fromJsonString(DesktopBackendBootstrap));
@@ -351,6 +352,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         lan: Option.none<boolean>(),
         publicUrl: Option.none(),
         startupPairing: Option.none(),
+        localSessions: Option.none(),
       };
       const layerConfig = ConfigProvider.layer(
         ConfigProvider.fromEnv({
@@ -398,6 +400,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         lan: Option.none<boolean>(),
         publicUrl: Option.none(),
         startupPairing: Option.none(),
+        localSessions: Option.none(),
       };
       const layerConfig = ConfigProvider.layer(
         ConfigProvider.fromEnv({ env: { T3CODE_DEV_AUTH_TOKEN: secret } }),
@@ -456,6 +459,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           lan: Option.none(),
           publicUrl: Option.none(),
           startupPairing: Option.none(),
+          localSessions: Option.none(),
         },
         Option.none(),
       ).pipe(
@@ -536,6 +540,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           lan: Option.none(),
           publicUrl: Option.none(),
           startupPairing: Option.none(),
+          localSessions: Option.none(),
         },
         Option.some("Debug"),
       ).pipe(
@@ -836,6 +841,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           lan: Option.none(),
           publicUrl: Option.none(),
           startupPairing: Option.none(),
+          localSessions: Option.none(),
         },
         Option.none(),
       ).pipe(
@@ -887,6 +893,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           lan: Option.none(),
           publicUrl: Option.none(),
           startupPairing: Option.none(),
+          localSessions: Option.none(),
         },
         Option.none(),
       ).pipe(
@@ -930,6 +937,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           lan: Option.none(),
           publicUrl: Option.none(),
           startupPairing: Option.none(),
+          localSessions: Option.none(),
         },
         Option.none(),
         {
@@ -996,6 +1004,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           lan: Option.none(),
           publicUrl: Option.none(),
           startupPairing: Option.none(),
+          localSessions: Option.none(),
         },
         Option.none(),
       ).pipe(
@@ -1038,6 +1047,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     lan: Option.none<boolean>(),
     publicUrl: Option.none(),
     startupPairing: Option.none(),
+    localSessions: Option.none(),
   });
 
   it.effect("uses the automatic port selector only when no port is configured", () =>
@@ -1258,5 +1268,37 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         privateNetworkOnly: undefined,
       });
     }),
+  );
+
+  it.effect(
+    "disables local sessions and cwd auto-bootstrap when SAIL_LOCAL_SESSIONS=off in web mode",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-local-sessions-" });
+        const withEnv = (env: Record<string, string>) =>
+          Effect.provide(
+            Layer.merge(NetService.layer, ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+          );
+
+        const controlPlane = yield* resolveServerConfig(
+          { ...minimalWebFlags(baseDir), autoBootstrapProjectFromCwd: Option.some(true) },
+          Option.none(),
+        ).pipe(withEnv({ SAIL_LOCAL_SESSIONS: "off" }));
+        assert.equal(controlPlane.localSessionsEnabled, false);
+        assert.equal(controlPlane.autoBootstrapProjectFromCwd, false);
+
+        const viaFlag = yield* resolveServerConfig(
+          { ...minimalWebFlags(baseDir), localSessions: Option.some("off") },
+          Option.none(),
+        ).pipe(withEnv({}));
+        assert.equal(viaFlag.localSessionsEnabled, false);
+
+        const desktop = yield* resolveServerConfig(
+          minimalDesktopFlags(baseDir),
+          Option.none(),
+        ).pipe(withEnv({ SAIL_LOCAL_SESSIONS: "off" }));
+        assert.equal(desktop.localSessionsEnabled, undefined);
+      }),
   );
 });

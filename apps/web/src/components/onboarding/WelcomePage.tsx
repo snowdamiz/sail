@@ -1,7 +1,10 @@
 import { useAuth } from "@clerk/react";
-import { useAtomValue } from "@effect/atom-react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import type {
   AgentSessionProjectCandidate,
+  BoatSignIn,
+  BoatSignInAction,
+  BoatSignInPhase,
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
@@ -23,6 +26,7 @@ import {
   AuthTerminalOperateScope,
   CommandId,
   AuthOrchestrationOperateScope,
+  environmentSupportsLocalSessions,
   isManagedDriverAllowed,
   ProviderDriverKind,
   ThreadId,
@@ -33,12 +37,13 @@ import {
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  ExternalLinkIcon,
   PlusIcon,
   SmartphoneIcon,
   TerminalIcon,
 } from "lucide-react";
 import { msg, T, useGT, useLocale, useMessages, Var } from "gt-react";
-import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 
 import { TYPOGRAPHY_ADVANCED_STORAGE_KEY } from "../../appearanceFonts";
 import { MOBILE_APP_URL } from "../../branding";
@@ -80,8 +85,11 @@ import {
   type WelcomeImportSelection,
   welcomeImportSelectionKey,
 } from "../../onboarding/welcomeState";
+import { environmentCatalog } from "../../connection/catalog";
 import { newProjectId, randomUUID } from "../../lib/utils";
 import { agentSessionImport } from "../../state/agentSessions";
+import { boatCommandsAllowedAtom } from "../../state/boats";
+import { clientHostEnvironmentAtom } from "../../state/clientHostEnvironment";
 import { readProjects, useProjects, waitForProject } from "../../state/entities";
 import { useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
 import { useManagedPolicy } from "../../state/managedPolicy";
@@ -103,8 +111,14 @@ import { CodexSetupSection } from "../settings/CodexSetupSection";
 import { readCodexSetupMode } from "../settings/CodexSetupSection.logic";
 import { TerminalViewport } from "../ThreadTerminalDrawer";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
+import { type BoatAccess, BoatAccessContext, useBoatAccess } from "../boats/access";
+import { useBoatCall, useBoatsPage, useFollowBoatLink } from "../boats/api";
+import { errorText } from "../boats/reply";
+import type { MachineView, SetupAction, UiState } from "../boats/types";
 import { ACPRegistryIcon } from "../Icons";
+import { SailBrandMark } from "../SailBrandMark";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 import { Checkbox } from "../ui/checkbox";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { QRCodeSvg } from "../ui/qr-code";
@@ -137,7 +151,18 @@ export function WelcomePage({
   const label =
     environments.find((environment) => environment.environmentId === environmentId)?.label ??
     gt("this computer");
-  const agentReady = useWelcomeAgents(environmentId).readyCount > 0;
+  const welcomeAgents = useWelcomeAgents(environmentId);
+  const agentReady = welcomeAgents.readyCount > 0;
+  const isControlPlane =
+    welcomeAgents.serverConfig !== null &&
+    !environmentSupportsLocalSessions(welcomeAgents.serverConfig);
+  const hasSessionEnvironment = environments.some(
+    (environment) =>
+      environment.entry?.enabled &&
+      environment.connection?.phase === "connected" &&
+      environmentSupportsLocalSessions(environment.serverConfig),
+  );
+  const readyToStart = isControlPlane ? hasSessionEnvironment : agentReady;
   // The phone and `t3` on PATH belong to the primary computer, so only it offers them.
   const isPrimary = usePrimaryEnvironmentId() === environmentId;
   // The same access Settings → Sharing & access checks.
@@ -149,7 +174,7 @@ export function WelcomePage({
     canShare: canReadRelay && canWriteRelay,
     policy: useManagedPolicy(environmentId),
   });
-  const scans = useProjectScans([environmentId]);
+  const scans = useProjectScans(isControlPlane ? [] : [environmentId]);
   const [storedSelection, storeSelection] = useLocalStorage(
     welcomeImportSelectionKey(environmentId),
     null,
@@ -282,43 +307,61 @@ export function WelcomePage({
               <T>Welcome to Sail</T>
             </h1>
             <p className="mt-1.5 text-sm text-muted-foreground">
-              <T>
-                Setting up{" "}
-                <span className="text-foreground">
-                  <Var>{label}</Var>
-                </span>
-                .
-              </T>
+              {isControlPlane ? (
+                <T>
+                  Setting up{" "}
+                  <span className="text-foreground">
+                    <Var>{label}</Var>
+                  </span>
+                  . Connect a Boat machine to run sessions.
+                </T>
+              ) : (
+                <T>
+                  Setting up{" "}
+                  <span className="text-foreground">
+                    <Var>{label}</Var>
+                  </span>
+                  .
+                </T>
+              )}
             </p>
             <div className="mt-10 border-t border-border/60">
+              {isControlPlane ? <BoatsSection environmentId={environmentId} /> : null}
               <AgentsSection
                 environmentId={environmentId}
                 label={label}
                 isPrimary={isPrimary}
+                isControlPlane={isControlPlane}
                 onImportSourceEnabled={() => scans[0]?.refresh()}
               />
-              <ProjectsSection
-                scan={scans[0]}
-                projectImport={projectImport}
-                isImporting={isImporting}
-              />
+              {isControlPlane ? null : (
+                <ProjectsSection
+                  scan={scans[0]}
+                  projectImport={projectImport}
+                  isImporting={isImporting}
+                />
+              )}
               {showPhone ? <PhoneSection environmentId={environmentId} /> : null}
             </div>
             <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
-              {agentReady ? (
+              {readyToStart ? (
                 <span />
               ) : (
                 <Button variant="ghost-muted" disabled={isImporting} onClick={start}>
-                  <T>Start without an agent</T>
+                  {isControlPlane ? <T>Continue without a Boat</T> : <T>Start without an agent</T>}
                 </Button>
               )}
               <div className="flex items-center gap-3">
-                {agentReady ? null : (
+                {readyToStart ? null : (
                   <span className="text-xs text-muted-foreground">
-                    <T>Set up one agent to start.</T>
+                    {isControlPlane ? (
+                      <T>Connect a Boat machine to start.</T>
+                    ) : (
+                      <T>Set up one agent to start.</T>
+                    )}
                   </span>
                 )}
-                <Button disabled={!agentReady || isImporting} onClick={start}>
+                <Button disabled={!readyToStart || isImporting} onClick={start}>
                   {isImporting
                     ? selected.length > 0
                       ? gt("Importing…")
@@ -366,6 +409,468 @@ function RowIcon({ children }: { readonly children: ReactNode }) {
   );
 }
 
+function BoatsSection({ environmentId }: { readonly environmentId: EnvironmentId }) {
+  const gt = useGT();
+  const { page, retry } = useBoatsPage(environmentId);
+  const allowed = useAtomValue(boatCommandsAllowedAtom(environmentId));
+  const onHost = useAtomValue(clientHostEnvironmentAtom(environmentId));
+  const { entries } = useAtomValue(environmentCatalog.catalogValueAtom);
+  const access: BoatAccess = {
+    environmentId,
+    can: (command) => allowed.has(command),
+    isPaired: (id) => {
+      const entry = id === null ? undefined : entries.get(id);
+      return entry?.enabled === true && entry.unsupportedReason === undefined;
+    },
+    onHost,
+  };
+
+  return (
+    <BoatAccessContext.Provider value={access}>
+      <WelcomeSection title={gt("Boats")}>
+        {page.kind === "starting" || page.kind === "noServer" ? (
+          <p className="text-sm leading-10 text-muted-foreground">
+            <T>Checking Boats…</T>
+          </p>
+        ) : page.kind === "offline" ? (
+          <div
+            role="alert"
+            className="flex min-h-10 items-center justify-between gap-3 text-sm text-muted-foreground"
+          >
+            <span>{gt("Could not reach Boats. {error}", { error: page.message })}</span>
+            <Button variant="ghost" size="sm" onClick={() => void retry()}>
+              <T>Retry</T>
+            </Button>
+          </div>
+        ) : page.kind === "setup" ? (
+          <BoatsOnboardingSetup state={page.state} />
+        ) : (
+          <BoatsOnboardingReady state={page.state} />
+        )}
+      </WelcomeSection>
+    </BoatAccessContext.Provider>
+  );
+}
+
+function BoatsOnboardingSetup({ state }: { readonly state: UiState }) {
+  const gt = useGT();
+  const access = useBoatAccess();
+  const call = useBoatCall();
+  const follow = useFollowBoatLink(access.onHost);
+  const [signIn, setSignIn] = useState<BoatSignIn | null>(null);
+  const [requesting, setRequesting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const finishSignIn = (phase: BoatSignInPhase) => {
+    setSignIn(null);
+    if (phase === "expired") setError(gt("The sign-in expired. Start again to get a new code."));
+    if (phase === "failed") setError(gt("Sign-in could not finish. Try again."));
+  };
+
+  const runSetupAction = (action: SetupAction) => {
+    setRequesting(true);
+    setError(null);
+    void call("setup_action", { action })
+      .then(
+        (reply) => {
+          if (reply.signIn !== undefined) {
+            setSignIn(reply.signIn);
+            if (reply.signIn.onHost) follow(reply.signIn.prompt?.url);
+          } else {
+            follow(reply.openUrl);
+          }
+        },
+        (cause) => setError(errorText(cause)),
+      )
+      .finally(() => setRequesting(false));
+  };
+
+  if (state.setup === "starting" || state.setup === "ready") {
+    return (
+      <p className="text-sm leading-10 text-muted-foreground">
+        <T>Checking Boat setup…</T>
+      </p>
+    );
+  }
+
+  const canAct = access.can("setup_action");
+  const locked = state.setupBusy || requesting || !canAct || signIn !== null;
+
+  return (
+    <>
+      {state.setup === "installBoat" ? (
+        <div className="flex min-h-10 items-center gap-3 py-1">
+          <RowIcon>
+            <SailBrandMark className="size-4" aria-hidden="true" />
+          </RowIcon>
+          <div className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-medium text-foreground">
+              <T>Install the Boat CLI</T>
+            </span>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              <T>Required on this server to launch and manage cloud Boat machines.</T>
+            </p>
+          </div>
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={locked}
+            onClick={() => runSetupAction("installBoat")}
+          >
+            {state.setupBusy || requesting ? gt("Installing…") : gt("Install")}
+          </Button>
+        </div>
+      ) : state.setup === "signInBoat" ? (
+        <>
+          <div className="flex min-h-10 items-center gap-3 py-1">
+            <RowIcon>
+              <SailBrandMark className="size-4" aria-hidden="true" />
+            </RowIcon>
+            <div className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium text-foreground">
+                <T>Sign in to Boat</T>
+              </span>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                <T>Launch cloud machines on your Boat account to run Sail sessions.</T>
+              </p>
+            </div>
+            {signIn === null ? (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={locked}
+                onClick={() => runSetupAction("signInBoat")}
+              >
+                {state.setupBusy || requesting ? gt("Waiting…") : gt("Sign in")}
+              </Button>
+            ) : null}
+          </div>
+          {signIn !== null ? (
+            <div className="pt-1 pb-2 pl-8">
+              <WelcomeBoatSignInCard
+                key={signIn.attemptId}
+                attempt={signIn}
+                onFinish={finishSignIn}
+              />
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div className="flex min-h-10 items-center gap-3 py-1">
+          <RowIcon>
+            <SailBrandMark className="size-4" aria-hidden="true" />
+          </RowIcon>
+          <div className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-medium text-foreground">
+              <T>Boat setup needs attention</T>
+            </span>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              <T>
+                This server could not run its own t3 command. Restart the server, then check again.
+              </T>
+            </p>
+          </div>
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={locked}
+            onClick={() => runSetupAction("recheck")}
+          >
+            <T>Check again</T>
+          </Button>
+        </div>
+      )}
+      {!canAct ? (
+        <p className="pl-8 text-xs text-muted-foreground">
+          <T>This connection cannot manage Boats.</T>
+        </p>
+      ) : null}
+      {error ? (
+        <p role="alert" className="pt-1 pl-8 text-xs text-destructive">
+          {error}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+function WelcomeBoatSignInCard({
+  attempt,
+  onFinish,
+}: {
+  readonly attempt: BoatSignIn;
+  readonly onFinish: (phase: BoatSignInPhase) => void;
+}) {
+  const gt = useGT();
+  const call = useBoatCall();
+  const canManage = useBoatAccess().can("manage_boat_sign_in");
+  const [code, setCode] = useState("");
+  const [action, setAction] = useState<"submit" | "cancel" | null>(null);
+  const [submitted, setSubmitted] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const { attemptId, prompt } = attempt;
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- polls the boat sign-in attempt until the browser flow finishes
+  useEffect(() => {
+    if (!canManage) return;
+    let stopped = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const { data: phase } = await call("manage_boat_sign_in", {
+          action: "status",
+          attemptId,
+        });
+        if (stopped) return;
+        if (phase !== "pending") {
+          onFinish(phase);
+          return;
+        }
+      } catch {
+        if (stopped) return;
+      }
+      timer = window.setTimeout(() => void poll(), 2000);
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [attemptId, call, canManage, onFinish]);
+
+  const act = (input: BoatSignInAction) => {
+    setAction(input.action === "submit" ? "submit" : "cancel");
+    setCode("");
+    setFailed(false);
+    void call("manage_boat_sign_in", input).then(
+      ({ data: phase }) => {
+        if (phase !== "pending") onFinish(phase);
+        else if (input.action === "submit") {
+          setSubmitted(true);
+          setAction(null);
+        }
+      },
+      () => {
+        setAction(null);
+        setFailed(true);
+      },
+    );
+  };
+
+  if (!canManage) return null;
+
+  const url = prompt === null ? null : URL.parse(prompt.url);
+  const link = url?.protocol === "https:" ? url.href : null;
+
+  return (
+    <div className="space-y-2.5 rounded-lg border border-border/60 bg-muted/30 p-3">
+      {link && action !== "cancel" ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="xs"
+            variant="outline"
+            render={<a href={link} target="_blank" rel="noopener noreferrer" />}
+          >
+            <ExternalLinkIcon className="size-3.5" />
+            {gt("Open sign-in page")}
+          </Button>
+          {prompt?.kind === "device" ? (
+            <span className="text-xs text-muted-foreground">
+              {gt("Enter this code on the sign-in page")}{" "}
+              <code className="rounded border border-border/60 bg-background px-1.5 py-0.5 font-mono text-xs text-foreground">
+                {prompt.code}
+              </code>
+            </span>
+          ) : null}
+        </div>
+      ) : prompt?.kind === "device" && action !== "cancel" ? (
+        <p className="text-xs text-muted-foreground">
+          {gt("Enter this code on the sign-in page")}{" "}
+          <code className="rounded border border-border/60 bg-background px-1.5 py-0.5 font-mono text-xs text-foreground">
+            {prompt.code}
+          </code>
+        </p>
+      ) : null}
+      {prompt?.kind === "paste" && action === null ? (
+        <form
+          className="flex flex-wrap items-center gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (code.trim()) act({ action: "submit", attemptId, code });
+          }}
+        >
+          <Input
+            type="password"
+            size="sm"
+            autoComplete="off"
+            maxLength={2048}
+            placeholder={gt("Paste the sign-in code")}
+            aria-label={gt("Paste the sign-in code")}
+            value={code}
+            onChange={(event) => setCode(event.target.value)}
+            className="max-w-xs flex-1"
+          />
+          <Button size="xs" type="submit" disabled={!code.trim()}>
+            {gt("Submit code")}
+          </Button>
+        </form>
+      ) : null}
+      {failed ? (
+        <p role="alert" className="text-xs text-destructive">
+          {gt("The sign-in request failed. Try again.")}
+        </p>
+      ) : null}
+      {submitted && !failed && action !== "cancel" ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          {gt("Code sent. If sign-in stalls, try another code.")}
+        </p>
+      ) : null}
+      <div className="flex items-center justify-between gap-2">
+        <span role="status" className="text-xs text-muted-foreground">
+          {action === "cancel" ? gt("Cancelling sign-in…") : gt("Waiting for sign-in…")}
+        </span>
+        {action !== "cancel" ? (
+          <Button
+            size="xs"
+            variant="ghost-muted"
+            disabled={action === "submit"}
+            onClick={() => act({ action: "cancel", attemptId })}
+          >
+            {gt("Cancel sign-in")}
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function BoatsOnboardingReady({ state }: { readonly state: UiState }) {
+  const gt = useGT();
+  const access = useBoatAccess();
+  const call = useBoatCall();
+  const follow = useFollowBoatLink(access.onHost);
+  const registry = useContext(RegistryContext);
+  const { environments } = useEnvironments();
+  const setEnabled = useAtomCommand(environmentCatalog.setEnabled, { reportFailure: false });
+  const [connectingId, setConnectingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const connectedEnvironmentIds = new Set(
+    environments
+      .filter(
+        (environment) =>
+          environment.entry?.enabled && environment.connection?.phase === "connected",
+      )
+      .map((environment) => environment.environmentId),
+  );
+
+  const connectMachine = (machine: MachineView) => {
+    setConnectingId(machine.id);
+    setError(null);
+    const id = machine.environmentId;
+    const entry =
+      access.onHost && id !== null
+        ? registry.get(environmentCatalog.catalogValueAtom).entries.get(id)
+        : undefined;
+    const run =
+      entry?.enabled === false && entry.unsupportedReason === undefined && id !== null
+        ? setEnabled({ environmentId: id, enabled: true }).then((result) => {
+            if (result._tag === "Failure") {
+              setError(errorText(squashAtomCommandFailure(result)));
+            }
+          })
+        : call("pair_machine", { id: machine.id }).then(
+            (reply) => {
+              follow(reply.openUrl, machine.environmentId ?? undefined);
+            },
+            (cause) => {
+              setError(errorText(cause));
+            },
+          );
+    void run.finally(() => {
+      setConnectingId((current) => (current === machine.id ? null : current));
+    });
+  };
+
+  return (
+    <>
+      {state.machines.map((machine) => {
+        const isConnected =
+          machine.environmentId !== null && connectedEnvironmentIds.has(machine.environmentId);
+        const isPaired = machine.environmentId !== null && access.isPaired(machine.environmentId);
+        const isBusy =
+          connectingId === machine.id || machine.state === "creating" || machine.state === "waking";
+        const detail = [machine.size, machine.detail || machine.state].filter(Boolean).join(" · ");
+        return (
+          <div key={machine.id} className="flex min-h-10 items-center gap-3 py-1">
+            <RowIcon>
+              <SailBrandMark className="size-4" aria-hidden="true" />
+            </RowIcon>
+            <div className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium text-foreground">
+                {machine.name}
+              </span>
+              {detail ? (
+                <p className="truncate text-xs leading-relaxed text-muted-foreground">{detail}</p>
+              ) : null}
+            </div>
+            <div className="shrink-0">
+              {isConnected ? (
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-success-foreground">
+                  <CheckIcon className="size-3.5" />
+                  <T context="boat status">Connected</T>
+                </span>
+              ) : isPaired ? (
+                <span className="text-xs text-muted-foreground">
+                  <T>Connecting…</T>
+                </span>
+              ) : machine.state === "creating" || machine.state === "waking" ? (
+                <span className="text-xs text-muted-foreground">
+                  <T>Starting…</T>
+                </span>
+              ) : (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={!access.can("pair_machine") || isBusy}
+                  onClick={() => void connectMachine(machine)}
+                >
+                  {connectingId === machine.id ? gt("Connecting…") : gt("Connect")}
+                </Button>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      <div className="flex min-h-10 items-center gap-3 py-1">
+        <RowIcon>
+          <PlusIcon className="size-4" />
+        </RowIcon>
+        <div className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium text-foreground">
+            {state.machines.length === 0
+              ? gt("Launch your first Boat machine")
+              : gt("Launch another Boat machine")}
+          </span>
+          {state.machines.length === 0 ? (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              <T>Coding sessions run on Boat machines that sleep automatically when idle.</T>
+            </p>
+          ) : null}
+        </div>
+        <Button size="xs" variant="outline" render={<Link to="/boats" />}>
+          {state.machines.length === 0 ? gt("Launch Boat") : gt("Open Boats")}
+        </Button>
+      </div>
+      {error ? (
+        <p role="alert" className="pt-1 pl-8 text-xs text-destructive">
+          {error}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
 const INSTALLABLE_DRIVERS = ["codex", "claudeAgent"] as const;
 type OnboardingAgentDriver = (typeof INSTALLABLE_DRIVERS)[number];
 const isInstallableDriver = (driver: string): driver is OnboardingAgentDriver =>
@@ -405,11 +910,13 @@ function AgentsSection({
   environmentId,
   label,
   isPrimary,
+  isControlPlane,
   onImportSourceEnabled,
 }: {
   readonly environmentId: EnvironmentId;
   readonly label: string;
   readonly isPrimary: boolean;
+  readonly isControlPlane: boolean;
   // The project scan only reads agents that are on, so turning one on can find more history.
   readonly onImportSourceEnabled: () => void;
 }) {
@@ -419,7 +926,8 @@ function AgentsSection({
     reportFailure: false,
   });
   const persistProviderInstance = usePersistEnvironmentProviderInstanceMutation(environmentId);
-  const canOperateTerminal = useEnvironmentScope(environmentId, AuthTerminalOperateScope);
+  const canOperateTerminal =
+    useEnvironmentScope(environmentId, AuthTerminalOperateScope) && !isControlPlane;
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
   const [terminalSession, setTerminalSession] = useState<AgentTerminalSession | null>(null);
   const [moreOpen, setMoreOpen] = useState<boolean | null>(null);
@@ -439,6 +947,7 @@ function AgentsSection({
   const acpAllowed = isManagedDriverAllowed(serverConfig?.managedPolicy, ACP_REGISTRY_DRIVER_KIND);
   const stateOf = (provider: ServerProvider) => welcomeAgentState(provider, serverConfig?.settings);
   const needsInstallOrSignIn = (provider: ServerProvider) => {
+    if (isControlPlane) return false;
     const state = stateOf(provider);
     return (
       isInstallableDriver(provider.driver) &&
@@ -596,6 +1105,7 @@ function AgentsSection({
   };
 
   const notes = [
+    !isControlPlane &&
     !canOperateTerminal &&
     [...found, ...available].some(
       (provider) =>
@@ -615,6 +1125,11 @@ function AgentsSection({
 
   return (
     <WelcomeSection title={gt("Agents")}>
+      {isControlPlane ? (
+        <p className="pb-2 text-xs text-muted-foreground">
+          <T>Provider credentials configured here sync to your Boat machines.</T>
+        </p>
+      ) : null}
       {found.map((provider) => (
         <AgentRow
           key={provider.instanceId}
@@ -689,14 +1204,15 @@ function AgentsSection({
             environmentId={environmentId}
             provider={codexSetupProvider}
             serverConfig={serverConfig}
+            isControlPlane={isControlPlane}
             onUseCliChange={(useCli) =>
               setCliTerminalFor(useCli ? codexSetupProvider.instanceId : null)
             }
           />
         </div>
       ) : null}
-      {isPrimary ? <CliPathSetup /> : null}
-      {terminalSession !== null ? (
+      {isPrimary && !isControlPlane ? <CliPathSetup /> : null}
+      {!isControlPlane && terminalSession !== null ? (
         <AgentInstallTerminal
           key={`${terminalSession.environmentId}:${terminalSession.providerInstanceId}:${terminalSession.driver}`}
           session={terminalSession}
@@ -1089,17 +1605,20 @@ function OnboardingCodexSetup({
   environmentId,
   provider,
   serverConfig,
+  isControlPlane,
   onUseCliChange,
 }: {
   readonly environmentId: EnvironmentId;
   readonly provider: ServerProvider;
   readonly serverConfig: ServerConfig;
+  readonly isControlPlane: boolean;
   // True asks for the CLI's install or sign-in terminal once Codex has checked the CLI.
   readonly onUseCliChange: (useCli: boolean) => void;
 }) {
   const gt = useGT();
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
-  const canOperateTerminal = useEnvironmentScope(environmentId, AuthTerminalOperateScope);
+  const canOperateTerminal =
+    useEnvironmentScope(environmentId, AuthTerminalOperateScope) && !isControlPlane;
   const persistProviderInstance = usePersistEnvironmentProviderInstanceMutation(environmentId);
   const instanceId = provider.instanceId;
   const instance = serverConfig.settings.providerInstances[instanceId] ?? {

@@ -130,6 +130,12 @@ const startupPairingFlag = Flag.Literals(
   ),
   Flag.optional,
 );
+const localSessionsFlag = Flag.Literals("local-sessions", ServerConfig.LocalSessions.literals).pipe(
+  Flag.withDescription(
+    "`off` runs this server as a control plane only (Boats, settings, and provider sync) without local sessions, projects, or terminals (equivalent to SAIL_LOCAL_SESSIONS).",
+  ),
+  Flag.optional,
+);
 const lanFlag = Flag.Boolean("lan").pipe(
   Flag.withDescription(
     "Accept connections from your local network and tailnet, not only this machine (equivalent to T3CODE_LAN).",
@@ -163,6 +169,9 @@ const startupPairingConfig = Config.schema(
   ServerConfig.StartupPairing,
   "SAIL_STARTUP_PAIRING",
 ).pipe(Config.option);
+const localSessionsConfig = Config.schema(ServerConfig.LocalSessions, "SAIL_LOCAL_SESSIONS").pipe(
+  Config.option,
+);
 const readPairingSetting = <A>(config: Config.Config<A>) =>
   config.pipe(Effect.mapError((error) => new CliError.UserError({ cause: error.cause.message })));
 
@@ -296,6 +305,7 @@ export interface CliServerFlags {
   readonly lan: Option.Option<boolean>;
   readonly publicUrl: Option.Option<URL>;
   readonly startupPairing: Option.Option<ServerConfig.StartupPairing>;
+  readonly localSessions: Option.Option<ServerConfig.LocalSessions>;
 }
 
 export interface CliAuthLocationFlags {
@@ -333,6 +343,7 @@ export const sharedServerCommandFlags = {
   lan: lanFlag,
   publicUrl: publicUrlFlag,
   startupPairing: startupPairingFlag,
+  localSessions: localSessionsFlag,
 } as const;
 
 export const readRunningServer = Effect.fn("config.readRunningServer")(function* (
@@ -401,6 +412,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     lan: flags.lan ?? Option.none(),
     publicUrl: flags.publicUrl ?? Option.none(),
     startupPairing: flags.startupPairing ?? Option.none(),
+    localSessions: flags.localSessions ?? Option.none(),
   } satisfies CliServerFlags;
   const bootstrapFd = Option.getOrUndefined(normalizedFlags.bootstrapFd) ?? env.bootstrapFd;
   const bootstrapEnvelope =
@@ -434,6 +446,15 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
         () => "on",
       )
     : "on";
+  const localSessions: ServerConfig.LocalSessions = servesWebPairing
+    ? Option.getOrElse(
+        Option.isSome(normalizedFlags.localSessions)
+          ? normalizedFlags.localSessions
+          : yield* readPairingSetting(localSessionsConfig),
+        () => "on",
+      )
+    : "on";
+  const localSessionsEnabled = localSessions !== "off";
 
   const devUrl = Option.getOrElse(
     resolveOptionPrecedence(normalizedFlags.devUrl, Option.fromUndefinedOr(env.devUrl)),
@@ -498,15 +519,17 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   const desktopBrowserFd = bootstrap?.desktopBrowserFd;
   const desktopBrowserControlFd = bootstrap?.desktopBrowserControlFd;
   const resourceMonitorPath = bootstrap?.resourceMonitorPath;
-  const autoBootstrapProjectFromCwd = Option.getOrElse(
-    resolveOptionPrecedence(
-      Option.fromUndefinedOr(options?.forceAutoBootstrapProjectFromCwd),
-      isHeadlessStartup ? Option.some(false) : Option.none(),
-      normalizedFlags.autoBootstrapProjectFromCwd,
-      Option.fromUndefinedOr(env.autoBootstrapProjectFromCwd),
-    ),
-    () => mode === "web",
-  );
+  const autoBootstrapProjectFromCwd = localSessionsEnabled
+    ? Option.getOrElse(
+        resolveOptionPrecedence(
+          Option.fromUndefinedOr(options?.forceAutoBootstrapProjectFromCwd),
+          isHeadlessStartup ? Option.some(false) : Option.none(),
+          normalizedFlags.autoBootstrapProjectFromCwd,
+          Option.fromUndefinedOr(env.autoBootstrapProjectFromCwd),
+        ),
+        () => mode === "web",
+      )
+    : false;
   const logWebSocketEvents = Option.getOrElse(
     resolveOptionPrecedence(
       normalizedFlags.logWebSocketEvents,
@@ -641,6 +664,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     noBrowser,
     startupPresentation,
     startupPairing,
+    ...(localSessionsEnabled ? {} : { localSessionsEnabled: false }),
     ...(yield* Effect.gen(function* () {
       const enabled =
         servesWebPairing &&
@@ -694,6 +718,7 @@ export const resolveCliAuthConfig = (
       lan: Option.none(),
       publicUrl: Option.none(),
       startupPairing: Option.none(),
+      localSessions: Option.none(),
     },
     cliLogLevel,
     { servesHome: false },

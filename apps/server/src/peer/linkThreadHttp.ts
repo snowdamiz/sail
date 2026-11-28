@@ -12,12 +12,14 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as ServerConfig from "../config.ts";
 import { eventStreamResponse } from "../eventStreamResponse.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
@@ -47,10 +49,14 @@ const admitLink = Effect.gen(function* () {
   if (request.headers.origin !== undefined) return refusal(403, "origin_not_allowed");
   const auth = yield* EnvironmentAuth.EnvironmentAuth;
   const settings = yield* ServerSettings.ServerSettingsService;
-  const linksEnabled = settings.getSettings.pipe(
-    Effect.map((current) => current.linkedEnvironmentsEnabled),
-    Effect.orElseSucceed(() => false),
-  );
+  const serverConfig = yield* Effect.serviceOption(ServerConfig.ServerConfig);
+  const linksEnabled =
+    Option.isSome(serverConfig) && !ServerConfig.isLocalSessionsEnabled(serverConfig.value)
+      ? Effect.succeed(true)
+      : settings.getSettings.pipe(
+          Effect.map((current) => current.linkedEnvironmentsEnabled),
+          Effect.orElseSucceed(() => false),
+        );
   // Verifying renews the link's session, as each `/mcp` call does.
   const verify = auth.authenticateMcpClient(request).pipe(Effect.option);
   const client = yield* verify;

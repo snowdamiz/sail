@@ -72,13 +72,23 @@ volume_name=$(awk '
   }
 ' "$config")
 [[ $volume_name =~ ^[a-z0-9_]+$ ]] || fail 'Expected one volume source in fly.toml.'
+volume_size=$(awk '
+  /^[[:space:]]*\[/ { mount = ($0 ~ /^[[:space:]]*\[\[mounts\]\][[:space:]]*$/) }
+  mount && /^[[:space:]]*initial_size[[:space:]]*=[[:space:]]*"[0-9]+GB"[[:space:]]*$/ {
+    split($0, parts, "\"")
+    sub(/GB$/, "", parts[2])
+    print parts[2]
+  }
+' "$config")
+volume_size=${volume_size:-3}
+[[ $volume_size =~ ^[1-9][0-9]*$ ]] || fail 'Expected a valid initial_size in fly.toml.'
 
 if $dry_run; then
   case "$mode" in
     deploy)
       source=${image:-the latest published Sail server image}
       if $build; then source='this checkout on the Fly remote builder'; fi
-      printf 'Would ensure app %s and a 10 GB %s volume (new volume region: %s).\n' "$app" "$volume_name" "${region:-iad}"
+      printf 'Would ensure app %s and a %s GB %s volume (new volume region: %s).\n' "$app" "$volume_size" "$volume_name" "${region:-iad}"
       if [ -n "$password_file" ]; then
         printf 'Would stage SAIL_INITIAL_OWNER_PASSWORD from %s before deploying.\n' "$password_file"
       else
@@ -234,7 +244,7 @@ if [ "$mode" = deploy ]; then
     region=$volume_region
   else
     region=${region:-iad}
-    "$fly" volumes create "$volume_name" --app "$app" --region "$region" --size 10 --yes >&2
+    "$fly" volumes create "$volume_name" --app "$app" --region "$region" --size "$volume_size" --yes >&2
   fi
 
   if [ -n "$provided_password" ]; then

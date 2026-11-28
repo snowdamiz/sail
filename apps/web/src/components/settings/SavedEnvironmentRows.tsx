@@ -12,6 +12,7 @@ import {
   AuthRelayWriteScope,
   type EnvironmentId,
   connectReachabilityHelpUrl,
+  environmentSupportsLocalSessions,
   formatConnectReachable,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
@@ -232,8 +233,12 @@ export function SavedBackendListRow({
       (lastDescriptor === undefined ? null : { environment: lastDescriptor }),
   );
   const routeCount = connectionRoutes(environment.entry).length;
+  const isControlPlane =
+    environment.serverConfig !== null &&
+    !environmentSupportsLocalSessions(environment.serverConfig);
   const subtitleText = [
     environmentTransportLabel(environment, connectedTarget, messages),
+    isControlPlane ? gt("Control server") : null,
     // The headline below names the failure in full.
     diagnosis ? null : resumingServerUpdate ? gt("Restarting") : status.text,
     enabled && versionMismatch ? serverVersion : null,

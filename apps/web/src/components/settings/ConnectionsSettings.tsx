@@ -24,6 +24,7 @@ import {
   type DesktopServerExposureState,
   type DesktopWslState,
   EnvironmentId,
+  environmentSupportsLocalSessions,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
 import {
@@ -342,7 +343,11 @@ function ConnectionsSettingsContent({
   const loadBalancingEnvironments = [
     ...(primaryEnvironment ? [primaryEnvironment] : []),
     ...savedEnvironments.filter((environment) => environment.entry.enabled),
-  ].filter((environment) => environment.connection.phase !== "unsupported");
+  ].filter(
+    (environment) =>
+      environment.connection.phase !== "unsupported" &&
+      environmentSupportsLocalSessions(environment.serverConfig),
+  );
   const [desktopServerExposureMutationError, setDesktopServerExposureMutationError] = useState<
     string | null
   >(null);

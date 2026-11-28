@@ -87,6 +87,8 @@ export type ServerSelfUpdateCapability = typeof ServerSelfUpdateCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** When explicitly false, this server is control-plane only (Boats, settings, and provider sync) and cannot run local sessions, projects, or terminals. */
+  localSessions: Schema.optionalKey(Schema.Boolean),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
   /** A DPoP session from a pairing link renews at /oauth/token; pair with a bearer where absent. */
   accessTokenRenewal: Schema.optionalKey(Schema.Boolean),
@@ -242,6 +244,19 @@ export const ExecutionEnvironmentDescriptor = Schema.Struct({
   capabilities: ExecutionEnvironmentCapabilities,
 });
 export type ExecutionEnvironmentDescriptor = typeof ExecutionEnvironmentDescriptor.Type;
+
+export function environmentSupportsLocalSessions(
+  input:
+    | Pick<ExecutionEnvironmentDescriptor, "capabilities">
+    | { readonly environment?: Pick<ExecutionEnvironmentDescriptor, "capabilities"> | null }
+    | null
+    | undefined,
+): boolean {
+  if (!input) return true;
+  const capabilities =
+    "capabilities" in input ? input.capabilities : input.environment?.capabilities;
+  return capabilities?.localSessions !== false;
+}
 
 export const RepositoryIdentityLocator = Schema.Struct({
   source: Schema.Literal("git-remote"),

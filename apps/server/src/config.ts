@@ -36,6 +36,9 @@ export type StartupPresentation = typeof StartupPresentation.Type;
 export const StartupPairing = Schema.Literals(["on", "off"]);
 export type StartupPairing = typeof StartupPairing.Type;
 
+export const LocalSessions = Schema.Literals(["on", "off"]);
+export type LocalSessions = typeof LocalSessions.Type;
+
 export interface ServerDerivedPaths {
   readonly stateDir: string;
   readonly dbPath: string;
@@ -101,6 +104,8 @@ export class ServerConfig extends Context.Service<
     readonly noBrowser: boolean;
     readonly startupPresentation: StartupPresentation;
     readonly startupPairing?: StartupPairing | undefined;
+    /** When false, this server is control-plane only and rejects local sessions, projects, and terminals. */
+    readonly localSessionsEnabled?: boolean | undefined;
     readonly ownerPasswordEnabled?: boolean;
     readonly initialOwnerPassword?: Redacted.Redacted<string>;
     readonly desktopBootstrapToken: string | undefined;
@@ -124,6 +129,10 @@ export class ServerConfig extends Context.Service<
     baseDirOrPrefix: string | { readonly prefix: string },
   ) => layerTest(cwd, baseDirOrPrefix);
 }
+
+export const isLocalSessionsEnabled = (
+  config: Pick<ServerConfig["Service"], "localSessionsEnabled">,
+): boolean => config.localSessionsEnabled !== false;
 
 export const make = (config: ServerConfig["Service"]) => ServerConfig.of(config);
 

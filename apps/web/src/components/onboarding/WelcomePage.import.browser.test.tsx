@@ -814,3 +814,31 @@ it("says the phone is set up only once this computer is shared with the signed-i
   await vi.waitFor(() => expect(pageText()).toContain("Your phone can reach this computer."));
   expect(pageText()).not.toContain("Check T3 Connect");
 });
+
+it("shows the Boats onboarding step and omits local project scans on a control-plane server", async () => {
+  using _now = setup();
+  appAtomRegistry.set(state.config as Atom.Writable<unknown>, {
+    cwd: "/data",
+    keybindings: [],
+    environment: {
+      environmentId: primaryId,
+      label: "sail-andrey.fly.dev",
+      platform: { os: "linux", arch: "x64" },
+      serverVersion: "0.0.0-test",
+      capabilities: { localSessions: false },
+    },
+    settings: { providerInstances: {} },
+  });
+
+  await using _screen = await mountWelcome();
+  expect(pageText()).toContain("Boats");
+  expect(pageText()).toContain("Provider credentials configured here sync to your Boat machines.");
+  expect(pageText()).toContain("Continue without a Boat");
+  expect(pageText()).toContain("Connect a Boat machine to start.");
+  expect(state.scan).not.toHaveBeenCalled();
+
+  const startButton = [...document.querySelectorAll("button")].find(
+    (element) => element.textContent?.trim() === "Start",
+  );
+  expect(startButton?.disabled).toBe(true);
+});

@@ -206,6 +206,7 @@ export const make = Effect.gen(function* () {
     serverSelfUpdate === "desktop-managed" &&
     serverConfig.desktopAppUpdate === true &&
     serverConfig.desktopTelemetryControlFd !== undefined;
+  const localSessionsEnabled = ServerConfig.isLocalSessionsEnabled(serverConfig);
 
   const databaseMigration = databaseMigrationHead(serverConfig.dbPath);
   const descriptor: ExecutionEnvironmentDescriptor = {
@@ -221,6 +222,7 @@ export const make = Effect.gen(function* () {
     ...(databaseMigration === undefined ? {} : { databaseMigration }),
     capabilities: {
       repositoryIdentity: true,
+      ...(localSessionsEnabled ? {} : { localSessions: false }),
       connectionProbe: true,
       attachmentUploads: true,
       accessTokenRenewal: true,
@@ -294,7 +296,7 @@ export const make = Effect.gen(function* () {
         : {}),
       ...(serverSelfUpdate === "boot-service" ? { serverUpdateStaging: true } : {}),
       ...(desktopAppUpdate ? { desktopAppUpdate: true, desktopAppChannelSwitch: true } : {}),
-      serverBrowser: true,
+      ...(localSessionsEnabled ? { serverBrowser: true } : {}),
       peerLinks: true,
       mcpModeLimitHeader: true,
       linkFence: true,

@@ -22,6 +22,7 @@ import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 
@@ -89,11 +90,15 @@ export class PeerClientPairing extends Context.Service<
 const makeIssuer = Effect.gen(function* () {
   const auth = yield* EnvironmentAuth.EnvironmentAuth;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const serverConfig = yield* Effect.serviceOption(ServerConfig.ServerConfig);
   const maxRuntimeMode = serverSettings.managedPolicy?.limits?.maxRuntimeMode;
-  const enabled = serverSettings.getSettings.pipe(
-    Effect.map((settings) => settings.linkedEnvironmentsEnabled),
-    Effect.orElseSucceed(() => false),
-  );
+  const enabled =
+    Option.isSome(serverConfig) && !ServerConfig.isLocalSessionsEnabled(serverConfig.value)
+      ? Effect.succeed(true)
+      : serverSettings.getSettings.pipe(
+          Effect.map((settings) => settings.linkedEnvironmentsEnabled),
+          Effect.orElseSucceed(() => false),
+        );
 
   const issue: PeerClientPairingIssuer["Service"]["issue"] = Effect.fn(
     "PeerClientPairingIssuer.issue",

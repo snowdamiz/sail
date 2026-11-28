@@ -3,11 +3,12 @@ SAIL_HOME = "/data/sail"
 T3CODE_HOME = "/data/sail"
 SAIL_STARTUP_PAIRING = "off"
 SAIL_OWNER_PASSWORD = "true"
+SAIL_LOCAL_SESSIONS = "off"
 
 [[mounts]]
 source = "sail_data"
 destination = "/data"
-initial_size = "10GB"
+initial_size = "3GB"
 
 [http_service]
 internal_port = 8080
@@ -24,5 +25,5 @@ timeout = "5s"
 grace_period = "30s"
 
 [[vm]]
-size = "shared-cpu-2x"
-memory = "4gb"
+size = "shared-cpu-1x"
+memory = "1gb"

@@ -33,7 +33,7 @@ const DEFAULT_PUBLIC_URL = "http://localhost:8080";
 const READY_LINE = "T3 Code server is ready.";
 const TOKEN_IN_LOGS = /pairing ?url:|token:|#token=/i;
 const NOT_RUNNING_YET = "No running T3 Code server owns";
-const PLANT_DIRS = ["/data/home/.local/bin", "/opt/npm-global/bin"];
+const PLANT_DIRS = ["/data/home/.local/bin"];
 const PLANTED_COMMANDS = [
   "t3",
   "id",
@@ -47,10 +47,7 @@ const PLANTED_COMMANDS = [
   "sail-smoke-probe",
 ];
 const PLANTED_LOG = "/data/home/.sail-smoke-planted";
-const AGENT_CLIS = ["claude", "codex", "opencode"];
-/** The server runs the agent CLIs itself at startup, so root's calls carry an argument of their own. */
-const ROOT_MARKER = "--sail-smoke-from-root";
-const SAIL_MARKER = "--sail-smoke-from-sail";
+const REMOVED_AGENT_CLIS = ["claude", "codex", "opencode"];
 const NO_NEW_PRIVS = /^NoNewPrivs:[ \t]+1$/m;
 const T3_PRIVILEGE_PROBE = `--import=data:text/javascript,${encodeURIComponent(
   `import { readFileSync } from "node:fs";
@@ -479,30 +476,15 @@ const expectRootIgnoresSailCommands = Effect.fn("smoke-docker-image.expectRootIg
           `mkdir -p ${dir} && printf '#!/bin/sh\\necho "$(/usr/bin/id -u) $0" >> ${PLANTED_LOG}\\nPATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin exec ${command} "$@"\\n' > ${dir}/${command} && chmod +x ${dir}/${command}`,
       ),
     ).join(" && ");
-    const plantAgents = AGENT_CLIS.map(
-      (name) =>
-        `printf '#!/bin/sh\\necho "$(/usr/bin/id -u) $0 $*" >> ${PLANTED_LOG}\\ncase "$1" in ${ROOT_MARKER}|${SAIL_MARKER}) /usr/bin/grep "^NoNewPrivs:" /proc/self/status;; esac\\n' > /data/home/.local/bin/${name} && chmod +x /data/home/.local/bin/${name}`,
-    ).join(" && ");
-    yield* docker(["exec", "--user", "sail", id, "/bin/sh", "-c", `${plant} && ${plantAgents}`]);
+    yield* docker(["exec", "--user", "sail", id, "/bin/sh", "-c", plant]);
     yield* docker(["restart", "-t", "30", id]);
     yield* waitForApp(id, timeoutSeconds);
     yield* expectServerRunsAsSail(id);
     yield* docker(["exec", id, "id", "-u"]);
     yield* docker(["exec", id, "t3", "--version"]);
     yield* docker(["exec", id, "sh", "-lc", "id -u"]);
-    for (const name of AGENT_CLIS) {
-      for (const { user, marker } of [
-        { user: "root", marker: ROOT_MARKER },
-        { user: "sail", marker: SAIL_MARKER },
-      ]) {
-        const status = (yield* docker(["exec", "--user", user, id, name, marker])).stdout;
-        if (!NO_NEW_PRIVS.test(status)) {
-          return yield* fail(
-            "privilege drop",
-            `${name} invoked by ${user} did not set no-new-privs`,
-          );
-        }
-      }
+    for (const name of REMOVED_AGENT_CLIS) {
+      yield* docker(["exec", id, "/bin/sh", "-c", `test ! -e /usr/local/bin/${name}`]);
     }
     yield* docker([
       "exec",
@@ -539,24 +521,18 @@ const expectRootIgnoresSailCommands = Effect.fn("smoke-docker-image.expectRootIg
         `left files sail does not own: ${notSails.replace(/\n/g, ", ")}`,
       );
     }
-    for (const name of AGENT_CLIS) {
-      if (!planted.includes(`1000 /data/home/.local/bin/${name} ${ROOT_MARKER}`)) {
-        return yield* fail("agent CLIs", `root's ${name} did not run sail's copy as sail`);
-      }
-    }
     for (const user of [["--user", "sail"], []]) {
-      const prefix = (yield* docker([
+      const status = (yield* docker([
         "exec",
         ...user,
         id,
         "as-sail",
-        "npm",
-        "config",
-        "get",
-        "prefix",
+        "/usr/bin/grep",
+        "^NoNewPrivs:",
+        "/proc/self/status",
       ])).stdout;
-      if (prefix !== "/opt/npm-global") {
-        return yield* fail("as-sail", `npm prefix is ${prefix}, not /opt/npm-global`);
+      if (!NO_NEW_PRIVS.test(status)) {
+        return yield* fail("as-sail", "as-sail did not set no-new-privs");
       }
     }
     for (const shell of [
