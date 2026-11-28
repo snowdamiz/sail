@@ -265,16 +265,151 @@ const publish = (next: UiState) =>
     ),
   );
 
+it("updates useSecsLeft on minute boundaries above 60s and stops scheduling timers after expiry", async () => {
+  using _timers = fakeTimers({ now: 10_000 });
+  let renders = 0;
+
+  function CountdownProbe({ endsAt }: { readonly endsAt: number | null }) {
+    renders += 1;
+    const secs = useSecsLeft(endsAt);
+    return <output data-testid="countdown-secs">{secs}</output>;
+  }
+
+  await using screen = await render(<CountdownProbe endsAt={10_000 + 180_000} />, {
+    router: false,
+  });
+
+  const output = screen.getByTestId("countdown-secs");
+  expect(output.element().textContent).toBe("180");
+  expect(renders).toBe(1);
+
+  await act(() => vi.advanceTimersByTime(59_000));
+  expect(output.element().textContent).toBe("180");
+  expect(renders).toBe(1);
+
+  await act(() => vi.advanceTimersByTime(1_000));
+  expect(output.element().textContent).toBe("120");
+  expect(renders).toBe(2);
+
+  await act(() => vi.advanceTimersByTime(59_000));
+  expect(output.element().textContent).toBe("120");
+  expect(renders).toBe(2);
+
+  await act(() => vi.advanceTimersByTime(1_000));
+  expect(output.element().textContent).toBe("60");
+  expect(renders).toBe(3);
+
+  await act(() => vi.advanceTimersByTime(1_000));
+  expect(output.element().textContent).toBe("59");
+  expect(renders).toBe(4);
+
+  await act(() => vi.advanceTimersByTime(59_000));
+  expect(output.element().textContent).toBe("0");
+  const rendersAtExpiry = renders;
+
+  await act(() => vi.advanceTimersByTime(10_000));
+  expect(renders).toBe(rendersAtExpiry);
+  expect(vi.getTimerCount()).toBe(0);
+
+  await screen.rerender(<CountdownProbe endsAt={200_250} />);
+  expect(output.element().textContent).toBe("1");
+  await act(() => vi.advanceTimersByTime(250));
+  expect(output.element().textContent).toBe("0");
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("never strands a nonzero useSecsLeft snapshot or slips a minute when Date.now crosses a boundary between reads", async () => {
+  using _timers = fakeTimers({ now: 0 });
+  let now = 0;
+  let nextNowAfterRead: number | null = null;
+  const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
+    const current = now;
+    if (nextNowAfterRead !== null) {
+      now = nextNowAfterRead;
+      nextNowAfterRead = null;
+    }
+    return current;
+  });
+
+  let onAfterRender: (() => void) | null = null;
+  function CountdownProbe({ endsAt }: { readonly endsAt: number | null }) {
+    const secs = useSecsLeft(endsAt);
+    onAfterRender?.();
+    onAfterRender = null;
+    return <output data-testid="countdown-boundary">{secs}</output>;
+  }
+
+  try {
+    now = 999;
+    onAfterRender = () => {
+      now = 1_000;
+    };
+    await using screen = await render(<CountdownProbe endsAt={1_000} />, { router: false });
+    const output = screen.getByTestId("countdown-boundary");
+    expect(output.element().textContent).toBe("0");
+    expect(vi.getTimerCount()).toBe(0);
+
+    now = 1_999;
+    onAfterRender = () => {
+      nextNowAfterRead = 2_000;
+    };
+    await screen.rerender(<CountdownProbe endsAt={2_000} />);
+    expect(output.element().textContent).toBe("1");
+    expect(vi.getTimerCount()).toBe(1);
+    await act(() => vi.advanceTimersByTime(1));
+    expect(output.element().textContent).toBe("0");
+    expect(vi.getTimerCount()).toBe(0);
+
+    now = 2_900;
+    await screen.rerender(<CountdownProbe endsAt={3_000} />);
+    expect(output.element().textContent).toBe("1");
+    expect(vi.getTimerCount()).toBe(1);
+    now = 2_999;
+    nextNowAfterRead = 3_000;
+    await act(() => vi.advanceTimersByTime(100));
+    expect(output.element().textContent).toBe("1");
+    expect(vi.getTimerCount()).toBe(1);
+    await act(() => vi.advanceTimersByTime(1));
+    expect(output.element().textContent).toBe("0");
+    expect(vi.getTimerCount()).toBe(0);
+
+    now = 999;
+    onAfterRender = () => {
+      nextNowAfterRead = 1_000;
+    };
+    await screen.rerender(<CountdownProbe endsAt={121_000} />);
+    expect(output.element().textContent).toBe("180");
+    expect(vi.getTimerCount()).toBe(1);
+    await act(() => vi.advanceTimersByTime(1));
+    expect(output.element().textContent).toBe("120");
+    expect(vi.getTimerCount()).toBe(1);
+  } finally {
+    nowSpy.mockRestore();
+  }
+});
+
 it("shows Boat setup in a plain browser tab from the subscribed state", async () => {
-  setup({ state: uiState({ setup: "installBoat" }) });
+  setup({ state: uiState({ setup: "signInBoat" }) });
   await using screen = await mount();
 
   expect(window.desktopBridge).toBeUndefined();
-  await expect
-    .element(screen.getByRole("heading", { name: "Set sail in two steps" }))
-    .toBeVisible();
-  await expect.element(screen.getByRole("button", { name: "Install Boat CLI" })).toBeEnabled();
+  await expect.element(screen.getByRole("heading", { name: "Set sail with Boat" })).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Sign in to Boat" })).toBeEnabled();
   await expect.element(screen.getByText("Desktop app required")).not.toBeInTheDocument();
+});
+
+it("routes legacy installBoat state through the single Sign in to Boat button", async () => {
+  setup({ state: uiState({ setup: "installBoat" }) });
+  state.replies.setup_action = {};
+  await using screen = await mount();
+
+  await userEvent.click(screen.getByRole("button", { name: "Sign in to Boat" }));
+  await expect
+    .poll(() => state.invoked)
+    .toContainEqual({
+      command: "setup_action",
+      args: { action: "installBoat" },
+    });
 });
 
 it.each([true, false])(
@@ -323,7 +458,7 @@ it("shows another tab's Boat sign-in as busy without showing a link or code", as
   await using screen = await mount();
 
   await expect.element(screen.getByRole("link")).not.toBeInTheDocument();
-  await expect.element(screen.getByRole("button", { name: "Waiting for sign-in…" })).toBeDisabled();
+  await expect.element(screen.getByRole("button", { name: "Setting up Boat…" })).toBeDisabled();
   expect(state.invoked).toEqual([]);
   expect(state.openExternal).not.toHaveBeenCalled();
 });
@@ -488,12 +623,12 @@ it("renders state but disables every action for a client that can only read", as
 
 it("disables setup actions for a client without the maintain grant", async () => {
   setup({
-    state: uiState({ setup: "installBoat" }),
+    state: uiState({ setup: "signInBoat" }),
     allowed: ALL_COMMANDS.filter((command) => command !== "setup_action" && command !== "add_mcp"),
   });
   await using screen = await mount();
 
-  await expect.element(screen.getByRole("button", { name: "Install Boat CLI" })).toBeDisabled();
+  await expect.element(screen.getByRole("button", { name: "Sign in to Boat" })).toBeDisabled();
 });
 
 it("lets a remote client add, wake, and open Boat machines", async () => {
@@ -1560,59 +1695,6 @@ it("ignores modified Escape chords including Shift+Escape before navigating back
   await expect.element(screen.getByRole("button", { name: "Details for dory" })).toBeVisible();
 });
 
-it("updates useSecsLeft on minute boundaries above 60s and stops scheduling timers after expiry", async () => {
-  using _timers = fakeTimers({ now: 10_000 });
-  let renders = 0;
-
-  function CountdownProbe({ endsAt }: { readonly endsAt: number | null }) {
-    renders += 1;
-    const secs = useSecsLeft(endsAt);
-    return <output data-testid="countdown-secs">{secs}</output>;
-  }
-
-  await using screen = await render(<CountdownProbe endsAt={10_000 + 180_000} />, {
-    router: false,
-  });
-
-  const output = screen.getByTestId("countdown-secs");
-  expect(output.element().textContent).toBe("180");
-  expect(renders).toBe(1);
-
-  await act(() => vi.advanceTimersByTime(59_000));
-  expect(output.element().textContent).toBe("180");
-  expect(renders).toBe(1);
-
-  await act(() => vi.advanceTimersByTime(1_000));
-  expect(output.element().textContent).toBe("120");
-  expect(renders).toBe(2);
-
-  await act(() => vi.advanceTimersByTime(59_000));
-  expect(output.element().textContent).toBe("120");
-  expect(renders).toBe(2);
-
-  await act(() => vi.advanceTimersByTime(1_000));
-  expect(output.element().textContent).toBe("60");
-  expect(renders).toBe(3);
-
-  await act(() => vi.advanceTimersByTime(1_000));
-  expect(output.element().textContent).toBe("59");
-  expect(renders).toBe(4);
-
-  await act(() => vi.advanceTimersByTime(59_000));
-  expect(output.element().textContent).toBe("0");
-  const rendersAtExpiry = renders;
-
-  await act(() => vi.advanceTimersByTime(10_000));
-  expect(renders).toBe(rendersAtExpiry);
-  expect(vi.getTimerCount()).toBe(0);
-
-  await screen.rerender(<CountdownProbe endsAt={200_250} />);
-  expect(output.element().textContent).toBe("1");
-  await act(() => vi.advanceTimersByTime(250));
-  expect(output.element().textContent).toBe("0");
-  expect(vi.getTimerCount()).toBe(0);
-});
-
 it("formats AgentNames conjunctions using the active GT locale", async () => {
   await using screen = await render(
     <GTProvider locale="en" translations={{}}>
@@ -1826,74 +1908,4 @@ it("disarms row primary delete confirmation when an ordinary control replaces it
       args: { id: "m-1", discard: true },
     }),
   );
-});
-
-it("never strands a nonzero useSecsLeft snapshot or slips a minute when Date.now crosses a boundary between reads", async () => {
-  using _timers = fakeTimers({ now: 0 });
-  let now = 0;
-  let nextNowAfterRead: number | null = null;
-  const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
-    const current = now;
-    if (nextNowAfterRead !== null) {
-      now = nextNowAfterRead;
-      nextNowAfterRead = null;
-    }
-    return current;
-  });
-
-  let onAfterRender: (() => void) | null = null;
-  function CountdownProbe({ endsAt }: { readonly endsAt: number | null }) {
-    const secs = useSecsLeft(endsAt);
-    onAfterRender?.();
-    onAfterRender = null;
-    return <output data-testid="countdown-boundary">{secs}</output>;
-  }
-
-  try {
-    now = 999;
-    onAfterRender = () => {
-      now = 1_000;
-    };
-    await using screen = await render(<CountdownProbe endsAt={1_000} />, { router: false });
-    const output = screen.getByTestId("countdown-boundary");
-    expect(output.element().textContent).toBe("0");
-    expect(vi.getTimerCount()).toBe(0);
-
-    now = 1_999;
-    onAfterRender = () => {
-      nextNowAfterRead = 2_000;
-    };
-    await screen.rerender(<CountdownProbe endsAt={2_000} />);
-    expect(output.element().textContent).toBe("1");
-    expect(vi.getTimerCount()).toBe(1);
-    await act(() => vi.advanceTimersByTime(1));
-    expect(output.element().textContent).toBe("0");
-    expect(vi.getTimerCount()).toBe(0);
-
-    now = 2_900;
-    await screen.rerender(<CountdownProbe endsAt={3_000} />);
-    expect(output.element().textContent).toBe("1");
-    expect(vi.getTimerCount()).toBe(1);
-    now = 2_999;
-    nextNowAfterRead = 3_000;
-    await act(() => vi.advanceTimersByTime(100));
-    expect(output.element().textContent).toBe("1");
-    expect(vi.getTimerCount()).toBe(1);
-    await act(() => vi.advanceTimersByTime(1));
-    expect(output.element().textContent).toBe("0");
-    expect(vi.getTimerCount()).toBe(0);
-
-    now = 999;
-    onAfterRender = () => {
-      nextNowAfterRead = 1_000;
-    };
-    await screen.rerender(<CountdownProbe endsAt={121_000} />);
-    expect(output.element().textContent).toBe("180");
-    expect(vi.getTimerCount()).toBe(1);
-    await act(() => vi.advanceTimersByTime(1));
-    expect(output.element().textContent).toBe("120");
-    expect(vi.getTimerCount()).toBe(1);
-  } finally {
-    nowSpy.mockRestore();
-  }
 });
