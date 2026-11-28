@@ -39,9 +39,8 @@ const DESCRIPTOR_REFRESH: std::time::Duration = std::time::Duration::from_millis
 /// T3's largest request: a 100 MB file into the preview browser.
 const MAX_BODY: usize = 128 * 1024 * 1024;
 
-pub async fn serve(machine: Arc<MachineRuntime>) -> Result<()> {
-    let port = machine.record().local_port;
-    let app = Router::new()
+pub fn router(machine: Arc<MachineRuntime>) -> Router {
+    Router::new()
         .route("/.well-known/t3/environment", get(descriptor))
         .route("/oauth/token", post(oauth_token))
         .route("/api/auth/session", get(auth_session))
@@ -61,7 +60,12 @@ pub async fn serve(machine: Arc<MachineRuntime>) -> Result<()> {
         .fallback(fallback)
         .layer(middleware::from_fn(cors))
         .layer(middleware::from_fn(local_host_only))
-        .with_state(machine);
+        .with_state(machine)
+}
+
+pub async fn serve(machine: Arc<MachineRuntime>) -> Result<()> {
+    let port = machine.record().local_port;
+    let app = router(machine);
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     axum::serve(listener, app).await?;
     Ok(())
@@ -101,7 +105,10 @@ async fn cors(req: Request, next: Next) -> Response {
 }
 
 fn client_authorized(m: &MachineRuntime, headers: &HeaderMap) -> bool {
-    auth::bearer(headers).is_some_and(|t| m.record().client_tokens.iter().any(|c| c == t))
+    auth::bearer(headers).is_some_and(|t| {
+        auth::constant_time_eq(t.as_bytes(), m.internal_proxy_token().as_bytes())
+            || m.record().client_tokens.iter().any(|c| auth::constant_time_eq(c.as_bytes(), t.as_bytes()))
+    })
 }
 
 fn unauthorized() -> Response {
@@ -274,8 +281,33 @@ const HOP_BY_HOP: &[&str] = &[
     "host",
 ];
 
+/// Parses all `Connection` header values (comma-separated, trimmed, ASCII-lowercased)
+/// per RFC 7230 §6.1 so connection-nominated hop-by-hop headers are stripped on relay.
+fn connection_nominated_headers(headers: &HeaderMap) -> Vec<String> {
+    headers
+        .get_all(header::CONNECTION)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|s| s.split(','))
+        .map(|name| name.trim().to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+fn is_hop_by_hop(name: &HeaderName, nominated: &[String]) -> bool {
+    let lower = name.as_str();
+    HOP_BY_HOP.contains(&lower) || nominated.iter().any(|n| n == lower)
+}
+
 /// Routes whose URL carries its own one-time token instead of a bearer header.
-const URL_TOKEN_ROUTES: &[&str] = &[assets::ROUTE, "/api/attachments/upload/"];
+const URL_TOKEN_ROUTES: &[&str] = &[assets::ROUTE, "/api/attachments/upload/", "/api/session-transfers/"];
+
+/// Binary transfer routes streamed end-to-end without buffering the request body in memory.
+const STREAMING_ROUTES: &[&str] = &["/api/session-transfers/", "/api/attachments/upload/"];
+
+fn is_streaming_route(path: &str) -> bool {
+    STREAMING_ROUTES.iter().any(|prefix| path.starts_with(prefix))
+}
 
 fn query_param(query: &str, name: &str) -> Option<String> {
     url::form_urlencoded::parse(query.as_bytes()).find(|(k, _)| k == name).map(|(_, v)| v.into_owned())
@@ -320,21 +352,26 @@ async fn fallback(State(m): M, upgrade: Result<WebSocketUpgrade, WebSocketUpgrad
 
 /// Plain requests without a route of their own need the live machine: wake it if needed, swap in
 /// the upstream token. URL-token requests without a bearer may come from any web page: they reach a
-/// running machine but never wake it or keep it awake. The assets a recorded answer points to
-/// are kept as they pass, and answered from what was kept while the machine does not run.
+/// running machine but never wake it or keep it awake. Session-transfer routes signal user activity
+/// only after upstream returns a 2xx response so invalid, expired, or missing (e.g. 404)
+/// transfer URLs cannot invalidate caches or send keep-awake heartbeats. The assets a recorded
+/// answer points to are kept as they pass, and answered from what was kept while the machine does
+/// not run.
 async fn forward(State(m): M, req: Request) -> Response {
     let (parts, body) = req.into_parts();
-    let url_token = URL_TOKEN_ROUTES.iter().any(|r| parts.uri.path().starts_with(r));
+    let path = parts.uri.path();
+    let is_session_transfer = path.starts_with("/api/session-transfers/");
+    let url_token = URL_TOKEN_ROUTES.iter().any(|r| path.starts_with(r));
     let bearer = parts.headers.contains_key(header::AUTHORIZATION);
     let authorized = client_authorized(&m, &parts.headers);
     if (bearer || !url_token) && !authorized {
         return unauthorized();
     }
-    if authorized && parts.method == Method::POST {
+    if !is_session_transfer && authorized && parts.method == Method::POST {
         m.user_action();
     }
-    let asset = (parts.method == Method::GET && parts.uri.path().starts_with(assets::ROUTE))
-        .then(|| assets::path(m.dir(), parts.uri.path()));
+    let asset = (parts.method == Method::GET && path.starts_with(assets::ROUTE))
+        .then(|| assets::path(m.dir(), path));
     if m.power() != Power::Running && let Some(kept) = asset.as_deref().and_then(assets::read) {
         return kept;
     }
@@ -344,6 +381,9 @@ async fn forward(State(m): M, req: Request) -> Response {
         wake: authorized,
     };
     let answer = relay(&m, parts, body, route).await;
+    if is_session_transfer && answer.status().is_success() {
+        m.user_action();
+    }
     // A range of it (206) is not the asset.
     let keep = asset.filter(|file| {
         answer.status() == StatusCode::OK && assets::recorded(m.dir(), &m.cache.lock().unwrap()).contains(file)
@@ -361,51 +401,72 @@ async fn relay(m: &MachineRuntime, parts: Parts, body: Body, route: Relay) -> Re
             return res;
         }
     }
-    let Ok(body) = axum::body::to_bytes(body, MAX_BODY).await else {
-        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
-    };
-    let send = || {
+    let req_nominated = connection_nominated_headers(&parts.headers);
+    let res = if is_streaming_route(parts.uri.path()) {
         let url = format!("{}{}", m.upstream_url(), route.target);
-        let mut rb = m.shared.http.request(parts.method.clone(), url).body(body.clone());
+        let mut rb = m
+            .shared
+            .http
+            .request(parts.method.clone(), url)
+            .body(reqwest::Body::wrap_stream(body.into_data_stream()));
         for (k, v) in &parts.headers {
-            // The credential is the route's, and the body's length is what is sent here.
-            let replaced = k == header::AUTHORIZATION || k == header::CONTENT_LENGTH;
-            if !replaced && !HOP_BY_HOP.contains(&k.as_str()) {
+            // Preserve Content-Length on streamed uploads so upstream routes can enforce exact sizes.
+            if k != header::AUTHORIZATION && !is_hop_by_hop(k, &req_nominated) {
                 rb = rb.header(k, v);
             }
         }
         if let Some(authorization) = &route.authorization {
             rb = rb.header(header::AUTHORIZATION, authorization);
         }
-        rb.send()
-    };
-    let first = send().await;
-    // Maybe never reached the machine: Boat answers for a sandbox that does not run itself (a
-    // redirect to its fallback page, a gateway error). If it fell asleep since the last poll,
-    // wake it and send once more.
-    let unreached = match &first {
-        Ok(r) => {
-            let s = r.status();
-            (s.is_redirection() && s != StatusCode::NOT_MODIFIED)
-                || matches!(s, StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT)
-        }
-        Err(e) => e.is_connect(),
-    };
-    let res = if unreached && !matches!(m.refresh_power().await, Ok(Power::Running)) {
-        if let Err(res) = wake(m, route.wake, &route.target).await {
-            return res;
-        }
-        send().await
+        rb.send().await
     } else {
-        first
+        let Ok(body) = axum::body::to_bytes(body, MAX_BODY).await else {
+            return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+        };
+        let send = || {
+            let url = format!("{}{}", m.upstream_url(), route.target);
+            let mut rb = m.shared.http.request(parts.method.clone(), url).body(body.clone());
+            for (k, v) in &parts.headers {
+                // The credential is the route's, and the body's length is what is sent here.
+                let replaced = k == header::AUTHORIZATION || k == header::CONTENT_LENGTH;
+                if !replaced && !is_hop_by_hop(k, &req_nominated) {
+                    rb = rb.header(k, v);
+                }
+            }
+            if let Some(authorization) = &route.authorization {
+                rb = rb.header(header::AUTHORIZATION, authorization);
+            }
+            rb.send()
+        };
+        let first = send().await;
+        // Maybe never reached the machine: Boat answers for a sandbox that does not run itself (a
+        // redirect to its fallback page, a gateway error). If it fell asleep since the last poll,
+        // wake it and send once more.
+        let unreached = match &first {
+            Ok(r) => {
+                let s = r.status();
+                (s.is_redirection() && s != StatusCode::NOT_MODIFIED)
+                    || matches!(s, StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT)
+            }
+            Err(e) => e.is_connect(),
+        };
+        if unreached && !matches!(m.refresh_power().await, Ok(Power::Running)) {
+            if let Err(res) = wake(m, route.wake, &route.target).await {
+                return res;
+            }
+            send().await
+        } else {
+            first
+        }
     };
     let res = match res {
         Ok(r) => r,
         Err(e) => return (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
     };
+    let res_nominated = connection_nominated_headers(res.headers());
     let mut out = Response::builder().status(res.status());
     for (k, v) in res.headers() {
-        if !HOP_BY_HOP.contains(&k.as_str()) {
+        if !is_hop_by_hop(k, &res_nominated) {
             out = out.header(k, v);
         }
     }
@@ -423,4 +484,280 @@ async fn wake(m: &MachineRuntime, allowed: bool, why: &str) -> Result<(), Respon
     m.ensure_awake()
         .await
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::boat::Boat;
+    use crate::store::Settings;
+    use crate::t3desktop;
+    use std::future::IntoFuture;
+    use std::sync::Mutex;
+    use tokio::sync::mpsc;
+
+    fn test_machine(
+        dir: &std::path::Path,
+        upstream_port: u16,
+        proxy_port: u16,
+    ) -> Arc<MachineRuntime> {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let shared = Arc::new(crate::machine::Shared {
+            boat: Boat::at(dir.join("no-boat")),
+            t3: t3desktop::T3Desktop::at(dir.join("no-sail")),
+            settings: std::sync::RwLock::new(Settings::default()),
+            events: tx,
+            http: reqwest::Client::new(),
+            saving: Mutex::new(std::collections::HashSet::new()),
+        });
+        let record = crate::store::Machine {
+            id: "bx_proxy_test".into(),
+            sandbox_id: "bx_proxy_test".into(),
+            name: "proxy-test".into(),
+            size: "small".into(),
+            upstream_url: format!("http://127.0.0.1:{upstream_port}"),
+            upstream_token: "upstream-secret".into(),
+            watchdog_url: "http://127.0.0.1:9".into(),
+            watchdog_secret: "watchdog".into(),
+            local_port: proxy_port,
+            t3_version: "0.0.0".into(),
+            provision_revision: String::new(),
+            lifecycle_enrolled: false,
+            pending_resume: None,
+            environment_id: "env-proxy-test".into(),
+            client_tokens: Vec::new(),
+            link_tokens: Vec::new(),
+            created_at: 0,
+            next_due_at: None,
+            connect: false,
+            saved_stop: None,
+            project_origins: Default::default(),
+        };
+        let machine = Arc::new(MachineRuntime::new(shared, record, dir.join("machine")));
+        machine.set_power(Power::Running);
+        machine
+    }
+
+    #[tokio::test]
+    async fn connection_nominated_hop_by_hop_headers_are_stripped_on_request_and_response() {
+        let dir = std::env::temp_dir().join(format!(
+            "sail-boat-proxy-hop-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let captured_stream_headers: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_stream_clone = captured_stream_headers.clone();
+        let captured_regular_headers: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_regular_clone = captured_regular_headers.clone();
+
+        let upstream_app = Router::new()
+            .route(
+                "/api/session-transfers/tx-hop/bundle/upload",
+                post(move |headers: HeaderMap, _body: Body| {
+                    let captured = captured_stream_clone.clone();
+                    async move {
+                        let pairs = headers
+                            .iter()
+                            .map(|(k, v)| (k.as_str().to_owned(), v.to_str().unwrap_or_default().to_owned()))
+                            .collect::<Vec<_>>();
+                        *captured.lock().unwrap() = pairs;
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("connection", "X-Resp-Hop, keep-alive")
+                            .header("x-resp-hop", "secret-resp")
+                            .header("x-resp-keep", "ok")
+                            .body(Body::from("uploaded"))
+                            .unwrap()
+                    }
+                }),
+            )
+            .route(
+                "/api/regular-echo",
+                get(move |headers: HeaderMap| {
+                    let captured = captured_regular_clone.clone();
+                    async move {
+                        let pairs = headers
+                            .iter()
+                            .map(|(k, v)| (k.as_str().to_owned(), v.to_str().unwrap_or_default().to_owned()))
+                            .collect::<Vec<_>>();
+                        *captured.lock().unwrap() = pairs;
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("connection", "x-resp-hop")
+                            .header("x-resp-hop", "secret-resp")
+                            .header("x-resp-keep", "ok")
+                            .body(Body::from("regular"))
+                            .unwrap()
+                    }
+                }),
+            );
+
+        let upstream_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let upstream_port = upstream_listener.local_addr().unwrap().port();
+        let upstream_task = tokio::spawn(axum::serve(upstream_listener, upstream_app).into_future());
+
+        let proxy_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let proxy_port = proxy_listener.local_addr().unwrap().port();
+        let machine = test_machine(&dir, upstream_port, proxy_port);
+        let proxy_task = tokio::spawn(axum::serve(proxy_listener, router(machine.clone())).into_future());
+
+        let local_url = machine.local_url();
+        let bearer = machine.internal_proxy_token().to_owned();
+        let client = reqwest::Client::new();
+
+        // Streaming route: Connection-nominated hop-by-hop headers stripped both ways.
+        let stream_res = client
+            .post(format!("{local_url}/api/session-transfers/tx-hop/bundle/upload?token=tok"))
+            .bearer_auth(&bearer)
+            .header("connection", "x-custom-hop, keep-alive")
+            .header("x-custom-hop", "secret-req")
+            .header("x-req-keep", "yes")
+            .body("payload")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stream_res.status(), StatusCode::OK);
+        assert!(stream_res.headers().get("x-resp-hop").is_none());
+        assert_eq!(
+            stream_res.headers().get("x-resp-keep").and_then(|v| v.to_str().ok()),
+            Some("ok")
+        );
+        let seen_stream = captured_stream_headers.lock().unwrap().clone();
+        assert!(!seen_stream.iter().any(|(k, _)| k == "x-custom-hop"));
+        assert!(seen_stream.iter().any(|(k, v)| k == "x-req-keep" && v == "yes"));
+
+        // Non-streaming route: Connection-nominated hop-by-hop headers stripped both ways.
+        let reg_res = client
+            .get(format!("{local_url}/api/regular-echo"))
+            .bearer_auth(&bearer)
+            .header("connection", "X-Custom-Hop, Keep-Alive")
+            .header("x-custom-hop", "secret-req")
+            .header("x-req-keep", "yes")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reg_res.status(), StatusCode::OK);
+        assert!(reg_res.headers().get("x-resp-hop").is_none());
+        assert_eq!(
+            reg_res.headers().get("x-resp-keep").and_then(|v| v.to_str().ok()),
+            Some("ok")
+        );
+        let seen_regular = captured_regular_headers.lock().unwrap().clone();
+        assert!(!seen_regular.iter().any(|(k, _)| k == "x-custom-hop"));
+        assert!(seen_regular.iter().any(|(k, v)| k == "x-req-keep" && v == "yes"));
+
+        proxy_task.abort();
+        upstream_task.abort();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn rejected_session_transfer_requests_do_not_trigger_user_action() {
+        let dir = std::env::temp_dir().join(format!(
+            "sail-boat-proxy-unauth-tx-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let upstream_app = Router::new()
+            .route(
+                "/api/session-transfers/tx-unauth/bundle/download",
+                get(|| async { (StatusCode::UNAUTHORIZED, "invalid token") }),
+            )
+            .route(
+                "/api/session-transfers/tx-forbid/bundle/upload",
+                post(|| async { (StatusCode::FORBIDDEN, "expired token") }),
+            )
+            .route(
+                "/api/session-transfers/invalid-token/bundle",
+                get(|| async { (StatusCode::NOT_FOUND, "not found") }),
+            )
+            .route(
+                "/api/session-transfers/tx-ok/bundle/download",
+                get(|| async { (StatusCode::OK, "ok") }),
+            );
+
+        let upstream_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let upstream_port = upstream_listener.local_addr().unwrap().port();
+        let upstream_task = tokio::spawn(axum::serve(upstream_listener, upstream_app).into_future());
+
+        let proxy_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let proxy_port = proxy_listener.local_addr().unwrap().port();
+        let machine = test_machine(&dir, upstream_port, proxy_port);
+        let proxy_task = tokio::spawn(axum::serve(proxy_listener, router(machine.clone())).into_future());
+
+        let local_url = machine.local_url();
+        let bearer = machine.internal_proxy_token().to_owned();
+        let client = reqwest::Client::new();
+
+        // 401 URL-token GET must NOT trigger user_action / bump cache epoch.
+        let epoch0 = machine.cache.lock().unwrap().epoch;
+        let res_401 = client
+            .get(format!("{local_url}/api/session-transfers/tx-unauth/bundle/download?token=bad"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res_401.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(machine.cache.lock().unwrap().epoch, epoch0);
+
+        // 403 URL-token POST (without bearer) must NOT trigger user_action.
+        let res_403_no_bearer = client
+            .post(format!("{local_url}/api/session-transfers/tx-forbid/bundle/upload?token=expired"))
+            .body("data")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res_403_no_bearer.status(), StatusCode::FORBIDDEN);
+        assert_eq!(machine.cache.lock().unwrap().epoch, epoch0);
+
+        // 403 POST even with bearer must NOT trigger user_action on /api/session-transfers/.
+        let res_403_bearer = client
+            .post(format!("{local_url}/api/session-transfers/tx-forbid/bundle/upload?token=expired"))
+            .bearer_auth(&bearer)
+            .body("data")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res_403_bearer.status(), StatusCode::FORBIDDEN);
+        assert_eq!(machine.cache.lock().unwrap().epoch, epoch0);
+
+        // 404 URL-token GET (invalid/expired token) must NOT trigger user_action.
+        let res_404_no_bearer = client
+            .get(format!("{local_url}/api/session-transfers/invalid-token/bundle"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res_404_no_bearer.status(), StatusCode::NOT_FOUND);
+        assert_eq!(machine.cache.lock().unwrap().epoch, epoch0);
+
+        // 404 GET even with bearer must NOT trigger user_action on /api/session-transfers/.
+        let res_404_bearer = client
+            .get(format!("{local_url}/api/session-transfers/invalid-token/bundle"))
+            .bearer_auth(&bearer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res_404_bearer.status(), StatusCode::NOT_FOUND);
+        assert_eq!(machine.cache.lock().unwrap().epoch, epoch0);
+
+        // Accepted 200 GET DOES trigger user_action.
+        let res_200 = client
+            .get(format!("{local_url}/api/session-transfers/tx-ok/bundle/download?token=good"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res_200.status(), StatusCode::OK);
+        assert!(machine.cache.lock().unwrap().epoch > epoch0);
+
+        proxy_task.abort();
+        upstream_task.abort();
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

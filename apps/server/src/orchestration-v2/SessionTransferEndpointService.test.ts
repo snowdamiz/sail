@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- test harness initializes real git repos and inspects restored files/attachments on disk.
 import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -39,6 +40,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
   TurnItemId,
+  VcsProcessExitError,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Schema from "effect/Schema";
@@ -53,6 +55,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as AssetSigner from "../assets/AssetSigner.ts";
@@ -60,14 +63,22 @@ import {
   resolveExportBundlePath,
   resolveImportBundlePath,
   resolveTransferStagingDir,
+  resolveWorktreeOwnershipPath,
+  SESSION_TRANSFER_STALE_TTL_MS,
   SESSION_TRANSFER_TOKEN_TTL_MS,
+  sweepStaleSessionTransferStaging,
   validateSessionTransferBundleToken,
 } from "../assets/SessionTransferToken.ts";
 import { createAttachmentId, resolveAttachmentPathById } from "../attachmentStore.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as BoatSupervisor from "../boat/BoatSupervisor.ts";
+import * as SessionTransferCoordinator from "../boat/SessionTransferCoordinator.ts";
+import * as SessionTransferRepository from "../persistence/SessionTransferRepository.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
@@ -98,6 +109,25 @@ function initGitRepo(dir: string): void {
   NodeFS.writeFileSync(NodePath.join(dir, "app.ts"), "export const v = 1;\n");
   git(dir, ["add", "-A"]);
   git(dir, ["commit", "-m", "initial commit"]);
+}
+
+function cloneGitRepo(srcRepo: string, dstRepo: string): void {
+  git(NodePath.dirname(dstRepo), ["clone", srcRepo, dstRepo]);
+  git(dstRepo, ["config", "user.name", "Transfer Test"]);
+  git(dstRepo, ["config", "user.email", "transfer@example.com"]);
+}
+
+function readGitCommonDirIdentitySync(repoDir: string) {
+  const commonDir = NodeFS.realpathSync(NodePath.join(repoDir, ".git"));
+  const commonStat = NodeFS.lstatSync(commonDir, { bigint: true });
+  const objectsStat = NodeFS.lstatSync(NodePath.join(commonDir, "objects"), { bigint: true });
+  return {
+    deviceId: commonStat.dev.toString(),
+    inode: commonStat.ino.toString(),
+    birthtimeNs: commonStat.birthtimeNs > 0n ? commonStat.birthtimeNs.toString() : null,
+    objectsInode: objectsStat.ino.toString(),
+    objectsBirthtimeNs: objectsStat.birthtimeNs > 0n ? objectsStat.birthtimeNs.toString() : null,
+  };
 }
 
 function decodeSignedAssetExpiresAt(relativeUrl: string): number {
@@ -163,6 +193,11 @@ interface EndpointTestHooks {
     | ProjectionStore.ProjectionStoreThreadNotFoundError
     | TestHookError
   >;
+  readonly onGetThreadWorktreePaths?: (ctx: {
+    readonly next: ReturnType<
+      ProjectionStore.ProjectionStoreV2["Service"]["getThreadWorktreePaths"]
+    >;
+  }) => ReturnType<ProjectionStore.ProjectionStoreV2["Service"]["getThreadWorktreePaths"]>;
   readonly onImportWorkspaceBundle?: <A, E>(next: Effect.Effect<A, E>) => Effect.Effect<A, E>;
   readonly onExportWorkspaceBundle?: <A, E>(
     next: Effect.Effect<A, E>,
@@ -176,6 +211,9 @@ interface EndpointTestHooks {
     readonly input: VcsProcess.VcsProcessInput;
     readonly next: ReturnType<VcsProcess.VcsProcess["Service"]["run"]>;
   }) => ReturnType<VcsProcess.VcsProcess["Service"]["run"]>;
+  readonly onAssetSign?: (ctx: {
+    readonly next: ReturnType<AssetSigner.AssetSigner["Service"]["sign"]>;
+  }) => ReturnType<AssetSigner.AssetSigner["Service"]["sign"]>;
 }
 
 function makeEndpointTestLayer(options: {
@@ -193,6 +231,7 @@ function makeEndpointTestLayer(options: {
   }>;
   readonly recorder: MockRecorder;
   readonly hooks?: EndpointTestHooks;
+  readonly sharedBaseDir?: string;
 }) {
   const rawBaseLayer = Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer);
   const baseLayer =
@@ -213,28 +252,49 @@ function makeEndpointTestLayer(options: {
           }),
         ).pipe(Layer.provideMerge(rawBaseLayer))
       : rawBaseLayer;
-  const configLayer = ServerConfig.layerTest(process.cwd(), {
-    prefix: `t3-xfer-endpoint-${options.environmentId}-`,
-  }).pipe(Layer.provideMerge(baseLayer));
+  const configLayer = ServerConfig.layerTest(
+    process.cwd(),
+    options.sharedBaseDir ?? {
+      prefix: `t3-xfer-endpoint-${options.environmentId}-`,
+    },
+  ).pipe(Layer.provideMerge(baseLayer));
 
-  const sqliteLayer = SqlitePersistence.layerMemory.pipe(Layer.provideMerge(configLayer));
+  const sqliteLayer = (
+    options.sharedBaseDir !== undefined
+      ? SqlitePersistence.layerConfig
+      : SqlitePersistence.layerMemory
+  ).pipe(Layer.provideMerge(configLayer));
   const eventStoreLayer = EventStore.layer.pipe(Layer.provideMerge(sqliteLayer));
   const rawProjectionStoreLayer = ProjectionStore.layer.pipe(Layer.provideMerge(eventStoreLayer));
   const projectionStoreLayer =
-    options.hooks?.onGetThreadRecords !== undefined
+    options.hooks?.onGetThreadRecords !== undefined ||
+    options.hooks?.onGetThreadWorktreePaths !== undefined
       ? Layer.effect(
           ProjectionStore.ProjectionStoreV2,
           Effect.gen(function* () {
             const inner = yield* ProjectionStore.ProjectionStoreV2;
-            const hook = options.hooks!.onGetThreadRecords!;
+            const getThreadRecordsHook = options.hooks?.onGetThreadRecords;
+            const getThreadWorktreePathsHook = options.hooks?.onGetThreadWorktreePaths;
             return {
               ...inner,
-              getThreadRecords: (threadId, fields, filter) =>
-                hook({
-                  threadId,
-                  fields,
-                  next: inner.getThreadRecords(threadId, fields, filter),
-                }) as never,
+              ...(getThreadRecordsHook !== undefined
+                ? {
+                    getThreadRecords: (threadId, fields, filter) =>
+                      getThreadRecordsHook({
+                        threadId,
+                        fields,
+                        next: inner.getThreadRecords(threadId, fields, filter),
+                      }) as never,
+                  }
+                : {}),
+              ...(getThreadWorktreePathsHook !== undefined
+                ? {
+                    getThreadWorktreePaths: (queryOptions) =>
+                      getThreadWorktreePathsHook({
+                        next: inner.getThreadWorktreePaths(queryOptions),
+                      }),
+                  }
+                : {}),
             } satisfies ProjectionStore.ProjectionStoreV2["Service"];
           }),
         ).pipe(Layer.provideMerge(rawProjectionStoreLayer))
@@ -269,7 +329,24 @@ function makeEndpointTestLayer(options: {
       : rawEventSinkLayer;
 
   const secretLayer = ServerSecretStore.layer.pipe(Layer.provideMerge(configLayer));
-  const signerLayer = AssetSigner.layer.pipe(Layer.provideMerge(secretLayer));
+  const rawSignerLayer = AssetSigner.layer.pipe(Layer.provideMerge(secretLayer));
+  const signerLayer =
+    options.hooks?.onAssetSign !== undefined
+      ? Layer.effect(
+          AssetSigner.AssetSigner,
+          Effect.gen(function* () {
+            const inner = yield* AssetSigner.AssetSigner;
+            const hook = options.hooks!.onAssetSign!;
+            return AssetSigner.AssetSigner.of({
+              ...inner,
+              sign: (payload) =>
+                hook({
+                  next: inner.sign(payload),
+                }),
+            });
+          }),
+        ).pipe(Layer.provideMerge(rawSignerLayer))
+      : rawSignerLayer;
   const documentTextLayer = DocumentText.layer.pipe(Layer.provideMerge(configLayer));
   const rawVcsProcessLayer = VcsProcess.layer.pipe(Layer.provideMerge(configLayer));
   const vcsProcessLayer =
@@ -5450,8 +5527,9 @@ describe("SessionTransferEndpointService", () => {
               "",
             );
 
-            // Attempt 1: block worktree removal -> abort fails, independent staging + attachment
-            // cleanup still run, and both worktree + created branch remain tracked in staged state.
+            // Attempt 1: block worktree removal -> abort fails, independent attachment cleanup
+            // still runs, and stagingDir (with durable worktree-ownership.json) remains intact on
+            // disk alongside worktree + created branch so cleanup survives a destination restart.
             blockedWorktreePath = worktreePath;
             blockWorktreeRemoval = true;
             const abort1 = yield* Effect.result(
@@ -5464,7 +5542,12 @@ describe("SessionTransferEndpointService", () => {
             if (Result.isFailure(abort1)) {
               expect(abort1.failure.code).toBe("workspace_error");
             }
-            expect(NodeFS.existsSync(stagingDir)).toBe(false);
+            const ownershipPath = resolveWorktreeOwnershipPath(config.stateDir, transferId, path)!;
+            expect(NodeFS.existsSync(stagingDir)).toBe(true);
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+            expect(NodeFS.existsSync(NodePath.join(stagingDir, "worktree-ownership.json"))).toBe(
+              false,
+            );
             expect(NodeFS.existsSync(pendingAttachmentPath)).toBe(false);
             expect(NodeFS.existsSync(worktreePath)).toBe(true);
             expect(git(dstRepo, ["branch", "--list", "feat/dst-abort-wt-fail"]).trim()).not.toBe(
@@ -5503,13 +5586,14 @@ describe("SessionTransferEndpointService", () => {
             }
 
             // Attempt 3: once branch deletion is unblocked, retry finishes deleting the leftover
-            // branch, clears staged state, and returns cleanedUp: true.
+            // branch, removes stagingDir & ownership file, clears staged state, and returns cleanedUp: true.
             const abort3 = yield* svc.abort({
               transferId,
               role: "destination",
             });
             expect(abort3.cleanedUp).toBe(true);
             expect(git(dstRepo, ["branch", "--list", "feat/dst-abort-wt-fail"]).trim()).toBe("");
+            expect(NodeFS.existsSync(stagingDir)).toBe(false);
 
             // Attempt 4: subsequent abort is a clean no-op.
             const abort4 = yield* svc.abort({
@@ -5957,6 +6041,4136 @@ describe("SessionTransferEndpointService", () => {
                 }).pipe(Effect.ignore);
               }
             }
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "cleans up created worktree and branch after destination server restart when commit fails before creating the thread",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-dst-restart-cleanup-"),
+        );
+        const srcRepo = NodePath.join(tmpRoot, "src");
+        const dstRepo = NodePath.join(tmpRoot, "dst");
+        const sharedBaseDirRaw = NodePath.join(tmpRoot, "server-base");
+        NodeFS.mkdirSync(sharedBaseDirRaw, { recursive: true });
+        const sharedBaseDir = NodeFS.realpathSync(sharedBaseDirRaw);
+
+        initGitRepo(srcRepo);
+        git(tmpRoot, ["clone", srcRepo, dstRepo]);
+        const featureBranch = "feat/dst-restart-cleanup";
+        git(srcRepo, ["checkout", "-b", featureBranch]);
+        NodeFS.writeFileSync(NodePath.join(srcRepo, "feature.txt"), "restart cleanup feature\n");
+        git(srcRepo, ["add", "feature.txt"]);
+        git(srcRepo, ["commit", "-m", "feature commit"]);
+
+        const srcProjectId = ProjectId.make("proj-dst-restart-src");
+        const dstProjectId = ProjectId.make("proj-dst-restart-dst");
+        const srcThreadId = ThreadId.make("thread-dst-restart-src");
+        const transferId = SessionTransferId.make("tx-dst-restart-cleanup-1");
+        const modelSelection: ModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+        const boatEnvId = EnvironmentId.make("env-boat-restart-src");
+        const localEnvId = EnvironmentId.make("env-dst-restart");
+        const nowIso = IsoDateTime.make("2026-11-28T05:00:00.000Z");
+
+        try {
+          let worktreePath = "";
+          let stagingDir = "";
+          let ownershipPath = "";
+          let destinationThreadId: ThreadId | null = null;
+
+          // Instance 1: commits workspace bundle (creating real worktree & branch), fails before
+          // persisting the thread, and fails the initial abort worktree removal.
+          let failNextCommitEventWrite = false;
+          let blockWorktreeRemoval = false;
+          let blockedWorktreePath: string | null = null;
+          const recorder1: MockRecorder = {
+            dispatches: [],
+            forceStops: [],
+            detachedSessions: [],
+            sentMessages: [],
+          };
+          const instance1Layer = makeEndpointTestLayer({
+            environmentId: localEnvId,
+            environmentLabel: "Destination Restart Host",
+            sharedBaseDir,
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: recorder1,
+            hooks: {
+              onEventSinkWrite: (events) => {
+                if (
+                  failNextCommitEventWrite &&
+                  events.some((event) => event.type === "thread.created")
+                ) {
+                  failNextCommitEventWrite = false;
+                  return Effect.fail(
+                    new TestHookError({
+                      message: "Simulated crash before creating destination thread",
+                    }),
+                  );
+                }
+                return Effect.void;
+              },
+              onVcsRun: ({ input: vcsInput, next }) =>
+                blockWorktreeRemoval && vcsInput.operation === "WorkspaceBundle.removeWorktree"
+                  ? Effect.succeed({
+                      exitCode: 128 as VcsProcess.VcsProcessOutput["exitCode"],
+                      stdout: "",
+                      stderr: "fatal: simulated worktree removal failure before restart",
+                      stdoutTruncated: false,
+                      stderrTruncated: false,
+                    })
+                  : next,
+              onFileSystemRemove: ({ targetPath, next }) =>
+                blockWorktreeRemoval &&
+                blockedWorktreePath !== null &&
+                targetPath === blockedWorktreePath
+                  ? Effect.fail(
+                      PlatformError.systemError({
+                        _tag: "PermissionDenied",
+                        module: "FileSystem",
+                        method: "remove",
+                        pathOrDescriptor: targetPath,
+                      }),
+                    )
+                  : next,
+            },
+          });
+
+          const repo1Layer = SessionTransferRepository.layer.pipe(
+            Layer.provideMerge(instance1Layer),
+          );
+
+          yield* Effect.gen(function* () {
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            const repo = yield* SessionTransferRepository.SessionTransferRepository;
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: featureBranch,
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const staged = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            destinationThreadId = staged.destinationThreadId;
+
+            const exportBundlePath = resolveExportBundlePath(config.stateDir, transferId, path)!;
+            const importBundlePath = resolveImportBundlePath(config.stateDir, transferId, path)!;
+            NodeFS.mkdirSync(NodePath.dirname(importBundlePath), { recursive: true });
+            NodeFS.copyFileSync(exportBundlePath, importBundlePath);
+
+            // Commit creates the real worktree and git branch, writes durable worktree-ownership.json,
+            // then fails eventSink.write before the thread is created.
+            failNextCommitEventWrite = true;
+            const commitRes = yield* Effect.result(
+              svc.commitImport({
+                transferId,
+                destinationProjectId: staged.destinationProjectId,
+                destinationThreadId: staged.destinationThreadId,
+                manifest: prep.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitRes)).toBe(true);
+
+            const stagedAfterFailedCommit = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            worktreePath = stagedAfterFailedCommit.destinationWorktreePath!;
+            stagingDir = resolveTransferStagingDir(config.stateDir, transferId, path)!;
+            ownershipPath = resolveWorktreeOwnershipPath(config.stateDir, transferId, path)!;
+
+            expect(NodeFS.existsSync(worktreePath)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", featureBranch])).not.toBe("");
+            expect(NodeFS.existsSync(stagingDir)).toBe(true);
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+
+            // Seed the in-flight coordinator record in shared SQLite at committing_target.
+            yield* repo.insertIfAbsent({
+              transferId,
+              direction: "boat_to_local",
+              phase: "committing_target",
+              phaseDetail: "Committing destination...",
+              sourceEnvironmentId: boatEnvId,
+              sourceEnvironmentName: TrimmedNonEmptyString.make("dev-boat"),
+              sourceMachineId: TrimmedNonEmptyString.make("machine-1"),
+              sourceProjectId: srcProjectId,
+              sourceThreadId: srcThreadId,
+              destinationEnvironmentId: localEnvId,
+              destinationEnvironmentName: TrimmedNonEmptyString.make("Destination Restart Host"),
+              destinationMachineId: null,
+              destinationProjectId: staged.destinationProjectId,
+              destinationThreadId: staged.destinationThreadId,
+              destinationBranch: GitRefName.make(featureBranch),
+              destinationWorktreePath: TrimmedNonEmptyString.make(worktreePath),
+              sourceWasRunning: false,
+              hadPendingRuntimeRequest: false,
+              modelSelectionOverride: null,
+              cloneDestinationPath: null,
+              autoResume: false,
+              warnings: [],
+              errorMessage: null,
+              createdAt: nowIso,
+              updatedAt: nowIso,
+              completedAt: null,
+            });
+
+            // First abort fails to remove the worktree -> ownership file and stagingDir must stay.
+            blockedWorktreePath = worktreePath;
+            blockWorktreeRemoval = true;
+            const abort1 = yield* Effect.result(
+              svc.abort({
+                transferId,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(abort1)).toBe(true);
+            if (Result.isFailure(abort1)) {
+              expect(abort1.failure.code).toBe("workspace_error");
+            }
+            expect(NodeFS.existsSync(worktreePath)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", featureBranch])).not.toBe("");
+            expect(NodeFS.existsSync(stagingDir)).toBe(true);
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+          }).pipe(Effect.provide(repo1Layer));
+
+          // Simulate a full destination server restart: build a brand-new SessionTransferEndpointService
+          // (fresh empty stagedImports in-memory map) + SessionTransferCoordinator sharing the same
+          // on-disk stateDir and SQLite DB.
+          const recorder2: MockRecorder = {
+            dispatches: [],
+            forceStops: [],
+            detachedSessions: [],
+            sentMessages: [],
+          };
+          const instance2Layer = makeEndpointTestLayer({
+            environmentId: localEnvId,
+            environmentLabel: "Destination Restart Host",
+            sharedBaseDir,
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: recorder2,
+          });
+
+          const remoteSourceAbortCalls: Array<string> = [];
+          const coordinator2SupportLayer = Layer.mergeAll(
+            SessionTransferRepository.layer.pipe(Layer.provideMerge(instance2Layer)),
+            Layer.succeed(
+              BoatSupervisor.BoatSupervisor,
+              BoatSupervisor.BoatSupervisor.of({
+                invoke: () => Effect.succeed({ data: { ok: true } }),
+                getMachineProxyAccess: () =>
+                  Effect.succeed({
+                    machineId: "machine-1",
+                    machineName: "dev-boat",
+                    environmentId: boatEnvId,
+                    state: "idle",
+                    localUrl: "http://127.0.0.1:41999",
+                    bearerToken: "internal-boat-token",
+                  }),
+                hasConfiguredBoats: Effect.succeed(true),
+                currentState: Effect.succeedNone,
+                passiveEvents: Stream.empty,
+                events: Stream.empty,
+                notices: Stream.empty,
+              }),
+            ),
+            Layer.succeed(
+              SessionTransferCoordinator.BoatRemoteClient,
+              SessionTransferCoordinator.BoatRemoteClient.of({
+                getServerConfig: () => Effect.die("unused"),
+                getShellSnapshot: () => Effect.die("unused"),
+                getThreadSummary: () => Effect.die("unused"),
+                prepareSource: () => Effect.die("unused"),
+                stageImport: () => Effect.die("unused"),
+                commitImport: () => Effect.die("unused"),
+                finalizeSource: () => Effect.die("unused"),
+                abort: (_endpoint, input) =>
+                  Effect.sync(() => {
+                    remoteSourceAbortCalls.push(`${input.transferId}:${input.role}`);
+                    return { cleanedUp: true };
+                  }),
+                streamHttpTransfer: () => Effect.die("unused"),
+              }),
+            ),
+            Layer.succeed(ProviderRegistry.ProviderRegistry, {
+              getProviders: Effect.succeed([]),
+            } as unknown as ProviderRegistry.ProviderRegistry["Service"]),
+            Layer.succeed(
+              RepositoryIdentityResolver.RepositoryIdentityResolver,
+              RepositoryIdentityResolver.RepositoryIdentityResolver.of({
+                resolve: () => Effect.succeed(null),
+              }),
+            ),
+          );
+
+          const coordinator2Layer = SessionTransferCoordinator.layer.pipe(
+            Layer.provideMerge(coordinator2SupportLayer),
+          );
+
+          yield* Effect.gen(function* () {
+            const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+            const repo = yield* SessionTransferRepository.SessionTransferRepository;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+
+            // Confirm destination thread was never committed before reconciliation.
+            const threadCheck = yield* Effect.result(
+              projectionStore.getThreadProjection(destinationThreadId!),
+            );
+            expect(Result.isFailure(threadCheck)).toBe(true);
+
+            // Reconcile on startup against the fresh endpoint service instance!
+            yield* coordinator.reconcileOnStartup;
+
+            // Worktree directory, created branch, ownership file, and staging dir must all be gone.
+            expect(NodeFS.existsSync(worktreePath)).toBe(false);
+            expect(git(dstRepo, ["branch", "--list", featureBranch])).toBe("");
+            expect(NodeFS.existsSync(ownershipPath)).toBe(false);
+            expect(NodeFS.existsSync(stagingDir)).toBe(false);
+
+            // Source was aborted and the SQLite transfer record transitioned cleanly to failed.
+            expect(remoteSourceAbortCalls).toEqual([`${transferId}:source`]);
+            const reconciled = yield* repo.getById(transferId);
+            expect(Option.isSome(reconciled) && reconciled.value.phase).toBe("failed");
+            const activeAfterReconcile = yield* repo.listActive();
+            expect(activeAfterReconcile.map((r) => r.transferId)).not.toContain(transferId);
+
+            // Subsequent abort on the restarted instance is an idempotent no-op.
+            const repeatAbort = yield* svc.abort({
+              transferId,
+              role: "destination",
+            });
+            expect(repeatAbort.cleanedUp).toBe(false);
+          }).pipe(Effect.scoped, Effect.provide(coordinator2Layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "retry of commitImport never commits a partially imported worktree and restores dirty files on same and restarted instances",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-partial-wt-retry-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const dstRepo = NodePath.join(tmpRoot, "dst-repo");
+          const sharedBaseDir = NodePath.join(tmpRoot, "state-base");
+          initGitRepo(srcRepo);
+          cloneGitRepo(srcRepo, dstRepo);
+
+          const branchA = "feat/partial-wt-same-instance";
+          const branchB = "feat/partial-wt-restarted-instance";
+          const dirtyFileName = "dirty-untracked.txt";
+          const dirtyFileContent = "important uncommitted dirty work\n";
+
+          git(srcRepo, ["checkout", "-b", branchA]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "committed.ts"), "export const x = 1;\n");
+          git(srcRepo, ["add", "committed.ts"]);
+          git(srcRepo, ["commit", "-m", "feature commit"]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, dirtyFileName), dirtyFileContent);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "app.ts"), "export const v = 999;\n");
+
+          const srcProjectId = ProjectId.make("proj-partial-src");
+          const dstProjectId = ProjectId.make("proj-partial-dst");
+          const srcThreadId = ThreadId.make("thread-partial-src");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          };
+
+          let failDirtyApply = false;
+          let blockCleanup = false;
+          let blockedWorktreePath: string | null = null;
+
+          const makeInstanceLayer = () => {
+            const recorder: MockRecorder = {
+              dispatches: [],
+              forceStops: [],
+              detachedSessions: [],
+              sentMessages: [],
+            };
+            return makeEndpointTestLayer({
+              environmentId: "env-partial-wt-retry",
+              environmentLabel: "Partial Retry Host",
+              sharedBaseDir,
+              projects: [
+                { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+                { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+              ],
+              providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+              recorder,
+              hooks: {
+                onVcsRun: ({ input, next }) => {
+                  if (input.operation === "WorkspaceBundle.addWorktree") {
+                    const sepIdx = input.args.indexOf("--");
+                    if (sepIdx !== -1 && input.args[sepIdx + 1] !== undefined) {
+                      blockedWorktreePath = input.args[sepIdx + 1]!;
+                    }
+                  }
+                  if (failDirtyApply && input.operation === "WorkspaceBundle.applyWorktreeLayer") {
+                    return Effect.succeed({
+                      exitCode: 128 as VcsProcess.VcsProcessOutput["exitCode"],
+                      stdout: "",
+                      stderr: "Simulated interruption before restoring dirty files",
+                      stdoutTruncated: false,
+                      stderrTruncated: false,
+                    });
+                  }
+                  if (
+                    failDirtyApply &&
+                    input.operation === "WorkspaceBundle.applyWorktreeLayerForce"
+                  ) {
+                    return Effect.fail(
+                      new VcsProcessExitError({
+                        operation: input.operation,
+                        command: input.command,
+                        cwd: input.cwd,
+                        exitCode: 128,
+                        detail: "Simulated interruption before restoring dirty files",
+                      }),
+                    );
+                  }
+                  if (blockCleanup && input.operation === "WorkspaceBundle.removeWorktree") {
+                    return Effect.succeed({
+                      exitCode: 128 as VcsProcess.VcsProcessOutput["exitCode"],
+                      stdout: "",
+                      stderr: "Simulated transient worktree cleanup lock",
+                      stdoutTruncated: false,
+                      stderrTruncated: false,
+                    });
+                  }
+                  return next;
+                },
+                onFileSystemRemove: ({ targetPath, next }) => {
+                  if (
+                    blockCleanup &&
+                    blockedWorktreePath !== null &&
+                    (targetPath === blockedWorktreePath ||
+                      targetPath.startsWith(`${blockedWorktreePath}${NodePath.sep}`))
+                  ) {
+                    return Effect.fail(
+                      PlatformError.systemError({
+                        _tag: "Busy",
+                        module: "FileSystem",
+                        method: "remove",
+                        pathOrDescriptor: targetPath,
+                        description: "Simulated busy worktree directory during partial cleanup",
+                      }),
+                    );
+                  }
+                  return next;
+                },
+              },
+            });
+          };
+
+          // Part A: Same-instance retry after partial import + failed first cleanup.
+          const layer1 = makeInstanceLayer();
+          const transferIdA = SessionTransferId.make("xfer-partial-wt-same");
+          const transferIdB = SessionTransferId.make("xfer-partial-wt-restart");
+          let stagedBManifest: {
+            readonly destinationProjectId: ProjectId;
+            readonly destinationThreadId: ThreadId;
+            readonly manifest: Parameters<
+              SessionTransferEndpointService.SessionTransferEndpointServiceShape["commitImport"]
+            >[0]["manifest"];
+          } | null = null;
+          let partialWorktreeB = "";
+          let ownershipPathB = "";
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: branchA,
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            const prepA = yield* svc.prepareSource({
+              transferId: transferIdA,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const stagedA = yield* svc.stageImport({
+              transferId: transferIdA,
+              manifest: prepA.manifest,
+              targetProjectId: dstProjectId,
+            });
+            const exportBundleA = resolveExportBundlePath(config.stateDir, transferIdA, path)!;
+            const importBundleA = resolveImportBundlePath(config.stateDir, transferIdA, path)!;
+            NodeFS.mkdirSync(NodePath.dirname(importBundleA), { recursive: true });
+            NodeFS.copyFileSync(exportBundleA, importBundleA);
+
+            const ownershipPathA = resolveWorktreeOwnershipPath(
+              config.stateDir,
+              transferIdA,
+              path,
+            )!;
+
+            // Fail dirty-layer restore AND block cleanup so partial worktree stays on disk with importCompleted: false.
+            failDirtyApply = true;
+            blockCleanup = true;
+            blockedWorktreePath = null;
+            const attempt1 = yield* Effect.result(
+              svc.commitImport({
+                transferId: transferIdA,
+                destinationProjectId: stagedA.destinationProjectId,
+                destinationThreadId: stagedA.destinationThreadId,
+                manifest: prepA.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(attempt1)).toBe(true);
+            expect(NodeFS.existsSync(ownershipPathA)).toBe(true);
+            const ownershipA = JSON.parse(NodeFS.readFileSync(ownershipPathA, "utf8")) as {
+              readonly worktreePath: string;
+              readonly importCompleted: boolean;
+            };
+            expect(ownershipA.importCompleted).toBe(false);
+            blockedWorktreePath = ownershipA.worktreePath;
+            // Ensure partial worktree exists on disk WITHOUT the dirty file.
+            expect(NodeFS.existsSync(ownershipA.worktreePath)).toBe(true);
+            expect(NodeFS.existsSync(NodePath.join(ownershipA.worktreePath, dirtyFileName))).toBe(
+              false,
+            );
+
+            // Retry while cleanup is STILL blocked -> must fail with workspace_error (never commit partial worktree).
+            failDirtyApply = false;
+            const attempt2 = yield* Effect.result(
+              svc.commitImport({
+                transferId: transferIdA,
+                destinationProjectId: stagedA.destinationProjectId,
+                destinationThreadId: stagedA.destinationThreadId,
+                manifest: prepA.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(attempt2)).toBe(true);
+            if (Result.isFailure(attempt2)) {
+              expect(attempt2.failure.code).toBe("workspace_error");
+            }
+
+            // Unblock cleanup and retry on the SAME service instance -> cleans up partial worktree,
+            // runs a fresh full import, and commits with the dirty file intact!
+            blockCleanup = false;
+            const committedA = yield* svc.commitImport({
+              transferId: transferIdA,
+              destinationProjectId: stagedA.destinationProjectId,
+              destinationThreadId: stagedA.destinationThreadId,
+              manifest: prepA.manifest,
+              autoResume: false,
+            });
+            expect(committedA.destinationWorktreePath).not.toBeNull();
+            expect(
+              NodeFS.readFileSync(
+                NodePath.join(committedA.destinationWorktreePath!, dirtyFileName),
+                "utf8",
+              ),
+            ).toBe(dirtyFileContent);
+            expect(
+              NodeFS.readFileSync(
+                NodePath.join(committedA.destinationWorktreePath!, "app.ts"),
+                "utf8",
+              ),
+            ).toBe("export const v = 999;\n");
+            expect(NodeFS.existsSync(ownershipPathA)).toBe(false);
+
+            // Release source lock from transferIdA before preparing transferIdB from the same source thread.
+            yield* svc.abort({ transferId: transferIdA, role: "source" });
+
+            // Part B setup: prepare second transfer, fail dirty-layer restore + block cleanup on instance 1.
+            git(srcRepo, ["checkout", "-b", branchB]);
+            const prepB = yield* svc.prepareSource({
+              transferId: transferIdB,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const stagedB = yield* svc.stageImport({
+              transferId: transferIdB,
+              manifest: prepB.manifest,
+              targetProjectId: dstProjectId,
+            });
+            const exportBundleB = resolveExportBundlePath(config.stateDir, transferIdB, path)!;
+            const importBundleB = resolveImportBundlePath(config.stateDir, transferIdB, path)!;
+            NodeFS.mkdirSync(NodePath.dirname(importBundleB), { recursive: true });
+            NodeFS.copyFileSync(exportBundleB, importBundleB);
+            ownershipPathB = resolveWorktreeOwnershipPath(config.stateDir, transferIdB, path)!;
+
+            failDirtyApply = true;
+            blockCleanup = true;
+            blockedWorktreePath = null;
+            const attemptB1 = yield* Effect.result(
+              svc.commitImport({
+                transferId: transferIdB,
+                destinationProjectId: stagedB.destinationProjectId,
+                destinationThreadId: stagedB.destinationThreadId,
+                manifest: prepB.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(attemptB1)).toBe(true);
+            const ownershipB = JSON.parse(NodeFS.readFileSync(ownershipPathB, "utf8")) as {
+              readonly worktreePath: string;
+              readonly importCompleted: boolean;
+            };
+            expect(ownershipB.importCompleted).toBe(false);
+            partialWorktreeB = ownershipB.worktreePath;
+            expect(NodeFS.existsSync(partialWorktreeB)).toBe(true);
+            expect(NodeFS.existsSync(NodePath.join(partialWorktreeB, dirtyFileName))).toBe(false);
+
+            stagedBManifest = {
+              destinationProjectId: stagedB.destinationProjectId,
+              destinationThreadId: stagedB.destinationThreadId,
+              manifest: prepB.manifest,
+            };
+          }).pipe(Effect.provide(layer1));
+
+          // Part B: Retry commitImport across a FRESH restarted service instance!
+          failDirtyApply = false;
+          blockCleanup = false;
+          blockedWorktreePath = null;
+          const layer2 = makeInstanceLayer();
+          yield* Effect.gen(function* () {
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const committedB = yield* svc.commitImport({
+              transferId: transferIdB,
+              destinationProjectId: stagedBManifest!.destinationProjectId,
+              destinationThreadId: stagedBManifest!.destinationThreadId,
+              manifest: stagedBManifest!.manifest,
+              autoResume: false,
+            });
+            expect(committedB.destinationWorktreePath).not.toBeNull();
+            expect(
+              NodeFS.readFileSync(
+                NodePath.join(committedB.destinationWorktreePath!, dirtyFileName),
+                "utf8",
+              ),
+            ).toBe(dirtyFileContent);
+            expect(
+              NodeFS.readFileSync(
+                NodePath.join(committedB.destinationWorktreePath!, "app.ts"),
+                "utf8",
+              ),
+            ).toBe("export const v = 999;\n");
+            expect(NodeFS.existsSync(ownershipPathB)).toBe(false);
+          }).pipe(Effect.provide(layer2));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "late destination abort fails and preserves committed worktree, branch, and ownership on projection read error",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-abort-proj-err-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const dstRepo = NodePath.join(tmpRoot, "dst-repo");
+          const sharedBaseDir = NodePath.join(tmpRoot, "state-base");
+          initGitRepo(srcRepo);
+          cloneGitRepo(srcRepo, dstRepo);
+
+          const featureBranch = "feat/abort-proj-read-error";
+          git(srcRepo, ["checkout", "-b", featureBranch]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "kept.ts"), "export const kept = true;\n");
+          git(srcRepo, ["add", "kept.ts"]);
+          git(srcRepo, ["commit", "-m", "committed feature"]);
+
+          const srcProjectId = ProjectId.make("proj-projerr-src");
+          const dstProjectId = ProjectId.make("proj-projerr-dst");
+          const srcThreadId = ThreadId.make("thread-projerr-src");
+          const transferId = SessionTransferId.make("xfer-abort-proj-err");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          };
+
+          let committedWorktreePath = "";
+          let committedBranch = "";
+          let ownershipPath = "";
+          let destinationThreadId: ThreadId | null = null;
+
+          // Instance 1: commit the thread completely, then simulate a surviving ownership file
+          // (as if the host crashed right after SQLite commit before best-effort ownership cleanup).
+          const layer1 = makeEndpointTestLayer({
+            environmentId: "env-projerr-1",
+            environmentLabel: "ProjErr Host",
+            sharedBaseDir,
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: featureBranch,
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const staged = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            const exportBundle = resolveExportBundlePath(config.stateDir, transferId, path)!;
+            const importBundle = resolveImportBundlePath(config.stateDir, transferId, path)!;
+            NodeFS.mkdirSync(NodePath.dirname(importBundle), { recursive: true });
+            NodeFS.copyFileSync(exportBundle, importBundle);
+
+            const committed = yield* svc.commitImport({
+              transferId,
+              destinationProjectId: staged.destinationProjectId,
+              destinationThreadId: staged.destinationThreadId,
+              manifest: prep.manifest,
+              autoResume: false,
+            });
+            committedWorktreePath = committed.destinationWorktreePath!;
+            committedBranch = committed.destinationBranch!;
+            destinationThreadId = committed.destinationThreadId;
+            ownershipPath = resolveWorktreeOwnershipPath(config.stateDir, transferId, path)!;
+
+            // Simulate surviving durable ownership file left behind after commit.
+            NodeFS.mkdirSync(NodePath.dirname(ownershipPath), { recursive: true });
+            NodeFS.writeFileSync(
+              ownershipPath,
+              JSON.stringify({
+                schemaVersion: 1,
+                transferId,
+                destinationProjectId: dstProjectId,
+                projectWorkspaceRoot: dstRepo,
+                destinationThreadId,
+                worktreePath: committedWorktreePath,
+                branch: committedBranch,
+                createdBranch: true,
+                importCompleted: true,
+              }),
+            );
+          }).pipe(Effect.provide(layer1));
+
+          // Instance 2 (fresh restart, empty stagedImports): inject transient SQLite projection
+          // read failure during late abort -> abort MUST fail and preserve worktree, branch, and ownership.
+          let failProjectionRead = true;
+          const layer2 = makeEndpointTestLayer({
+            environmentId: "env-projerr-2",
+            environmentLabel: "ProjErr Host",
+            sharedBaseDir,
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onGetThreadRecords: ({ threadId, next }) => {
+                if (failProjectionRead && threadId === destinationThreadId) {
+                  return Effect.fail(
+                    new ProjectionStore.ProjectionStoreReadError({
+                      threadId,
+                      cause: new Error("SQLITE_BUSY: simulated transient projection read error"),
+                    }),
+                  );
+                }
+                return next;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const failedAbort = yield* Effect.result(
+              svc.abort({
+                transferId,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(failedAbort)).toBe(true);
+            if (Result.isFailure(failedAbort)) {
+              expect(failedAbort.failure.code).toBe("internal");
+            }
+
+            // Worktree, branch, and ownership file must ALL remain completely intact!
+            expect(NodeFS.existsSync(committedWorktreePath)).toBe(true);
+            expect(NodeFS.existsSync(NodePath.join(committedWorktreePath, "kept.ts"))).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", committedBranch])).not.toBe("");
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+
+            // Once projection reads recover, abort observes the committed thread, returns
+            // cleanedUp: false, deletes the stale ownership file, and keeps worktree + branch intact.
+            failProjectionRead = false;
+            const recoveredAbort = yield* svc.abort({
+              transferId,
+              role: "destination",
+            });
+            expect(recoveredAbort.cleanedUp).toBe(false);
+            expect(NodeFS.existsSync(committedWorktreePath)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", committedBranch])).not.toBe("");
+            expect(NodeFS.existsSync(ownershipPath)).toBe(false);
+          }).pipe(Effect.provide(layer2));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "serializes concurrent commitImport calls into the same repo so each gets a distinct worktree/branch and aborting one preserves the other",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-concurrent-repo-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const dstRepo = NodePath.join(tmpRoot, "dst-repo");
+          initGitRepo(srcRepo);
+          cloneGitRepo(srcRepo, dstRepo);
+
+          const sharedBranch = "feat/concurrent-shared";
+          git(srcRepo, ["checkout", "-b", sharedBranch]);
+          NodeFS.writeFileSync(
+            NodePath.join(srcRepo, "concurrent.ts"),
+            "export const winner = true;\n",
+          );
+          git(srcRepo, ["add", "concurrent.ts"]);
+          git(srcRepo, ["commit", "-m", "shared feature commit"]);
+
+          const srcProjectId = ProjectId.make("proj-conc-src");
+          const dstProjectId = ProjectId.make("proj-conc-dst");
+          const srcThread1 = ThreadId.make("thread-conc-src-1");
+          const srcThread2 = ThreadId.make("thread-conc-src-2");
+          const transfer1 = SessionTransferId.make("xfer-conc-1");
+          const transfer2 = SessionTransferId.make("xfer-conc-2");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          };
+
+          let destThread2Id: ThreadId | null = null;
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-conc-repo",
+            environmentLabel: "Concurrent Repo Host",
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onEventSinkWrite: (events) => {
+                if (
+                  destThread2Id !== null &&
+                  events.some((event) => event.threadId === destThread2Id)
+                ) {
+                  return Effect.fail(
+                    new TestHookError({
+                      message: "Simulated commit failure for concurrent transfer 2",
+                    }),
+                  );
+                }
+                return Effect.void;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: [
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThread1,
+                  branch: sharedBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThread2,
+                  branch: sharedBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+              ],
+            });
+
+            const [prep1, prep2] = yield* Effect.all([
+              svc.prepareSource({
+                transferId: transfer1,
+                threadId: srcThread1,
+                direction: "boat_to_local",
+              }),
+              svc.prepareSource({
+                transferId: transfer2,
+                threadId: srcThread2,
+                direction: "boat_to_local",
+              }),
+            ]);
+
+            const [staged1, staged2] = yield* Effect.all([
+              svc.stageImport({
+                transferId: transfer1,
+                manifest: prep1.manifest,
+                targetProjectId: dstProjectId,
+              }),
+              svc.stageImport({
+                transferId: transfer2,
+                manifest: prep2.manifest,
+                targetProjectId: dstProjectId,
+              }),
+            ]);
+            destThread2Id = staged2.destinationThreadId;
+
+            for (const txId of [transfer1, transfer2]) {
+              const exportBundle = resolveExportBundlePath(config.stateDir, txId, path)!;
+              const importBundle = resolveImportBundlePath(config.stateDir, txId, path)!;
+              NodeFS.mkdirSync(NodePath.dirname(importBundle), { recursive: true });
+              NodeFS.copyFileSync(exportBundle, importBundle);
+            }
+
+            // Run both commitImport calls concurrently against the SAME destination git repo
+            // and SAME source branch name.
+            const [res1, res2] = yield* Effect.all(
+              [
+                Effect.result(
+                  svc.commitImport({
+                    transferId: transfer1,
+                    destinationProjectId: staged1.destinationProjectId,
+                    destinationThreadId: staged1.destinationThreadId,
+                    manifest: prep1.manifest,
+                    autoResume: false,
+                  }),
+                ),
+                Effect.result(
+                  svc.commitImport({
+                    transferId: transfer2,
+                    destinationProjectId: staged2.destinationProjectId,
+                    destinationThreadId: staged2.destinationThreadId,
+                    manifest: prep2.manifest,
+                    autoResume: false,
+                  }),
+                ),
+              ],
+              { concurrency: "unbounded" },
+            );
+
+            expect(Result.isSuccess(res1)).toBe(true);
+            expect(Result.isFailure(res2)).toBe(true);
+            if (!Result.isSuccess(res1)) {
+              throw new Error("Expected transfer 1 to commit");
+            }
+
+            const winnerWorktree = res1.success.destinationWorktreePath!;
+            const winnerBranch = res1.success.destinationBranch!;
+
+            const ownership2Path = resolveWorktreeOwnershipPath(config.stateDir, transfer2, path)!;
+            expect(NodeFS.existsSync(ownership2Path)).toBe(true);
+            const ownership2 = JSON.parse(NodeFS.readFileSync(ownership2Path, "utf8")) as {
+              readonly worktreePath: string;
+              readonly branch: string;
+              readonly createdBranch: boolean;
+            };
+            const loserWorktree = ownership2.worktreePath;
+            const loserBranch = ownership2.branch;
+
+            // Both transfers must have allocated distinct worktrees and distinct branches!
+            expect(loserWorktree).not.toBe(winnerWorktree);
+            expect(loserBranch).not.toBe(winnerBranch);
+            expect(ownership2.createdBranch).toBe(true);
+            expect(NodeFS.existsSync(winnerWorktree)).toBe(true);
+            expect(NodeFS.existsSync(loserWorktree)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", winnerBranch])).not.toBe("");
+            expect(git(dstRepo, ["branch", "--list", loserBranch])).not.toBe("");
+
+            // Aborting the failed transfer deletes ONLY its own worktree and branch, leaving the
+            // winner's worktree and branch completely intact.
+            const abort2 = yield* svc.abort({
+              transferId: transfer2,
+              role: "destination",
+            });
+            expect(abort2.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(loserWorktree)).toBe(false);
+            expect(git(dstRepo, ["branch", "--list", loserBranch])).toBe("");
+            expect(NodeFS.existsSync(ownership2Path)).toBe(false);
+
+            expect(NodeFS.existsSync(winnerWorktree)).toBe(true);
+            expect(NodeFS.existsSync(NodePath.join(winnerWorktree, "concurrent.ts"))).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", winnerBranch])).not.toBe("");
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "1-hour staging TTL sweep reclaims expired staging dir while preserving worktree ownership ledger for post-restart cleanup",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-ttl-sweep-ownership-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const dstRepo = NodePath.join(tmpRoot, "dst-repo");
+          const sharedBaseDir = NodePath.join(tmpRoot, "state-base");
+          initGitRepo(srcRepo);
+          cloneGitRepo(srcRepo, dstRepo);
+
+          const featureBranch = "feat/ttl-sweep-survivor";
+          git(srcRepo, ["checkout", "-b", featureBranch]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "swept.ts"), "export const s = 1;\n");
+          git(srcRepo, ["add", "swept.ts"]);
+          git(srcRepo, ["commit", "-m", "feature commit"]);
+
+          const localEnvId = EnvironmentId.make("env-ttl-sweep-local");
+          const boatEnvId = EnvironmentId.make("env-ttl-sweep-boat");
+          const srcProjectId = ProjectId.make("proj-ttl-src");
+          const dstProjectId = ProjectId.make("proj-ttl-dst");
+          const srcThreadId = ThreadId.make("thread-ttl-src");
+          const transferId = SessionTransferId.make("xfer-ttl-sweep-ownership");
+          const nowIso = IsoDateTime.make("2026-11-28T08:00:00.000Z");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          };
+
+          let failNextCommitEventWrite = false;
+          let blockWorktreeRemoval = false;
+          let blockedWorktreePath: string | null = null;
+          let worktreePath = "";
+          let stagingDir = "";
+          let ownershipPath = "";
+
+          const instance1Layer = makeEndpointTestLayer({
+            environmentId: localEnvId,
+            environmentLabel: "TTL Sweep Host",
+            sharedBaseDir,
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onEventSinkWrite: () => {
+                if (failNextCommitEventWrite) {
+                  failNextCommitEventWrite = false;
+                  return Effect.fail(
+                    new TestHookError({
+                      message: "Simulated SQLite failure after worktree creation",
+                    }),
+                  );
+                }
+                return Effect.void;
+              },
+              onVcsRun: ({ input, next }) => {
+                if (blockWorktreeRemoval && input.operation === "WorkspaceBundle.removeWorktree") {
+                  return Effect.succeed({
+                    exitCode: 128 as VcsProcess.VcsProcessOutput["exitCode"],
+                    stdout: "",
+                    stderr: "Simulated transient git worktree remove failure",
+                    stdoutTruncated: false,
+                    stderrTruncated: false,
+                  });
+                }
+                return next;
+              },
+              onFileSystemRemove: ({ targetPath, next }) => {
+                if (
+                  blockWorktreeRemoval &&
+                  blockedWorktreePath !== null &&
+                  (targetPath === blockedWorktreePath ||
+                    targetPath.startsWith(`${blockedWorktreePath}${NodePath.sep}`))
+                ) {
+                  return Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "Busy",
+                      module: "FileSystem",
+                      method: "remove",
+                      pathOrDescriptor: targetPath,
+                      description: "Simulated busy worktree directory",
+                    }),
+                  );
+                }
+                return next;
+              },
+            },
+          });
+
+          const repo1Layer = SessionTransferRepository.layer.pipe(
+            Layer.provideMerge(instance1Layer),
+          );
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const repo = yield* SessionTransferRepository.SessionTransferRepository;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: featureBranch,
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const staged = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            const exportBundle = resolveExportBundlePath(config.stateDir, transferId, path)!;
+            const importBundle = resolveImportBundlePath(config.stateDir, transferId, path)!;
+            NodeFS.mkdirSync(NodePath.dirname(importBundle), { recursive: true });
+            NodeFS.copyFileSync(exportBundle, importBundle);
+
+            failNextCommitEventWrite = true;
+            const commitRes = yield* Effect.result(
+              svc.commitImport({
+                transferId,
+                destinationProjectId: staged.destinationProjectId,
+                destinationThreadId: staged.destinationThreadId,
+                manifest: prep.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitRes)).toBe(true);
+
+            stagingDir = resolveTransferStagingDir(config.stateDir, transferId, path)!;
+            ownershipPath = resolveWorktreeOwnershipPath(config.stateDir, transferId, path)!;
+            const ownership = JSON.parse(NodeFS.readFileSync(ownershipPath, "utf8")) as {
+              readonly worktreePath: string;
+            };
+            worktreePath = ownership.worktreePath;
+
+            yield* repo.insertIfAbsent({
+              transferId,
+              direction: "boat_to_local",
+              phase: "committing_target",
+              phaseDetail: "Committing destination...",
+              sourceEnvironmentId: boatEnvId,
+              sourceEnvironmentName: TrimmedNonEmptyString.make("dev-boat"),
+              sourceMachineId: TrimmedNonEmptyString.make("machine-1"),
+              sourceProjectId: srcProjectId,
+              sourceThreadId: srcThreadId,
+              destinationEnvironmentId: localEnvId,
+              destinationEnvironmentName: TrimmedNonEmptyString.make("TTL Sweep Host"),
+              destinationMachineId: null,
+              destinationProjectId: staged.destinationProjectId,
+              destinationThreadId: staged.destinationThreadId,
+              destinationBranch: GitRefName.make(featureBranch),
+              destinationWorktreePath: TrimmedNonEmptyString.make(worktreePath),
+              sourceWasRunning: false,
+              hadPendingRuntimeRequest: false,
+              modelSelectionOverride: null,
+              cloneDestinationPath: null,
+              autoResume: false,
+              warnings: [],
+              errorMessage: null,
+              createdAt: nowIso,
+              updatedAt: nowIso,
+              completedAt: null,
+            });
+
+            // First abort fails worktree removal.
+            blockedWorktreePath = worktreePath;
+            blockWorktreeRemoval = true;
+            const abort1 = yield* Effect.result(
+              svc.abort({
+                transferId,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(abort1)).toBe(true);
+
+            // Age BOTH the staging directory contents AND the ownership file well past the 1-hour
+            // TTL, then run the production staging sweeper.
+            const futureNowMs =
+              (yield* Clock.currentTimeMillis) + SESSION_TRANSFER_STALE_TTL_MS * 3;
+            const oldSec = Math.floor(
+              (futureNowMs - SESSION_TRANSFER_STALE_TTL_MS - 120_000) / 1000,
+            );
+            for (const entry of NodeFS.readdirSync(stagingDir)) {
+              NodeFS.utimesSync(NodePath.join(stagingDir, entry), oldSec, oldSec);
+            }
+            NodeFS.utimesSync(stagingDir, oldSec, oldSec);
+            NodeFS.utimesSync(ownershipPath, oldSec, oldSec);
+
+            const swept = yield* sweepStaleSessionTransferStaging({
+              stateDir: config.stateDir,
+              nowMs: futureNowMs,
+            });
+            expect(swept.deletedDirs).toBeGreaterThanOrEqual(1);
+            // Expired staging payload dir IS swept, while the durable ownership ledger SURVIVES!
+            expect(NodeFS.existsSync(stagingDir)).toBe(false);
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+            expect(NodeFS.existsSync(worktreePath)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", featureBranch])).not.toBe("");
+          }).pipe(Effect.provide(repo1Layer));
+
+          // Simulate destination restart after the 1-hour sweep with worktree removal unblocked.
+          const instance2Layer = makeEndpointTestLayer({
+            environmentId: localEnvId,
+            environmentLabel: "TTL Sweep Host",
+            sharedBaseDir,
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+          });
+
+          const coordinator2SupportLayer = Layer.mergeAll(
+            SessionTransferRepository.layer.pipe(Layer.provideMerge(instance2Layer)),
+            Layer.succeed(
+              BoatSupervisor.BoatSupervisor,
+              BoatSupervisor.BoatSupervisor.of({
+                invoke: () => Effect.succeed({ data: { ok: true } }),
+                getMachineProxyAccess: () =>
+                  Effect.succeed({
+                    machineId: "machine-1",
+                    machineName: "dev-boat",
+                    environmentId: boatEnvId,
+                    state: "idle",
+                    localUrl: "http://127.0.0.1:41999",
+                    bearerToken: "internal-boat-token",
+                  }),
+                hasConfiguredBoats: Effect.succeed(true),
+                currentState: Effect.succeedNone,
+                passiveEvents: Stream.empty,
+                events: Stream.empty,
+                notices: Stream.empty,
+              }),
+            ),
+            Layer.succeed(
+              SessionTransferCoordinator.BoatRemoteClient,
+              SessionTransferCoordinator.BoatRemoteClient.of({
+                getServerConfig: () => Effect.die("unused"),
+                getShellSnapshot: () => Effect.die("unused"),
+                getThreadSummary: () => Effect.die("unused"),
+                prepareSource: () => Effect.die("unused"),
+                stageImport: () => Effect.die("unused"),
+                commitImport: () => Effect.die("unused"),
+                finalizeSource: () => Effect.die("unused"),
+                abort: () => Effect.succeed({ cleanedUp: true }),
+                streamHttpTransfer: () => Effect.die("unused"),
+              }),
+            ),
+            Layer.succeed(ProviderRegistry.ProviderRegistry, {
+              getProviders: Effect.succeed([]),
+            } as unknown as ProviderRegistry.ProviderRegistry["Service"]),
+            Layer.succeed(
+              RepositoryIdentityResolver.RepositoryIdentityResolver,
+              RepositoryIdentityResolver.RepositoryIdentityResolver.of({
+                resolve: () => Effect.succeed(null),
+              }),
+            ),
+          );
+
+          const coordinator2Layer = SessionTransferCoordinator.layer.pipe(
+            Layer.provideMerge(coordinator2SupportLayer),
+          );
+
+          yield* Effect.gen(function* () {
+            const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+            const repo = yield* SessionTransferRepository.SessionTransferRepository;
+
+            yield* coordinator.reconcileOnStartup;
+
+            expect(NodeFS.existsSync(worktreePath)).toBe(false);
+            expect(git(dstRepo, ["branch", "--list", featureBranch])).toBe("");
+            expect(NodeFS.existsSync(ownershipPath)).toBe(false);
+            const reconciled = yield* repo.getById(transferId);
+            expect(Option.isSome(reconciled) && reconciled.value.phase).toBe("failed");
+          }).pipe(Effect.scoped, Effect.provide(coordinator2Layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "prevents an interrupted pre-add allocation from colliding with another transfer and refuses to delete committed thread worktrees on abort",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-interrupted-alloc-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const dstRepo = NodePath.join(tmpRoot, "dst-repo");
+          initGitRepo(srcRepo);
+          cloneGitRepo(srcRepo, dstRepo);
+
+          const sharedBranch = "feat/interrupted-alloc";
+          git(srcRepo, ["checkout", "-b", sharedBranch]);
+          NodeFS.writeFileSync(
+            NodePath.join(srcRepo, "interrupted-alloc.ts"),
+            "export const kept = 42;\n",
+          );
+          git(srcRepo, ["add", "interrupted-alloc.ts"]);
+          git(srcRepo, ["commit", "-m", "feature commit"]);
+
+          const srcProjectId = ProjectId.make("proj-int-alloc-src");
+          const dstProjectId = ProjectId.make("proj-int-alloc-dst");
+          const srcThreadA = ThreadId.make("thread-int-alloc-src-a");
+          const srcThreadB = ThreadId.make("thread-int-alloc-src-b");
+          const srcThreadA2 = ThreadId.make("thread-int-alloc-src-a2");
+          const transferA = SessionTransferId.make("xfer-int-alloc-a");
+          const transferB = SessionTransferId.make("xfer-int-alloc-b");
+          const transferA2 = SessionTransferId.make("xfer-int-alloc-a2");
+          const transferC = SessionTransferId.make("xfer-int-alloc-c-manual");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          };
+
+          const pauseAddEnteredA = yield* Deferred.make<void>();
+          const pauseAddEnteredA2 = yield* Deferred.make<void>();
+          let pauseAddMode: "none" | "pause-a" | "pause-a2" = "none";
+          let blockedOwnershipPath: string | null = null;
+          let failGetThreadWorktreePaths = false;
+
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-int-alloc",
+            environmentLabel: "Interrupted Allocation Env",
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onVcsRun: ({ input, next }) => {
+                if (
+                  input.operation === "WorkspaceBundle.addWorktree" &&
+                  pauseAddMode === "pause-a"
+                ) {
+                  pauseAddMode = "none";
+                  return Deferred.succeed(pauseAddEnteredA, undefined).pipe(
+                    Effect.andThen(Effect.never),
+                  );
+                }
+                if (
+                  input.operation === "WorkspaceBundle.addWorktree" &&
+                  pauseAddMode === "pause-a2"
+                ) {
+                  pauseAddMode = "none";
+                  return Deferred.succeed(pauseAddEnteredA2, undefined).pipe(
+                    Effect.andThen(Effect.never),
+                  );
+                }
+                return next;
+              },
+              onFileSystemRemove: ({ targetPath, next }) => {
+                if (blockedOwnershipPath !== null && targetPath === blockedOwnershipPath) {
+                  return Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "PermissionDenied",
+                      module: "FileSystem",
+                      method: "remove",
+                      pathOrDescriptor: targetPath,
+                    }),
+                  );
+                }
+                return next;
+              },
+              onGetThreadWorktreePaths: ({ next }) =>
+                failGetThreadWorktreePaths
+                  ? Effect.fail(
+                      new ProjectionStore.ProjectionStoreSetupError({
+                        cause: new Error("SQLITE_BUSY: simulated worktree lookup error"),
+                      }),
+                    )
+                  : next,
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: [
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThreadA,
+                  branch: sharedBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThreadB,
+                  branch: sharedBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThreadA2,
+                  branch: sharedBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+              ],
+            });
+
+            const prepA = yield* svc.prepareSource({
+              transferId: transferA,
+              threadId: srcThreadA,
+              direction: "boat_to_local",
+            });
+            const stagedA = yield* svc.stageImport({
+              transferId: transferA,
+              manifest: prepA.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferA, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferA, path)!,
+              resolveImportBundlePath(config.stateDir, transferA, path)!,
+            );
+
+            const prepB = yield* svc.prepareSource({
+              transferId: transferB,
+              threadId: srcThreadB,
+              direction: "boat_to_local",
+            });
+            const stagedB = yield* svc.stageImport({
+              transferId: transferB,
+              manifest: prepB.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferB, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferB, path)!,
+              resolveImportBundlePath(config.stateDir, transferB, path)!,
+            );
+
+            const ownershipPathA = resolveWorktreeOwnershipPath(config.stateDir, transferA, path)!;
+
+            // Part 1: Interrupt Transfer A immediately after persisting its ownership record and
+            // before `git worktree add` runs, while blocking ownership unlink to simulate a crash
+            // leaving A's persisted ownership record on disk.
+            blockedOwnershipPath = ownershipPathA;
+            pauseAddMode = "pause-a";
+            const fiberA = yield* Effect.forkChild(
+              svc.commitImport({
+                transferId: transferA,
+                destinationProjectId: stagedA.destinationProjectId,
+                destinationThreadId: stagedA.destinationThreadId,
+                manifest: prepA.manifest,
+                autoResume: false,
+              }),
+            );
+            yield* Deferred.await(pauseAddEnteredA);
+            expect(NodeFS.existsSync(ownershipPathA)).toBe(true);
+            yield* Fiber.interrupt(fiberA);
+
+            // Ownership record A survived on disk while neither worktree nor branch was created in git.
+            expect(NodeFS.existsSync(ownershipPathA)).toBe(true);
+            const ownershipA = JSON.parse(NodeFS.readFileSync(ownershipPathA, "utf8")) as {
+              readonly worktreePath: string;
+              readonly branch: string;
+              readonly gitCommonDir: string;
+              readonly importCompleted: boolean;
+            };
+            expect(ownershipA.importCompleted).toBe(false);
+            expect(ownershipA.branch).toBe(sharedBranch);
+            expect(ownershipA.gitCommonDir).toBe(
+              NodeFS.realpathSync(NodePath.join(dstRepo, ".git")),
+            );
+            expect(NodeFS.existsSync(ownershipA.worktreePath)).toBe(false);
+            expect(git(dstRepo, ["branch", "--list", ownershipA.branch])).toBe("");
+
+            // Now commit Transfer B with the SAME requested branch into the SAME repo:
+            // Layer 1 must observe A's persisted ownership record and pick a DIFFERENT path & branch!
+            const committedB = yield* svc.commitImport({
+              transferId: transferB,
+              destinationProjectId: stagedB.destinationProjectId,
+              destinationThreadId: stagedB.destinationThreadId,
+              manifest: prepB.manifest,
+              autoResume: false,
+            });
+            expect(committedB.destinationWorktreePath).not.toBeNull();
+            expect(committedB.destinationBranch).not.toBeNull();
+            expect(committedB.destinationWorktreePath).not.toBe(ownershipA.worktreePath);
+            expect(committedB.destinationBranch).not.toBe(ownershipA.branch);
+            expect(NodeFS.existsSync(committedB.destinationWorktreePath!)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", committedB.destinationBranch!])).not.toBe("");
+
+            // Unblock ownership unlink and abort Transfer A: A cleans up its own record and leaves
+            // Transfer B's committed worktree and branch completely intact!
+            blockedOwnershipPath = null;
+            const abortA = yield* svc.abort({
+              transferId: transferA,
+              role: "destination",
+            });
+            expect(abortA.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(ownershipPathA)).toBe(false);
+            expect(NodeFS.existsSync(committedB.destinationWorktreePath!)).toBe(true);
+            expect(
+              NodeFS.existsSync(
+                NodePath.join(committedB.destinationWorktreePath!, "interrupted-alloc.ts"),
+              ),
+            ).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", committedB.destinationBranch!])).not.toBe("");
+
+            // Part 2: Graceful Fiber.interrupt between onWorktreeAllocated and git worktree add
+            // clears ownership atomically under the repo lock (Layer 2).
+            const prepA2 = yield* svc.prepareSource({
+              transferId: transferA2,
+              threadId: srcThreadA2,
+              direction: "boat_to_local",
+            });
+            const stagedA2 = yield* svc.stageImport({
+              transferId: transferA2,
+              manifest: prepA2.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferA2, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferA2, path)!,
+              resolveImportBundlePath(config.stateDir, transferA2, path)!,
+            );
+
+            const ownershipPathA2 = resolveWorktreeOwnershipPath(
+              config.stateDir,
+              transferA2,
+              path,
+            )!;
+            pauseAddMode = "pause-a2";
+            const fiberA2 = yield* Effect.forkChild(
+              svc.commitImport({
+                transferId: transferA2,
+                destinationProjectId: stagedA2.destinationProjectId,
+                destinationThreadId: stagedA2.destinationThreadId,
+                manifest: prepA2.manifest,
+                autoResume: false,
+              }),
+            );
+            yield* Deferred.await(pauseAddEnteredA2);
+            expect(NodeFS.existsSync(ownershipPathA2)).toBe(true);
+            yield* Fiber.interrupt(fiberA2);
+            expect(NodeFS.existsSync(ownershipPathA2)).toBe(false);
+
+            // Part 3: Defense-in-depth in abort (Layer 3): even if an ownership file manually names
+            // Transfer B's committed worktree path, abort propagates DB read errors and refuses to
+            // delete Transfer B's committed worktree or branch!
+            const ownershipPathC = resolveWorktreeOwnershipPath(config.stateDir, transferC, path)!;
+            NodeFS.mkdirSync(NodePath.dirname(ownershipPathC), { recursive: true });
+            NodeFS.writeFileSync(
+              ownershipPathC,
+              JSON.stringify({
+                schemaVersion: 1,
+                transferId: transferC,
+                destinationProjectId: dstProjectId,
+                projectWorkspaceRoot: dstRepo,
+                gitCommonDir: NodeFS.realpathSync(NodePath.join(dstRepo, ".git")),
+                gitCommonDirIdentity: readGitCommonDirIdentitySync(dstRepo),
+                destinationThreadId: ThreadId.make("thread-uncommitted-c"),
+                worktreePath: committedB.destinationWorktreePath!,
+                branch: committedB.destinationBranch!,
+                branchHeadSha: git(dstRepo, [
+                  "rev-parse",
+                  `refs/heads/${committedB.destinationBranch!}`,
+                ]),
+                createdBranch: true,
+                importCompleted: false,
+              }),
+            );
+
+            // DB read failure must propagate without deleting worktree, branch, or ownership file.
+            failGetThreadWorktreePaths = true;
+            const abortCFail = yield* Effect.result(
+              svc.abort({
+                transferId: transferC,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(abortCFail)).toBe(true);
+            if (Result.isFailure(abortCFail)) {
+              expect(abortCFail.failure.code).toBe("internal");
+            }
+            expect(NodeFS.existsSync(ownershipPathC)).toBe(true);
+            expect(NodeFS.existsSync(committedB.destinationWorktreePath!)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", committedB.destinationBranch!])).not.toBe("");
+
+            // Once DB reads succeed, abort refuses to delete B's committed worktree/branch and
+            // safely clears C's stale ownership record.
+            failGetThreadWorktreePaths = false;
+            const abortC = yield* svc.abort({
+              transferId: transferC,
+              role: "destination",
+            });
+            expect(abortC.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(ownershipPathC)).toBe(false);
+            expect(NodeFS.existsSync(committedB.destinationWorktreePath!)).toBe(true);
+            expect(
+              NodeFS.existsSync(
+                NodePath.join(committedB.destinationWorktreePath!, "interrupted-alloc.ts"),
+              ),
+            ).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", committedB.destinationBranch!])).not.toBe("");
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "fails destination abort on ownership-file unlink PermissionDenied, blocks name reuse while ownership survives, and recovers on retry",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-ownership-unlink-eacces-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const dstRepo = NodePath.join(tmpRoot, "dst-repo");
+          initGitRepo(srcRepo);
+          cloneGitRepo(srcRepo, dstRepo);
+
+          const featureBranch = "feat/ownership-unlink-eacces";
+          git(srcRepo, ["checkout", "-b", featureBranch]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "owned.ts"), "export const owned = true;\n");
+          git(srcRepo, ["add", "owned.ts"]);
+          git(srcRepo, ["commit", "-m", "feature commit"]);
+
+          const srcProjectId = ProjectId.make("proj-own-eacces-src");
+          const dstProjectId = ProjectId.make("proj-own-eacces-dst");
+          const srcThreadA = ThreadId.make("thread-own-eacces-a");
+          const srcThreadB = ThreadId.make("thread-own-eacces-b");
+          const transferA = SessionTransferId.make("xfer-own-eacces-a");
+          const transferB = SessionTransferId.make("xfer-own-eacces-b");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          };
+
+          let failNextCommitEventWrite = false;
+          let blockedOwnershipPath: string | null = null;
+
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-own-eacces",
+            environmentLabel: "Ownership Unlink EACCES Env",
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onEventSinkWrite: (events) => {
+                if (failNextCommitEventWrite && events.some((e) => e.type === "thread.created")) {
+                  failNextCommitEventWrite = false;
+                  return Effect.fail(
+                    new TestHookError({ message: "Simulated commit failure after worktree" }),
+                  );
+                }
+                return Effect.void;
+              },
+              onFileSystemRemove: ({ targetPath, next }) => {
+                if (blockedOwnershipPath !== null && targetPath === blockedOwnershipPath) {
+                  return Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "PermissionDenied",
+                      module: "FileSystem",
+                      method: "remove",
+                      pathOrDescriptor: targetPath,
+                    }),
+                  );
+                }
+                return next;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: [
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThreadA,
+                  branch: featureBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThreadB,
+                  branch: featureBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+              ],
+            });
+
+            const prepA = yield* svc.prepareSource({
+              transferId: transferA,
+              threadId: srcThreadA,
+              direction: "boat_to_local",
+            });
+            const stagedA = yield* svc.stageImport({
+              transferId: transferA,
+              manifest: prepA.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferA, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferA, path)!,
+              resolveImportBundlePath(config.stateDir, transferA, path)!,
+            );
+
+            // Commit A creates worktree + branch + ownership record, then fails SQLite commit.
+            failNextCommitEventWrite = true;
+            const commitA = yield* Effect.result(
+              svc.commitImport({
+                transferId: transferA,
+                destinationProjectId: stagedA.destinationProjectId,
+                destinationThreadId: stagedA.destinationThreadId,
+                manifest: prepA.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitA)).toBe(true);
+
+            const ownershipPathA = resolveWorktreeOwnershipPath(config.stateDir, transferA, path)!;
+            expect(NodeFS.existsSync(ownershipPathA)).toBe(true);
+            const ownershipA = JSON.parse(NodeFS.readFileSync(ownershipPathA, "utf8")) as {
+              readonly worktreePath: string;
+              readonly branch: string;
+            };
+            expect(NodeFS.existsSync(ownershipA.worktreePath)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", ownershipA.branch])).not.toBe("");
+
+            // Inject PermissionDenied ONLY on ownership-file unlink during abort!
+            blockedOwnershipPath = ownershipPathA;
+            const abortA1 = yield* Effect.result(
+              svc.abort({
+                transferId: transferA,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(abortA1)).toBe(true);
+            if (Result.isFailure(abortA1)) {
+              expect(abortA1.failure.code).toBe("internal");
+            }
+            // Worktree & branch were cleaned, while the ownership file survived due to EACCES.
+            expect(NodeFS.existsSync(ownershipA.worktreePath)).toBe(false);
+            expect(git(dstRepo, ["branch", "--list", ownershipA.branch])).toBe("");
+            expect(NodeFS.existsSync(ownershipPathA)).toBe(true);
+
+            // While A's stale ownership file survives on disk, Transfer B CANNOT claim A's names!
+            const prepB = yield* svc.prepareSource({
+              transferId: transferB,
+              threadId: srcThreadB,
+              direction: "boat_to_local",
+            });
+            const stagedB = yield* svc.stageImport({
+              transferId: transferB,
+              manifest: prepB.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferB, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferB, path)!,
+              resolveImportBundlePath(config.stateDir, transferB, path)!,
+            );
+
+            const committedB = yield* svc.commitImport({
+              transferId: transferB,
+              destinationProjectId: stagedB.destinationProjectId,
+              destinationThreadId: stagedB.destinationThreadId,
+              manifest: prepB.manifest,
+              autoResume: false,
+            });
+            expect(committedB.destinationBranch).not.toBe(ownershipA.branch);
+            expect(committedB.destinationWorktreePath).not.toBe(ownershipA.worktreePath);
+
+            // Restore unlink permission and retry abort for A -> succeeds, deletes ownership file,
+            // and leaves Transfer B's committed worktree and branch intact!
+            blockedOwnershipPath = null;
+            const abortA2 = yield* svc.abort({
+              transferId: transferA,
+              role: "destination",
+            });
+            expect(abortA2.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(ownershipPathA)).toBe(false);
+            expect(NodeFS.existsSync(committedB.destinationWorktreePath!)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", committedB.destinationBranch!])).not.toBe("");
+
+            // Third abort is an idempotent no-op.
+            const abortA3 = yield* svc.abort({
+              transferId: transferA,
+              role: "destination",
+            });
+            expect(abortA3.cleanedUp).toBe(false);
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "serializes concurrent commitImport calls targeting a main checkout and a linked Git worktree on the same gitCommonDir mutex",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-linked-wt-mutex-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const dstMainRepo = NodePath.join(tmpRoot, "dst-main-repo");
+          const dstLinkedWt = NodePath.join(tmpRoot, "dst-linked-wt");
+          initGitRepo(srcRepo);
+          cloneGitRepo(srcRepo, dstMainRepo);
+          git(dstMainRepo, ["worktree", "add", "-b", "linked-base", dstLinkedWt, "HEAD"]);
+
+          const sharedBranch = "feat/linked-wt-shared-mutex";
+          git(srcRepo, ["checkout", "-b", sharedBranch]);
+          NodeFS.writeFileSync(
+            NodePath.join(srcRepo, "linked-mutex.ts"),
+            "export const serialized = true;\n",
+          );
+          git(srcRepo, ["add", "linked-mutex.ts"]);
+          git(srcRepo, ["commit", "-m", "shared branch commit"]);
+
+          const srcProjectId = ProjectId.make("proj-linked-mutex-src");
+          const dstMainProjectId = ProjectId.make("proj-linked-mutex-main");
+          const dstLinkedProjectId = ProjectId.make("proj-linked-mutex-wt");
+          const srcThread1 = ThreadId.make("thread-linked-mutex-1");
+          const srcThread2 = ThreadId.make("thread-linked-mutex-2");
+          const transfer1 = SessionTransferId.make("xfer-linked-mutex-1");
+          const transfer2 = SessionTransferId.make("xfer-linked-mutex-2");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          };
+
+          let activeCriticalSections = 0;
+          let maxConcurrentCriticalSections = 0;
+          let listBranchesCount = 0;
+          const firstAddEntered = yield* Deferred.make<void>();
+          const allowFirstAdd = yield* Deferred.make<void>();
+          let delayedFirstAdd = false;
+
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-linked-wt-mutex",
+            environmentLabel: "Linked Worktree Mutex Env",
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstMainProjectId, title: "dst-main", workspaceRoot: dstMainRepo },
+              { id: dstLinkedProjectId, title: "dst-linked", workspaceRoot: dstLinkedWt },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onVcsRun: ({ input, next }) => {
+                if (input.operation === "WorkspaceBundle.listLocalBranches") {
+                  return Effect.sync(() => {
+                    listBranchesCount += 1;
+                    activeCriticalSections += 1;
+                    if (activeCriticalSections > maxConcurrentCriticalSections) {
+                      maxConcurrentCriticalSections = activeCriticalSections;
+                    }
+                  }).pipe(Effect.andThen(next));
+                }
+                if (input.operation === "WorkspaceBundle.addWorktree") {
+                  const shouldDelay = !delayedFirstAdd;
+                  if (shouldDelay) {
+                    delayedFirstAdd = true;
+                  }
+                  return Effect.gen(function* () {
+                    if (shouldDelay) {
+                      yield* Deferred.succeed(firstAddEntered, undefined);
+                      yield* Deferred.await(allowFirstAdd);
+                    }
+                    return yield* next;
+                  }).pipe(
+                    Effect.ensuring(
+                      Effect.sync(() => {
+                        activeCriticalSections = Math.max(0, activeCriticalSections - 1);
+                      }),
+                    ),
+                  );
+                }
+                return next;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: [
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThread1,
+                  branch: sharedBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThread2,
+                  branch: sharedBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+              ],
+            });
+
+            const prep1 = yield* svc.prepareSource({
+              transferId: transfer1,
+              threadId: srcThread1,
+              direction: "boat_to_local",
+            });
+            const staged1 = yield* svc.stageImport({
+              transferId: transfer1,
+              manifest: prep1.manifest,
+              targetProjectId: dstMainProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transfer1, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transfer1, path)!,
+              resolveImportBundlePath(config.stateDir, transfer1, path)!,
+            );
+
+            const prep2 = yield* svc.prepareSource({
+              transferId: transfer2,
+              threadId: srcThread2,
+              direction: "boat_to_local",
+            });
+            const staged2 = yield* svc.stageImport({
+              transferId: transfer2,
+              manifest: prep2.manifest,
+              targetProjectId: dstLinkedProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transfer2, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transfer2, path)!,
+              resolveImportBundlePath(config.stateDir, transfer2, path)!,
+            );
+
+            // Launch both commitImport calls concurrently: one targeting dstMainRepo and the other
+            // targeting its linked worktree dstLinkedWt with the SAME requested branch name!
+            const fiber1 = yield* Effect.forkChild(
+              svc.commitImport({
+                transferId: transfer1,
+                destinationProjectId: staged1.destinationProjectId,
+                destinationThreadId: staged1.destinationThreadId,
+                manifest: prep1.manifest,
+                autoResume: false,
+              }),
+            );
+            const fiber2 = yield* Effect.forkChild(
+              svc.commitImport({
+                transferId: transfer2,
+                destinationProjectId: staged2.destinationProjectId,
+                destinationThreadId: staged2.destinationThreadId,
+                manifest: prep2.manifest,
+                autoResume: false,
+              }),
+            );
+
+            // Once the first transfer enters git worktree add, give the second transfer plenty of
+            // turns to try to enter listLocalBranches; it must stay blocked on the shared gitCommonDir mutex.
+            yield* Deferred.await(firstAddEntered);
+            for (let i = 0; i < 10; i += 1) {
+              yield* Effect.yieldNow;
+            }
+            expect(activeCriticalSections).toBe(1);
+            expect(listBranchesCount).toBe(1);
+
+            yield* Deferred.succeed(allowFirstAdd, undefined);
+            const [res1, res2] = yield* Effect.all([Fiber.join(fiber1), Fiber.join(fiber2)]);
+
+            // Both imports must have serialized on the same gitCommonDir mutex (never overlapping).
+            expect(listBranchesCount).toBe(2);
+            expect(maxConcurrentCriticalSections).toBe(1);
+            expect(res1.destinationBranch).not.toBeNull();
+            expect(res2.destinationBranch).not.toBeNull();
+            expect(res1.destinationBranch).not.toBe(res2.destinationBranch);
+            expect(res1.destinationWorktreePath).not.toBeNull();
+            expect(res2.destinationWorktreePath).not.toBeNull();
+            expect(res1.destinationWorktreePath).not.toBe(res2.destinationWorktreePath);
+            expect(
+              NodeFS.existsSync(NodePath.join(res1.destinationWorktreePath!, "linked-mutex.ts")),
+            ).toBe(true);
+            expect(
+              NodeFS.existsSync(NodePath.join(res2.destinationWorktreePath!, "linked-mutex.ts")),
+            ).toBe(true);
+            expect(git(dstMainRepo, ["branch", "--list", res1.destinationBranch!])).not.toBe("");
+            expect(git(dstMainRepo, ["branch", "--list", res2.destinationBranch!])).not.toBe("");
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+  it.effect(
+    "preserves an externally created branch on pre-add interruption and on post-restart abort of worktreeCreated: false ownership records",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-ext-branch-protect-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const dstRepo = NodePath.join(tmpRoot, "dst-repo");
+          const sharedBaseDir = NodePath.join(tmpRoot, "state-base");
+          initGitRepo(srcRepo);
+          git(tmpRoot, ["clone", srcRepo, dstRepo]);
+
+          const externalBranch = "feat/external-branch-probe";
+          git(srcRepo, ["checkout", "-b", externalBranch]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "probe.ts"), "export const probe = 1;\n");
+          git(srcRepo, ["add", "-A"]);
+          git(srcRepo, ["commit", "-m", "probe commit"]);
+
+          const srcProjectId = ProjectId.make("proj-ext-probe-src");
+          const dstProjectId = ProjectId.make("proj-ext-probe-dst");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.4",
+          };
+
+          // Part 1: Live interruption probe — pause right after onWorktreeAllocated (before atomic
+          // branch ref creation / git worktree add), independently create the requested branch in
+          // dstRepo, then interrupt the transfer.
+          const pauseAddEntered = yield* Deferred.make<void>();
+          let pauseAdd = true;
+
+          const layer1 = makeEndpointTestLayer({
+            environmentId: "env-ext-probe-1",
+            environmentLabel: "External Branch Probe 1",
+            sharedBaseDir,
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onVcsRun: ({ input, next }) => {
+                if (input.operation === "WorkspaceBundle.createDestinationBranchRef" && pauseAdd) {
+                  pauseAdd = false;
+                  return Deferred.succeed(pauseAddEntered, undefined).pipe(
+                    Effect.andThen(Effect.never),
+                  );
+                }
+                return next;
+              },
+            },
+          });
+
+          const transferLive = SessionTransferId.make("xfer-ext-branch-live");
+          const transferRestart = SessionTransferId.make("xfer-ext-branch-restart");
+          const transferRegisteredCrash = SessionTransferId.make("xfer-ext-branch-reg-crash");
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            const srcThreadId = ThreadId.make("thread-ext-probe-live");
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: externalBranch,
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId: transferLive,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const staged = yield* svc.stageImport({
+              transferId: transferLive,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferLive, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferLive, path)!,
+              resolveImportBundlePath(config.stateDir, transferLive, path)!,
+            );
+
+            const ownershipPath = resolveWorktreeOwnershipPath(
+              config.stateDir,
+              transferLive,
+              path,
+            )!;
+
+            const commitFiber = yield* Effect.forkChild(
+              svc.commitImport({
+                transferId: transferLive,
+                destinationProjectId: staged.destinationProjectId,
+                destinationThreadId: staged.destinationThreadId,
+                manifest: prep.manifest,
+                autoResume: false,
+              }),
+            );
+            yield* Deferred.await(pauseAddEntered);
+
+            // Ownership record must already exist on disk with worktreeCreated: false and repoRoot.
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+            const persistedPreAdd = JSON.parse(NodeFS.readFileSync(ownershipPath, "utf8")) as {
+              readonly repoRoot: string;
+              readonly gitCommonDir: string;
+              readonly branch: string;
+              readonly worktreePath: string;
+              readonly worktreeCreated: boolean;
+              readonly importCompleted: boolean;
+            };
+            expect(persistedPreAdd.worktreeCreated).toBe(false);
+            expect(persistedPreAdd.importCompleted).toBe(false);
+            expect(persistedPreAdd.repoRoot).toBe(dstRepo);
+            expect(persistedPreAdd.gitCommonDir).toBe(
+              NodeFS.realpathSync(NodePath.join(dstRepo, ".git")),
+            );
+            expect(persistedPreAdd.branch).toBe(externalBranch);
+
+            // Independently create the requested branch in dstRepo before interrupting the transfer.
+            git(dstRepo, ["branch", externalBranch]);
+            const expectedBranchSha = git(dstRepo, ["rev-parse", `refs/heads/${externalBranch}`]);
+
+            yield* Fiber.interrupt(commitFiber);
+
+            // Externally created branch MUST still exist untouched, and ownership record MUST be cleared!
+            expect(git(dstRepo, ["rev-parse", `refs/heads/${externalBranch}`])).toBe(
+              expectedBranchSha,
+            );
+            expect(NodeFS.existsSync(ownershipPath)).toBe(false);
+            expect(NodeFS.existsSync(persistedPreAdd.worktreePath)).toBe(false);
+          }).pipe(Effect.provide(layer1));
+
+          // Part 2: Crash/restart variant — persist an ownership record with worktreeCreated: false
+          // while externalBranch exists independently in dstRepo (no worktree at worktreePath), then
+          // run destination abort on a fresh service instance.
+          const layer2 = makeEndpointTestLayer({
+            environmentId: "env-ext-probe-2",
+            environmentLabel: "External Branch Probe 2",
+            sharedBaseDir,
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+          });
+
+          yield* Effect.gen(function* () {
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            const expectedBranchSha = git(dstRepo, ["rev-parse", `refs/heads/${externalBranch}`]);
+            const nonexistentWorktreePath = NodePath.join(tmpRoot, "never-created-wt");
+            const restartOwnershipPath = resolveWorktreeOwnershipPath(
+              config.stateDir,
+              transferRestart,
+              path,
+            )!;
+            NodeFS.mkdirSync(NodePath.dirname(restartOwnershipPath), { recursive: true });
+            NodeFS.writeFileSync(
+              restartOwnershipPath,
+              JSON.stringify({
+                schemaVersion: 1,
+                transferId: transferRestart,
+                destinationProjectId: dstProjectId,
+                projectWorkspaceRoot: dstRepo,
+                repoRoot: dstRepo,
+                gitCommonDir: NodeFS.realpathSync(NodePath.join(dstRepo, ".git")),
+                gitCommonDirIdentity: readGitCommonDirIdentitySync(dstRepo),
+                destinationThreadId: ThreadId.make("thread-ext-probe-restart"),
+                worktreePath: nonexistentWorktreePath,
+                branch: externalBranch,
+                branchHeadSha: null,
+                createdBranch: true,
+                worktreeCreated: false,
+                importCompleted: false,
+              }),
+            );
+
+            const abortedRestart = yield* svc.abort({
+              transferId: transferRestart,
+              role: "destination",
+            });
+            expect(abortedRestart.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(restartOwnershipPath)).toBe(false);
+            expect(git(dstRepo, ["rev-parse", `refs/heads/${externalBranch}`])).toBe(
+              expectedBranchSha,
+            );
+
+            // Part 3: Positive-proof crash variant — worktreeCreated: false, but git worktree add
+            // DID register worktreePath on refs/heads/<branch> right before crashing.
+            // Destination abort MUST clean up both the registered worktree and its bound branch.
+            const boundBranch = "feat/bound-before-crash";
+            const boundWorktreePath = NodePath.join(tmpRoot, "bound-before-crash-wt");
+            git(dstRepo, ["worktree", "add", "-b", boundBranch, boundWorktreePath, "HEAD"]);
+            const boundBranchSha = git(dstRepo, ["rev-parse", `refs/heads/${boundBranch}`]);
+            const regCrashOwnershipPath = resolveWorktreeOwnershipPath(
+              config.stateDir,
+              transferRegisteredCrash,
+              path,
+            )!;
+            NodeFS.mkdirSync(NodePath.dirname(regCrashOwnershipPath), { recursive: true });
+            NodeFS.writeFileSync(
+              regCrashOwnershipPath,
+              JSON.stringify({
+                schemaVersion: 1,
+                transferId: transferRegisteredCrash,
+                destinationProjectId: dstProjectId,
+                projectWorkspaceRoot: dstRepo,
+                repoRoot: dstRepo,
+                gitCommonDir: NodeFS.realpathSync(NodePath.join(dstRepo, ".git")),
+                gitCommonDirIdentity: readGitCommonDirIdentitySync(dstRepo),
+                destinationThreadId: ThreadId.make("thread-ext-probe-reg-crash"),
+                worktreePath: boundWorktreePath,
+                branch: boundBranch,
+                baseCommitSha: boundBranchSha,
+                branchHeadSha: boundBranchSha,
+                allowedBranchHeadShas: [boundBranchSha],
+                createdBranch: true,
+                worktreeCreated: false,
+                importCompleted: false,
+              }),
+            );
+
+            const abortedBound = yield* svc.abort({
+              transferId: transferRegisteredCrash,
+              role: "destination",
+            });
+            expect(abortedBound.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(regCrashOwnershipPath)).toBe(false);
+            expect(NodeFS.existsSync(boundWorktreePath)).toBe(false);
+            expect(git(dstRepo, ["branch", "--list", boundBranch])).toBe("");
+            // External branch is still untouched.
+            expect(git(dstRepo, ["rev-parse", `refs/heads/${externalBranch}`])).toBe(
+              expectedBranchSha,
+            );
+          }).pipe(Effect.provide(layer2));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "isolates ownership repository identity on cross-project restaging so abort never deletes a branch in Repo B",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-xfer-cross-repo-"));
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const repoA = NodePath.join(tmpRoot, "repo-a");
+          const repoB = NodePath.join(tmpRoot, "repo-b");
+          const sharedBaseDir = NodePath.join(tmpRoot, "state-base");
+
+          // Repo A and Repo B are completely distinct Git repositories.
+          initGitRepo(srcRepo);
+          git(tmpRoot, ["clone", srcRepo, repoA]);
+          initGitRepo(repoB);
+          NodeFS.writeFileSync(NodePath.join(repoB, "repo-b-only.txt"), "repo B\n");
+          git(repoB, ["add", "-A"]);
+          git(repoB, ["commit", "-m", "repo B unique commit"]);
+
+          const sharedBranchName = "feat/cross-repo-branch";
+          // Existing unoccupied branch B in Repo B that MUST NEVER be deleted!
+          git(repoB, ["branch", sharedBranchName]);
+          const repoBBranchSha = git(repoB, ["rev-parse", `refs/heads/${sharedBranchName}`]);
+
+          git(srcRepo, ["checkout", "-b", sharedBranchName]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "cross.ts"), "export const cross = 1;\n");
+          git(srcRepo, ["add", "-A"]);
+          git(srcRepo, ["commit", "-m", "source feature commit"]);
+
+          const srcProjectId = ProjectId.make("proj-cross-src");
+          const projectAId = ProjectId.make("proj-cross-a");
+          const projectBId = ProjectId.make("proj-cross-b");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.4",
+          };
+
+          let failCommitEventWrite = false;
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-cross-repo",
+            environmentLabel: "Cross Repo Env",
+            sharedBaseDir,
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: projectAId, title: "Repo A", workspaceRoot: repoA },
+              { id: projectBId, title: "Repo B", workspaceRoot: repoB },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onEventSinkWrite: (events) => {
+                if (failCommitEventWrite && events.some((e) => e.type === "thread.created")) {
+                  failCommitEventWrite = false;
+                  return Effect.fail(new TestHookError({ message: "simulated commit event fail" }));
+                }
+                return Effect.void;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            const srcThread1 = ThreadId.make("thread-cross-1");
+            const srcThread2 = ThreadId.make("thread-cross-2");
+            const srcThread3 = ThreadId.make("thread-cross-3");
+            yield* eventSink.write({
+              events: [
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThread1,
+                  branch: sharedBranchName,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThread2,
+                  branch: sharedBranchName,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThread3,
+                  branch: sharedBranchName,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+              ],
+            });
+
+            // Case 1 (worktreeCreated: true): Transfer T1 creates real worktree + branch B in Repo A
+            // (commitImport fails on event write, leaving ownership in Repo A with worktreeCreated: true),
+            // then T1 is restaged against Repo B and aborted.
+            const transfer1 = SessionTransferId.make("xfer-cross-created-true");
+            const prep1 = yield* svc.prepareSource({
+              transferId: transfer1,
+              threadId: srcThread1,
+              direction: "boat_to_local",
+            });
+            const staged1A = yield* svc.stageImport({
+              transferId: transfer1,
+              manifest: prep1.manifest,
+              targetProjectId: projectAId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transfer1, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transfer1, path)!,
+              resolveImportBundlePath(config.stateDir, transfer1, path)!,
+            );
+
+            failCommitEventWrite = true;
+            const commitFail1 = yield* Effect.result(
+              svc.commitImport({
+                transferId: transfer1,
+                destinationProjectId: staged1A.destinationProjectId,
+                destinationThreadId: staged1A.destinationThreadId,
+                manifest: prep1.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitFail1)).toBe(true);
+
+            const ownershipPath1 = resolveWorktreeOwnershipPath(config.stateDir, transfer1, path)!;
+            expect(NodeFS.existsSync(ownershipPath1)).toBe(true);
+            const ownership1 = JSON.parse(NodeFS.readFileSync(ownershipPath1, "utf8")) as {
+              readonly repoRoot: string;
+              readonly gitCommonDir: string;
+              readonly worktreePath: string;
+              readonly branch: string;
+              readonly worktreeCreated: boolean;
+            };
+            expect(ownership1.repoRoot).toBe(repoA);
+            expect(ownership1.gitCommonDir).toBe(NodeFS.realpathSync(NodePath.join(repoA, ".git")));
+            expect(ownership1.branch).toBe(sharedBranchName);
+            expect(ownership1.worktreeCreated).toBe(true);
+            expect(NodeFS.existsSync(ownership1.worktreePath)).toBe(true);
+            expect(git(repoA, ["branch", "--list", sharedBranchName])).not.toBe("");
+
+            // Restage T1 against Repo B -> must clean up Repo A's worktree & branch in Repo A,
+            // never carry them into Repo B's staged state, and leave Repo B's branch B untouched!
+            const restaged1B = yield* svc.stageImport({
+              transferId: transfer1,
+              manifest: prep1.manifest,
+              targetProjectId: projectBId,
+            });
+            expect(restaged1B.destinationProjectId).toBe(projectBId);
+            expect(restaged1B.destinationWorktreePath).toBeNull();
+            expect(restaged1B.destinationBranch).toBeNull();
+            expect(NodeFS.existsSync(ownership1.worktreePath)).toBe(false);
+            expect(git(repoA, ["branch", "--list", sharedBranchName])).toBe("");
+            expect(NodeFS.existsSync(ownershipPath1)).toBe(false);
+            expect(git(repoB, ["rev-parse", `refs/heads/${sharedBranchName}`])).toBe(
+              repoBBranchSha,
+            );
+
+            // Abort T1 -> Repo B's branch B MUST STILL EXIST completely untouched!
+            const abort1 = yield* svc.abort({
+              transferId: transfer1,
+              role: "destination",
+            });
+            expect(abort1.cleanedUp).toBe(true);
+            expect(git(repoB, ["rev-parse", `refs/heads/${sharedBranchName}`])).toBe(
+              repoBBranchSha,
+            );
+
+            // Case 2 (worktreeCreated: false): Persist an ownership record for T2 in Repo A with
+            // worktreeCreated: false and createdBranch: B (and an independent branch B in Repo A),
+            // restage T2 against Repo B, and call destination abort(T2).
+            const transfer2 = SessionTransferId.make("xfer-cross-created-false");
+            const prep2 = yield* svc.prepareSource({
+              transferId: transfer2,
+              threadId: srcThread2,
+              direction: "boat_to_local",
+            });
+            git(repoA, ["branch", sharedBranchName]);
+            const repoAExtBranchSha = git(repoA, ["rev-parse", `refs/heads/${sharedBranchName}`]);
+            const ownershipPath2 = resolveWorktreeOwnershipPath(config.stateDir, transfer2, path)!;
+            NodeFS.mkdirSync(NodePath.dirname(ownershipPath2), { recursive: true });
+            NodeFS.writeFileSync(
+              ownershipPath2,
+              JSON.stringify({
+                schemaVersion: 1,
+                transferId: transfer2,
+                destinationProjectId: projectAId,
+                projectWorkspaceRoot: repoA,
+                repoRoot: repoA,
+                gitCommonDir: NodeFS.realpathSync(NodePath.join(repoA, ".git")),
+                gitCommonDirIdentity: readGitCommonDirIdentitySync(repoA),
+                destinationThreadId: ThreadId.make("thread-cross-2-dst"),
+                worktreePath: NodePath.join(tmpRoot, "repo-a-uncreated-wt"),
+                branch: sharedBranchName,
+                branchHeadSha: null,
+                createdBranch: true,
+                worktreeCreated: false,
+                importCompleted: false,
+              }),
+            );
+
+            const restaged2B = yield* svc.stageImport({
+              transferId: transfer2,
+              manifest: prep2.manifest,
+              targetProjectId: projectBId,
+            });
+            expect(restaged2B.destinationProjectId).toBe(projectBId);
+            expect(restaged2B.destinationWorktreePath).toBeNull();
+            expect(restaged2B.destinationBranch).toBeNull();
+            expect(NodeFS.existsSync(ownershipPath2)).toBe(false);
+            // Both Repo B's branch B AND Repo A's externally created branch B remain untouched!
+            expect(git(repoB, ["rev-parse", `refs/heads/${sharedBranchName}`])).toBe(
+              repoBBranchSha,
+            );
+            expect(git(repoA, ["rev-parse", `refs/heads/${sharedBranchName}`])).toBe(
+              repoAExtBranchSha,
+            );
+
+            const abort2 = yield* svc.abort({
+              transferId: transfer2,
+              role: "destination",
+            });
+            expect(abort2.cleanedUp).toBe(true);
+            expect(git(repoB, ["rev-parse", `refs/heads/${sharedBranchName}`])).toBe(
+              repoBBranchSha,
+            );
+            expect(git(repoA, ["rev-parse", `refs/heads/${sharedBranchName}`])).toBe(
+              repoAExtBranchSha,
+            );
+
+            // Clean up Repo A's external branch before Case 3.
+            git(repoA, ["branch", "-D", sharedBranchName]);
+
+            // Case 3: Cross-repo restage MUST fail if Repo A cleanup fails (locked worktree),
+            // keeping Repo A ownership intact; and direct abort uses ownership.repoRoot (Repo A),
+            // never deleting Repo B's branch B even when staged in-memory against Repo B.
+            const transfer3 = SessionTransferId.make("xfer-cross-locked-cleanup");
+            const prep3 = yield* svc.prepareSource({
+              transferId: transfer3,
+              threadId: srcThread3,
+              direction: "boat_to_local",
+            });
+            const staged3A = yield* svc.stageImport({
+              transferId: transfer3,
+              manifest: prep3.manifest,
+              targetProjectId: projectAId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transfer3, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transfer3, path)!,
+              resolveImportBundlePath(config.stateDir, transfer3, path)!,
+            );
+
+            failCommitEventWrite = true;
+            const commitFail3 = yield* Effect.result(
+              svc.commitImport({
+                transferId: transfer3,
+                destinationProjectId: staged3A.destinationProjectId,
+                destinationThreadId: staged3A.destinationThreadId,
+                manifest: prep3.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitFail3)).toBe(true);
+
+            const ownershipPath3 = resolveWorktreeOwnershipPath(config.stateDir, transfer3, path)!;
+            const ownership3 = JSON.parse(NodeFS.readFileSync(ownershipPath3, "utf8")) as {
+              readonly worktreePath: string;
+            };
+            git(repoA, ["worktree", "lock", "--reason", "held in repo A", ownership3.worktreePath]);
+            let unlocked3 = false;
+            try {
+              const failedRestage3B = yield* Effect.result(
+                svc.stageImport({
+                  transferId: transfer3,
+                  manifest: prep3.manifest,
+                  targetProjectId: projectBId,
+                }),
+              );
+              expect(Result.isFailure(failedRestage3B)).toBe(true);
+              if (Result.isFailure(failedRestage3B)) {
+                expect(failedRestage3B.failure.code).toBe("workspace_error");
+              }
+              expect(NodeFS.existsSync(ownershipPath3)).toBe(true);
+              expect(NodeFS.existsSync(ownership3.worktreePath)).toBe(true);
+              expect(git(repoB, ["rev-parse", `refs/heads/${sharedBranchName}`])).toBe(
+                repoBBranchSha,
+              );
+
+              git(repoA, ["worktree", "unlock", ownership3.worktreePath]);
+              unlocked3 = true;
+
+              const abort3 = yield* svc.abort({
+                transferId: transfer3,
+                role: "destination",
+              });
+              expect(abort3.cleanedUp).toBe(true);
+              expect(NodeFS.existsSync(ownershipPath3)).toBe(false);
+              expect(NodeFS.existsSync(ownership3.worktreePath)).toBe(false);
+              expect(git(repoA, ["branch", "--list", sharedBranchName])).toBe("");
+              expect(git(repoB, ["rev-parse", `refs/heads/${sharedBranchName}`])).toBe(
+                repoBBranchSha,
+              );
+            } finally {
+              if (!unlocked3) {
+                yield* Effect.try({
+                  try: () => git(repoA, ["worktree", "unlock", ownership3.worktreePath]),
+                  catch: () => undefined,
+                }).pipe(Effect.ignore);
+              }
+            }
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "refuses to force-remove an independent worktree on a different branch during abort (for both worktreeCreated: false and worktreeCreated: true)",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-diff-branch-wt-"),
+        );
+        try {
+          const dstRepo = NodePath.join(tmpRoot, "dst-repo");
+          const sharedBaseDir = NodePath.join(tmpRoot, "state-base");
+          initGitRepo(dstRepo);
+
+          const dstProjectId = ProjectId.make("proj-diff-branch-dst");
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-diff-branch",
+            environmentLabel: "Diff Branch Guard Env",
+            sharedBaseDir,
+            projects: [{ id: dstProjectId, title: "dst", workspaceRoot: dstRepo }],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+          });
+
+          yield* Effect.gen(function* () {
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            // Part 1 (worktreeCreated: false): an independent worktree on a different branch
+            // with an uncommitted file (and an unattached branch matching ownership.branch) must
+            // all survive abort while this transfer's ownership record is cleared.
+            const transferFalse = SessionTransferId.make("xfer-diff-branch-false");
+            const independentWt1 = NodePath.join(tmpRoot, "independent-wt-1");
+            const independentBranch1 = "feat/independent-work-1";
+            const expectedBranch1 = "feat/expected-transfer-1";
+            git(dstRepo, ["worktree", "add", "-b", independentBranch1, independentWt1, "HEAD"]);
+            const uncommittedFile1 = NodePath.join(independentWt1, "uncommitted-work.txt");
+            NodeFS.writeFileSync(uncommittedFile1, "precious uncommitted edit\n");
+            git(dstRepo, ["branch", expectedBranch1]);
+            const expectedBranch1Sha = git(dstRepo, ["rev-parse", `refs/heads/${expectedBranch1}`]);
+            const independentBranch1Sha = git(dstRepo, [
+              "rev-parse",
+              `refs/heads/${independentBranch1}`,
+            ]);
+
+            const ownershipPathFalse = resolveWorktreeOwnershipPath(
+              config.stateDir,
+              transferFalse,
+              path,
+            )!;
+            NodeFS.mkdirSync(NodePath.dirname(ownershipPathFalse), { recursive: true });
+            NodeFS.writeFileSync(
+              ownershipPathFalse,
+              JSON.stringify({
+                schemaVersion: 1,
+                transferId: transferFalse,
+                destinationProjectId: dstProjectId,
+                projectWorkspaceRoot: dstRepo,
+                repoRoot: dstRepo,
+                gitCommonDir: NodeFS.realpathSync(NodePath.join(dstRepo, ".git")),
+                gitCommonDirIdentity: readGitCommonDirIdentitySync(dstRepo),
+                destinationThreadId: ThreadId.make("thread-diff-branch-false"),
+                worktreePath: independentWt1,
+                branch: expectedBranch1,
+                branchHeadSha: null,
+                createdBranch: true,
+                worktreeCreated: false,
+                importCompleted: false,
+              }),
+            );
+
+            const abortFalse = yield* svc.abort({
+              transferId: transferFalse,
+              role: "destination",
+            });
+            expect(abortFalse.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(ownershipPathFalse)).toBe(false);
+            expect(NodeFS.existsSync(independentWt1)).toBe(true);
+            expect(NodeFS.readFileSync(uncommittedFile1, "utf8")).toBe(
+              "precious uncommitted edit\n",
+            );
+            expect(git(dstRepo, ["rev-parse", `refs/heads/${independentBranch1}`])).toBe(
+              independentBranch1Sha,
+            );
+            expect(git(dstRepo, ["rev-parse", `refs/heads/${expectedBranch1}`])).toBe(
+              expectedBranch1Sha,
+            );
+
+            // Part 2 (worktreeCreated: true): registered worktree at worktreePath is on a
+            // DIFFERENT branch -> abort MUST refuse to force-remove it and leave worktree,
+            // uncommitted file, and branch intact!
+            const transferTrue = SessionTransferId.make("xfer-diff-branch-true");
+            const independentWt2 = NodePath.join(tmpRoot, "independent-wt-2");
+            const independentBranch2 = "feat/independent-work-2";
+            const expectedBranch2 = "feat/expected-transfer-2";
+            git(dstRepo, ["worktree", "add", "-b", independentBranch2, independentWt2, "HEAD"]);
+            const uncommittedFile2 = NodePath.join(independentWt2, "active-wip.txt");
+            NodeFS.writeFileSync(uncommittedFile2, "active branch edit\n");
+            const independentBranch2Sha = git(dstRepo, [
+              "rev-parse",
+              `refs/heads/${independentBranch2}`,
+            ]);
+
+            const ownershipPathTrue = resolveWorktreeOwnershipPath(
+              config.stateDir,
+              transferTrue,
+              path,
+            )!;
+            NodeFS.writeFileSync(
+              ownershipPathTrue,
+              JSON.stringify({
+                schemaVersion: 1,
+                transferId: transferTrue,
+                destinationProjectId: dstProjectId,
+                projectWorkspaceRoot: dstRepo,
+                repoRoot: dstRepo,
+                gitCommonDir: NodeFS.realpathSync(NodePath.join(dstRepo, ".git")),
+                gitCommonDirIdentity: readGitCommonDirIdentitySync(dstRepo),
+                destinationThreadId: ThreadId.make("thread-diff-branch-true"),
+                worktreePath: independentWt2,
+                branch: expectedBranch2,
+                branchHeadSha: git(dstRepo, ["rev-parse", "HEAD"]),
+                createdBranch: true,
+                worktreeCreated: true,
+                importCompleted: false,
+              }),
+            );
+
+            const abortTrue = yield* Effect.result(
+              svc.abort({
+                transferId: transferTrue,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(abortTrue)).toBe(true);
+            if (Result.isFailure(abortTrue)) {
+              expect(abortTrue.failure.code).toBe("workspace_error");
+            }
+            expect(NodeFS.existsSync(ownershipPathTrue)).toBe(true);
+            expect(NodeFS.existsSync(independentWt2)).toBe(true);
+            expect(NodeFS.readFileSync(uncommittedFile2, "utf8")).toBe("active branch edit\n");
+            expect(git(dstRepo, ["rev-parse", `refs/heads/${independentBranch2}`])).toBe(
+              independentBranch2Sha,
+            );
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "clears in-memory staged allocation immediately after Repo A cleanup so failed bundle-URL signing during cross-repo restaging never lets abort delete a recreated branch in Repo A",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-restage-sign-fail-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const repoA = NodePath.join(tmpRoot, "repo-a");
+          const repoB = NodePath.join(tmpRoot, "repo-b");
+          initGitRepo(srcRepo);
+          cloneGitRepo(srcRepo, repoA);
+          initGitRepo(repoB);
+          NodeFS.writeFileSync(NodePath.join(repoB, "b.txt"), "repo b\n");
+          git(repoB, ["add", "-A"]);
+          git(repoB, ["commit", "-m", "repo b commit"]);
+
+          const branchName = "feat/restage-sign-fail";
+          git(srcRepo, ["checkout", "-b", branchName]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "feature.ts"), "export const x = 1;\n");
+          git(srcRepo, ["add", "-A"]);
+          git(srcRepo, ["commit", "-m", "feature commit"]);
+
+          const srcProjectId = ProjectId.make("proj-signfail-src");
+          const projectAId = ProjectId.make("proj-signfail-a");
+          const projectBId = ProjectId.make("proj-signfail-b");
+          const srcThreadId = ThreadId.make("thread-signfail-src");
+          const transferId = SessionTransferId.make("xfer-restage-sign-fail");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.4",
+          };
+
+          let failCommitEventWrite = false;
+          let failNextAssetSign = false;
+
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-restage-sign-fail",
+            environmentLabel: "Restage Sign Fail Env",
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: projectAId, title: "Repo A", workspaceRoot: repoA },
+              { id: projectBId, title: "Repo B", workspaceRoot: repoB },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onEventSinkWrite: (events) => {
+                if (failCommitEventWrite && events.some((e) => e.type === "thread.created")) {
+                  failCommitEventWrite = false;
+                  return Effect.fail(new TestHookError({ message: "simulated commit fail" }));
+                }
+                return Effect.void;
+              },
+              onAssetSign: ({ next }) => {
+                if (failNextAssetSign) {
+                  failNextAssetSign = false;
+                  return Effect.fail(
+                    new ServerSecretStore.SecretStoreReadError({
+                      resource: "asset-access-signing-key",
+                      cause: new Error("Simulated bundle URL signing failure"),
+                    }),
+                  );
+                }
+                return next;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: branchName,
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const stagedA = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: projectAId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferId, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferId, path)!,
+              resolveImportBundlePath(config.stateDir, transferId, path)!,
+            );
+
+            // Commit creates worktree + branch in Repo A, then fails SQLite commit so Repo A
+            // allocation lives both on disk AND in stagedImports in memory.
+            failCommitEventWrite = true;
+            const failedCommit = yield* Effect.result(
+              svc.commitImport({
+                transferId,
+                destinationProjectId: stagedA.destinationProjectId,
+                destinationThreadId: stagedA.destinationThreadId,
+                manifest: prep.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(failedCommit)).toBe(true);
+
+            const ownershipPath = resolveWorktreeOwnershipPath(config.stateDir, transferId, path)!;
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+            const ownershipA = JSON.parse(NodeFS.readFileSync(ownershipPath, "utf8")) as {
+              readonly worktreePath: string;
+            };
+            expect(NodeFS.existsSync(ownershipA.worktreePath)).toBe(true);
+            expect(git(repoA, ["branch", "--list", branchName])).not.toBe("");
+
+            // Restage from Repo A to Repo B, letting Repo A cleanup succeed, while injecting a
+            // failure in bundle-URL signing BEFORE stagedImports is rewritten for Repo B!
+            failNextAssetSign = true;
+            const failedRestage = yield* Effect.result(
+              svc.stageImport({
+                transferId,
+                manifest: prep.manifest,
+                targetProjectId: projectBId,
+              }),
+            );
+            expect(Result.isFailure(failedRestage)).toBe(true);
+            if (Result.isFailure(failedRestage)) {
+              expect(failedRestage.failure.code).toBe("internal");
+            }
+            // Repo A cleanup already succeeded on disk:
+            expect(NodeFS.existsSync(ownershipA.worktreePath)).toBe(false);
+            expect(NodeFS.existsSync(ownershipPath)).toBe(false);
+            expect(git(repoA, ["branch", "--list", branchName])).toBe("");
+
+            // Independently recreate the branch in Repo A after the failed restage!
+            git(repoA, ["branch", branchName]);
+            const recreatedSha = git(repoA, ["rev-parse", `refs/heads/${branchName}`]);
+
+            // Now call destination abort: because in-memory stagedImports was synchronously cleared
+            // when Repo A cleanup succeeded, abort MUST NOT delete the recreated branch in Repo A!
+            yield* svc.abort({
+              transferId,
+              role: "destination",
+            });
+            expect(git(repoA, ["rev-parse", `refs/heads/${branchName}`])).toBe(recreatedSha);
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "fails closed on repository identity check error or mismatch when repoRoot is redirected to Repo B, never deleting Repo B's same-named branch",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-repo-id-fail-closed-"),
+        );
+        try {
+          const repoAReal = NodePath.join(tmpRoot, "repo-a-real");
+          const repoBReal = NodePath.join(tmpRoot, "repo-b-real");
+          const repoLink = NodePath.join(tmpRoot, "repo-link");
+          initGitRepo(repoAReal);
+          initGitRepo(repoBReal);
+          NodeFS.writeFileSync(NodePath.join(repoBReal, "repo-b.txt"), "repo b unique\n");
+          git(repoBReal, ["add", "-A"]);
+          git(repoBReal, ["commit", "-m", "repo b unique"]);
+
+          // Symlink repoLink initially points to Repo A.
+          NodeFS.symlinkSync(repoAReal, repoLink);
+
+          const sharedBranch = "feat/same-name-in-both";
+          // Independent branch in Repo B that MUST NEVER be deleted!
+          git(repoBReal, ["branch", sharedBranch]);
+          const repoBBranchSha = git(repoBReal, ["rev-parse", `refs/heads/${sharedBranch}`]);
+
+          const repoACommonDir = NodeFS.realpathSync(NodePath.join(repoAReal, ".git"));
+          const dstProjectId = ProjectId.make("proj-repoid-dst");
+          const transferId = SessionTransferId.make("xfer-repoid-redirect");
+
+          let resolveMode: "normal" | "return-null" | "throw-error" = "normal";
+
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-repoid-guard",
+            environmentLabel: "Repo Identity Guard Env",
+            projects: [{ id: dstProjectId, title: "Linked Repo", workspaceRoot: repoLink }],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onVcsRun: ({ input, next }) => {
+                if (input.operation === "WorkspaceBundle.resolveGitCommonDir") {
+                  if (resolveMode === "return-null") {
+                    return Effect.succeed({
+                      exitCode: 128 as VcsProcess.VcsProcessOutput["exitCode"],
+                      stdout: "",
+                      stderr: "fatal: simulated git rev-parse failure",
+                      stdoutTruncated: false,
+                      stderrTruncated: false,
+                    });
+                  }
+                  if (resolveMode === "throw-error") {
+                    return Effect.fail(
+                      new VcsProcessExitError({
+                        operation: input.operation,
+                        command: "git rev-parse --path-format=absolute --git-common-dir",
+                        cwd: input.cwd,
+                        exitCode: 128,
+                        detail: "fatal: simulated git process error",
+                      }),
+                    );
+                  }
+                }
+                return next;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            // Persist an ownership record for Repo A (via repoLink) with worktreeCreated: true and
+            // createdBranch: true for sharedBranch.
+            const ownershipPath = resolveWorktreeOwnershipPath(config.stateDir, transferId, path)!;
+            NodeFS.mkdirSync(NodePath.dirname(ownershipPath), { recursive: true });
+            NodeFS.writeFileSync(
+              ownershipPath,
+              JSON.stringify({
+                schemaVersion: 1,
+                transferId,
+                destinationProjectId: dstProjectId,
+                projectWorkspaceRoot: repoLink,
+                repoRoot: repoLink,
+                gitCommonDir: repoACommonDir,
+                gitCommonDirIdentity: readGitCommonDirIdentitySync(repoAReal),
+                destinationThreadId: ThreadId.make("thread-repoid-dst"),
+                worktreePath: NodePath.join(tmpRoot, "missing-wt-in-a"),
+                branch: sharedBranch,
+                branchHeadSha: repoBBranchSha,
+                createdBranch: true,
+                worktreeCreated: true,
+                importCompleted: false,
+              }),
+            );
+
+            // Redirect repoLink from Repo A -> Repo B!
+            NodeFS.unlinkSync(repoLink);
+            NodeFS.symlinkSync(repoBReal, repoLink);
+
+            // Case 1a: git rev-parse --git-common-dir returns exit 128 (resolveGitCommonDir -> null)
+            // while repoRoot exists on disk -> abort MUST fail closed (code: "internal") and leave
+            // Repo B's branch AND ownership untouched!
+            resolveMode = "return-null";
+            const abortNull = yield* Effect.result(
+              svc.abort({
+                transferId,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(abortNull)).toBe(true);
+            if (Result.isFailure(abortNull)) {
+              expect(abortNull.failure.code).toBe("internal");
+            }
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+            expect(git(repoBReal, ["rev-parse", `refs/heads/${sharedBranch}`])).toBe(
+              repoBBranchSha,
+            );
+
+            // Case 1b: git rev-parse --git-common-dir fails with VcsProcessExitError -> abort MUST
+            // fail closed (code: "internal") and leave Repo B's branch untouched!
+            resolveMode = "throw-error";
+            const abortErr = yield* Effect.result(
+              svc.abort({
+                transferId,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(abortErr)).toBe(true);
+            if (Result.isFailure(abortErr)) {
+              expect(abortErr.failure.code).toBe("internal");
+            }
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+            expect(git(repoBReal, ["rev-parse", `refs/heads/${sharedBranch}`])).toBe(
+              repoBBranchSha,
+            );
+
+            // Case 2: Non-error redirect case (resolvedCommonDir === repoBCommonDir !== repoACommonDir)
+            // while Repo A still exists -> abort MUST fail closed (code: "workspace_error") and
+            // leave Repo B's branch untouched!
+            resolveMode = "normal";
+            const abortMismatch = yield* Effect.result(
+              svc.abort({
+                transferId,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(abortMismatch)).toBe(true);
+            if (Result.isFailure(abortMismatch)) {
+              expect(abortMismatch.failure.code).toBe("workspace_error");
+            }
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+            expect(git(repoBReal, ["rev-parse", `refs/heads/${sharedBranch}`])).toBe(
+              repoBBranchSha,
+            );
+
+            // Case 3: Once original Repo A (gitCommonDir) is completely gone while repoLink still
+            // points to Repo B, abort skips deletion in Repo B, clears stale ownership safely, and
+            // leaves Repo B's branch completely untouched!
+            NodeFS.rmSync(repoAReal, { recursive: true, force: true });
+            const abortCleared = yield* svc.abort({
+              transferId,
+              role: "destination",
+            });
+            expect(abortCleared.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(ownershipPath)).toBe(false);
+            expect(git(repoBReal, ["rev-parse", `refs/heads/${sharedBranch}`])).toBe(
+              repoBBranchSha,
+            );
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "does not re-realpath stored gitCommonDir when Repo A is moved away and replaced with a symlink to Repo B, leaving Repo B's same-named branch untouched on abort and restage",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-symlink-swap-repoid-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const repoA = NodePath.join(tmpRoot, "repo-a");
+          const repoAMoved = NodePath.join(tmpRoot, "repo-a-moved");
+          const repoB = NodePath.join(tmpRoot, "repo-b");
+
+          initGitRepo(srcRepo);
+          cloneGitRepo(srcRepo, repoA);
+          initGitRepo(repoB);
+          NodeFS.writeFileSync(NodePath.join(repoB, "repo-b-only.txt"), "repo b content\n");
+          git(repoB, ["add", "-A"]);
+          git(repoB, ["commit", "-m", "repo b unique commit"]);
+
+          const sharedBranch = "feat/symlink-swap-branch";
+          // Independent branch in Repo B that MUST NEVER be deleted!
+          git(repoB, ["branch", sharedBranch]);
+          const repoBBranchSha = git(repoB, ["rev-parse", `refs/heads/${sharedBranch}`]);
+
+          git(srcRepo, ["checkout", "-b", sharedBranch]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "swap.ts"), "export const swap = 1;\n");
+          git(srcRepo, ["add", "-A"]);
+          git(srcRepo, ["commit", "-m", "source feature commit"]);
+
+          const srcProjectId = ProjectId.make("proj-swap-src");
+          const projectAId = ProjectId.make("proj-swap-a");
+          const projectBId = ProjectId.make("proj-swap-b");
+          const srcThreadId = ThreadId.make("thread-swap-src");
+          const transferId = SessionTransferId.make("xfer-symlink-swap-a-to-b");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.4",
+          };
+
+          let failCommitEventWrite = false;
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-symlink-swap",
+            environmentLabel: "Symlink Swap Repo Identity Env",
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: projectAId, title: "Repo A", workspaceRoot: repoA },
+              { id: projectBId, title: "Repo B", workspaceRoot: repoB },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onEventSinkWrite: (events) => {
+                if (failCommitEventWrite && events.some((e) => e.type === "thread.created")) {
+                  failCommitEventWrite = false;
+                  return Effect.fail(new TestHookError({ message: "simulated commit fail" }));
+                }
+                return Effect.void;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: sharedBranch,
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const stagedA = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: projectAId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferId, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferId, path)!,
+              resolveImportBundlePath(config.stateDir, transferId, path)!,
+            );
+
+            // Commit creates worktree + branch in Repo A (a real directory, not a symlink),
+            // writes durable ownership recording canonical gitCommonDir = realpath(repoA/.git),
+            // and fails on SQLite event write.
+            failCommitEventWrite = true;
+            const failedCommit = yield* Effect.result(
+              svc.commitImport({
+                transferId,
+                destinationProjectId: stagedA.destinationProjectId,
+                destinationThreadId: stagedA.destinationThreadId,
+                manifest: prep.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(failedCommit)).toBe(true);
+
+            const ownershipPath = resolveWorktreeOwnershipPath(config.stateDir, transferId, path)!;
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+            const ownership = JSON.parse(NodeFS.readFileSync(ownershipPath, "utf8")) as {
+              readonly repoRoot: string;
+              readonly gitCommonDir: string;
+              readonly worktreePath: string;
+              readonly branch: string;
+              readonly worktreeCreated: boolean;
+            };
+            expect(ownership.repoRoot).toBe(repoA);
+            expect(ownership.gitCommonDir).toBe(NodeFS.realpathSync(NodePath.join(repoA, ".git")));
+            expect(ownership.branch).toBe(sharedBranch);
+            expect(ownership.worktreeCreated).toBe(true);
+
+            // Move Repo A away and replace Repo A's original path with a symlink to Repo B!
+            // Also remove the orphaned worktree dir so only the branch deletion path would run if
+            // the identity check were bypassed.
+            NodeFS.rmSync(ownership.worktreePath, { recursive: true, force: true });
+            NodeFS.renameSync(repoA, repoAMoved);
+            NodeFS.symlinkSync(repoB, repoA);
+
+            // Abort MUST detect mismatch between freshly resolved realpath(repoB/.git) and stored
+            // literal gitCommonDir (repoA/.git), fail closed, and leave Repo B's branch untouched!
+            const abortRes = yield* Effect.result(
+              svc.abort({
+                transferId,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(abortRes)).toBe(true);
+            if (Result.isFailure(abortRes)) {
+              expect(abortRes.failure.code).toBe("workspace_error");
+            }
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+            expect(git(repoB, ["rev-parse", `refs/heads/${sharedBranch}`])).toBe(repoBBranchSha);
+
+            // Restaging against Repo B MUST NOT treat stored gitCommonDir as matching Repo B via
+            // re-realpath, and must fail closed without touching Repo B's branch!
+            const restageRes = yield* Effect.result(
+              svc.stageImport({
+                transferId,
+                manifest: prep.manifest,
+                targetProjectId: projectBId,
+              }),
+            );
+            expect(Result.isFailure(restageRes)).toBe(true);
+            if (Result.isFailure(restageRes)) {
+              expect(restageRes.failure.code).toBe("workspace_error");
+            }
+            expect(git(repoB, ["rev-parse", `refs/heads/${sharedBranch}`])).toBe(repoBBranchSha);
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "fails closed on abort when persisted ownership JSON is missing gitCommonDir, has null gitCommonDir, or has blank gitCommonDir, never deleting an independent branch",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-missing-gitcommondir-"),
+        );
+        try {
+          const dstRepo = NodePath.join(tmpRoot, "dst-repo");
+          initGitRepo(dstRepo);
+
+          const protectedBranch = "feat/independent-protected-branch";
+          git(dstRepo, ["branch", protectedBranch]);
+          const protectedBranchSha = git(dstRepo, ["rev-parse", `refs/heads/${protectedBranch}`]);
+
+          const dstProjectId = ProjectId.make("proj-missing-gcd-dst");
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-missing-gcd",
+            environmentLabel: "Missing gitCommonDir Guard Env",
+            projects: [{ id: dstProjectId, title: "dst", workspaceRoot: dstRepo }],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+          });
+
+          yield* Effect.gen(function* () {
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            const validCommonDir = NodeFS.realpathSync(NodePath.join(dstRepo, ".git"));
+            const validIdentity = readGitCommonDirIdentitySync(dstRepo);
+            const variants: ReadonlyArray<{
+              readonly label: string;
+              readonly transferId: SessionTransferId;
+              readonly extraFields: Record<string, unknown>;
+            }> = [
+              {
+                label: "omitted",
+                transferId: SessionTransferId.make("xfer-missing-gcd-omitted"),
+                extraFields: { gitCommonDirIdentity: validIdentity },
+              },
+              {
+                label: "null",
+                transferId: SessionTransferId.make("xfer-missing-gcd-null"),
+                extraFields: { gitCommonDir: null, gitCommonDirIdentity: validIdentity },
+              },
+              {
+                label: "empty",
+                transferId: SessionTransferId.make("xfer-missing-gcd-empty"),
+                extraFields: { gitCommonDir: "", gitCommonDirIdentity: validIdentity },
+              },
+              {
+                label: "whitespace",
+                transferId: SessionTransferId.make("xfer-missing-gcd-whitespace"),
+                extraFields: { gitCommonDir: "   ", gitCommonDirIdentity: validIdentity },
+              },
+              {
+                label: "missing-identity",
+                transferId: SessionTransferId.make("xfer-missing-gcd-identity"),
+                extraFields: { gitCommonDir: validCommonDir },
+              },
+              {
+                label: "blank-identity-inode",
+                transferId: SessionTransferId.make("xfer-blank-gcd-identity-inode"),
+                extraFields: {
+                  gitCommonDir: validCommonDir,
+                  gitCommonDirIdentity: { ...validIdentity, inode: "  " },
+                },
+              },
+            ];
+
+            for (const variant of variants) {
+              const ownershipPath = resolveWorktreeOwnershipPath(
+                config.stateDir,
+                variant.transferId,
+                path,
+              )!;
+              NodeFS.mkdirSync(NodePath.dirname(ownershipPath), { recursive: true });
+              NodeFS.writeFileSync(
+                ownershipPath,
+                JSON.stringify({
+                  schemaVersion: 1,
+                  transferId: variant.transferId,
+                  destinationProjectId: dstProjectId,
+                  projectWorkspaceRoot: dstRepo,
+                  repoRoot: dstRepo,
+                  destinationThreadId: ThreadId.make(`thread-missing-gcd-${variant.label}`),
+                  worktreePath: NodePath.join(tmpRoot, `nonexistent-wt-${variant.label}`),
+                  branch: protectedBranch,
+                  branchHeadSha: protectedBranchSha,
+                  createdBranch: true,
+                  worktreeCreated: true,
+                  importCompleted: false,
+                  ...variant.extraFields,
+                }),
+              );
+
+              const abortRes = yield* Effect.result(
+                svc.abort({
+                  transferId: variant.transferId,
+                  role: "destination",
+                }),
+              );
+              expect(Result.isFailure(abortRes)).toBe(true);
+              if (Result.isFailure(abortRes)) {
+                expect(abortRes.failure.code).toBe("internal");
+              }
+              expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+              expect(git(dstRepo, ["rev-parse", `refs/heads/${protectedBranch}`])).toBe(
+                protectedBranchSha,
+              );
+            }
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "never deletes a same-named branch in a replacement repository re-cloned or re-initialized at the exact same path (same SHA or different SHA) or a branch whose tip moved",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-reclone-same-path-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const repoSamePath = NodePath.join(tmpRoot, "dst-repo");
+          const sharedBranch = "feat/reclone-same-path-branch";
+
+          initGitRepo(srcRepo);
+          cloneGitRepo(srcRepo, repoSamePath);
+
+          git(srcRepo, ["checkout", "-b", sharedBranch]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "feature.ts"), "export const f = 1;\n");
+          git(srcRepo, ["add", "-A"]);
+          git(srcRepo, ["commit", "-m", "feature commit"]);
+          const featureCommitSha = git(srcRepo, ["rev-parse", "HEAD"]);
+
+          const srcProjectId = ProjectId.make("proj-reclone-src");
+          const dstProjectId = ProjectId.make("proj-reclone-dst");
+          const srcThreadId = ThreadId.make("thread-reclone-src");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.4",
+          };
+
+          let failCommitEventWrite = false;
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-reclone-same-path",
+            environmentLabel: "Reclone Same Path Env",
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: repoSamePath },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onEventSinkWrite: (events) => {
+                if (failCommitEventWrite && events.some((e) => e.type === "thread.created")) {
+                  failCommitEventWrite = false;
+                  return Effect.fail(new TestHookError({ message: "simulated commit fail" }));
+                }
+                return Effect.void;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: sharedBranch,
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            // Scenario 1: Re-clone from the SAME origin at the EXACT SAME PATH with the EXACT SAME
+            // commit SHA on the same-named branch!
+            const transferReclone = SessionTransferId.make("xfer-reclone-same-sha");
+            const prep1 = yield* svc.prepareSource({
+              transferId: transferReclone,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const staged1 = yield* svc.stageImport({
+              transferId: transferReclone,
+              manifest: prep1.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferReclone, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferReclone, path)!,
+              resolveImportBundlePath(config.stateDir, transferReclone, path)!,
+            );
+
+            failCommitEventWrite = true;
+            const commitFail1 = yield* Effect.result(
+              svc.commitImport({
+                transferId: transferReclone,
+                destinationProjectId: staged1.destinationProjectId,
+                destinationThreadId: staged1.destinationThreadId,
+                manifest: prep1.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitFail1)).toBe(true);
+
+            const ownershipPath1 = resolveWorktreeOwnershipPath(
+              config.stateDir,
+              transferReclone,
+              path,
+            )!;
+            expect(NodeFS.existsSync(ownershipPath1)).toBe(true);
+            const ownership1 = JSON.parse(NodeFS.readFileSync(ownershipPath1, "utf8")) as {
+              readonly gitCommonDir: string;
+              readonly gitCommonDirIdentity: WorkspaceBundle.GitCommonDirIdentity;
+              readonly worktreePath: string;
+              readonly branch: string;
+              readonly branchHeadSha: string | null;
+              readonly worktreeCreated: boolean;
+            };
+            expect(ownership1.worktreeCreated).toBe(true);
+            expect(ownership1.branch).toBe(sharedBranch);
+            expect(ownership1.branchHeadSha).toBe(featureCommitSha);
+
+            // Remove the worktree so registration is absent, rm -rf Repo A, and re-clone Repo B
+            // from srcRepo at the EXACT SAME PATH with the same-named branch at the EXACT SAME SHA!
+            NodeFS.rmSync(ownership1.worktreePath, { recursive: true, force: true });
+            NodeFS.rmSync(repoSamePath, { recursive: true, force: true });
+            cloneGitRepo(srcRepo, repoSamePath);
+            git(repoSamePath, ["checkout", "-B", "main", "origin/main"]);
+            git(repoSamePath, ["branch", "-f", sharedBranch, featureCommitSha]);
+            expect(NodeFS.realpathSync(NodePath.join(repoSamePath, ".git"))).toBe(
+              ownership1.gitCommonDir,
+            );
+            expect(git(repoSamePath, ["rev-parse", `refs/heads/${sharedBranch}`])).toBe(
+              featureCommitSha,
+            );
+
+            // Destination abort MUST detect gitCommonDirIdentity mismatch, NOT delete the
+            // replacement clone's branch, and cleanly clear the stale ownership record!
+            const abortReclone = yield* svc.abort({
+              transferId: transferReclone,
+              role: "destination",
+            });
+            expect(abortReclone.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(ownershipPath1)).toBe(false);
+            expect(git(repoSamePath, ["rev-parse", `refs/heads/${sharedBranch}`])).toBe(
+              featureCommitSha,
+            );
+            yield* svc.abort({
+              transferId: transferReclone,
+              role: "source",
+            });
+
+            // Scenario 2: Fresh re-init repository at the EXACT SAME PATH with a DIFFERENT commit SHA.
+            // First reset repoSamePath to a clean clone of main so commitImport creates sharedBranch.
+            NodeFS.rmSync(repoSamePath, { recursive: true, force: true });
+            cloneGitRepo(srcRepo, repoSamePath);
+            git(repoSamePath, ["checkout", "-B", "main", "origin/main"]);
+            git(repoSamePath, ["branch", "-D", sharedBranch]);
+
+            const transferFreshInit = SessionTransferId.make("xfer-reinit-diff-sha");
+            const prep2 = yield* svc.prepareSource({
+              transferId: transferFreshInit,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const staged2 = yield* svc.stageImport({
+              transferId: transferFreshInit,
+              manifest: prep2.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferFreshInit, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferFreshInit, path)!,
+              resolveImportBundlePath(config.stateDir, transferFreshInit, path)!,
+            );
+
+            failCommitEventWrite = true;
+            const commitFail2 = yield* Effect.result(
+              svc.commitImport({
+                transferId: transferFreshInit,
+                destinationProjectId: staged2.destinationProjectId,
+                destinationThreadId: staged2.destinationThreadId,
+                manifest: prep2.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitFail2)).toBe(true);
+
+            const ownershipPath2 = resolveWorktreeOwnershipPath(
+              config.stateDir,
+              transferFreshInit,
+              path,
+            )!;
+            const ownership2 = JSON.parse(NodeFS.readFileSync(ownershipPath2, "utf8")) as {
+              readonly gitCommonDir: string;
+              readonly worktreePath: string;
+              readonly branchHeadSha: string | null;
+            };
+            expect(ownership2.branchHeadSha).toBe(featureCommitSha);
+
+            NodeFS.rmSync(ownership2.worktreePath, { recursive: true, force: true });
+            NodeFS.rmSync(repoSamePath, { recursive: true, force: true });
+            initGitRepo(repoSamePath);
+            NodeFS.writeFileSync(NodePath.join(repoSamePath, "replacement.txt"), "brand new\n");
+            git(repoSamePath, ["add", "-A"]);
+            git(repoSamePath, ["commit", "-m", "brand new repo commit"]);
+            git(repoSamePath, ["branch", sharedBranch]);
+            const freshRepoBranchSha = git(repoSamePath, [
+              "rev-parse",
+              `refs/heads/${sharedBranch}`,
+            ]);
+            expect(freshRepoBranchSha).not.toBe(featureCommitSha);
+            expect(NodeFS.realpathSync(NodePath.join(repoSamePath, ".git"))).toBe(
+              ownership2.gitCommonDir,
+            );
+
+            const abortFreshInit = yield* svc.abort({
+              transferId: transferFreshInit,
+              role: "destination",
+            });
+            expect(abortFreshInit.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(ownershipPath2)).toBe(false);
+            expect(git(repoSamePath, ["rev-parse", `refs/heads/${sharedBranch}`])).toBe(
+              freshRepoBranchSha,
+            );
+            yield* svc.abort({
+              transferId: transferFreshInit,
+              role: "source",
+            });
+
+            // Scenario 3 (CAS layer in SAME repo): Even in the exact same repository (matching
+            // gitCommonDir + gitCommonDirIdentity), if the worktree was removed and someone moved
+            // the branch to a DIFFERENT commit SHA, atomic CAS refuses to delete the moved branch
+            // and safely clears stale ownership.
+            NodeFS.rmSync(repoSamePath, { recursive: true, force: true });
+            cloneGitRepo(srcRepo, repoSamePath);
+            git(repoSamePath, ["checkout", "-B", "main", "origin/main"]);
+            git(repoSamePath, ["branch", "-D", sharedBranch]);
+
+            const transferMovedBranch = SessionTransferId.make("xfer-cas-moved-branch");
+            const prep3 = yield* svc.prepareSource({
+              transferId: transferMovedBranch,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const staged3 = yield* svc.stageImport({
+              transferId: transferMovedBranch,
+              manifest: prep3.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(
+                resolveImportBundlePath(config.stateDir, transferMovedBranch, path)!,
+              ),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferMovedBranch, path)!,
+              resolveImportBundlePath(config.stateDir, transferMovedBranch, path)!,
+            );
+
+            failCommitEventWrite = true;
+            const commitFail3 = yield* Effect.result(
+              svc.commitImport({
+                transferId: transferMovedBranch,
+                destinationProjectId: staged3.destinationProjectId,
+                destinationThreadId: staged3.destinationThreadId,
+                manifest: prep3.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitFail3)).toBe(true);
+
+            const ownershipPath3 = resolveWorktreeOwnershipPath(
+              config.stateDir,
+              transferMovedBranch,
+              path,
+            )!;
+            const ownership3 = JSON.parse(NodeFS.readFileSync(ownershipPath3, "utf8")) as {
+              readonly worktreePath: string;
+              readonly branchHeadSha: string | null;
+            };
+            expect(ownership3.branchHeadSha).toBe(featureCommitSha);
+
+            // Remove the worktree cleanly, then move the same-named branch to a new commit SHA.
+            git(repoSamePath, ["worktree", "remove", "--force", ownership3.worktreePath]);
+            NodeFS.writeFileSync(NodePath.join(repoSamePath, "moved.txt"), "user commit\n");
+            git(repoSamePath, ["add", "-A"]);
+            git(repoSamePath, ["commit", "-m", "independent user commit"]);
+            const movedSha = git(repoSamePath, ["rev-parse", "HEAD"]);
+            git(repoSamePath, ["branch", "-f", sharedBranch, movedSha]);
+            expect(movedSha).not.toBe(featureCommitSha);
+
+            const abortMoved = yield* svc.abort({
+              transferId: transferMovedBranch,
+              role: "destination",
+            });
+            expect(abortMoved.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(ownershipPath3)).toBe(false);
+            expect(git(repoSamePath, ["rev-parse", `refs/heads/${sharedBranch}`])).toBe(movedSha);
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "preserves a still-registered worktree and branch untouched on abort when a user makes a new commit inside the worktree",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-user-commit-in-wt-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const dstRepo = NodePath.join(tmpRoot, "dst-repo");
+          const featureBranch = "feat/user-commit-survives-abort";
+
+          initGitRepo(srcRepo);
+          cloneGitRepo(srcRepo, dstRepo);
+
+          git(srcRepo, ["checkout", "-b", featureBranch]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "feature.ts"), "export const x = 1;\n");
+          git(srcRepo, ["add", "-A"]);
+          git(srcRepo, ["commit", "-m", "transfer feature commit"]);
+          const transferCommitSha = git(srcRepo, ["rev-parse", "HEAD"]);
+
+          const srcProjectId = ProjectId.make("proj-user-wt-src");
+          const dstProjectId = ProjectId.make("proj-user-wt-dst");
+          const srcThreadId = ThreadId.make("thread-user-wt-src");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.4",
+          };
+
+          let failCommitEventWrite = false;
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-user-wt-commit",
+            environmentLabel: "User Commit In Worktree Env",
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onEventSinkWrite: (events) => {
+                if (failCommitEventWrite && events.some((e) => e.type === "thread.created")) {
+                  failCommitEventWrite = false;
+                  return Effect.fail(new TestHookError({ message: "simulated SQLite failure" }));
+                }
+                return Effect.void;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: featureBranch,
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            const transferId = SessionTransferId.make("xfer-user-commit-in-still-reg-wt");
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const staged = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferId, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferId, path)!,
+              resolveImportBundlePath(config.stateDir, transferId, path)!,
+            );
+
+            // Fail commitImport right after creating the worktree + branch so the worktree
+            // REMAINS registered on dstRepo with persisted ownership.
+            failCommitEventWrite = true;
+            const commitRes = yield* Effect.result(
+              svc.commitImport({
+                transferId,
+                destinationProjectId: staged.destinationProjectId,
+                destinationThreadId: staged.destinationThreadId,
+                manifest: prep.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitRes)).toBe(true);
+
+            const ownershipPath = resolveWorktreeOwnershipPath(config.stateDir, transferId, path)!;
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+            const ownership = JSON.parse(NodeFS.readFileSync(ownershipPath, "utf8")) as {
+              readonly worktreePath: string;
+              readonly branch: string;
+              readonly baseCommitSha: string | null;
+              readonly branchHeadSha: string | null;
+              readonly allowedBranchHeadShas: ReadonlyArray<string>;
+              readonly worktreeCreated: boolean;
+            };
+            expect(ownership.worktreeCreated).toBe(true);
+            expect(ownership.branch).toBe(featureBranch);
+            expect(ownership.baseCommitSha).toBe(transferCommitSha);
+            expect(ownership.branchHeadSha).toBe(transferCommitSha);
+            expect(ownership.allowedBranchHeadShas).toEqual([transferCommitSha]);
+            expect(NodeFS.existsSync(ownership.worktreePath)).toBe(true);
+
+            // Make a brand-new user commit directly inside the still-registered worktree!
+            const userFilePath = NodePath.join(ownership.worktreePath, "user-new-work.ts");
+            NodeFS.writeFileSync(userFilePath, "export const precious = 42;\n");
+            git(ownership.worktreePath, ["add", "user-new-work.ts"]);
+            git(ownership.worktreePath, ["commit", "-m", "user commit directly in worktree"]);
+            const userCommitSha = git(ownership.worktreePath, ["rev-parse", "HEAD"]);
+            expect(userCommitSha).not.toBe(transferCommitSha);
+
+            // Destination abort MUST preserve BOTH the still-registered worktree AND the branch
+            // containing the user's new commit completely untouched, while clearing stale ownership!
+            const abortRes = yield* svc.abort({
+              transferId,
+              role: "destination",
+            });
+            expect(abortRes.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(ownershipPath)).toBe(false);
+            expect(NodeFS.existsSync(ownership.worktreePath)).toBe(true);
+            expect(NodeFS.readFileSync(userFilePath, "utf8")).toBe("export const precious = 42;\n");
+            expect(git(dstRepo, ["rev-parse", `refs/heads/${featureBranch}`])).toBe(userCommitSha);
+            const wtListAfter = git(dstRepo, ["worktree", "list", "--porcelain"]);
+            expect(wtListAfter).toContain(NodeFS.realpathSync(ownership.worktreePath));
+            expect(wtListAfter).toContain(`branch refs/heads/${featureBranch}`);
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "allows imports into unrelated repos when a previous-format or corrupt ownership record exists, while still reserving paths and branches for the matching repo",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-legacy-ledger-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const repoA = NodePath.join(tmpRoot, "repo-a");
+          const repoB = NodePath.join(tmpRoot, "repo-b");
+          const sharedBranch = "feat/legacy-ledger-branch";
+
+          initGitRepo(srcRepo);
+          cloneGitRepo(srcRepo, repoA);
+          cloneGitRepo(srcRepo, repoB);
+
+          git(srcRepo, ["checkout", "-b", sharedBranch]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "legacy.ts"), "export const v = 1;\n");
+          git(srcRepo, ["add", "-A"]);
+          git(srcRepo, ["commit", "-m", "legacy test commit"]);
+
+          const srcProjectId = ProjectId.make("proj-legacy-src");
+          const projectAId = ProjectId.make("proj-legacy-a");
+          const projectBId = ProjectId.make("proj-legacy-b");
+          const srcThreadA = ThreadId.make("thread-legacy-src-a");
+          const srcThreadB = ThreadId.make("thread-legacy-src-b");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.4",
+          };
+
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-legacy-ledger",
+            environmentLabel: "Legacy Ledger Env",
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: projectAId, title: "repoA", workspaceRoot: repoA },
+              { id: projectBId, title: "repoB", workspaceRoot: repoB },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: [
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThreadA,
+                  branch: sharedBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThreadB,
+                  branch: sharedBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+              ],
+            });
+
+            const repoACommonDir = NodeFS.realpathSync(NodePath.join(repoA, ".git"));
+            const renamedBranchInRepoA = `${sharedBranch}-local`;
+            const renamedPathHash = NodeCrypto.createHash("sha256")
+              .update(`${repoACommonDir}\0${renamedBranchInRepoA}`)
+              .digest("hex")
+              .slice(0, 16);
+            let renamedPrefix = "";
+            for (const ch of renamedBranchInRepoA.replace(/\//g, "-")) {
+              if (Buffer.byteLength(renamedPrefix + ch) > 23) break;
+              renamedPrefix += ch;
+            }
+            const expectedRenamedPathInRepoA = NodePath.join(
+              config.worktreesDir,
+              NodePath.basename(repoA),
+              `${renamedPrefix}-${renamedPathHash}`,
+            );
+
+            // 1. Write a previous-format ownership record (missing gitCommonDirIdentity and
+            //    branchHeadSha) referencing Repo A's gitCommonDir, path, and branch.
+            const legacyOwnership1 = resolveWorktreeOwnershipPath(
+              config.stateDir,
+              SessionTransferId.make("xfer-legacy-format-branch"),
+              path,
+            )!;
+            NodeFS.mkdirSync(NodePath.dirname(legacyOwnership1), { recursive: true });
+            NodeFS.writeFileSync(
+              legacyOwnership1,
+              JSON.stringify({
+                schemaVersion: 1,
+                transferId: "xfer-legacy-format-branch",
+                destinationProjectId: projectAId,
+                projectWorkspaceRoot: repoA,
+                gitCommonDir: repoACommonDir,
+                destinationThreadId: "thread-legacy-old-1",
+                worktreePath: NodePath.join(tmpRoot, "legacy-reserved-wt-1"),
+                branch: sharedBranch,
+                createdBranch: true,
+                importCompleted: false,
+              }),
+            );
+
+            // 2. Write a second previous-format ownership record (also missing
+            //    gitCommonDirIdentity and branchHeadSha) reserving the exact deterministic
+            //    worktreePath that Repo A would otherwise pick for the renamed branch!
+            const legacyOwnership2 = resolveWorktreeOwnershipPath(
+              config.stateDir,
+              SessionTransferId.make("xfer-legacy-format-path"),
+              path,
+            )!;
+            NodeFS.writeFileSync(
+              legacyOwnership2,
+              JSON.stringify({
+                schemaVersion: 1,
+                transferId: "xfer-legacy-format-path",
+                destinationProjectId: projectAId,
+                projectWorkspaceRoot: repoA,
+                gitCommonDir: repoACommonDir,
+                destinationThreadId: "thread-legacy-old-2",
+                worktreePath: expectedRenamedPathInRepoA,
+                branch: null,
+                createdBranch: false,
+                importCompleted: false,
+              }),
+            );
+
+            // 3. Write a corrupt JSON file in the ownership directory to verify it logs a warning
+            //    and is skipped instead of permanently breaking imports for all projects.
+            const corruptOwnership = NodePath.join(
+              NodePath.dirname(legacyOwnership1),
+              "corrupt-other-transfer.json",
+            );
+            NodeFS.writeFileSync(corruptOwnership, "{not valid json!!!");
+
+            // Import into UNRELATED Repo B MUST succeed cleanly and can use sharedBranch because
+            // the legacy record belongs to Repo A!
+            const transferB = SessionTransferId.make("xfer-import-unrelated-repo-b");
+            const prepB = yield* svc.prepareSource({
+              transferId: transferB,
+              threadId: srcThreadB,
+              direction: "boat_to_local",
+            });
+            const stagedB = yield* svc.stageImport({
+              transferId: transferB,
+              manifest: prepB.manifest,
+              targetProjectId: projectBId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferB, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferB, path)!,
+              resolveImportBundlePath(config.stateDir, transferB, path)!,
+            );
+            const commitB = yield* svc.commitImport({
+              transferId: transferB,
+              destinationProjectId: stagedB.destinationProjectId,
+              destinationThreadId: stagedB.destinationThreadId,
+              manifest: prepB.manifest,
+              autoResume: false,
+            });
+            expect(commitB.destinationBranch).toBe(sharedBranch);
+            expect(commitB.destinationWorktreePath).not.toBeNull();
+            expect(NodeFS.existsSync(commitB.destinationWorktreePath!)).toBe(true);
+
+            // Import into Repo A MUST succeed AND still avoid colliding with BOTH the reserved
+            // branch AND the reserved worktreePath from the previous-format records!
+            const transferA = SessionTransferId.make("xfer-import-matching-repo-a");
+            const prepA = yield* svc.prepareSource({
+              transferId: transferA,
+              threadId: srcThreadA,
+              direction: "boat_to_local",
+            });
+            const stagedA = yield* svc.stageImport({
+              transferId: transferA,
+              manifest: prepA.manifest,
+              targetProjectId: projectAId,
+            });
+            NodeFS.mkdirSync(
+              NodePath.dirname(resolveImportBundlePath(config.stateDir, transferA, path)!),
+              { recursive: true },
+            );
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferA, path)!,
+              resolveImportBundlePath(config.stateDir, transferA, path)!,
+            );
+            const commitA = yield* svc.commitImport({
+              transferId: transferA,
+              destinationProjectId: stagedA.destinationProjectId,
+              destinationThreadId: stagedA.destinationThreadId,
+              manifest: prepA.manifest,
+              autoResume: false,
+            });
+            expect(commitA.destinationBranch).toBe(renamedBranchInRepoA);
+            expect(commitA.destinationWorktreePath).not.toBeNull();
+            expect(NodeFS.realpathSync(commitA.destinationWorktreePath!)).not.toBe(
+              expectedRenamedPathInRepoA,
+            );
+            expect(commitA.destinationWorktreePath).toBe(`${expectedRenamedPathInRepoA}-2`);
+            expect(NodeFS.existsSync(commitA.destinationWorktreePath!)).toBe(true);
           }).pipe(Effect.provide(layer));
         } finally {
           NodeFS.rmSync(tmpRoot, { recursive: true, force: true });

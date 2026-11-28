@@ -757,6 +757,10 @@ export const ServerConfig = Schema.Struct({
   projectCredentialsSync: Schema.optionalKey(Schema.Boolean),
   portableSecretProviderSync: Schema.optionalKey(Schema.Boolean),
   portableProviderAuthSync: Schema.optionalKey(Schema.Boolean),
+  /** Whether at least one Boat machine is configured locally (computed passively without spawning sail-boatd). */
+  hasConfiguredBoats: Schema.optionalKey(Schema.Boolean),
+  /** Whether this server supports bidirectional session transfer endpoints. */
+  sessionTransfer: Schema.optionalKey(Schema.Boolean),
   scratchWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
   newProjectsRoot: Schema.optionalKey(TrimmedNonEmptyString),
   /**

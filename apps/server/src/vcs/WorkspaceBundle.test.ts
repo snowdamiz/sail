@@ -5,11 +5,12 @@ import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
-import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
 import { describe } from "vite-plus/test";
 
@@ -171,8 +172,11 @@ describe("WorkspaceBundle", () => {
         // Cleanup helper removes the created worktree cleanly.
         yield* bundleService.removeWorktree({
           repoCwd: dstRepo,
+          expectedGitCommonDir: imported.gitCommonDir,
+          expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
           worktreePath: imported.worktreePath,
           branch: imported.branch,
+          expectedBranchHeadSha: imported.branchHeadSha,
         });
         expect(yield* fs.exists(imported.worktreePath)).toBe(false);
       }).pipe(Effect.provide(makeTestLayer())),
@@ -382,6 +386,8 @@ describe("WorkspaceBundle", () => {
         // Removing the worktree without passing branch preserves the pre-existing branch.
         yield* bundleService.removeWorktree({
           repoCwd: dstRepo,
+          expectedGitCommonDir: imported.gitCommonDir,
+          expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
           worktreePath: imported.worktreePath,
         });
         const branchRef = (yield* git(dstRepo, [
@@ -740,19 +746,13 @@ describe("WorkspaceBundle", () => {
         expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
 
         let blockWorktreeRemoval = true;
+        const fsRemoveCalls: Array<string> = [];
         const wrappedFsLayer = Layer.succeed(FileSystem.FileSystem, {
           ...baseFs,
           remove: (targetPath, removeOptions) =>
-            blockWorktreeRemoval && targetPath === imported.worktreePath
-              ? Effect.fail(
-                  PlatformError.systemError({
-                    _tag: "PermissionDenied",
-                    module: "FileSystem",
-                    method: "remove",
-                    pathOrDescriptor: targetPath,
-                  }),
-                )
-              : baseFs.remove(targetPath, removeOptions),
+            Effect.sync(() => {
+              fsRemoveCalls.push(targetPath);
+            }).pipe(Effect.andThen(baseFs.remove(targetPath, removeOptions))),
         });
         const wrappedVcsLayer = Layer.succeed(VcsProcess.VcsProcess, {
           run: (runInput) =>
@@ -770,24 +770,29 @@ describe("WorkspaceBundle", () => {
           Layer.provide(Layer.merge(wrappedFsLayer, wrappedVcsLayer)),
         );
 
-        // 1. Worktree directory removal failure (PermissionDenied) must propagate as WorkspaceBundleError.
+        // 1. Worktree removal failure while directory still exists must fail with git_error and
+        //    NEVER fall back to recursive fileSystem.remove!
         const worktreeFail = yield* Effect.gen(function* () {
           const svc = yield* WorkspaceBundle.WorkspaceBundle;
           return yield* Effect.result(
             svc.removeWorktree({
               repoCwd: dstRepo,
+              expectedGitCommonDir: imported.gitCommonDir,
+              expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
               worktreePath: imported.worktreePath,
             }),
           );
         }).pipe(Effect.provide(faultBundleLayer));
         expect(Result.isFailure(worktreeFail)).toBe(true);
         if (Result.isFailure(worktreeFail)) {
-          expect(worktreeFail.failure.code).toBe("io_error");
+          expect(worktreeFail.failure.code).toBe("git_error");
         }
+        expect(fsRemoveCalls).toEqual([]);
         expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
 
-        // 2. Unblock worktree removal, but lock the created branch ref so git branch -D fails while
-        //    the branch still exists. removeWorktree must remove the worktree and report branch failure.
+        // 2. Unblock worktree removal, but lock the created branch ref so atomic CAS
+        //    git update-ref -d fails while the branch still exists at expectedBranchHeadSha.
+        //    removeWorktree must remove the worktree and report retryable git_error for the branch.
         blockWorktreeRemoval = false;
         const branchLockPath = path.join(
           dstRepo,
@@ -804,8 +809,11 @@ describe("WorkspaceBundle", () => {
             return yield* Effect.result(
               svc.removeWorktree({
                 repoCwd: dstRepo,
+                expectedGitCommonDir: imported.gitCommonDir,
+                expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
                 worktreePath: imported.worktreePath,
                 branch: imported.branch,
+                expectedBranchHeadSha: imported.branchHeadSha,
               }),
             );
           }).pipe(Effect.provide(faultBundleLayer));
@@ -813,6 +821,7 @@ describe("WorkspaceBundle", () => {
           if (Result.isFailure(branchFail)) {
             expect(branchFail.failure.code).toBe("git_error");
           }
+          expect(fsRemoveCalls).toEqual([]);
           expect(yield* baseFs.exists(imported.worktreePath)).toBe(false);
           expect((yield* git(dstRepo, ["branch", "--list", "feat/remove-err"])).trim()).not.toBe(
             "",
@@ -821,19 +830,26 @@ describe("WorkspaceBundle", () => {
           yield* baseFs.remove(branchLockPath, { force: true }).pipe(Effect.ignore);
         }
 
-        // 3. Retry once the branch lock is cleared: treats missing worktree as already gone and deletes branch.
+        // 3. Retry once the branch lock is cleared: treats missing worktree as already gone and
+        //    deletes branch via atomic CAS.
         yield* baseBundleService.removeWorktree({
           repoCwd: dstRepo,
+          expectedGitCommonDir: imported.gitCommonDir,
+          expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
           worktreePath: imported.worktreePath,
           branch: imported.branch,
+          expectedBranchHeadSha: imported.branchHeadSha,
         });
         expect((yield* git(dstRepo, ["branch", "--list", "feat/remove-err"])).trim()).toBe("");
 
         // 4. Subsequent call when both worktree and branch are already gone succeeds idempotently.
         yield* baseBundleService.removeWorktree({
           repoCwd: dstRepo,
+          expectedGitCommonDir: imported.gitCommonDir,
+          expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
           worktreePath: imported.worktreePath,
           branch: imported.branch,
+          expectedBranchHeadSha: imported.branchHeadSha,
         });
       }).pipe(Effect.provide(makeTestLayer())),
   );
@@ -886,8 +902,11 @@ describe("WorkspaceBundle", () => {
           const lockedResult = yield* Effect.result(
             bundleService.removeWorktree({
               repoCwd: dstRepo,
+              expectedGitCommonDir: imported.gitCommonDir,
+              expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
               worktreePath: imported.worktreePath,
               branch: imported.branch,
+              expectedBranchHeadSha: imported.branchHeadSha,
             }),
           );
           expect(Result.isFailure(lockedResult)).toBe(true);
@@ -912,8 +931,11 @@ describe("WorkspaceBundle", () => {
 
           yield* bundleService.removeWorktree({
             repoCwd: dstRepo,
+            expectedGitCommonDir: imported.gitCommonDir,
+            expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
             worktreePath: imported.worktreePath,
             branch: imported.branch,
+            expectedBranchHeadSha: imported.branchHeadSha,
           });
           expect(yield* fs.exists(imported.worktreePath)).toBe(false);
           const afterPorcelain = yield* git(dstRepo, ["worktree", "list", "--porcelain"]);
@@ -983,8 +1005,11 @@ describe("WorkspaceBundle", () => {
           const lockedResult = yield* Effect.result(
             bundleService.removeWorktree({
               repoCwd: dstRepo,
+              expectedGitCommonDir: imported.gitCommonDir,
+              expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
               worktreePath: imported.worktreePath,
               branch: imported.branch,
+              expectedBranchHeadSha: imported.branchHeadSha,
             }),
           );
           expect(Result.isFailure(lockedResult)).toBe(true);
@@ -1012,8 +1037,11 @@ describe("WorkspaceBundle", () => {
 
           yield* bundleService.removeWorktree({
             repoCwd: dstRepo,
+            expectedGitCommonDir: imported.gitCommonDir,
+            expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
             worktreePath: imported.worktreePath,
             branch: imported.branch,
+            expectedBranchHeadSha: imported.branchHeadSha,
           });
           expect(yield* fs.exists(imported.worktreePath)).toBe(false);
           const afterPorcelainZ = yield* git(dstRepo, ["worktree", "list", "--porcelain", "-z"]);
@@ -1101,8 +1129,11 @@ describe("WorkspaceBundle", () => {
           return yield* Effect.result(
             svc.removeWorktree({
               repoCwd: dstRepo,
+              expectedGitCommonDir: imported.gitCommonDir,
+              expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
               worktreePath: imported.worktreePath,
               branch: imported.branch,
+              expectedBranchHeadSha: imported.branchHeadSha,
             }),
           );
         }).pipe(Effect.provide(truncatedBundleLayer));
@@ -1127,6 +1158,3048 @@ describe("WorkspaceBundle", () => {
         expect((yield* git(dstRepo, ["branch", "--list", "feat/truncated-wt"])).trim()).not.toBe(
           "",
         );
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+  it.effect(
+    "never deletes an externally created branch when interrupted after onWorktreeAllocated (both before and during git worktree add) and invokes onWorktreeCreated inside the lock",
+    () =>
+      Effect.gen(function* () {
+        const baseFs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseVcsProcess = yield* VcsProcess.VcsProcess;
+
+        const root = yield* baseFs.makeTempDirectoryScoped({
+          prefix: "t3-wb-interrupt-ext-branch-",
+        });
+        const srcRepo = path.join(root, "src");
+        const dstRepo = path.join(root, "dst");
+        const bundlePath = path.join(root, "interrupt-ext.bundle");
+
+        yield* baseFs.makeDirectory(srcRepo, { recursive: true });
+        yield* git(srcRepo, ["init", "-b", "main"]);
+        yield* baseFs.writeFileString(path.join(srcRepo, "file.txt"), "base\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "init"]);
+        yield* git(root, ["clone", srcRepo, dstRepo]);
+
+        yield* git(srcRepo, ["checkout", "-b", "feat/ext-branch-interrupt"]);
+        yield* baseFs.writeFileString(path.join(srcRepo, "file.txt"), "feature\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "feature"]);
+
+        const baseBundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const exported = yield* baseBundleService.exportWorkspaceBundle({
+          transferId: "xfer-ext-branch-interrupt",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+
+        // Part 1: Interrupt while paused in onWorktreeAllocated (gitWorktreeAddInvoked === false)
+        // after someone independently creates the requested branch in dstRepo.
+        const allocPaused = yield* Deferred.make<void>();
+        let allocatedBranchName = "";
+        let allocatedWorktreePath = "";
+        let clearedCount = 0;
+
+        const fiber1 = yield* Effect.forkChild(
+          baseBundleService.importWorkspaceBundle({
+            transferId: "xfer-ext-branch-interrupt",
+            repoCwd: dstRepo,
+            bundlePath,
+            sourceBranch: exported.branch,
+            targetLabel: "boat",
+            onWorktreeAllocated: (allocation) =>
+              Effect.gen(function* () {
+                allocatedBranchName = allocation.branch;
+                allocatedWorktreePath = allocation.worktreePath;
+                yield* Deferred.succeed(allocPaused, undefined);
+                return yield* Effect.never;
+              }),
+            onWorktreeAllocationCleared: () =>
+              Effect.sync(() => {
+                clearedCount += 1;
+              }),
+          }),
+        );
+        yield* Deferred.await(allocPaused);
+        expect(allocatedBranchName).toBe("feat/ext-branch-interrupt");
+
+        // Independently create the branch in dstRepo before interrupting the transfer.
+        yield* git(dstRepo, ["branch", allocatedBranchName]);
+        const extBranchSha1 = (yield* git(dstRepo, [
+          "rev-parse",
+          `refs/heads/${allocatedBranchName}`,
+        ])).trim();
+        yield* Fiber.interrupt(fiber1);
+
+        expect(clearedCount).toBe(1);
+        expect(
+          (yield* git(dstRepo, ["rev-parse", `refs/heads/${allocatedBranchName}`])).trim(),
+        ).toBe(extBranchSha1);
+        expect(yield* baseFs.exists(allocatedWorktreePath)).toBe(false);
+
+        // Remove the external branch to run Part 2 on the same branch name.
+        yield* git(dstRepo, ["branch", "-D", allocatedBranchName]);
+
+        // Part 2: Pause right at VcsProcess.run("WorkspaceBundle.createDestinationBranchRef")
+        // (before atomic ref creation / git worktree add), independently create the branch in
+        // dstRepo, then interrupt.
+        const addPaused = yield* Deferred.make<void>();
+        let pauseAdd = true;
+        let clearedCount2 = 0;
+        let createdCallbackInsideLock = false;
+        let lockHeld = false;
+
+        const pausedVcsLayer = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) => {
+            if (runInput.operation === "WorkspaceBundle.createDestinationBranchRef" && pauseAdd) {
+              pauseAdd = false;
+              return Deferred.succeed(addPaused, undefined).pipe(Effect.andThen(Effect.never));
+            }
+            return baseVcsProcess.run(runInput);
+          },
+        });
+        const pausedBundleLayer = Layer.fresh(WorkspaceBundle.layer).pipe(
+          Layer.provide(pausedVcsLayer),
+        );
+
+        yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          let allocatedPath2 = "";
+          const fiber2 = yield* Effect.forkChild(
+            svc.importWorkspaceBundle({
+              transferId: "xfer-ext-branch-interrupt",
+              repoCwd: dstRepo,
+              bundlePath,
+              sourceBranch: exported.branch,
+              targetLabel: "boat",
+              onWorktreeAllocated: (allocation) =>
+                Effect.sync(() => {
+                  allocatedPath2 = allocation.worktreePath;
+                }),
+              onWorktreeAllocationCleared: () =>
+                Effect.sync(() => {
+                  clearedCount2 += 1;
+                }),
+            }),
+          );
+          yield* Deferred.await(addPaused);
+          yield* git(dstRepo, ["branch", "feat/ext-branch-interrupt"]);
+          const extBranchSha2 = (yield* git(dstRepo, [
+            "rev-parse",
+            "refs/heads/feat/ext-branch-interrupt",
+          ])).trim();
+          yield* Fiber.interrupt(fiber2);
+
+          expect(clearedCount2).toBe(1);
+          expect(
+            (yield* git(dstRepo, ["rev-parse", "refs/heads/feat/ext-branch-interrupt"])).trim(),
+          ).toBe(extBranchSha2);
+          expect(yield* baseFs.exists(allocatedPath2)).toBe(false);
+
+          // Part 3: Normal import invokes onWorktreeCreated while still holding withWorktreeAllocationLock.
+          const imported = yield* svc.importWorkspaceBundle({
+            transferId: "xfer-ext-branch-interrupt",
+            repoCwd: dstRepo,
+            bundlePath,
+            sourceBranch: exported.branch,
+            targetLabel: "boat",
+            withWorktreeAllocationLock: (effect) =>
+              Effect.acquireUseRelease(
+                Effect.sync(() => {
+                  lockHeld = true;
+                }),
+                () => effect,
+                () =>
+                  Effect.sync(() => {
+                    lockHeld = false;
+                  }),
+              ),
+            onWorktreeCreated: () =>
+              Effect.sync(() => {
+                createdCallbackInsideLock = lockHeld;
+              }),
+          });
+          expect(createdCallbackInsideLock).toBe(true);
+          expect(imported.branch).not.toBe("feat/ext-branch-interrupt");
+          expect(
+            (yield* git(dstRepo, ["rev-parse", "refs/heads/feat/ext-branch-interrupt"])).trim(),
+          ).toBe(extBranchSha2);
+        }).pipe(Effect.provide(pausedBundleLayer));
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "never recursively deletes an unregistered directory or a worktree on a different branch when interrupted during add, and guards removeWorktree unregistered fallbacks",
+    () =>
+      Effect.gen(function* () {
+        const baseFs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseVcsProcess = yield* VcsProcess.VcsProcess;
+
+        const root = yield* baseFs.makeTempDirectoryScoped({
+          prefix: "t3-wb-unregistered-dir-guard-",
+        });
+        const srcRepo = path.join(root, "src");
+        const dstRepo = path.join(root, "dst");
+        const otherRepo = path.join(root, "other");
+        const bundlePath = path.join(root, "unreg-guard.bundle");
+
+        yield* baseFs.makeDirectory(srcRepo, { recursive: true });
+        yield* git(srcRepo, ["init", "-b", "main"]);
+        yield* baseFs.writeFileString(path.join(srcRepo, "file.txt"), "base\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "init"]);
+        yield* git(root, ["clone", srcRepo, dstRepo]);
+        yield* git(root, ["clone", srcRepo, otherRepo]);
+
+        yield* git(srcRepo, ["checkout", "-b", "feat/unreg-dir-guard"]);
+        yield* baseFs.writeFileString(path.join(srcRepo, "file.txt"), "feature\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "feature"]);
+
+        const baseBundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const exported = yield* baseBundleService.exportWorkspaceBundle({
+          transferId: "xfer-unreg-dir-guard",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+
+        // Probe 1 (Finding 2 exact probe): Pause add right after its final path check (inside
+        // WorkspaceBundle.addWorktree before git spawns), independently create a directory + file
+        // at worktreePath, then interrupt -> directory + file MUST survive untouched and ownership
+        // MUST be cleared!
+        const addPaused1 = yield* Deferred.make<void>();
+        let pauseAdd1 = true;
+        const pausedVcsLayer1 = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) => {
+            if (runInput.operation === "WorkspaceBundle.addWorktree" && pauseAdd1) {
+              pauseAdd1 = false;
+              return Deferred.succeed(addPaused1, undefined).pipe(Effect.andThen(Effect.never));
+            }
+            return baseVcsProcess.run(runInput);
+          },
+        });
+        const pausedBundleLayer1 = Layer.fresh(WorkspaceBundle.layer).pipe(
+          Layer.provide(pausedVcsLayer1),
+        );
+
+        let clearedCount1 = 0;
+        let allocatedPath1 = "";
+        yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          const fiber = yield* Effect.forkChild(
+            svc.importWorkspaceBundle({
+              transferId: "xfer-unreg-dir-guard",
+              repoCwd: dstRepo,
+              bundlePath,
+              sourceBranch: exported.branch,
+              targetLabel: "boat",
+              onWorktreeAllocated: (allocation) =>
+                Effect.sync(() => {
+                  allocatedPath1 = allocation.worktreePath;
+                }),
+              onWorktreeAllocationCleared: () =>
+                Effect.sync(() => {
+                  clearedCount1 += 1;
+                }),
+            }),
+          );
+          yield* Deferred.await(addPaused1);
+
+          // Independently create a non-worktree directory + user file at the allocated path.
+          yield* baseFs.makeDirectory(allocatedPath1, { recursive: true });
+          const userFilePath = path.join(allocatedPath1, "user-important.txt");
+          yield* baseFs.writeFileString(userFilePath, "do not delete me\n");
+
+          yield* Fiber.interrupt(fiber);
+
+          expect(clearedCount1).toBe(1);
+          expect(yield* baseFs.exists(allocatedPath1)).toBe(true);
+          expect(yield* baseFs.readFileString(userFilePath)).toBe("do not delete me\n");
+        }).pipe(Effect.provide(pausedBundleLayer1));
+
+        // Probe 2 (Finding 1 in cleanupIncompleteAdd): Pause add right after its final path check,
+        // independently register a Git worktree at allocatedWorktreePath on a DIFFERENT branch
+        // with an uncommitted file, then interrupt -> worktree, uncommitted file, and branch MUST
+        // ALL survive untouched while ownership is cleared!
+        const addPaused2 = yield* Deferred.make<void>();
+        let pauseAdd2 = true;
+        const pausedVcsLayer2 = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) => {
+            if (runInput.operation === "WorkspaceBundle.addWorktree" && pauseAdd2) {
+              pauseAdd2 = false;
+              return Deferred.succeed(addPaused2, undefined).pipe(Effect.andThen(Effect.never));
+            }
+            return baseVcsProcess.run(runInput);
+          },
+        });
+        const pausedBundleLayer2 = Layer.fresh(WorkspaceBundle.layer).pipe(
+          Layer.provide(pausedVcsLayer2),
+        );
+
+        let clearedCount2 = 0;
+        let allocatedPath2 = "";
+        yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          const fiber = yield* Effect.forkChild(
+            svc.importWorkspaceBundle({
+              transferId: "xfer-unreg-dir-guard",
+              repoCwd: dstRepo,
+              bundlePath,
+              sourceBranch: exported.branch,
+              targetLabel: "boat",
+              onWorktreeAllocated: (allocation) =>
+                Effect.sync(() => {
+                  allocatedPath2 = allocation.worktreePath;
+                }),
+              onWorktreeAllocationCleared: () =>
+                Effect.sync(() => {
+                  clearedCount2 += 1;
+                }),
+            }),
+          );
+          yield* Deferred.await(addPaused2);
+
+          // Independently register a worktree at allocatedPath2 on a DIFFERENT branch.
+          const otherBranch = "feat/independent-wt-branch";
+          yield* git(dstRepo, ["worktree", "add", "-b", otherBranch, allocatedPath2, "HEAD"]);
+          const dirtyFile = path.join(allocatedPath2, "wip.txt");
+          yield* baseFs.writeFileString(dirtyFile, "uncommitted work\n");
+
+          yield* Fiber.interrupt(fiber);
+
+          expect(clearedCount2).toBe(1);
+          expect(yield* baseFs.exists(allocatedPath2)).toBe(true);
+          expect(yield* baseFs.readFileString(dirtyFile)).toBe("uncommitted work\n");
+          expect((yield* git(dstRepo, ["branch", "--list", otherBranch])).trim()).not.toBe("");
+
+          // Probe 3: removeWorktree with expectedBranch mismatch MUST refuse to force-remove
+          // the worktree and leave its directory, file, and branch untouched!
+          const dstRepoInfo = (yield* baseBundleService.resolveGitCommonDirIdentity(dstRepo))!;
+          const otherBranchSha = (yield* git(dstRepo, [
+            "rev-parse",
+            `refs/heads/${otherBranch}`,
+          ])).trim();
+          const wrongBranchRemove = yield* Effect.result(
+            baseBundleService.removeWorktree({
+              repoCwd: dstRepo,
+              expectedGitCommonDir: dstRepoInfo.gitCommonDir,
+              expectedGitCommonDirIdentity: dstRepoInfo.identity,
+              worktreePath: allocatedPath2,
+              branch: otherBranch,
+              expectedBranch: "feat/unreg-dir-guard",
+              expectedBranchHeadSha: otherBranchSha,
+            }),
+          );
+          expect(Result.isFailure(wrongBranchRemove)).toBe(true);
+          if (Result.isFailure(wrongBranchRemove)) {
+            expect(wrongBranchRemove.failure.code).toBe("git_error");
+          }
+          expect(yield* baseFs.exists(allocatedPath2)).toBe(true);
+          expect(yield* baseFs.readFileString(dirtyFile)).toBe("uncommitted work\n");
+          expect((yield* git(dstRepo, ["branch", "--list", otherBranch])).trim()).not.toBe("");
+        }).pipe(Effect.provide(pausedBundleLayer2));
+
+        const dstRepoInfo = (yield* baseBundleService.resolveGitCommonDirIdentity(dstRepo))!;
+
+        // Probe 4: removeWorktree on unregistered directories NEVER calls recursive fs.remove:
+        // (a) Plain directory without `.git` -> refuses with git_error, leaves untouched.
+        const plainDir = path.join(root, "plain-user-dir");
+        yield* baseFs.makeDirectory(plainDir, { recursive: true });
+        yield* baseFs.writeFileString(path.join(plainDir, "keep.txt"), "precious\n");
+        const plainFail = yield* Effect.result(
+          baseBundleService.removeWorktree({
+            repoCwd: dstRepo,
+            expectedGitCommonDir: dstRepoInfo.gitCommonDir,
+            expectedGitCommonDirIdentity: dstRepoInfo.identity,
+            worktreePath: plainDir,
+          }),
+        );
+        expect(Result.isFailure(plainFail)).toBe(true);
+        if (Result.isFailure(plainFail)) {
+          expect(plainFail.failure.code).toBe("git_error");
+        }
+        expect(yield* baseFs.readFileString(path.join(plainDir, "keep.txt"))).toBe("precious\n");
+
+        // (b) Directory with `.git` gitfile pointing to a DIFFERENT repo's worktrees dir -> refuses!
+        const foreignDir = path.join(root, "foreign-wt-dir");
+        yield* baseFs.makeDirectory(foreignDir, { recursive: true });
+        yield* baseFs.writeFileString(
+          path.join(foreignDir, ".git"),
+          `gitdir: ${path.join(otherRepo, ".git", "worktrees", "foreign")}\n`,
+        );
+        yield* baseFs.writeFileString(path.join(foreignDir, "foreign.txt"), "other repo\n");
+        const foreignFail = yield* Effect.result(
+          baseBundleService.removeWorktree({
+            repoCwd: dstRepo,
+            expectedGitCommonDir: dstRepoInfo.gitCommonDir,
+            expectedGitCommonDirIdentity: dstRepoInfo.identity,
+            worktreePath: foreignDir,
+          }),
+        );
+        expect(Result.isFailure(foreignFail)).toBe(true);
+        if (Result.isFailure(foreignFail)) {
+          expect(foreignFail.failure.code).toBe("git_error");
+        }
+        expect(yield* baseFs.readFileString(path.join(foreignDir, "foreign.txt"))).toBe(
+          "other repo\n",
+        );
+
+        // (c) Even an unregistered directory with a bidirectional `<adminDir>/gitdir` backlink
+        //     is ALWAYS refused with git_error (zero recursive fs.remove fallback!).
+        const orphanDir = path.join(root, "orphan-wt-dir");
+        const orphanAdminDir = path.join(dstRepo, ".git", "worktrees", "orphan-wt");
+        yield* baseFs.makeDirectory(orphanDir, { recursive: true });
+        yield* baseFs.writeFileString(path.join(orphanDir, ".git"), `gitdir: ${orphanAdminDir}\n`);
+        yield* baseFs.writeFileString(path.join(orphanDir, "orphan.txt"), "stale\n");
+        yield* baseFs.makeDirectory(orphanAdminDir, { recursive: true });
+        yield* baseFs.writeFileString(
+          path.join(orphanAdminDir, "gitdir"),
+          `${path.join(orphanDir, ".git")}\n`,
+        );
+
+        const refusedOrphan = yield* Effect.result(
+          baseBundleService.removeWorktree({
+            repoCwd: dstRepo,
+            expectedGitCommonDir: dstRepoInfo.gitCommonDir,
+            expectedGitCommonDirIdentity: dstRepoInfo.identity,
+            worktreePath: orphanDir,
+          }),
+        );
+        expect(Result.isFailure(refusedOrphan)).toBe(true);
+        if (Result.isFailure(refusedOrphan)) {
+          expect(refusedOrphan.failure.code).toBe("git_error");
+        }
+        expect(yield* baseFs.exists(orphanDir)).toBe(true);
+        expect(yield* baseFs.readFileString(path.join(orphanDir, "orphan.txt"))).toBe("stale\n");
+
+        // (d) Stale registered worktree whose directory is already ENOENT on disk: cleanly prunes
+        //     its Git admin registration and deletes its branch via atomic CAS!
+        const staleWtPath = path.join(root, "stale-enoent-wt");
+        const staleBranch = "feat/stale-enoent-prune";
+        yield* git(dstRepo, ["worktree", "add", "-b", staleBranch, staleWtPath, "HEAD"]);
+        const staleBranchSha = (yield* git(dstRepo, [
+          "rev-parse",
+          `refs/heads/${staleBranch}`,
+        ])).trim();
+        NodeFS.rmSync(staleWtPath, { recursive: true, force: true });
+        expect(
+          yield* baseBundleService.findRegisteredWorktree(dstRepo, staleWtPath),
+        ).not.toBeNull();
+
+        yield* baseBundleService.removeWorktree({
+          repoCwd: dstRepo,
+          expectedGitCommonDir: dstRepoInfo.gitCommonDir,
+          expectedGitCommonDirIdentity: dstRepoInfo.identity,
+          worktreePath: staleWtPath,
+          branch: staleBranch,
+          expectedBranch: staleBranch,
+          expectedBranchHeadSha: staleBranchSha,
+        });
+        expect(yield* baseBundleService.findRegisteredWorktree(dstRepo, staleWtPath)).toBeNull();
+        expect((yield* git(dstRepo, ["branch", "--list", staleBranch])).trim()).toBe("");
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "never calls recursive fs.remove on worktreePath after git worktree remove succeeds or fails, or on unregistered directories/symlinks",
+    () =>
+      Effect.gen(function* () {
+        const baseFs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseVcsProcess = yield* VcsProcess.VcsProcess;
+
+        const root = yield* baseFs.makeTempDirectoryScoped({
+          prefix: "t3-wb-never-fs-rm-",
+        });
+        const srcRepo = path.join(root, "src");
+        const dstRepo = path.join(root, "dst");
+        const bundlePath = path.join(root, "never-fs-rm.bundle");
+
+        yield* baseFs.makeDirectory(srcRepo, { recursive: true });
+        yield* git(srcRepo, ["init", "-b", "main"]);
+        yield* baseFs.writeFileString(path.join(srcRepo, "file.txt"), "base\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "init"]);
+        yield* git(root, ["clone", srcRepo, dstRepo]);
+
+        yield* git(srcRepo, ["checkout", "-b", "feat/never-fs-rm"]);
+        yield* baseFs.writeFileString(path.join(srcRepo, "file.txt"), "feature\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "feature"]);
+
+        const baseBundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const exported = yield* baseBundleService.exportWorkspaceBundle({
+          transferId: "xfer-never-fs-rm",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+        const imported = yield* baseBundleService.importWorkspaceBundle({
+          transferId: "xfer-never-fs-rm",
+          repoCwd: dstRepo,
+          bundlePath,
+          sourceBranch: exported.branch,
+          targetLabel: "boat",
+        });
+        expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
+
+        const fsRemoveTargets: Array<string> = [];
+        let failNextGitRemove = true;
+        const wrappedFsLayer = Layer.succeed(FileSystem.FileSystem, {
+          ...baseFs,
+          remove: (targetPath, removeOptions) =>
+            Effect.sync(() => {
+              fsRemoveTargets.push(targetPath);
+            }).pipe(Effect.andThen(baseFs.remove(targetPath, removeOptions))),
+        });
+        const wrappedVcsLayer = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) => {
+            if (runInput.operation === "WorkspaceBundle.removeWorktree") {
+              if (failNextGitRemove) {
+                failNextGitRemove = false;
+                return Effect.succeed({
+                  exitCode: 128 as VcsProcess.VcsProcessOutput["exitCode"],
+                  stdout: "",
+                  stderr: "fatal: simulated git worktree remove failure",
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                });
+              }
+              return baseVcsProcess.run(runInput).pipe(
+                Effect.tap((output) =>
+                  output.exitCode === 0
+                    ? Effect.sync(() => {
+                        // Simulate a new unrelated directory being created at worktreePath
+                        // immediately after `git worktree remove --force` succeeds.
+                        NodeFS.mkdirSync(imported.worktreePath, { recursive: true });
+                        NodeFS.writeFileSync(
+                          path.join(imported.worktreePath, "fresh-independent.txt"),
+                          "recreated-after-remove\n",
+                        );
+                      })
+                    : Effect.void,
+                ),
+              );
+            }
+            return baseVcsProcess.run(runInput);
+          },
+        });
+        const spyBundleLayer = Layer.fresh(WorkspaceBundle.layer).pipe(
+          Layer.provide(Layer.merge(wrappedFsLayer, wrappedVcsLayer)),
+        );
+
+        // Case 1: git worktree remove fails while directory still exists -> fails with git_error,
+        // NEVER invokes fs.remove, leaves worktree and branch untouched.
+        const failRes = yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          return yield* Effect.result(
+            svc.removeWorktree({
+              repoCwd: dstRepo,
+              expectedGitCommonDir: imported.gitCommonDir,
+              expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+              worktreePath: imported.worktreePath,
+              branch: imported.branch,
+              expectedBranch: imported.branch,
+              expectedBranchHeadSha: imported.branchHeadSha,
+            }),
+          );
+        }).pipe(Effect.provide(spyBundleLayer));
+        expect(Result.isFailure(failRes)).toBe(true);
+        if (Result.isFailure(failRes)) {
+          expect(failRes.failure.code).toBe("git_error");
+        }
+        expect(fsRemoveTargets).toEqual([]);
+        expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
+        expect((yield* git(dstRepo, ["branch", "--list", imported.branch])).trim()).not.toBe("");
+
+        // Case 2: git worktree remove succeeds -> NEVER invokes fs.remove even if an unrelated dir
+        // appears immediately at worktreePath, and still deletes the branch cleanly.
+        yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          yield* svc.removeWorktree({
+            repoCwd: dstRepo,
+            expectedGitCommonDir: imported.gitCommonDir,
+            expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+            worktreePath: imported.worktreePath,
+            branch: imported.branch,
+            expectedBranch: imported.branch,
+            expectedBranchHeadSha: imported.branchHeadSha,
+          });
+        }).pipe(Effect.provide(spyBundleLayer));
+
+        expect(fsRemoveTargets).toEqual([]);
+        expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
+        expect(
+          yield* baseFs.readFileString(path.join(imported.worktreePath, "fresh-independent.txt")),
+        ).toBe("recreated-after-remove\n");
+        expect((yield* git(dstRepo, ["branch", "--list", imported.branch])).trim()).toBe("");
+
+        // Case 3: Calling removeWorktree again on the now-unregistered directory refuses with
+        // git_error and NEVER calls fs.remove!
+        const unregRes = yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          return yield* Effect.result(
+            svc.removeWorktree({
+              repoCwd: dstRepo,
+              expectedGitCommonDir: imported.gitCommonDir,
+              expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+              worktreePath: imported.worktreePath,
+            }),
+          );
+        }).pipe(Effect.provide(spyBundleLayer));
+        expect(Result.isFailure(unregRes)).toBe(true);
+        if (Result.isFailure(unregRes)) {
+          expect(unregRes.failure.code).toBe("git_error");
+        }
+        expect(fsRemoveTargets).toEqual([]);
+        expect(
+          yield* baseFs.readFileString(path.join(imported.worktreePath, "fresh-independent.txt")),
+        ).toBe("recreated-after-remove\n");
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "enforces atomic CAS branch deletion (expectedBranchHeadSha) and required gitCommonDir + GitCommonDirIdentity guards",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-cas-and-identity-",
+        });
+        const repoPath = path.join(root, "repo");
+        const otherRepoPath = path.join(root, "other-repo");
+
+        yield* fs.makeDirectory(repoPath, { recursive: true });
+        yield* git(repoPath, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(repoPath, "file.txt"), "base\n");
+        yield* git(repoPath, ["add", "-A"]);
+        yield* git(repoPath, ["commit", "-m", "init"]);
+
+        yield* git(root, ["clone", repoPath, otherRepoPath]);
+
+        const repoInfo = (yield* bundleService.resolveGitCommonDirIdentity(repoPath))!;
+        const otherRepoInfo = (yield* bundleService.resolveGitCommonDirIdentity(otherRepoPath))!;
+
+        // Create two commits on a test branch to test CAS semantics.
+        const casBranch = "feat/cas-delete-test";
+        yield* git(repoPath, ["branch", casBranch, "HEAD"]);
+        const originalSha = (yield* git(repoPath, ["rev-parse", `refs/heads/${casBranch}`])).trim();
+
+        // Create a second commit on main so we have a distinct valid commit SHA.
+        yield* fs.writeFileString(path.join(repoPath, "file.txt"), "v2\n");
+        yield* git(repoPath, ["add", "-A"]);
+        yield* git(repoPath, ["commit", "-m", "second"]);
+        const secondSha = (yield* git(repoPath, ["rev-parse", "HEAD"])).trim();
+        expect(secondSha).not.toBe(originalSha);
+
+        // Guard 1: Empty expectedGitCommonDir fails closed without touching branch.
+        const emptyCommonDir = yield* Effect.result(
+          bundleService.removeWorktree({
+            repoCwd: repoPath,
+            expectedGitCommonDir: "   ",
+            expectedGitCommonDirIdentity: repoInfo.identity,
+            branch: casBranch,
+            expectedBranchHeadSha: originalSha,
+          }),
+        );
+        expect(Result.isFailure(emptyCommonDir)).toBe(true);
+        if (Result.isFailure(emptyCommonDir)) {
+          expect(emptyCommonDir.failure.code).toBe("git_error");
+        }
+        expect((yield* git(repoPath, ["rev-parse", `refs/heads/${casBranch}`])).trim()).toBe(
+          originalSha,
+        );
+
+        // Guard 2: Mismatched expectedGitCommonDir fails closed without touching branch.
+        const wrongCommonDir = yield* Effect.result(
+          bundleService.removeWorktree({
+            repoCwd: repoPath,
+            expectedGitCommonDir: otherRepoInfo.gitCommonDir,
+            expectedGitCommonDirIdentity: repoInfo.identity,
+            branch: casBranch,
+            expectedBranchHeadSha: originalSha,
+          }),
+        );
+        expect(Result.isFailure(wrongCommonDir)).toBe(true);
+        if (Result.isFailure(wrongCommonDir)) {
+          expect(wrongCommonDir.failure.code).toBe("git_error");
+        }
+        expect((yield* git(repoPath, ["rev-parse", `refs/heads/${casBranch}`])).trim()).toBe(
+          originalSha,
+        );
+
+        // Guard 3: Mismatched expectedGitCommonDirIdentity (e.g., different repo inode/birthtime)
+        // fails closed without touching branch.
+        const wrongIdentity = yield* Effect.result(
+          bundleService.removeWorktree({
+            repoCwd: repoPath,
+            expectedGitCommonDir: repoInfo.gitCommonDir,
+            expectedGitCommonDirIdentity: otherRepoInfo.identity,
+            branch: casBranch,
+            expectedBranchHeadSha: originalSha,
+          }),
+        );
+        expect(Result.isFailure(wrongIdentity)).toBe(true);
+        if (Result.isFailure(wrongIdentity)) {
+          expect(wrongIdentity.failure.code).toBe("git_error");
+        }
+        expect((yield* git(repoPath, ["rev-parse", `refs/heads/${casBranch}`])).trim()).toBe(
+          originalSha,
+        );
+
+        // Guard 4: Missing/empty expectedBranchHeadSha fails closed without deleting branch!
+        const missingSha = yield* Effect.result(
+          bundleService.removeWorktree({
+            repoCwd: repoPath,
+            expectedGitCommonDir: repoInfo.gitCommonDir,
+            expectedGitCommonDirIdentity: repoInfo.identity,
+            branch: casBranch,
+          }),
+        );
+        expect(Result.isFailure(missingSha)).toBe(true);
+        if (Result.isFailure(missingSha)) {
+          expect(missingSha.failure.code).toBe("git_error");
+        }
+        expect((yield* git(repoPath, ["rev-parse", `refs/heads/${casBranch}`])).trim()).toBe(
+          originalSha,
+        );
+
+        // Guard 5: Branch tip moved to a different commit SHA -> CAS refuses to delete it and
+        // returns cleanly without touching the moved branch!
+        yield* git(repoPath, ["branch", "-f", casBranch, secondSha]);
+        yield* bundleService.removeWorktree({
+          repoCwd: repoPath,
+          expectedGitCommonDir: repoInfo.gitCommonDir,
+          expectedGitCommonDirIdentity: repoInfo.identity,
+          branch: casBranch,
+          expectedBranchHeadSha: originalSha,
+        });
+        expect((yield* git(repoPath, ["rev-parse", `refs/heads/${casBranch}`])).trim()).toBe(
+          secondSha,
+        );
+
+        // Guard 6: Transient ref .lock file while tip still matches expectedBranchHeadSha ->
+        // fails with retryable git_error so cleanup retries once lock clears.
+        const lockFile = path.join(
+          repoPath,
+          ".git",
+          "refs",
+          "heads",
+          "feat",
+          "cas-delete-test.lock",
+        );
+        yield* fs.writeFileString(lockFile, "locked\n");
+        try {
+          const lockedCas = yield* Effect.result(
+            bundleService.removeWorktree({
+              repoCwd: repoPath,
+              expectedGitCommonDir: repoInfo.gitCommonDir,
+              expectedGitCommonDirIdentity: repoInfo.identity,
+              branch: casBranch,
+              expectedBranchHeadSha: secondSha,
+            }),
+          );
+          expect(Result.isFailure(lockedCas)).toBe(true);
+          if (Result.isFailure(lockedCas)) {
+            expect(lockedCas.failure.code).toBe("git_error");
+          }
+          expect((yield* git(repoPath, ["rev-parse", `refs/heads/${casBranch}`])).trim()).toBe(
+            secondSha,
+          );
+        } finally {
+          yield* fs.remove(lockFile, { force: true }).pipe(Effect.ignore);
+        }
+
+        // Guard 6b: Branch currently checked out in another worktree -> refuses with git_error
+        // even when expectedBranchHeadSha matches!
+        const siblingWt = path.join(root, "sibling-checked-out-wt");
+        yield* git(repoPath, ["worktree", "add", siblingWt, casBranch]);
+        try {
+          const checkedOutRes = yield* Effect.result(
+            bundleService.removeWorktree({
+              repoCwd: repoPath,
+              expectedGitCommonDir: repoInfo.gitCommonDir,
+              expectedGitCommonDirIdentity: repoInfo.identity,
+              branch: casBranch,
+              expectedBranchHeadSha: secondSha,
+            }),
+          );
+          expect(Result.isFailure(checkedOutRes)).toBe(true);
+          if (Result.isFailure(checkedOutRes)) {
+            expect(checkedOutRes.failure.code).toBe("git_error");
+          }
+          expect((yield* git(repoPath, ["rev-parse", `refs/heads/${casBranch}`])).trim()).toBe(
+            secondSha,
+          );
+        } finally {
+          yield* git(repoPath, ["worktree", "remove", "--force", siblingWt]).pipe(Effect.ignore);
+        }
+
+        // Guard 7: Matching expectedBranchHeadSha with no lock -> deletes branch atomically!
+        yield* bundleService.removeWorktree({
+          repoCwd: repoPath,
+          expectedGitCommonDir: repoInfo.gitCommonDir,
+          expectedGitCommonDirIdentity: repoInfo.identity,
+          branch: casBranch,
+          expectedBranchHeadSha: secondSha,
+        });
+        expect((yield* git(repoPath, ["branch", "--list", casBranch])).trim()).toBe("");
+
+        // Guard 8: Already absent branch -> succeeds idempotently!
+        yield* bundleService.removeWorktree({
+          repoCwd: repoPath,
+          expectedGitCommonDir: repoInfo.gitCommonDir,
+          expectedGitCommonDirIdentity: repoInfo.identity,
+          branch: casBranch,
+          expectedBranchHeadSha: secondSha,
+        });
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "never dereferences or deletes symbolic branch refs, verifies worktree HEAD SHA before removal, and uses --git-dir + --no-deref with pre-delete identity re-verification",
+    () =>
+      Effect.gen(function* () {
+        const baseFs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseVcsProcess = yield* VcsProcess.VcsProcess;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+
+        const root = yield* baseFs.makeTempDirectoryScoped({
+          prefix: "t3-wb-symref-and-head-cas-",
+        });
+        const repoPath = path.join(root, "repo");
+        yield* baseFs.makeDirectory(repoPath, { recursive: true });
+        yield* git(repoPath, ["init", "-b", "main"]);
+        yield* baseFs.writeFileString(path.join(repoPath, "file.txt"), "base\n");
+        yield* git(repoPath, ["add", "-A"]);
+        yield* git(repoPath, ["commit", "-m", "init"]);
+
+        const repoInfo = (yield* bundleService.resolveGitCommonDirIdentity(repoPath))!;
+        const baseSha = (yield* git(repoPath, ["rev-parse", "HEAD"])).trim();
+
+        // 1. Symbolic branch ref pointing to refs/heads/other-branch at <expectedSha>:
+        //    removeWorktree MUST refuse to dereference or delete EITHER refs/heads/other-branch
+        //    OR refs/heads/<branch>!
+        const targetBranch = "other-branch";
+        const symrefBranch = "feat/symref-branch";
+        yield* git(repoPath, ["branch", targetBranch, baseSha]);
+        yield* git(repoPath, [
+          "symbolic-ref",
+          `refs/heads/${symrefBranch}`,
+          `refs/heads/${targetBranch}`,
+        ]);
+
+        yield* bundleService.removeWorktree({
+          repoCwd: repoPath,
+          expectedGitCommonDir: repoInfo.gitCommonDir,
+          expectedGitCommonDirIdentity: repoInfo.identity,
+          branch: symrefBranch,
+          expectedBranchHeadSha: baseSha,
+        });
+
+        expect((yield* git(repoPath, ["rev-parse", `refs/heads/${targetBranch}`])).trim()).toBe(
+          baseSha,
+        );
+        expect((yield* git(repoPath, ["symbolic-ref", `refs/heads/${symrefBranch}`])).trim()).toBe(
+          `refs/heads/${targetBranch}`,
+        );
+
+        // 2. Registered worktree whose HEAD moved to a newer commit than expectedBranchHeadSha:
+        //    removeWorktree MUST refuse with git_error and preserve BOTH worktree and branch!
+        const userCommitBranch = "feat/user-commit-in-wt";
+        const userCommitWt = path.join(root, "user-commit-wt");
+        yield* git(repoPath, ["worktree", "add", "-b", userCommitBranch, userCommitWt, baseSha]);
+        yield* baseFs.writeFileString(path.join(userCommitWt, "user.txt"), "user commit\n");
+        yield* git(userCommitWt, ["add", "user.txt"]);
+        yield* git(userCommitWt, ["commit", "-m", "user work inside worktree"]);
+        const userNewSha = (yield* git(userCommitWt, ["rev-parse", "HEAD"])).trim();
+        expect(userNewSha).not.toBe(baseSha);
+
+        const refusedWorktreeRes = yield* Effect.result(
+          bundleService.removeWorktree({
+            repoCwd: repoPath,
+            expectedGitCommonDir: repoInfo.gitCommonDir,
+            expectedGitCommonDirIdentity: repoInfo.identity,
+            worktreePath: userCommitWt,
+            branch: userCommitBranch,
+            expectedBranch: userCommitBranch,
+            expectedBranchHeadSha: baseSha,
+          }),
+        );
+        expect(Result.isFailure(refusedWorktreeRes)).toBe(true);
+        if (Result.isFailure(refusedWorktreeRes)) {
+          expect(refusedWorktreeRes.failure.code).toBe("git_error");
+        }
+        expect(yield* baseFs.exists(userCommitWt)).toBe(true);
+        expect(yield* baseFs.readFileString(path.join(userCommitWt, "user.txt"))).toBe(
+          "user commit\n",
+        );
+        expect((yield* git(repoPath, ["rev-parse", `refs/heads/${userCommitBranch}`])).trim()).toBe(
+          userNewSha,
+        );
+
+        // Clean up userCommitWt for subsequent check.
+        yield* git(repoPath, ["worktree", "remove", "--force", userCommitWt]);
+
+        // 3. Normal direct branch deletion invokes git with `--git-dir <expectedGitCommonDir>`
+        //    and `update-ref --no-deref -d <ref> <expectedSha>`!
+        const observedDeleteArgs: Array<ReadonlyArray<string>> = [];
+        const spyVcsLayer = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) => {
+            if (runInput.operation === "WorkspaceBundle.deleteUnusedBranch") {
+              observedDeleteArgs.push(runInput.args);
+            }
+            return baseVcsProcess.run(runInput);
+          },
+        });
+        const spyBundleLayer = Layer.fresh(WorkspaceBundle.layer).pipe(Layer.provide(spyVcsLayer));
+
+        yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          yield* svc.removeWorktree({
+            repoCwd: repoPath,
+            expectedGitCommonDir: repoInfo.gitCommonDir,
+            expectedGitCommonDirIdentity: repoInfo.identity,
+            branch: userCommitBranch,
+            expectedBranchHeadSha: userNewSha,
+          });
+        }).pipe(Effect.provide(spyBundleLayer));
+
+        expect(observedDeleteArgs).toEqual([
+          [
+            "--git-dir",
+            repoInfo.gitCommonDir,
+            "update-ref",
+            "--no-deref",
+            "-d",
+            `refs/heads/${userCommitBranch}`,
+            userNewSha,
+          ],
+        ]);
+        expect((yield* git(repoPath, ["branch", "--list", userCommitBranch])).trim()).toBe("");
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "never reuses symbolic branch refs (pointing to checked-out branch or dangling) during destination branch allocation",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-symref-branch-alloc-",
+        });
+        const dstRepo = path.join(root, "dst");
+        const srcRepo = path.join(root, "src");
+        const bundlePath = path.join(root, "alias.bundle");
+
+        // Destination main worktree is checked out on `other`, with symbolic ref `alias -> other`.
+        yield* fs.makeDirectory(dstRepo, { recursive: true });
+        yield* git(dstRepo, ["init", "-b", "other"]);
+        yield* fs.writeFileString(path.join(dstRepo, "shared.txt"), "base\n");
+        yield* git(dstRepo, ["add", "-A"]);
+        yield* git(dstRepo, ["commit", "-m", "base commit"]);
+        const baseSha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+        yield* git(dstRepo, ["symbolic-ref", "refs/heads/alias", "refs/heads/other"]);
+
+        // Export a bundle from a repo at the same commit SHA on branch `alias`.
+        yield* git(root, ["clone", dstRepo, srcRepo]);
+        yield* git(srcRepo, ["checkout", "-b", "alias", baseSha]);
+        const exported = yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-symref-alloc-1",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+        expect(exported.branch).toBe("alias");
+        expect(exported.headSha).toBe(baseSha);
+
+        const imported = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-symref-alloc-1",
+          repoCwd: dstRepo,
+          bundlePath,
+          sourceBranch: "alias",
+          targetLabel: "boat",
+        });
+
+        // Must allocate a distinct non-symbolic branch — never `alias` and never `other`.
+        expect(imported.branch).not.toBe("alias");
+        expect(imported.branch).not.toBe("other");
+        expect(imported.branch).toBe("alias-boat");
+        expect(imported.createdBranch).toBe(true);
+        expect(imported.branchRenamedFrom).toBe("alias");
+
+        // Symbolic ref `alias -> other` and main worktree checkout `other` remain intact.
+        expect((yield* git(dstRepo, ["symbolic-ref", "refs/heads/alias"])).trim()).toBe(
+          "refs/heads/other",
+        );
+        expect((yield* git(dstRepo, ["symbolic-ref", "--short", "HEAD"])).trim()).toBe("other");
+        expect(
+          (yield* git(imported.worktreePath, ["symbolic-ref", "--short", "HEAD"])).trim(),
+        ).toBe(imported.branch);
+
+        // Committing in the imported worktree must NOT advance `other`.
+        yield* fs.writeFileString(path.join(imported.worktreePath, "imported.txt"), "new work\n");
+        yield* git(imported.worktreePath, ["add", "imported.txt"]);
+        yield* git(imported.worktreePath, ["commit", "-m", "commit in imported worktree"]);
+        const importedCommitSha = (yield* git(imported.worktreePath, ["rev-parse", "HEAD"])).trim();
+        expect(importedCommitSha).not.toBe(baseSha);
+        expect((yield* git(dstRepo, ["rev-parse", "refs/heads/other"])).trim()).toBe(baseSha);
+
+        // Cleanup removes the imported worktree and allocated branch cleanly (leaving `other` and `alias` untouched).
+        yield* bundleService.removeWorktree({
+          repoCwd: dstRepo,
+          expectedGitCommonDir: imported.gitCommonDir,
+          expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+          worktreePath: imported.worktreePath,
+          branch: imported.branch,
+          expectedBranch: imported.branch,
+          expectedBranchHeadSha: importedCommitSha,
+        });
+        expect(yield* fs.exists(imported.worktreePath)).toBe(false);
+        expect((yield* git(dstRepo, ["branch", "--list", imported.branch])).trim()).toBe("");
+        expect((yield* git(dstRepo, ["rev-parse", "refs/heads/other"])).trim()).toBe(baseSha);
+        expect((yield* git(dstRepo, ["symbolic-ref", "refs/heads/alias"])).trim()).toBe(
+          "refs/heads/other",
+        );
+
+        // Also verify a dangling symbolic ref (omitted by git for-each-ref) is never dereferenced.
+        yield* git(dstRepo, [
+          "symbolic-ref",
+          "refs/heads/dangling-alias",
+          "refs/heads/dangling-target",
+        ]);
+        const danglingBundlePath = path.join(root, "dangling.bundle");
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-symref-dangling-1",
+          cwd: srcRepo,
+          outputPath: danglingBundlePath,
+        });
+        const danglingImported = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-symref-dangling-1",
+          repoCwd: dstRepo,
+          bundlePath: danglingBundlePath,
+          sourceBranch: "dangling-alias",
+          targetLabel: "boat",
+        });
+        expect(danglingImported.branch).toBe("dangling-alias-boat");
+        expect(danglingImported.createdBranch).toBe(true);
+        expect(danglingImported.branchRenamedFrom).toBe("dangling-alias");
+        expect((yield* git(dstRepo, ["branch", "--list", "dangling-target"])).trim()).toBe("");
+        expect((yield* git(dstRepo, ["symbolic-ref", "refs/heads/dangling-alias"])).trim()).toBe(
+          "refs/heads/dangling-target",
+        );
+
+        yield* bundleService.removeWorktree({
+          repoCwd: dstRepo,
+          expectedGitCommonDir: danglingImported.gitCommonDir,
+          expectedGitCommonDirIdentity: danglingImported.gitCommonDirIdentity,
+          worktreePath: danglingImported.worktreePath,
+          branch: danglingImported.branch,
+          expectedBranch: danglingImported.branch,
+          expectedBranchHeadSha: danglingImported.branchHeadSha,
+        });
+        expect(yield* fs.exists(danglingImported.worktreePath)).toBe(false);
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "refuses to delete or reuse a branch held by an active rebase or bisect in another worktree",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-rebase-bisect-guard-",
+        });
+        const dstRepo = path.join(root, "dst");
+        const srcRepo = path.join(root, "src");
+        const rebaseWt = path.join(root, "rebase-wt");
+        const bisectWt = path.join(root, "bisect-wt");
+        const bundlePath = path.join(root, "transfer.bundle");
+
+        // Initialize destination repo with a base commit on `main`.
+        yield* fs.makeDirectory(dstRepo, { recursive: true });
+        yield* git(dstRepo, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(dstRepo, "conflict.txt"), "base\n");
+        yield* git(dstRepo, ["add", "-A"]);
+        yield* git(dstRepo, ["commit", "-m", "base commit"]);
+        const baseSha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+
+        // Create source repo from destination, make a conflicting commit on `feat/rebase-target`.
+        yield* git(root, ["clone", dstRepo, srcRepo]);
+        yield* git(srcRepo, ["checkout", "-b", "feat/rebase-target"]);
+        yield* fs.writeFileString(path.join(srcRepo, "conflict.txt"), "feature change\n");
+        yield* git(srcRepo, ["add", "conflict.txt"]);
+        yield* git(srcRepo, ["commit", "-m", "feature commit"]);
+        const featureSha = (yield* git(srcRepo, ["rev-parse", "HEAD"])).trim();
+
+        // Advance `main` in dstRepo with a conflicting edit so rebasing `feat/rebase-target` onto `main` pauses on conflict.
+        yield* fs.writeFileString(path.join(dstRepo, "conflict.txt"), "main change\n");
+        yield* git(dstRepo, ["add", "conflict.txt"]);
+        yield* git(dstRepo, ["commit", "-m", "main conflicting commit"]);
+
+        // Export and import `feat/rebase-target` into dstRepo to create the transfer branch + worktree.
+        const exported = yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-rebase-probe-1",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+        const imported = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-rebase-probe-1",
+          repoCwd: dstRepo,
+          bundlePath,
+          sourceBranch: exported.branch,
+          targetLabel: "boat",
+        });
+        expect(imported.branch).toBe("feat/rebase-target");
+        expect(imported.branchHeadSha).toBe(featureSha);
+
+        // Remove the imported worktree while leaving the branch `feat/rebase-target` at `featureSha`.
+        yield* bundleService.removeWorktree({
+          repoCwd: dstRepo,
+          expectedGitCommonDir: imported.gitCommonDir,
+          expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+          worktreePath: imported.worktreePath,
+          expectedBranch: imported.branch,
+          expectedBranchHeadSha: imported.branchHeadSha,
+        });
+        expect(yield* fs.exists(imported.worktreePath)).toBe(false);
+        expect((yield* git(dstRepo, ["rev-parse", "refs/heads/feat/rebase-target"])).trim()).toBe(
+          featureSha,
+        );
+
+        // Check out `feat/rebase-target` in another worktree and start a rebase onto `main` that pauses on conflict.
+        yield* git(dstRepo, ["worktree", "add", rebaseWt, "feat/rebase-target"]);
+        const vcsProcess = yield* VcsProcess.VcsProcess;
+        const rebaseStart = yield* vcsProcess.run({
+          operation: "WorkspaceBundle.test.startConflictingRebase",
+          command: "git",
+          args: ["rebase", "main"],
+          cwd: rebaseWt,
+          env: GIT_TEST_ENV,
+          allowNonZeroExit: true,
+          timeoutMs: 15_000,
+        });
+        expect(rebaseStart.exitCode).not.toBe(0);
+
+        // Confirm `git worktree list --porcelain` reports detached HEAD (no `branch` line) for `rebaseWt`.
+        const porcelain = yield* git(dstRepo, ["worktree", "list", "--porcelain"]);
+        const rebaseWtBlock = porcelain
+          .split("\n\n")
+          .find((block) => block.includes(path.basename(rebaseWt)));
+        expect(rebaseWtBlock).toBeDefined();
+        expect(rebaseWtBlock).toContain("detached");
+        expect(rebaseWtBlock).not.toContain("branch refs/heads/feat/rebase-target");
+
+        // 1. removeWorktree MUST refuse deleting `feat/rebase-target` with `git_error`, preserving the ref.
+        const removeDuringRebase = yield* Effect.result(
+          bundleService.removeWorktree({
+            repoCwd: dstRepo,
+            expectedGitCommonDir: imported.gitCommonDir,
+            expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+            branch: "feat/rebase-target",
+            expectedBranchHeadSha: featureSha,
+          }),
+        );
+        expect(Result.isFailure(removeDuringRebase)).toBe(true);
+        if (Result.isFailure(removeDuringRebase)) {
+          expect(removeDuringRebase.failure.code).toBe("git_error");
+        }
+        expect((yield* git(dstRepo, ["rev-parse", "refs/heads/feat/rebase-target"])).trim()).toBe(
+          featureSha,
+        );
+
+        // 2. importWorkspaceBundle (allocateDestinationBranch) MUST refuse to reuse `feat/rebase-target`
+        //    while it is paused in an active rebase, allocating a distinct branch instead!
+        const bundlePath2 = path.join(root, "transfer-2.bundle");
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-rebase-probe-2",
+          cwd: srcRepo,
+          outputPath: bundlePath2,
+        });
+        const importDuringRebase = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-rebase-probe-2",
+          repoCwd: dstRepo,
+          bundlePath: bundlePath2,
+          sourceBranch: "feat/rebase-target",
+          targetLabel: "boat",
+        });
+        expect(importDuringRebase.branch).not.toBe("feat/rebase-target");
+        expect(importDuringRebase.branch).toBe("feat/rebase-target-boat");
+        expect(importDuringRebase.createdBranch).toBe(true);
+        expect(importDuringRebase.branchRenamedFrom).toBe("feat/rebase-target");
+
+        // Clean up the second imported worktree & branch.
+        yield* bundleService.removeWorktree({
+          repoCwd: dstRepo,
+          expectedGitCommonDir: importDuringRebase.gitCommonDir,
+          expectedGitCommonDirIdentity: importDuringRebase.gitCommonDirIdentity,
+          worktreePath: importDuringRebase.worktreePath,
+          branch: importDuringRebase.branch,
+          expectedBranch: importDuringRebase.branch,
+          expectedBranchHeadSha: importDuringRebase.branchHeadSha,
+        });
+
+        // 3. Resolving the conflict and running `git rebase --continue` MUST succeed and update `feat/rebase-target`!
+        yield* fs.writeFileString(path.join(rebaseWt, "conflict.txt"), "resolved change\n");
+        yield* git(rebaseWt, ["add", "conflict.txt"]);
+        yield* vcsProcess.run({
+          operation: "WorkspaceBundle.test.continueRebase",
+          command: "git",
+          args: ["rebase", "--continue"],
+          cwd: rebaseWt,
+          env: { ...GIT_TEST_ENV, GIT_EDITOR: "true" },
+          timeoutMs: 15_000,
+        });
+        expect((yield* git(rebaseWt, ["symbolic-ref", "--short", "HEAD"])).trim()).toBe(
+          "feat/rebase-target",
+        );
+        const rebasedSha = (yield* git(dstRepo, [
+          "rev-parse",
+          "refs/heads/feat/rebase-target",
+        ])).trim();
+        expect(rebasedSha).not.toBe(featureSha);
+
+        // Clean up rebaseWt before testing active bisect guard.
+        yield* git(dstRepo, ["worktree", "remove", "--force", rebaseWt]);
+
+        // 4. Active bisect in another worktree (`BISECT_START`) MUST also prevent deletion and reuse.
+        yield* git(dstRepo, ["worktree", "add", bisectWt, "feat/rebase-target"]);
+        yield* git(bisectWt, ["bisect", "start", "HEAD", baseSha]);
+        try {
+          const removeDuringBisect = yield* Effect.result(
+            bundleService.removeWorktree({
+              repoCwd: dstRepo,
+              expectedGitCommonDir: imported.gitCommonDir,
+              expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+              branch: "feat/rebase-target",
+              expectedBranchHeadSha: rebasedSha,
+            }),
+          );
+          expect(Result.isFailure(removeDuringBisect)).toBe(true);
+          if (Result.isFailure(removeDuringBisect)) {
+            expect(removeDuringBisect.failure.code).toBe("git_error");
+          }
+          expect((yield* git(dstRepo, ["rev-parse", "refs/heads/feat/rebase-target"])).trim()).toBe(
+            rebasedSha,
+          );
+        } finally {
+          yield* git(bisectWt, ["bisect", "reset"]).pipe(Effect.ignore);
+          yield* git(dstRepo, ["worktree", "remove", "--force", bisectWt]).pipe(Effect.ignore);
+        }
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "fails with git_error and never attaches or creates target when destination branch becomes a symbolic ref during onWorktreeAllocated or git worktree add",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const baseVcsProcess = yield* VcsProcess.VcsProcess;
+
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-symref-race-",
+        });
+        const dstRepo = path.join(root, "dst");
+        const srcRepo = path.join(root, "src");
+        const bundleExisting = path.join(root, "existing.bundle");
+        const bundleDangling = path.join(root, "dangling.bundle");
+        const bundlePostAdd = path.join(root, "post-add.bundle");
+
+        // Destination main worktree is checked out on `other`.
+        yield* fs.makeDirectory(dstRepo, { recursive: true });
+        yield* git(dstRepo, ["init", "-b", "other"]);
+        yield* fs.writeFileString(path.join(dstRepo, "shared.txt"), "base\n");
+        yield* git(dstRepo, ["add", "-A"]);
+        yield* git(dstRepo, ["commit", "-m", "base commit"]);
+        const baseSha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+
+        // Create an eligible direct branch `eligible-branch` at `baseSha` in dstRepo.
+        yield* git(dstRepo, ["branch", "eligible-branch", baseSha]);
+
+        // Export bundle from srcRepo on `eligible-branch` at `baseSha`.
+        yield* git(root, ["clone", dstRepo, srcRepo]);
+        yield* git(srcRepo, ["checkout", "-b", "eligible-branch", baseSha]);
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-symref-race-existing",
+          cwd: srcRepo,
+          outputPath: bundleExisting,
+        });
+
+        // Case 1: Mutate `eligible-branch` into a symbolic ref pointing to checked-out `other`
+        // inside `onWorktreeAllocated`.
+        const clearedExisting: Array<string> = [];
+        let allocatedPathExisting: string | null = null;
+        const existingRaceResult = yield* Effect.result(
+          bundleService.importWorkspaceBundle({
+            transferId: "xfer-symref-race-existing",
+            repoCwd: dstRepo,
+            bundlePath: bundleExisting,
+            sourceBranch: "eligible-branch",
+            targetLabel: "boat",
+            onWorktreeAllocated: (allocation) =>
+              Effect.gen(function* () {
+                allocatedPathExisting = allocation.worktreePath;
+                expect(allocation.branch).toBe("eligible-branch");
+                yield* baseVcsProcess
+                  .run({
+                    operation: "WorkspaceBundle.test.mutateExistingToSymref",
+                    command: "git",
+                    args: ["symbolic-ref", "refs/heads/eligible-branch", "refs/heads/other"],
+                    cwd: dstRepo,
+                    env: GIT_TEST_ENV,
+                    timeoutMs: 15_000,
+                  })
+                  .pipe(Effect.asVoid, Effect.orDie);
+              }),
+            onWorktreeAllocationCleared: (allocation) =>
+              Effect.sync(() => {
+                clearedExisting.push(allocation.worktreePath);
+              }),
+          }),
+        );
+        expect(Result.isFailure(existingRaceResult)).toBe(true);
+        if (Result.isFailure(existingRaceResult)) {
+          expect(existingRaceResult.failure.code).toBe("git_error");
+        }
+        expect(allocatedPathExisting).not.toBeNull();
+        expect(clearedExisting).toEqual([allocatedPathExisting]);
+        expect(yield* fs.exists(allocatedPathExisting!)).toBe(false);
+        expect(
+          (yield* git(dstRepo, ["worktree", "list", "--porcelain"])).split("worktree ").length - 1,
+        ).toBe(1);
+        expect((yield* git(dstRepo, ["symbolic-ref", "refs/heads/eligible-branch"])).trim()).toBe(
+          "refs/heads/other",
+        );
+        expect((yield* git(dstRepo, ["rev-parse", "refs/heads/other"])).trim()).toBe(baseSha);
+
+        // Case 2: Create a dangling symbolic ref for a new destination branch inside `onWorktreeAllocated`.
+        yield* git(srcRepo, ["checkout", "-b", "dangling-race", baseSha]);
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-symref-race-dangling",
+          cwd: srcRepo,
+          outputPath: bundleDangling,
+        });
+        const clearedDangling: Array<string> = [];
+        let allocatedPathDangling: string | null = null;
+        const danglingRaceResult = yield* Effect.result(
+          bundleService.importWorkspaceBundle({
+            transferId: "xfer-symref-race-dangling",
+            repoCwd: dstRepo,
+            bundlePath: bundleDangling,
+            sourceBranch: "dangling-race",
+            targetLabel: "boat",
+            onWorktreeAllocated: (allocation) =>
+              Effect.gen(function* () {
+                allocatedPathDangling = allocation.worktreePath;
+                expect(allocation.branch).toBe("dangling-race");
+                yield* baseVcsProcess
+                  .run({
+                    operation: "WorkspaceBundle.test.mutateDanglingToSymref",
+                    command: "git",
+                    args: [
+                      "symbolic-ref",
+                      "refs/heads/dangling-race",
+                      "refs/heads/dangling-target",
+                    ],
+                    cwd: dstRepo,
+                    env: GIT_TEST_ENV,
+                    timeoutMs: 15_000,
+                  })
+                  .pipe(Effect.asVoid, Effect.orDie);
+              }),
+            onWorktreeAllocationCleared: (allocation) =>
+              Effect.sync(() => {
+                clearedDangling.push(allocation.worktreePath);
+              }),
+          }),
+        );
+        expect(Result.isFailure(danglingRaceResult)).toBe(true);
+        if (Result.isFailure(danglingRaceResult)) {
+          expect(danglingRaceResult.failure.code).toBe("git_error");
+        }
+        expect(allocatedPathDangling).not.toBeNull();
+        expect(clearedDangling).toEqual([allocatedPathDangling]);
+        expect(yield* fs.exists(allocatedPathDangling!)).toBe(false);
+        expect((yield* git(dstRepo, ["branch", "--list", "dangling-target"])).trim()).toBe("");
+        expect(
+          (yield* git(dstRepo, ["worktree", "list", "--porcelain"])).split("worktree ").length - 1,
+        ).toBe(1);
+
+        // Case 3: Simulate TOCTOU symref mutation right before `git worktree add` targeting
+        // `foreign-target`; verify post-add verification removes only the new worktree, leaves
+        // `foreign-target` intact, clears ownership, and fails with `git_error`.
+        yield* git(dstRepo, ["branch", "foreign-target", baseSha]);
+        yield* git(dstRepo, ["branch", "post-add-race", baseSha]);
+        yield* git(srcRepo, ["checkout", "-b", "post-add-race", baseSha]);
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-symref-race-post-add",
+          cwd: srcRepo,
+          outputPath: bundlePostAdd,
+        });
+
+        let mutatedBeforeAdd = false;
+        const spyVcsLayer = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) =>
+            Effect.gen(function* () {
+              if (runInput.operation === "WorkspaceBundle.addWorktree" && !mutatedBeforeAdd) {
+                mutatedBeforeAdd = true;
+                yield* baseVcsProcess.run({
+                  operation: "WorkspaceBundle.test.mutateToSymrefBeforeAdd",
+                  command: "git",
+                  args: ["symbolic-ref", "refs/heads/post-add-race", "refs/heads/foreign-target"],
+                  cwd: dstRepo,
+                  env: GIT_TEST_ENV,
+                  timeoutMs: 15_000,
+                });
+              }
+              return yield* baseVcsProcess.run(runInput);
+            }),
+        });
+        const spyBundleLayer = Layer.fresh(WorkspaceBundle.layer).pipe(Layer.provide(spyVcsLayer));
+
+        const clearedPostAdd: Array<string> = [];
+        let allocatedPathPostAdd: string | null = null;
+        const postAddRaceResult = yield* Effect.result(
+          Effect.gen(function* () {
+            const svc = yield* WorkspaceBundle.WorkspaceBundle;
+            return yield* svc.importWorkspaceBundle({
+              transferId: "xfer-symref-race-post-add",
+              repoCwd: dstRepo,
+              bundlePath: bundlePostAdd,
+              sourceBranch: "post-add-race",
+              targetLabel: "boat",
+              onWorktreeAllocated: (allocation) =>
+                Effect.sync(() => {
+                  allocatedPathPostAdd = allocation.worktreePath;
+                }),
+              onWorktreeAllocationCleared: (allocation) =>
+                Effect.sync(() => {
+                  clearedPostAdd.push(allocation.worktreePath);
+                }),
+            });
+          }).pipe(Effect.provide(spyBundleLayer)),
+        );
+        expect(mutatedBeforeAdd).toBe(true);
+        expect(Result.isFailure(postAddRaceResult)).toBe(true);
+        if (Result.isFailure(postAddRaceResult)) {
+          expect(postAddRaceResult.failure.code).toBe("git_error");
+        }
+        expect(allocatedPathPostAdd).not.toBeNull();
+        expect(clearedPostAdd).toEqual([allocatedPathPostAdd]);
+        expect(yield* fs.exists(allocatedPathPostAdd!)).toBe(false);
+        expect((yield* git(dstRepo, ["rev-parse", "refs/heads/foreign-target"])).trim()).toBe(
+          baseSha,
+        );
+        expect(
+          (yield* git(dstRepo, ["worktree", "list", "--porcelain"])).split("worktree ").length - 1,
+        ).toBe(1);
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "refuses removeWorktree when the imported worktree has an active --no-checkout bisect (keeping worktree, BISECT_START, and branch intact)",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-bisect-no-checkout-",
+        });
+        const dstRepo = path.join(root, "dst");
+        const srcRepo = path.join(root, "src");
+        const bundlePath = path.join(root, "transfer.bundle");
+
+        yield* fs.makeDirectory(dstRepo, { recursive: true });
+        yield* git(dstRepo, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(dstRepo, "file.txt"), "v1\n");
+        yield* git(dstRepo, ["add", "-A"]);
+        yield* git(dstRepo, ["commit", "-m", "v1"]);
+
+        yield* git(root, ["clone", dstRepo, srcRepo]);
+        yield* git(srcRepo, ["checkout", "-b", "feat/bisect-no-checkout"]);
+        yield* fs.writeFileString(path.join(srcRepo, "file.txt"), "v2\n");
+        yield* git(srcRepo, ["add", "file.txt"]);
+        yield* git(srcRepo, ["commit", "-m", "v2"]);
+
+        const exported = yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-bisect-no-checkout-1",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+        const imported = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-bisect-no-checkout-1",
+          repoCwd: dstRepo,
+          bundlePath,
+          sourceBranch: exported.branch,
+          targetLabel: "boat",
+        });
+
+        const wtGitDir = (yield* git(imported.worktreePath, [
+          "rev-parse",
+          "--path-format=absolute",
+          "--git-dir",
+        ])).trim();
+        const bisectStartPath = path.join(wtGitDir, "BISECT_START");
+
+        // Start a --no-checkout bisect inside the imported worktree: HEAD remains attached
+        // to the transfer branch at the exact expected commit SHA!
+        yield* git(imported.worktreePath, ["bisect", "start", "--no-checkout"]);
+        try {
+          expect(
+            (yield* git(imported.worktreePath, ["symbolic-ref", "--short", "HEAD"])).trim(),
+          ).toBe(imported.branch);
+          expect((yield* git(imported.worktreePath, ["rev-parse", "HEAD"])).trim()).toBe(
+            imported.branchHeadSha,
+          );
+          expect(yield* fs.exists(bisectStartPath)).toBe(true);
+
+          const removeResult = yield* Effect.result(
+            bundleService.removeWorktree({
+              repoCwd: dstRepo,
+              expectedGitCommonDir: imported.gitCommonDir,
+              expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+              worktreePath: imported.worktreePath,
+              branch: imported.branch,
+              expectedBranch: imported.branch,
+              expectedBranchHeadSha: imported.branchHeadSha,
+            }),
+          );
+          expect(Result.isFailure(removeResult)).toBe(true);
+          if (Result.isFailure(removeResult)) {
+            expect(removeResult.failure.code).toBe("git_error");
+            expect(removeResult.failure.message.toLowerCase()).toContain("active git operation");
+          }
+
+          // Worktree, BISECT_START, and branch must all remain untouched!
+          expect(yield* fs.exists(imported.worktreePath)).toBe(true);
+          expect(yield* fs.exists(bisectStartPath)).toBe(true);
+          expect((yield* git(dstRepo, ["rev-parse", `refs/heads/${imported.branch}`])).trim()).toBe(
+            imported.branchHeadSha,
+          );
+        } finally {
+          yield* git(imported.worktreePath, ["bisect", "reset"]).pipe(Effect.ignore);
+        }
+
+        // Once bisect is reset, normal cleanup succeeds cleanly.
+        yield* bundleService.removeWorktree({
+          repoCwd: dstRepo,
+          expectedGitCommonDir: imported.gitCommonDir,
+          expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+          worktreePath: imported.worktreePath,
+          branch: imported.branch,
+          expectedBranch: imported.branch,
+          expectedBranchHeadSha: imported.branchHeadSha,
+        });
+        expect(yield* fs.exists(imported.worktreePath)).toBe(false);
+        expect((yield* git(dstRepo, ["branch", "--list", imported.branch])).trim()).toBe("");
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "protects secondary stacked branches held by git rebase --update-refs (both in update-refs/done and queued in git-rebase-todo) from reuse and deletion",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const vcsProcess = yield* VcsProcess.VcsProcess;
+
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-rebase-update-refs-",
+        });
+        const dstRepo = path.join(root, "dst");
+        const srcRepo = path.join(root, "src");
+        const rebaseWt = path.join(root, "rebase-wt");
+        const stackedBundle = path.join(root, "stacked.bundle");
+        const lateStackedBundle = path.join(root, "late-stacked.bundle");
+
+        // Build stacked history in dstRepo:
+        // main (c1 -> m2 conflicting with base1 on base.txt AND top1 on top.txt)
+        // base (c1 -> base1) -> stacked (base1 -> stacked1) -> top (stacked1 -> top1)
+        yield* fs.makeDirectory(dstRepo, { recursive: true });
+        yield* git(dstRepo, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(dstRepo, "base.txt"), "v1\n");
+        yield* fs.writeFileString(path.join(dstRepo, "top.txt"), "v1\n");
+        yield* git(dstRepo, ["add", "-A"]);
+        yield* git(dstRepo, ["commit", "-m", "c1"]);
+
+        yield* git(dstRepo, ["checkout", "-b", "base"]);
+        yield* fs.writeFileString(path.join(dstRepo, "base.txt"), "base change\n");
+        yield* git(dstRepo, ["add", "base.txt"]);
+        yield* git(dstRepo, ["commit", "-m", "base1"]);
+
+        yield* git(dstRepo, ["checkout", "-b", "stacked"]);
+        yield* fs.writeFileString(path.join(dstRepo, "stacked.txt"), "stacked change\n");
+        yield* git(dstRepo, ["add", "stacked.txt"]);
+        yield* git(dstRepo, ["commit", "-m", "stacked1"]);
+        const stackedSha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+
+        yield* git(dstRepo, ["checkout", "-b", "top"]);
+        yield* fs.writeFileString(path.join(dstRepo, "top.txt"), "top change\n");
+        yield* git(dstRepo, ["add", "top.txt"]);
+        yield* git(dstRepo, ["commit", "-m", "top1"]);
+
+        // Advance main with edits conflicting with BOTH `base1` and `top1`.
+        yield* git(dstRepo, ["checkout", "main"]);
+        yield* fs.writeFileString(path.join(dstRepo, "base.txt"), "main base change\n");
+        yield* fs.writeFileString(path.join(dstRepo, "top.txt"), "main top change\n");
+        yield* git(dstRepo, ["add", "-A"]);
+        yield* git(dstRepo, ["commit", "-m", "main conflicting"]);
+
+        const repoInfo = yield* bundleService.resolveGitCommonDirIdentity(dstRepo);
+        expect(repoInfo).not.toBeNull();
+
+        // Export bundles from srcRepo at `stackedSha` on `stacked` and `queued-only`.
+        yield* git(root, ["clone", dstRepo, srcRepo]);
+        yield* git(srcRepo, ["checkout", "-b", "stacked", stackedSha]);
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-update-refs-1",
+          cwd: srcRepo,
+          outputPath: stackedBundle,
+        });
+        yield* git(srcRepo, ["checkout", "-b", "queued-only", stackedSha]);
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-update-refs-queued",
+          cwd: srcRepo,
+          outputPath: lateStackedBundle,
+        });
+
+        // Start `git rebase --update-refs main` on `top` in another worktree; it pauses at `base1`.
+        yield* git(dstRepo, ["worktree", "add", rebaseWt, "top"]);
+        const rebaseWtGitDir = (yield* git(rebaseWt, [
+          "rev-parse",
+          "--path-format=absolute",
+          "--git-dir",
+        ])).trim();
+        const rebaseStart = yield* vcsProcess.run({
+          operation: "WorkspaceBundle.test.startUpdateRefsRebase",
+          command: "git",
+          args: ["rebase", "--update-refs", "main"],
+          cwd: rebaseWt,
+          env: GIT_TEST_ENV,
+          allowNonZeroExit: true,
+          timeoutMs: 15_000,
+        });
+        expect(rebaseStart.exitCode).not.toBe(0);
+
+        try {
+          // Phase A: Paused at `base1` — `update-ref refs/heads/stacked` is still queued in
+          // `rebase-merge/git-rebase-todo` (and present in `rebase-merge/update-refs`).
+          // Also append `update-ref refs/heads/queued-only` to `git-rebase-todo` only (NOT in
+          // `update-refs`) to verify todo-only parsing protects queued branches independently.
+          const todoPath = path.join(rebaseWtGitDir, "rebase-merge", "git-rebase-todo");
+          const updateRefsPath = path.join(rebaseWtGitDir, "rebase-merge", "update-refs");
+          // Create `queued-only` at `stackedSha` AFTER rebase started so it is NOT in
+          // `rebase-merge/update-refs`, and queue it only in `rebase-merge/git-rebase-todo`.
+          yield* git(dstRepo, ["branch", "queued-only", stackedSha]);
+          const todoBefore = yield* fs.readFileString(todoPath);
+          expect(todoBefore).toContain("update-ref refs/heads/stacked");
+          expect(yield* fs.readFileString(updateRefsPath)).toContain("refs/heads/stacked");
+          expect(yield* fs.readFileString(updateRefsPath)).not.toContain("refs/heads/queued-only");
+          yield* fs.writeFileString(
+            todoPath,
+            `${todoBefore.trimEnd()}\nupdate-ref refs/heads/queued-only\n`,
+          );
+
+          // Neither `stacked` nor `queued-only` may be reused or deleted!
+          for (const [branchName, bundleFile, xferId] of [
+            ["stacked", stackedBundle, "xfer-update-refs-1"],
+            ["queued-only", lateStackedBundle, "xfer-update-refs-queued"],
+          ] as const) {
+            const importResult = yield* bundleService.importWorkspaceBundle({
+              transferId: xferId,
+              repoCwd: dstRepo,
+              bundlePath: bundleFile,
+              sourceBranch: branchName,
+              targetLabel: "boat",
+            });
+            expect(importResult.branch).not.toBe(branchName);
+            expect(importResult.branch).toBe(`${branchName}-boat`);
+            expect(importResult.createdBranch).toBe(true);
+            expect(importResult.branchRenamedFrom).toBe(branchName);
+            yield* bundleService.removeWorktree({
+              repoCwd: dstRepo,
+              expectedGitCommonDir: importResult.gitCommonDir,
+              expectedGitCommonDirIdentity: importResult.gitCommonDirIdentity,
+              worktreePath: importResult.worktreePath,
+              branch: importResult.branch,
+              expectedBranch: importResult.branch,
+              expectedBranchHeadSha: importResult.branchHeadSha,
+            });
+
+            const removeRefResult = yield* Effect.result(
+              bundleService.removeWorktree({
+                repoCwd: dstRepo,
+                expectedGitCommonDir: repoInfo!.gitCommonDir,
+                expectedGitCommonDirIdentity: repoInfo!.identity,
+                branch: branchName,
+                expectedBranchHeadSha: stackedSha,
+              }),
+            );
+            expect(Result.isFailure(removeRefResult)).toBe(true);
+            if (Result.isFailure(removeRefResult)) {
+              expect(removeRefResult.failure.code).toBe("git_error");
+            }
+            expect((yield* git(dstRepo, ["rev-parse", `refs/heads/${branchName}`])).trim()).toBe(
+              stackedSha,
+            );
+          }
+
+          // Phase B: Resolve `base1` conflict and continue so Git applies `stacked1` and runs
+          // `update-ref refs/heads/stacked`, then pauses on `top1` conflict. Now `stacked` is
+          // NO LONGER in `git-rebase-todo`, only in `rebase-merge/update-refs` and `done`!
+          yield* fs.writeFileString(path.join(rebaseWt, "base.txt"), "resolved base\n");
+          yield* git(rebaseWt, ["add", "base.txt"]);
+          const continueToTop = yield* vcsProcess.run({
+            operation: "WorkspaceBundle.test.continueToTopConflict",
+            command: "git",
+            args: ["rebase", "--continue"],
+            cwd: rebaseWt,
+            env: { ...GIT_TEST_ENV, GIT_EDITOR: "true" },
+            allowNonZeroExit: true,
+            timeoutMs: 15_000,
+          });
+          expect(continueToTop.exitCode).not.toBe(0);
+
+          const todoAtTop = yield* fs.readFileString(todoPath);
+          const doneAtTop = yield* fs.readFileString(
+            path.join(rebaseWtGitDir, "rebase-merge", "done"),
+          );
+          expect(todoAtTop).not.toContain("update-ref refs/heads/stacked");
+          expect(doneAtTop).toContain("update-ref refs/heads/stacked");
+          expect(yield* fs.readFileString(updateRefsPath)).toContain("refs/heads/stacked");
+
+          const importPhaseB = yield* bundleService.importWorkspaceBundle({
+            transferId: "xfer-update-refs-1",
+            repoCwd: dstRepo,
+            bundlePath: stackedBundle,
+            sourceBranch: "stacked",
+            targetLabel: "boat",
+          });
+          expect(importPhaseB.branch).not.toBe("stacked");
+          expect(importPhaseB.branch).toBe("stacked-boat");
+          expect(importPhaseB.createdBranch).toBe(true);
+          expect(importPhaseB.branchRenamedFrom).toBe("stacked");
+          yield* bundleService.removeWorktree({
+            repoCwd: dstRepo,
+            expectedGitCommonDir: importPhaseB.gitCommonDir,
+            expectedGitCommonDirIdentity: importPhaseB.gitCommonDirIdentity,
+            worktreePath: importPhaseB.worktreePath,
+            branch: importPhaseB.branch,
+            expectedBranch: importPhaseB.branch,
+            expectedBranchHeadSha: importPhaseB.branchHeadSha,
+          });
+
+          const removePhaseB = yield* Effect.result(
+            bundleService.removeWorktree({
+              repoCwd: dstRepo,
+              expectedGitCommonDir: repoInfo!.gitCommonDir,
+              expectedGitCommonDirIdentity: repoInfo!.identity,
+              branch: "stacked",
+              expectedBranchHeadSha: stackedSha,
+            }),
+          );
+          expect(Result.isFailure(removePhaseB)).toBe(true);
+          if (Result.isFailure(removePhaseB)) {
+            expect(removePhaseB.failure.code).toBe("git_error");
+          }
+
+          // Resolve `top1` conflict and verify `git rebase --continue` succeeds cleanly and
+          // updates `stacked` (and `queued-only`).
+          yield* fs.writeFileString(path.join(rebaseWt, "top.txt"), "resolved top\n");
+          yield* git(rebaseWt, ["add", "top.txt"]);
+          yield* vcsProcess.run({
+            operation: "WorkspaceBundle.test.finishUpdateRefsRebase",
+            command: "git",
+            args: ["rebase", "--continue"],
+            cwd: rebaseWt,
+            env: { ...GIT_TEST_ENV, GIT_EDITOR: "true" },
+            timeoutMs: 15_000,
+          });
+          expect((yield* git(rebaseWt, ["symbolic-ref", "--short", "HEAD"])).trim()).toBe("top");
+          const updatedStackedSha = (yield* git(dstRepo, [
+            "rev-parse",
+            "refs/heads/stacked",
+          ])).trim();
+          expect(updatedStackedSha).not.toBe(stackedSha);
+        } finally {
+          yield* git(rebaseWt, ["rebase", "--abort"]).pipe(Effect.ignore);
+          yield* git(dstRepo, ["worktree", "remove", "--force", rebaseWt]).pipe(Effect.ignore);
+        }
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "preserves literal refs/heads/ prefix in BISECT_START so a branch literally named refs/heads/bisect-topic is neither deleted nor reused during bisect",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-bisect-literal-prefix-",
+        });
+        const dstRepo = path.join(root, "dst");
+        const srcRepo = path.join(root, "src");
+        const bisectWt = path.join(root, "bisect-wt");
+        const bundlePath = path.join(root, "bisect-topic.bundle");
+        const literalBranch = "refs/heads/bisect-topic";
+
+        yield* fs.makeDirectory(dstRepo, { recursive: true });
+        yield* git(dstRepo, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(dstRepo, "file.txt"), "c1\n");
+        yield* git(dstRepo, ["add", "-A"]);
+        yield* git(dstRepo, ["commit", "-m", "c1"]);
+        const baseSha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+
+        yield* fs.writeFileString(path.join(dstRepo, "file.txt"), "c2\n");
+        yield* git(dstRepo, ["add", "file.txt"]);
+        yield* git(dstRepo, ["commit", "-m", "c2"]);
+        const tipSha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+
+        // Create branch whose literal short name is `refs/heads/bisect-topic`
+        // (full ref `refs/heads/refs/heads/bisect-topic`).
+        yield* git(dstRepo, ["branch", literalBranch, tipSha]);
+
+        const repoInfo = yield* bundleService.resolveGitCommonDirIdentity(dstRepo);
+        expect(repoInfo).not.toBeNull();
+
+        yield* git(root, ["clone", dstRepo, srcRepo]);
+        yield* git(srcRepo, ["checkout", "-b", literalBranch, tipSha]);
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-bisect-literal-prefix",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+
+        // Start a bisect on `refs/heads/bisect-topic` in another worktree (which detaches HEAD
+        // and records `refs/heads/bisect-topic` verbatim in BISECT_START).
+        yield* git(dstRepo, ["worktree", "add", bisectWt, literalBranch]);
+        yield* git(bisectWt, ["bisect", "start", "HEAD", baseSha]);
+        try {
+          const wtGitDir = (yield* git(bisectWt, [
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+          ])).trim();
+          expect((yield* fs.readFileString(path.join(wtGitDir, "BISECT_START"))).trim()).toBe(
+            literalBranch,
+          );
+
+          // 1. removeWorktree MUST refuse deleting `refs/heads/bisect-topic` with `git_error`.
+          const removeResult = yield* Effect.result(
+            bundleService.removeWorktree({
+              repoCwd: dstRepo,
+              expectedGitCommonDir: repoInfo!.gitCommonDir,
+              expectedGitCommonDirIdentity: repoInfo!.identity,
+              branch: literalBranch,
+              expectedBranchHeadSha: tipSha,
+            }),
+          );
+          expect(Result.isFailure(removeResult)).toBe(true);
+          if (Result.isFailure(removeResult)) {
+            expect(removeResult.failure.code).toBe("git_error");
+          }
+          expect((yield* git(dstRepo, ["rev-parse", `refs/heads/${literalBranch}`])).trim()).toBe(
+            tipSha,
+          );
+
+          // 2. importWorkspaceBundle MUST refuse reusing `refs/heads/bisect-topic` and allocate
+          //    a distinct branch instead.
+          const imported = yield* bundleService.importWorkspaceBundle({
+            transferId: "xfer-bisect-literal-prefix",
+            repoCwd: dstRepo,
+            bundlePath,
+            sourceBranch: literalBranch,
+            targetLabel: "boat",
+          });
+          expect(imported.branch).not.toBe(literalBranch);
+          expect(imported.branch).toBe(`${literalBranch}-boat`);
+          expect(imported.createdBranch).toBe(true);
+          expect(imported.branchRenamedFrom).toBe(literalBranch);
+
+          yield* bundleService.removeWorktree({
+            repoCwd: dstRepo,
+            expectedGitCommonDir: imported.gitCommonDir,
+            expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+            worktreePath: imported.worktreePath,
+            branch: imported.branch,
+            expectedBranch: imported.branch,
+            expectedBranchHeadSha: imported.branchHeadSha,
+          });
+        } finally {
+          yield* git(bisectWt, ["bisect", "reset"]).pipe(Effect.ignore);
+          yield* git(dstRepo, ["worktree", "remove", "--force", bisectWt]).pipe(Effect.ignore);
+        }
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "fails with git_error, removes only the newly added worktree, preserves the moved branch, and clears ownership when an eligible existing branch moves during onWorktreeAllocated",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const vcsProcess = yield* VcsProcess.VcsProcess;
+
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-moved-branch-race-",
+        });
+        const dstRepo = path.join(root, "dst");
+        const srcRepo = path.join(root, "src");
+        const bundlePath = path.join(root, "transfer.bundle");
+
+        yield* fs.makeDirectory(dstRepo, { recursive: true });
+        yield* git(dstRepo, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(dstRepo, "file.txt"), "v1\n");
+        yield* git(dstRepo, ["add", "-A"]);
+        yield* git(dstRepo, ["commit", "-m", "c1"]);
+        const baseSha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+
+        yield* fs.writeFileString(path.join(dstRepo, "file.txt"), "v2\n");
+        yield* git(dstRepo, ["add", "file.txt"]);
+        yield* git(dstRepo, ["commit", "-m", "c2"]);
+        const movedSha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+
+        // Create eligible idle branch at baseSha matching the bundle HEAD.
+        yield* git(dstRepo, ["branch", "eligible-moved", baseSha]);
+
+        yield* git(root, ["clone", dstRepo, srcRepo]);
+        yield* git(srcRepo, ["checkout", "-b", "eligible-moved", baseSha]);
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-moved-branch-race",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+
+        let allocatedPath: string | null = null;
+        const clearedPaths: Array<string> = [];
+        const importResult = yield* Effect.result(
+          bundleService.importWorkspaceBundle({
+            transferId: "xfer-moved-branch-race",
+            repoCwd: dstRepo,
+            bundlePath,
+            sourceBranch: "eligible-moved",
+            targetLabel: "boat",
+            onWorktreeAllocated: (allocation) =>
+              Effect.gen(function* () {
+                allocatedPath = allocation.worktreePath;
+                expect(allocation.branch).toBe("eligible-moved");
+                expect(allocation.createdBranch).toBe(false);
+                // Move eligible-moved to movedSha right before git worktree add runs.
+                yield* vcsProcess
+                  .run({
+                    operation: "WorkspaceBundle.test.moveEligibleBranch",
+                    command: "git",
+                    args: ["update-ref", "refs/heads/eligible-moved", movedSha],
+                    cwd: dstRepo,
+                    env: GIT_TEST_ENV,
+                    timeoutMs: 15_000,
+                  })
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new WorkspaceBundle.WorkspaceBundleError({
+                          code: "git_error",
+                          message: cause.message,
+                          cause,
+                        }),
+                    ),
+                  );
+              }),
+            onWorktreeAllocationCleared: (allocation) =>
+              Effect.sync(() => {
+                clearedPaths.push(allocation.worktreePath);
+              }),
+          }),
+        );
+
+        expect(Result.isFailure(importResult)).toBe(true);
+        if (Result.isFailure(importResult)) {
+          expect(importResult.failure.code).toBe("git_error");
+        }
+        expect(allocatedPath).not.toBeNull();
+        expect(clearedPaths).toEqual([allocatedPath]);
+        expect(yield* fs.exists(allocatedPath!)).toBe(false);
+        expect((yield* git(dstRepo, ["rev-parse", "refs/heads/eligible-moved"])).trim()).toBe(
+          movedSha,
+        );
+        expect(
+          (yield* git(dstRepo, ["worktree", "list", "--porcelain"])).split("worktree ").length - 1,
+        ).toBe(1);
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "never creates a foreign branch when a dangling symref races with atomic branch ref creation or git worktree add",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseVcsProcess = yield* VcsProcess.VcsProcess;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-dangling-symref-atomic-",
+        });
+        const dstRepo = path.join(root, "dst");
+        const srcRepo = path.join(root, "src");
+        const bundleA = path.join(root, "a.bundle");
+        const bundleB = path.join(root, "b.bundle");
+        const bundleC = path.join(root, "c.bundle");
+
+        yield* fs.makeDirectory(dstRepo, { recursive: true });
+        yield* git(dstRepo, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(dstRepo, "file.txt"), "v1\n");
+        yield* git(dstRepo, ["add", "-A"]);
+        yield* git(dstRepo, ["commit", "-m", "init"]);
+        const baseSha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+
+        yield* git(root, ["clone", dstRepo, srcRepo]);
+
+        // Case A: Dangling symref introduced inside onWorktreeAllocated.
+        yield* git(srcRepo, ["checkout", "-b", "dang-hook", baseSha]);
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-dang-hook",
+          cwd: srcRepo,
+          outputPath: bundleA,
+        });
+        let allocA: string | null = null;
+        const clearedA: Array<string> = [];
+        const resA = yield* Effect.result(
+          bundleService.importWorkspaceBundle({
+            transferId: "xfer-dang-hook",
+            repoCwd: dstRepo,
+            bundlePath: bundleA,
+            sourceBranch: "dang-hook",
+            targetLabel: "boat",
+            onWorktreeAllocated: (allocation) =>
+              Effect.gen(function* () {
+                allocA = allocation.worktreePath;
+                yield* baseVcsProcess
+                  .run({
+                    operation: "WorkspaceBundle.test.createDanglingSymrefHook",
+                    command: "git",
+                    args: ["symbolic-ref", "refs/heads/dang-hook", "refs/heads/foreign-hook"],
+                    cwd: dstRepo,
+                    env: GIT_TEST_ENV,
+                    timeoutMs: 15_000,
+                  })
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new WorkspaceBundle.WorkspaceBundleError({
+                          code: "git_error",
+                          message: cause.message,
+                          cause,
+                        }),
+                    ),
+                  );
+              }),
+            onWorktreeAllocationCleared: (allocation) =>
+              Effect.sync(() => {
+                clearedA.push(allocation.worktreePath);
+              }),
+          }),
+        );
+        expect(Result.isFailure(resA)).toBe(true);
+        if (Result.isFailure(resA)) {
+          expect(resA.failure.code).toBe("git_error");
+        }
+        expect(allocA).not.toBeNull();
+        expect(clearedA).toEqual([allocA]);
+        expect(yield* fs.exists(allocA!)).toBe(false);
+        expect((yield* git(dstRepo, ["branch", "--list", "foreign-hook"])).trim()).toBe("");
+        expect((yield* git(dstRepo, ["symbolic-ref", "refs/heads/dang-hook"])).trim()).toBe(
+          "refs/heads/foreign-hook",
+        );
+
+        // Case B: TOCTOU dangling symref introduced AFTER symrefCheckBeforeAdd and right BEFORE
+        // WorkspaceBundle.createDestinationBranchRef (update-ref --no-deref).
+        yield* git(srcRepo, ["checkout", "-b", "dang-update-ref", baseSha]);
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-dang-update-ref",
+          cwd: srcRepo,
+          outputPath: bundleB,
+        });
+        let injectedBeforeCreateRef = false;
+        let addWorktreeCalledInB = false;
+        const spyVcsLayerB = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) =>
+            Effect.gen(function* () {
+              if (
+                runInput.operation === "WorkspaceBundle.createDestinationBranchRef" &&
+                !injectedBeforeCreateRef
+              ) {
+                injectedBeforeCreateRef = true;
+                yield* baseVcsProcess.run({
+                  operation: "WorkspaceBundle.test.injectDanglingBeforeUpdateRef",
+                  command: "git",
+                  args: [
+                    "symbolic-ref",
+                    "refs/heads/dang-update-ref",
+                    "refs/heads/foreign-update-ref",
+                  ],
+                  cwd: dstRepo,
+                  env: GIT_TEST_ENV,
+                  timeoutMs: 15_000,
+                });
+              }
+              if (runInput.operation === "WorkspaceBundle.addWorktree") {
+                addWorktreeCalledInB = true;
+              }
+              return yield* baseVcsProcess.run(runInput);
+            }),
+        });
+        const spyBundleLayerB = Layer.fresh(WorkspaceBundle.layer).pipe(
+          Layer.provide(spyVcsLayerB),
+        );
+        let allocB: string | null = null;
+        const clearedB: Array<string> = [];
+        const resB = yield* Effect.result(
+          Effect.gen(function* () {
+            const svc = yield* WorkspaceBundle.WorkspaceBundle;
+            return yield* svc.importWorkspaceBundle({
+              transferId: "xfer-dang-update-ref",
+              repoCwd: dstRepo,
+              bundlePath: bundleB,
+              sourceBranch: "dang-update-ref",
+              targetLabel: "boat",
+              onWorktreeAllocated: (allocation) =>
+                Effect.sync(() => {
+                  allocB = allocation.worktreePath;
+                }),
+              onWorktreeAllocationCleared: (allocation) =>
+                Effect.sync(() => {
+                  clearedB.push(allocation.worktreePath);
+                }),
+            });
+          }).pipe(Effect.provide(spyBundleLayerB)),
+        );
+        expect(injectedBeforeCreateRef).toBe(true);
+        expect(addWorktreeCalledInB).toBe(false);
+        expect(Result.isFailure(resB)).toBe(true);
+        if (Result.isFailure(resB)) {
+          expect(resB.failure.code).toBe("git_error");
+        }
+        expect(allocB).not.toBeNull();
+        expect(clearedB).toEqual([allocB]);
+        expect(yield* fs.exists(allocB!)).toBe(false);
+        expect((yield* git(dstRepo, ["branch", "--list", "foreign-update-ref"])).trim()).toBe("");
+        expect((yield* git(dstRepo, ["symbolic-ref", "refs/heads/dang-update-ref"])).trim()).toBe(
+          "refs/heads/foreign-update-ref",
+        );
+
+        // Case C: TOCTOU dangling symref swapped AFTER update-ref --no-deref succeeds and right
+        // BEFORE git worktree add (no -b); git worktree add fails cleanly without creating foreign.
+        yield* git(srcRepo, ["checkout", "-b", "dang-worktree-add", baseSha]);
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-dang-worktree-add",
+          cwd: srcRepo,
+          outputPath: bundleC,
+        });
+        let injectedBeforeAdd = false;
+        const spyVcsLayerC = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) =>
+            Effect.gen(function* () {
+              if (runInput.operation === "WorkspaceBundle.addWorktree" && !injectedBeforeAdd) {
+                injectedBeforeAdd = true;
+                expect(runInput.args).not.toContain("-b");
+                yield* baseVcsProcess.run({
+                  operation: "WorkspaceBundle.test.swapToDanglingBeforeAdd",
+                  command: "git",
+                  args: [
+                    "symbolic-ref",
+                    "refs/heads/dang-worktree-add",
+                    "refs/heads/foreign-worktree-add",
+                  ],
+                  cwd: dstRepo,
+                  env: GIT_TEST_ENV,
+                  timeoutMs: 15_000,
+                });
+              }
+              return yield* baseVcsProcess.run(runInput);
+            }),
+        });
+        const spyBundleLayerC = Layer.fresh(WorkspaceBundle.layer).pipe(
+          Layer.provide(spyVcsLayerC),
+        );
+        let allocC: string | null = null;
+        const clearedC: Array<string> = [];
+        const resC = yield* Effect.result(
+          Effect.gen(function* () {
+            const svc = yield* WorkspaceBundle.WorkspaceBundle;
+            return yield* svc.importWorkspaceBundle({
+              transferId: "xfer-dang-worktree-add",
+              repoCwd: dstRepo,
+              bundlePath: bundleC,
+              sourceBranch: "dang-worktree-add",
+              targetLabel: "boat",
+              onWorktreeAllocated: (allocation) =>
+                Effect.sync(() => {
+                  allocC = allocation.worktreePath;
+                }),
+              onWorktreeAllocationCleared: (allocation) =>
+                Effect.sync(() => {
+                  clearedC.push(allocation.worktreePath);
+                }),
+            });
+          }).pipe(Effect.provide(spyBundleLayerC)),
+        );
+        expect(injectedBeforeAdd).toBe(true);
+        expect(Result.isFailure(resC)).toBe(true);
+        if (Result.isFailure(resC)) {
+          expect(resC.failure.code).toBe("git_error");
+        }
+        expect(allocC).not.toBeNull();
+        expect(clearedC).toEqual([allocC]);
+        expect(yield* fs.exists(allocC!)).toBe(false);
+        expect((yield* git(dstRepo, ["branch", "--list", "foreign-worktree-add"])).trim()).toBe("");
+        expect((yield* git(dstRepo, ["symbolic-ref", "refs/heads/dang-worktree-add"])).trim()).toBe(
+          "refs/heads/foreign-worktree-add",
+        );
+        expect(
+          (yield* git(dstRepo, ["worktree", "list", "--porcelain"])).split("worktree ").length - 1,
+        ).toBe(1);
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "refuses removeWorktree when the imported worktree has a conflicted multi-commit or single-commit cherry-pick --no-commit (protecting sequencer/todo, conflict state, and branch)",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const vcsProcess = yield* VcsProcess.VcsProcess;
+
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-cherry-pick-no-commit-",
+        });
+        const dstRepo = path.join(root, "dst");
+        const srcRepo = path.join(root, "src");
+        const bundleMulti = path.join(root, "multi.bundle");
+        const bundleSingle = path.join(root, "single.bundle");
+
+        yield* fs.makeDirectory(dstRepo, { recursive: true });
+        yield* git(dstRepo, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(dstRepo, "conflict.txt"), "base\n");
+        yield* git(dstRepo, ["add", "-A"]);
+        yield* git(dstRepo, ["commit", "-m", "base"]);
+
+        // Create two commits on a side branch that conflict with main2.
+        yield* git(dstRepo, ["checkout", "-b", "side"]);
+        yield* fs.writeFileString(path.join(dstRepo, "conflict.txt"), "side1\n");
+        yield* git(dstRepo, ["add", "conflict.txt"]);
+        yield* git(dstRepo, ["commit", "-m", "side1"]);
+        const side1Sha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+
+        yield* fs.writeFileString(path.join(dstRepo, "conflict.txt"), "side2\n");
+        yield* git(dstRepo, ["add", "conflict.txt"]);
+        yield* git(dstRepo, ["commit", "-m", "side2"]);
+        const side2Sha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+
+        yield* git(dstRepo, ["checkout", "main"]);
+        yield* fs.writeFileString(path.join(dstRepo, "conflict.txt"), "main2\n");
+        yield* git(dstRepo, ["add", "conflict.txt"]);
+        yield* git(dstRepo, ["commit", "-m", "main2"]);
+        const main2Sha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+
+        yield* git(root, ["clone", dstRepo, srcRepo]);
+
+        // Case 1: Multi-commit `git cherry-pick --no-commit <side1> <side2>` leaves sequencer/todo
+        // while CHERRY_PICK_HEAD is absent and branch HEAD stays at main2Sha.
+        yield* git(srcRepo, ["checkout", "-b", "feat/cp-multi", main2Sha]);
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-cp-multi",
+          cwd: srcRepo,
+          outputPath: bundleMulti,
+        });
+        const importedMulti = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-cp-multi",
+          repoCwd: dstRepo,
+          bundlePath: bundleMulti,
+          sourceBranch: "feat/cp-multi",
+          targetLabel: "boat",
+        });
+
+        const multiCp = yield* vcsProcess.run({
+          operation: "WorkspaceBundle.test.cherryPickNoCommitMulti",
+          command: "git",
+          args: ["cherry-pick", "--no-commit", side1Sha, side2Sha],
+          cwd: importedMulti.worktreePath,
+          env: GIT_TEST_ENV,
+          allowNonZeroExit: true,
+          timeoutMs: 15_000,
+        });
+        expect(multiCp.exitCode).not.toBe(0);
+
+        const multiWtGitDir = (yield* git(importedMulti.worktreePath, [
+          "rev-parse",
+          "--path-format=absolute",
+          "--git-dir",
+        ])).trim();
+        expect(yield* fs.exists(path.join(multiWtGitDir, "sequencer", "todo"))).toBe(true);
+        expect(yield* fs.exists(path.join(multiWtGitDir, "CHERRY_PICK_HEAD"))).toBe(false);
+        expect((yield* git(importedMulti.worktreePath, ["rev-parse", "HEAD"])).trim()).toBe(
+          importedMulti.branchHeadSha,
+        );
+
+        const removeMultiResult = yield* Effect.result(
+          bundleService.removeWorktree({
+            repoCwd: dstRepo,
+            expectedGitCommonDir: importedMulti.gitCommonDir,
+            expectedGitCommonDirIdentity: importedMulti.gitCommonDirIdentity,
+            worktreePath: importedMulti.worktreePath,
+            branch: importedMulti.branch,
+            expectedBranch: importedMulti.branch,
+            expectedBranchHeadSha: importedMulti.branchHeadSha,
+          }),
+        );
+        expect(Result.isFailure(removeMultiResult)).toBe(true);
+        if (Result.isFailure(removeMultiResult)) {
+          expect(removeMultiResult.failure.code).toBe("git_error");
+        }
+        expect(yield* fs.exists(importedMulti.worktreePath)).toBe(true);
+        expect(yield* fs.exists(path.join(multiWtGitDir, "sequencer", "todo"))).toBe(true);
+        expect(
+          (yield* git(importedMulti.worktreePath, ["ls-files", "--unmerged"])).trim().length,
+        ).toBeGreaterThan(0);
+        expect(
+          (yield* git(dstRepo, ["rev-parse", `refs/heads/${importedMulti.branch}`])).trim(),
+        ).toBe(importedMulti.branchHeadSha);
+
+        yield* git(importedMulti.worktreePath, ["cherry-pick", "--abort"]);
+        yield* bundleService.removeWorktree({
+          repoCwd: dstRepo,
+          expectedGitCommonDir: importedMulti.gitCommonDir,
+          expectedGitCommonDirIdentity: importedMulti.gitCommonDirIdentity,
+          worktreePath: importedMulti.worktreePath,
+          branch: importedMulti.branch,
+          expectedBranch: importedMulti.branch,
+          expectedBranchHeadSha: importedMulti.branchHeadSha,
+        });
+        expect(yield* fs.exists(importedMulti.worktreePath)).toBe(false);
+
+        // Case 2: Single-commit `git cherry-pick --no-commit <side1>` leaves neither
+        // CHERRY_PICK_HEAD nor sequencer, only unmerged index entries while HEAD stays at main2Sha.
+        yield* git(srcRepo, ["checkout", "-b", "feat/cp-single", main2Sha]);
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-cp-single",
+          cwd: srcRepo,
+          outputPath: bundleSingle,
+        });
+        const importedSingle = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-cp-single",
+          repoCwd: dstRepo,
+          bundlePath: bundleSingle,
+          sourceBranch: "feat/cp-single",
+          targetLabel: "boat",
+        });
+
+        const singleCp = yield* vcsProcess.run({
+          operation: "WorkspaceBundle.test.cherryPickNoCommitSingle",
+          command: "git",
+          args: ["cherry-pick", "--no-commit", side1Sha],
+          cwd: importedSingle.worktreePath,
+          env: GIT_TEST_ENV,
+          allowNonZeroExit: true,
+          timeoutMs: 15_000,
+        });
+        expect(singleCp.exitCode).not.toBe(0);
+
+        const singleWtGitDir = (yield* git(importedSingle.worktreePath, [
+          "rev-parse",
+          "--path-format=absolute",
+          "--git-dir",
+        ])).trim();
+        expect(yield* fs.exists(path.join(singleWtGitDir, "CHERRY_PICK_HEAD"))).toBe(false);
+        expect(yield* fs.exists(path.join(singleWtGitDir, "sequencer"))).toBe(false);
+        expect(
+          (yield* git(importedSingle.worktreePath, ["ls-files", "--unmerged"])).trim().length,
+        ).toBeGreaterThan(0);
+
+        const removeSingleResult = yield* Effect.result(
+          bundleService.removeWorktree({
+            repoCwd: dstRepo,
+            expectedGitCommonDir: importedSingle.gitCommonDir,
+            expectedGitCommonDirIdentity: importedSingle.gitCommonDirIdentity,
+            worktreePath: importedSingle.worktreePath,
+            branch: importedSingle.branch,
+            expectedBranch: importedSingle.branch,
+            expectedBranchHeadSha: importedSingle.branchHeadSha,
+          }),
+        );
+        expect(Result.isFailure(removeSingleResult)).toBe(true);
+        if (Result.isFailure(removeSingleResult)) {
+          expect(removeSingleResult.failure.code).toBe("git_error");
+        }
+        expect(yield* fs.exists(importedSingle.worktreePath)).toBe(true);
+        expect(
+          (yield* git(importedSingle.worktreePath, ["ls-files", "--unmerged"])).trim().length,
+        ).toBeGreaterThan(0);
+        expect(
+          (yield* git(dstRepo, ["rev-parse", `refs/heads/${importedSingle.branch}`])).trim(),
+        ).toBe(importedSingle.branchHeadSha);
+
+        yield* git(importedSingle.worktreePath, ["reset", "--hard"]);
+        yield* bundleService.removeWorktree({
+          repoCwd: dstRepo,
+          expectedGitCommonDir: importedSingle.gitCommonDir,
+          expectedGitCommonDirIdentity: importedSingle.gitCommonDirIdentity,
+          worktreePath: importedSingle.worktreePath,
+          branch: importedSingle.branch,
+          expectedBranch: importedSingle.branch,
+          expectedBranchHeadSha: importedSingle.branchHeadSha,
+        });
+        expect(yield* fs.exists(importedSingle.worktreePath)).toBe(false);
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "preserves Unicode whitespace (U+00A0 NBSP) in stacked rebase --update-refs branch names and BISECT_START without stripping or splitting",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const vcsProcess = yield* VcsProcess.VcsProcess;
+
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-unicode-nbsp-branches-",
+        });
+        const dstRepo = path.join(root, "dst");
+        const srcRepo = path.join(root, "src");
+        const rebaseWt = path.join(root, "rebase-wt");
+        const bisectWt = path.join(root, "bisect-wt");
+
+        const stackedNbsp = "stacked\u00a0branch";
+        const queuedTrailingNbsp = "queued-nbsp\u00a0";
+        const bisectTrailingNbsp = "bisect-nbsp\u00a0";
+
+        // Build stacked history + 3-commit history for bisect:
+        // c1 -> base1 -> stacked1 (stacked\u00a0branch) -> top1 (top)
+        yield* fs.makeDirectory(dstRepo, { recursive: true });
+        yield* git(dstRepo, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(dstRepo, "base.txt"), "v1\n");
+        yield* fs.writeFileString(path.join(dstRepo, "top.txt"), "v1\n");
+        yield* git(dstRepo, ["add", "-A"]);
+        yield* git(dstRepo, ["commit", "-m", "c1"]);
+        const c1Sha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+
+        yield* git(dstRepo, ["checkout", "-b", "base"]);
+        yield* fs.writeFileString(path.join(dstRepo, "base.txt"), "base change\n");
+        yield* git(dstRepo, ["add", "base.txt"]);
+        yield* git(dstRepo, ["commit", "-m", "base1"]);
+
+        yield* git(dstRepo, ["checkout", "-b", stackedNbsp]);
+        yield* fs.writeFileString(path.join(dstRepo, "stacked.txt"), "stacked change\n");
+        yield* git(dstRepo, ["add", "stacked.txt"]);
+        yield* git(dstRepo, ["commit", "-m", "stacked1"]);
+        const stackedSha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+
+        yield* git(dstRepo, ["checkout", "-b", "top"]);
+        yield* fs.writeFileString(path.join(dstRepo, "top.txt"), "top change\n");
+        yield* git(dstRepo, ["add", "top.txt"]);
+        yield* git(dstRepo, ["commit", "-m", "top1"]);
+        const topSha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+
+        // Advance main with edits conflicting with base1 and top1.
+        yield* git(dstRepo, ["checkout", "main"]);
+        yield* fs.writeFileString(path.join(dstRepo, "base.txt"), "main base\n");
+        yield* fs.writeFileString(path.join(dstRepo, "top.txt"), "main top\n");
+        yield* git(dstRepo, ["add", "-A"]);
+        yield* git(dstRepo, ["commit", "-m", "main conflict"]);
+
+        // Create 3-commit branch ending with U+00A0 for bisect test.
+        yield* git(dstRepo, ["branch", bisectTrailingNbsp, topSha]);
+
+        const repoInfo = yield* bundleService.resolveGitCommonDirIdentity(dstRepo);
+        expect(repoInfo).not.toBeNull();
+
+        yield* git(root, ["clone", dstRepo, srcRepo]);
+
+        const stackedBundle = path.join(root, "stacked-nbsp.bundle");
+        yield* git(srcRepo, ["checkout", "-b", stackedNbsp, stackedSha]);
+        const exportedStacked = yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-nbsp-stacked",
+          cwd: srcRepo,
+          outputPath: stackedBundle,
+        });
+        expect(exportedStacked.branch).toBe(stackedNbsp);
+
+        const queuedBundle = path.join(root, "queued-nbsp.bundle");
+        yield* git(srcRepo, ["checkout", "-b", queuedTrailingNbsp, stackedSha]);
+        const exportedQueued = yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-nbsp-queued",
+          cwd: srcRepo,
+          outputPath: queuedBundle,
+        });
+        expect(exportedQueued.branch).toBe(queuedTrailingNbsp);
+
+        const bisectBundle = path.join(root, "bisect-nbsp.bundle");
+        yield* git(srcRepo, ["checkout", "-b", bisectTrailingNbsp, topSha]);
+        const exportedBisect = yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-nbsp-bisect",
+          cwd: srcRepo,
+          outputPath: bisectBundle,
+        });
+        expect(exportedBisect.branch).toBe(bisectTrailingNbsp);
+
+        // Part 1: Active `git rebase --update-refs` with U+00A0 branch names in todo/done/update-refs.
+        yield* git(dstRepo, ["worktree", "add", rebaseWt, "top"]);
+        const rebaseWtGitDir = (yield* git(rebaseWt, [
+          "rev-parse",
+          "--path-format=absolute",
+          "--git-dir",
+        ])).trim();
+        const rebaseStart = yield* vcsProcess.run({
+          operation: "WorkspaceBundle.test.startNbspRebase",
+          command: "git",
+          args: ["rebase", "--update-refs", "main"],
+          cwd: rebaseWt,
+          env: GIT_TEST_ENV,
+          allowNonZeroExit: true,
+          timeoutMs: 15_000,
+        });
+        expect(rebaseStart.exitCode).not.toBe(0);
+
+        try {
+          // Queue `queued-nbsp\u00a0` ONLY in git-rebase-todo (not in update-refs) so we directly
+          // exercise parseRebaseTodoUpdateRefBranches on both middle and trailing U+00A0!
+          const todoPath = path.join(rebaseWtGitDir, "rebase-merge", "git-rebase-todo");
+          const updateRefsPath = path.join(rebaseWtGitDir, "rebase-merge", "update-refs");
+          yield* git(dstRepo, ["branch", queuedTrailingNbsp, stackedSha]);
+          const todoBefore = yield* fs.readFileString(todoPath);
+          expect(todoBefore).toContain(`update-ref refs/heads/${stackedNbsp}`);
+          expect(yield* fs.readFileString(updateRefsPath)).not.toContain(queuedTrailingNbsp);
+          yield* fs.writeFileString(
+            todoPath,
+            `${todoBefore.replace(/[\r\n]+$/, "")}\nupdate-ref refs/heads/${queuedTrailingNbsp}\n`,
+          );
+
+          for (const [branchName, bundleFile, xferId] of [
+            [stackedNbsp, stackedBundle, "xfer-nbsp-stacked"],
+            [queuedTrailingNbsp, queuedBundle, "xfer-nbsp-queued"],
+          ] as const) {
+            const removeRes = yield* Effect.result(
+              bundleService.removeWorktree({
+                repoCwd: dstRepo,
+                expectedGitCommonDir: repoInfo!.gitCommonDir,
+                expectedGitCommonDirIdentity: repoInfo!.identity,
+                branch: branchName,
+                expectedBranchHeadSha: stackedSha,
+              }),
+            );
+            expect(Result.isFailure(removeRes)).toBe(true);
+            if (Result.isFailure(removeRes)) {
+              expect(removeRes.failure.code).toBe("git_error");
+            }
+            expect((yield* git(dstRepo, ["rev-parse", `refs/heads/${branchName}`])).trim()).toBe(
+              stackedSha,
+            );
+
+            const imported = yield* bundleService.importWorkspaceBundle({
+              transferId: xferId,
+              repoCwd: dstRepo,
+              bundlePath: bundleFile,
+              sourceBranch: branchName,
+              targetLabel: "boat",
+            });
+            expect(imported.branch).toBe(`${branchName}-boat`);
+            expect(imported.createdBranch).toBe(true);
+            expect(imported.branchRenamedFrom).toBe(branchName);
+            yield* bundleService.removeWorktree({
+              repoCwd: dstRepo,
+              expectedGitCommonDir: imported.gitCommonDir,
+              expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+              worktreePath: imported.worktreePath,
+              branch: imported.branch,
+              expectedBranch: imported.branch,
+              expectedBranchHeadSha: imported.branchHeadSha,
+            });
+          }
+
+          // Advance past base1 so `stacked\u00a0branch` moves into `done` + `update-refs`.
+          yield* fs.writeFileString(path.join(rebaseWt, "base.txt"), "resolved base\n");
+          yield* git(rebaseWt, ["add", "base.txt"]);
+          const continueRes = yield* vcsProcess.run({
+            operation: "WorkspaceBundle.test.continueNbspRebase",
+            command: "git",
+            args: ["rebase", "--continue"],
+            cwd: rebaseWt,
+            env: { ...GIT_TEST_ENV, GIT_EDITOR: "true" },
+            allowNonZeroExit: true,
+            timeoutMs: 15_000,
+          });
+          expect(continueRes.exitCode).not.toBe(0);
+          expect(
+            yield* fs.readFileString(path.join(rebaseWtGitDir, "rebase-merge", "done")),
+          ).toContain(`update-ref refs/heads/${stackedNbsp}`);
+
+          const removePhaseB = yield* Effect.result(
+            bundleService.removeWorktree({
+              repoCwd: dstRepo,
+              expectedGitCommonDir: repoInfo!.gitCommonDir,
+              expectedGitCommonDirIdentity: repoInfo!.identity,
+              branch: stackedNbsp,
+              expectedBranchHeadSha: stackedSha,
+            }),
+          );
+          expect(Result.isFailure(removePhaseB)).toBe(true);
+          if (Result.isFailure(removePhaseB)) {
+            expect(removePhaseB.failure.code).toBe("git_error");
+          }
+        } finally {
+          yield* git(rebaseWt, ["rebase", "--abort"]).pipe(Effect.ignore);
+          yield* git(dstRepo, ["worktree", "remove", "--force", rebaseWt]).pipe(Effect.ignore);
+        }
+
+        // Part 2: 3-commit active bisect started on `bisect-nbsp\u00a0` (trailing U+00A0 in BISECT_START).
+        yield* git(dstRepo, ["worktree", "add", bisectWt, bisectTrailingNbsp]);
+        yield* git(bisectWt, ["bisect", "start", "HEAD", c1Sha]);
+        try {
+          const bisectWtGitDir = (yield* git(bisectWt, [
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+          ])).trim();
+          const bisectStartContent = yield* fs.readFileString(
+            path.join(bisectWtGitDir, "BISECT_START"),
+          );
+          expect(bisectStartContent.replace(/[\r\n]+$/, "")).toBe(bisectTrailingNbsp);
+
+          const removeBisectResult = yield* Effect.result(
+            bundleService.removeWorktree({
+              repoCwd: dstRepo,
+              expectedGitCommonDir: repoInfo!.gitCommonDir,
+              expectedGitCommonDirIdentity: repoInfo!.identity,
+              branch: bisectTrailingNbsp,
+              expectedBranchHeadSha: topSha,
+            }),
+          );
+          expect(Result.isFailure(removeBisectResult)).toBe(true);
+          if (Result.isFailure(removeBisectResult)) {
+            expect(removeBisectResult.failure.code).toBe("git_error");
+          }
+          expect(
+            (yield* git(dstRepo, ["rev-parse", `refs/heads/${bisectTrailingNbsp}`])).trim(),
+          ).toBe(topSha);
+
+          const importedBisect = yield* bundleService.importWorkspaceBundle({
+            transferId: "xfer-nbsp-bisect",
+            repoCwd: dstRepo,
+            bundlePath: bisectBundle,
+            sourceBranch: bisectTrailingNbsp,
+            targetLabel: "boat",
+          });
+          expect(importedBisect.branch).toBe(`${bisectTrailingNbsp}-boat`);
+          expect(importedBisect.createdBranch).toBe(true);
+          expect(importedBisect.branchRenamedFrom).toBe(bisectTrailingNbsp);
+
+          yield* bundleService.removeWorktree({
+            repoCwd: dstRepo,
+            expectedGitCommonDir: importedBisect.gitCommonDir,
+            expectedGitCommonDirIdentity: importedBisect.gitCommonDirIdentity,
+            worktreePath: importedBisect.worktreePath,
+            branch: importedBisect.branch,
+            expectedBranch: importedBisect.branch,
+            expectedBranchHeadSha: importedBisect.branchHeadSha,
+          });
+        } finally {
+          yield* git(bisectWt, ["bisect", "reset"]).pipe(Effect.ignore);
+          yield* git(dstRepo, ["worktree", "remove", "--force", bisectWt]).pipe(Effect.ignore);
+        }
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "refuses removeWorktree when a single-commit cherry-pick --no-commit conflicted worktree directory has moved away (preserving administrative index and branch)",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const vcsProcess = yield* VcsProcess.VcsProcess;
+
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-moved-conflict-index-",
+        });
+        const dstRepo = path.join(root, "dst");
+        const srcRepo = path.join(root, "src");
+        const bundlePath = path.join(root, "single-moved.bundle");
+
+        yield* fs.makeDirectory(dstRepo, { recursive: true });
+        yield* git(dstRepo, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(dstRepo, "conflict.txt"), "base\n");
+        yield* git(dstRepo, ["add", "-A"]);
+        yield* git(dstRepo, ["commit", "-m", "base"]);
+
+        yield* git(dstRepo, ["checkout", "-b", "side"]);
+        yield* fs.writeFileString(path.join(dstRepo, "conflict.txt"), "side1\n");
+        yield* git(dstRepo, ["add", "conflict.txt"]);
+        yield* git(dstRepo, ["commit", "-m", "side1"]);
+        const side1Sha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+
+        yield* git(dstRepo, ["checkout", "main"]);
+        yield* fs.writeFileString(path.join(dstRepo, "conflict.txt"), "main2\n");
+        yield* git(dstRepo, ["add", "conflict.txt"]);
+        yield* git(dstRepo, ["commit", "-m", "main2"]);
+        const main2Sha = (yield* git(dstRepo, ["rev-parse", "HEAD"])).trim();
+
+        yield* git(root, ["clone", dstRepo, srcRepo]);
+        yield* git(srcRepo, ["checkout", "-b", "feat/cp-single-moved", main2Sha]);
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-cp-single-moved",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+        const imported = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-cp-single-moved",
+          repoCwd: dstRepo,
+          bundlePath,
+          sourceBranch: "feat/cp-single-moved",
+          targetLabel: "boat",
+        });
+
+        const singleCp = yield* vcsProcess.run({
+          operation: "WorkspaceBundle.test.cherryPickNoCommitMoved",
+          command: "git",
+          args: ["cherry-pick", "--no-commit", side1Sha],
+          cwd: imported.worktreePath,
+          env: GIT_TEST_ENV,
+          allowNonZeroExit: true,
+          timeoutMs: 15_000,
+        });
+        expect(singleCp.exitCode).not.toBe(0);
+
+        const wtGitDir = (yield* git(imported.worktreePath, [
+          "rev-parse",
+          "--path-format=absolute",
+          "--git-dir",
+        ])).trim();
+        const wtIndexPath = path.join(wtGitDir, "index");
+        expect(yield* fs.exists(path.join(wtGitDir, "CHERRY_PICK_HEAD"))).toBe(false);
+        expect(yield* fs.exists(path.join(wtGitDir, "sequencer"))).toBe(false);
+        expect(
+          (yield* git(imported.worktreePath, ["ls-files", "--unmerged"])).trim().length,
+        ).toBeGreaterThan(0);
+
+        // Move the worktree directory away so imported.worktreePath is ENOENT on disk.
+        const movedPath = `${imported.worktreePath}-moved`;
+        yield* fs.rename(imported.worktreePath, movedPath);
+        expect(yield* fs.exists(imported.worktreePath)).toBe(false);
+        expect(yield* fs.exists(movedPath)).toBe(true);
+
+        const removeResult = yield* Effect.result(
+          bundleService.removeWorktree({
+            repoCwd: dstRepo,
+            expectedGitCommonDir: imported.gitCommonDir,
+            expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+            worktreePath: imported.worktreePath,
+            branch: imported.branch,
+            expectedBranch: imported.branch,
+            expectedBranchHeadSha: imported.branchHeadSha,
+          }),
+        );
+        expect(Result.isFailure(removeResult)).toBe(true);
+        if (Result.isFailure(removeResult)) {
+          expect(removeResult.failure.code).toBe("git_error");
+        }
+
+        // Administrative <wtGitDir>/index (still containing unmerged entries) and branch must remain intact.
+        expect(yield* fs.exists(wtIndexPath)).toBe(true);
+        const unmergedAfter = yield* vcsProcess.run({
+          operation: "WorkspaceBundle.test.verifyMovedUnmergedIndex",
+          command: "git",
+          args: ["--git-dir", wtGitDir, "--work-tree", wtGitDir, "ls-files", "--unmerged"],
+          cwd: wtGitDir,
+          env: { ...GIT_TEST_ENV, GIT_INDEX_FILE: wtIndexPath },
+          timeoutMs: 15_000,
+        });
+        expect(unmergedAfter.stdout.trim().length).toBeGreaterThan(0);
+        expect((yield* git(dstRepo, ["rev-parse", `refs/heads/${imported.branch}`])).trim()).toBe(
+          imported.branchHeadSha,
+        );
+
+        // Move the worktree back, clear the conflict, and confirm cleanup succeeds afterward.
+        yield* fs.rename(movedPath, imported.worktreePath);
+        yield* git(imported.worktreePath, ["reset", "--hard"]);
+        yield* bundleService.removeWorktree({
+          repoCwd: dstRepo,
+          expectedGitCommonDir: imported.gitCommonDir,
+          expectedGitCommonDirIdentity: imported.gitCommonDirIdentity,
+          worktreePath: imported.worktreePath,
+          branch: imported.branch,
+          expectedBranch: imported.branch,
+          expectedBranchHeadSha: imported.branchHeadSha,
+        });
+        expect(yield* fs.exists(imported.worktreePath)).toBe(false);
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "deletes transfer-created branch when interrupted after createDestinationBranchRef succeeds before result delivery while preserving externally created branches at the same SHA",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseVcsProcess = yield* VcsProcess.VcsProcess;
+        const baseBundleService = yield* WorkspaceBundle.WorkspaceBundle;
+
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-interrupt-after-ref-",
+        });
+        const srcRepo = path.join(root, "src");
+        const dstRepo = path.join(root, "dst");
+        const bundlePath = path.join(root, "interrupt-after-ref.bundle");
+
+        yield* fs.makeDirectory(srcRepo, { recursive: true });
+        yield* git(srcRepo, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(srcRepo, "file.txt"), "base\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "init"]);
+        yield* git(root, ["clone", srcRepo, dstRepo]);
+
+        yield* git(srcRepo, ["checkout", "-b", "feat/interrupt-after-ref"]);
+        yield* fs.writeFileString(path.join(srcRepo, "file.txt"), "feature\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "feature"]);
+
+        const exported = yield* baseBundleService.exportWorkspaceBundle({
+          transferId: "xfer-interrupt-after-ref",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+
+        // Part 1: Run the real update-ref, pause delivery of its successful result to the importer,
+        // and interrupt the import fiber. Verify the transfer-created branch is deleted before
+        // onWorktreeAllocationCleared runs.
+        const refCreatedPaused = yield* Deferred.make<void>();
+        let clearedCount = 0;
+        let allocatedWorktreePath = "";
+        let branchDeletedBeforeClear = false;
+        let createRefExitCode: number | null = null;
+
+        const pausedAfterRefVcsLayer = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) => {
+            if (runInput.operation === "WorkspaceBundle.createDestinationBranchRef") {
+              return Effect.gen(function* () {
+                const result = yield* baseVcsProcess.run(runInput);
+                createRefExitCode = result.exitCode;
+                yield* Deferred.succeed(refCreatedPaused, undefined);
+                return yield* Effect.never;
+              });
+            }
+            return baseVcsProcess.run(runInput);
+          },
+        });
+        const pausedAfterRefBundleLayer = Layer.fresh(WorkspaceBundle.layer).pipe(
+          Layer.provide(pausedAfterRefVcsLayer),
+        );
+
+        yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          const fiber = yield* Effect.forkChild(
+            svc.importWorkspaceBundle({
+              transferId: "xfer-interrupt-after-ref",
+              repoCwd: dstRepo,
+              bundlePath,
+              sourceBranch: exported.branch,
+              targetLabel: "boat",
+              onWorktreeAllocated: (allocation) =>
+                Effect.sync(() => {
+                  allocatedWorktreePath = allocation.worktreePath;
+                }),
+              onWorktreeAllocationCleared: () =>
+                Effect.gen(function* () {
+                  const checkRef = yield* Effect.result(
+                    baseVcsProcess.run({
+                      operation: "WorkspaceBundle.test.checkRefBeforeClear",
+                      command: "git",
+                      args: [
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        "refs/heads/feat/interrupt-after-ref",
+                      ],
+                      cwd: dstRepo,
+                      env: GIT_TEST_ENV,
+                      allowNonZeroExit: true,
+                      timeoutMs: 15_000,
+                    }),
+                  );
+                  branchDeletedBeforeClear =
+                    Result.isSuccess(checkRef) && checkRef.success.exitCode === 1;
+                  clearedCount += 1;
+                }),
+            }),
+          );
+          yield* Deferred.await(refCreatedPaused);
+          expect(createRefExitCode).toBe(0);
+          // Confirm the ref really exists on disk while delivery is paused.
+          expect(
+            (yield* git(dstRepo, ["rev-parse", "refs/heads/feat/interrupt-after-ref"])).trim(),
+          ).toBe(exported.headSha);
+
+          yield* Fiber.interrupt(fiber);
+        }).pipe(Effect.provide(pausedAfterRefBundleLayer));
+
+        expect(clearedCount).toBe(1);
+        expect(branchDeletedBeforeClear).toBe(true);
+        expect(yield* fs.exists(allocatedWorktreePath)).toBe(false);
+        const verifyAfterInterrupt = yield* baseVcsProcess.run({
+          operation: "WorkspaceBundle.test.verifyRefDeletedAfterInterrupt",
+          command: "git",
+          args: ["rev-parse", "--verify", "--quiet", "refs/heads/feat/interrupt-after-ref"],
+          cwd: dstRepo,
+          env: GIT_TEST_ENV,
+          allowNonZeroExit: true,
+          timeoutMs: 15_000,
+        });
+        expect(verifyAfterInterrupt.exitCode).toBe(1);
+
+        // Part 2: When interrupted BEFORE update-ref runs and an external caller creates the
+        // destination branch at the exact same headSha, the external branch must NOT be deleted.
+        const preCreatePaused = yield* Deferred.make<void>();
+        let clearedCount2 = 0;
+        let allocatedWorktreePath2 = "";
+        const pausedBeforeRefVcsLayer = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) => {
+            if (runInput.operation === "WorkspaceBundle.createDestinationBranchRef") {
+              return Deferred.succeed(preCreatePaused, undefined).pipe(
+                Effect.andThen(Effect.never),
+              );
+            }
+            return baseVcsProcess.run(runInput);
+          },
+        });
+        const pausedBeforeRefBundleLayer = Layer.fresh(WorkspaceBundle.layer).pipe(
+          Layer.provide(pausedBeforeRefVcsLayer),
+        );
+
+        yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          const fiber2 = yield* Effect.forkChild(
+            svc.importWorkspaceBundle({
+              transferId: "xfer-interrupt-after-ref",
+              repoCwd: dstRepo,
+              bundlePath,
+              sourceBranch: exported.branch,
+              targetLabel: "boat",
+              onWorktreeAllocated: (allocation) =>
+                Effect.sync(() => {
+                  allocatedWorktreePath2 = allocation.worktreePath;
+                }),
+              onWorktreeAllocationCleared: () =>
+                Effect.sync(() => {
+                  clearedCount2 += 1;
+                }),
+            }),
+          );
+          yield* Deferred.await(preCreatePaused);
+          // Externally create the branch at the exact same headSha (which was already unbundled).
+          yield* git(dstRepo, ["branch", "feat/interrupt-after-ref", exported.headSha]);
+          yield* Fiber.interrupt(fiber2);
+        }).pipe(Effect.provide(pausedBeforeRefBundleLayer));
+
+        expect(clearedCount2).toBe(1);
+        expect(yield* fs.exists(allocatedWorktreePath2)).toBe(false);
+        expect(
+          (yield* git(dstRepo, ["rev-parse", "refs/heads/feat/interrupt-after-ref"])).trim(),
+        ).toBe(exported.headSha);
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "preserves branch name on export and import when a tag shares the exact same name as the checked-out branch",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const vcsProcess = yield* VcsProcess.VcsProcess;
+
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-same-name-tag-",
+        });
+        const srcRepo = path.join(root, "src");
+        const dstRepo = path.join(root, "dst");
+        const bundlePath = path.join(root, "same-name-tag.bundle");
+
+        yield* fs.makeDirectory(srcRepo, { recursive: true });
+        yield* git(srcRepo, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(srcRepo, "file.txt"), "base\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "base"]);
+        const baseSha = (yield* git(srcRepo, ["rev-parse", "HEAD"])).trim();
+        yield* git(root, ["clone", srcRepo, dstRepo]);
+
+        const branchName = "feat/same-name-tag";
+        yield* git(srcRepo, ["checkout", "-b", branchName]);
+        yield* fs.writeFileString(path.join(srcRepo, "file.txt"), "feature\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "feature"]);
+        yield* git(srcRepo, ["tag", branchName, "HEAD"]);
+
+        // Sanity-check that git symbolic-ref --short really produces the ambiguous heads/ prefix.
+        expect((yield* git(srcRepo, ["symbolic-ref", "--short", "HEAD"])).trim()).toBe(
+          `heads/${branchName}`,
+        );
+
+        const exported = yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-same-name-tag",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+        expect(exported.branch).toBe(branchName);
+        expect(exported.isDetachedHead).toBe(false);
+
+        // Also place a same-named tag on dstRepo to ensure destination checkout stays on refs/heads/<branch>.
+        yield* git(dstRepo, ["tag", branchName, baseSha]);
+
+        const imported = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-same-name-tag",
+          repoCwd: dstRepo,
+          bundlePath,
+          sourceBranch: exported.branch,
+          targetLabel: "boat",
+        });
+        expect(imported.branch).toBe(branchName);
+        expect(imported.branchRenamedFrom).toBeNull();
+        expect(imported.createdBranch).toBe(true);
+        expect((yield* git(imported.worktreePath, ["symbolic-ref", "-q", "HEAD"])).trim()).toBe(
+          `refs/heads/${branchName}`,
+        );
+        expect((yield* git(dstRepo, ["rev-parse", `refs/heads/${branchName}`])).trim()).toBe(
+          exported.headSha,
+        );
+        const wrongBranchCheck = yield* vcsProcess.run({
+          operation: "WorkspaceBundle.test.checkNoHeadsPrefixBranch",
+          command: "git",
+          args: ["rev-parse", "--verify", "--quiet", `refs/heads/heads/${branchName}`],
+          cwd: dstRepo,
+          env: GIT_TEST_ENV,
+          allowNonZeroExit: true,
+          timeoutMs: 15_000,
+        });
+        expect(wrongBranchCheck.exitCode).toBe(1);
       }).pipe(Effect.provide(makeTestLayer())),
   );
 });

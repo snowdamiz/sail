@@ -140,6 +140,37 @@ export function resolveImportBundlePath(
   return dir === null ? null : path.join(dir, "import.bundle");
 }
 
+function sessionTransferWorktreeOwnershipRootDir(stateDir: string, path: Path.Path): string {
+  return path.join(stateDir, "session-transfer-worktree-ownership");
+}
+
+/**
+ * Resolves the durable worktree ownership ledger directory outside the 1-hour TTL-swept
+ * `session-transfers/` staging directory so expired bundle payloads can be reclaimed
+ * without erasing pending worktree/branch cleanup metadata.
+ */
+export function resolveWorktreeOwnershipDir(stateDir: string, path: Path.Path): string {
+  return path.resolve(sessionTransferWorktreeOwnershipRootDir(stateDir, path));
+}
+
+/**
+ * Resolves the durable worktree ownership ledger path outside the 1-hour TTL-swept
+ * `session-transfers/` staging directory so expired bundle payloads can be reclaimed
+ * without erasing pending worktree/branch cleanup metadata.
+ */
+export function resolveWorktreeOwnershipPath(
+  stateDir: string,
+  transferId: string,
+  path: Path.Path,
+): string | null {
+  const segment = uniqueTransferSegment(transferId);
+  if (segment === null) return null;
+  const root = resolveWorktreeOwnershipDir(stateDir, path);
+  const target = path.resolve(root, `${segment}.json`);
+  if (path.dirname(target) !== root) return null;
+  return target;
+}
+
 interface SweepStaleSessionTransferStagingResult {
   readonly deletedFiles: number;
   readonly deletedDirs: number;

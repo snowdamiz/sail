@@ -87,6 +87,17 @@ const CommandReply = Schema.Union([
 ]);
 const decodeCommandReply = Schema.decodeUnknownEffect(CommandReply);
 
+export const BoatMachineProxyAccess = Schema.Struct({
+  machineId: Schema.NonEmptyString,
+  machineName: Schema.NonEmptyString,
+  environmentId: EnvironmentId,
+  state: Schema.String,
+  localUrl: Schema.NonEmptyString,
+  bearerToken: Schema.NonEmptyString,
+});
+export type BoatMachineProxyAccess = typeof BoatMachineProxyAccess.Type;
+const decodeMachineProxyAccess = Schema.decodeUnknownEffect(BoatMachineProxyAccess);
+
 const decodeStateEvent = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const decodeNotifyEvent = Schema.decodeUnknownOption(Schema.fromJsonString(BoatNotice));
 
@@ -96,6 +107,13 @@ const SavedBoatState = Schema.Struct({
   pendingSandboxes: Schema.optional(Schema.Array(Schema.Unknown)),
 });
 const decodeSavedBoatState = Schema.decodeUnknownOption(Schema.fromJsonString(SavedBoatState));
+
+const stateHasConfiguredBoats = (state: unknown): boolean =>
+  typeof state === "object" &&
+  state !== null &&
+  "machines" in state &&
+  Array.isArray(state.machines) &&
+  state.machines.length > 0;
 
 /** Saved machines, or deletions Boat has not confirmed, may still bill until the daemon runs. */
 export const savedStateNeedsDaemon = (stateJson: string): boolean =>
@@ -258,6 +276,11 @@ export class BoatSupervisor extends Context.Service<
       readonly machineId: string;
       readonly bundle: ProviderAuthSyncBundle;
     }) => Effect.Effect<{ readonly synced: boolean }, BoatError>;
+    readonly getMachineProxyAccess?: (input: {
+      readonly machineId?: string;
+      readonly environmentId?: EnvironmentId;
+    }) => Effect.Effect<BoatMachineProxyAccess, BoatError>;
+    readonly hasConfiguredBoats?: Effect.Effect<boolean>;
     readonly currentState?: Effect.Effect<Option.Option<unknown>>;
     readonly passiveEvents?: Stream.Stream<BoatEvent>;
     readonly events: Stream.Stream<BoatEvent>;
@@ -812,10 +835,73 @@ const make = Effect.gen(function* () {
     return { synced };
   });
 
+  const getMachineProxyAccess = Effect.fn("BoatSupervisor.getMachineProxyAccess")(
+    function* (input: { readonly machineId?: string; readonly environmentId?: EnvironmentId }) {
+      const args: Record<string, string> = {};
+      if (input.machineId !== undefined) {
+        args.id = input.machineId;
+      }
+      if (input.environmentId !== undefined) {
+        args.environmentId = input.environmentId;
+      }
+      const daemon = yield* Effect.flatten(ensureStarted);
+      const response = yield* httpClient
+        .execute(
+          HttpClientRequest.post(`${daemon.baseUrl}/api/command/machine_proxy_access`).pipe(
+            authorized(daemon),
+            HttpClientRequest.bodyJsonUnsafe(args),
+          ),
+        )
+        .pipe(
+          Effect.mapError(
+            () => new BoatError({ message: "sail-boatd did not answer machine_proxy_access." }),
+          ),
+        );
+      const reply = yield* response.json.pipe(
+        Effect.flatMap(decodeCommandReply),
+        Effect.mapError(
+          () =>
+            new BoatError({
+              message: `sail-boatd answered machine_proxy_access with HTTP ${response.status}.`,
+            }),
+        ),
+      );
+      if (!reply.ok) {
+        return yield* new BoatError({ message: reply.error });
+      }
+      return yield* decodeMachineProxyAccess(reply.data).pipe(
+        Effect.mapError(
+          () =>
+            new BoatError({
+              message: "sail-boatd returned an invalid machine_proxy_access response.",
+            }),
+        ),
+      );
+    },
+  );
+
+  const hasConfiguredBoats: Effect.Effect<boolean> = Ref.get(latestState).pipe(
+    Effect.flatMap((state) =>
+      Option.isSome(state)
+        ? Effect.succeed(stateHasConfiguredBoats(state.value))
+        : fileSystem.readFileString(path.join(dataDir, "state.json")).pipe(
+            Effect.map((saved) =>
+              Option.match(decodeSavedBoatState(saved), {
+                onNone: () => false,
+                onSome: (parsed) => (parsed.machines?.length ?? 0) > 0,
+              }),
+            ),
+            Effect.orElseSucceed(() => false),
+          ),
+    ),
+  );
+
   return BoatSupervisor.of({
     invoke,
     syncProjectCredentials,
     syncProviderAuth,
+    getMachineProxyAccess,
+    hasConfiguredBoats,
     currentState: Ref.get(latestState),
     passiveEvents: Stream.fromPubSub(hub),
     events,
