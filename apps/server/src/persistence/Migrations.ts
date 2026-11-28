@@ -129,6 +129,7 @@ import Migration0115 from "./Migrations/115_WorkflowRunTags.ts";
 import Migration0116 from "./Migrations/116_ForkHistoryMembership.ts";
 import Migration0117 from "./Migrations/117_MaintenanceProviderLifetimes.ts";
 import Migration0118 from "./Migrations/118_PeerMutationIntents.ts";
+import Migration0119 from "./Migrations/119_SessionTransfers.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -250,6 +251,7 @@ const migrationEntries = [
   [116, "ForkHistoryMembership", Migration0116],
   [117, "MaintenanceProviderLifetimes", Migration0117],
   [118, "PeerMutationIntents", Migration0118],
+  [119, "SessionTransfers", Migration0119],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

@@ -109,6 +109,17 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.peerLinksAnswerRequest]: AuthAccessWriteScope,
   [WS_METHODS.peerLinksPairClient]: AuthAccessWriteScope,
   [WS_METHODS.peerLinksPairLink]: AuthAccessWriteScope,
+  [WS_METHODS.sessionTransferPreflight]: AuthOrchestrationReadScope,
+  [WS_METHODS.sessionTransferList]: AuthOrchestrationReadScope,
+  [WS_METHODS.subscribeSessionTransfers]: AuthOrchestrationReadScope,
+  [WS_METHODS.sessionTransferStart]: AuthOrchestrationOperateScope,
+  [WS_METHODS.sessionTransferCancel]: AuthOrchestrationOperateScope,
+  [WS_METHODS.sessionTransferRetry]: AuthOrchestrationOperateScope,
+  [WS_METHODS.sessionTransferPrepareSource]: AuthOrchestrationOperateScope,
+  [WS_METHODS.sessionTransferStageImport]: AuthOrchestrationOperateScope,
+  [WS_METHODS.sessionTransferCommitImport]: AuthOrchestrationOperateScope,
+  [WS_METHODS.sessionTransferFinalizeSource]: AuthOrchestrationOperateScope,
+  [WS_METHODS.sessionTransferAbort]: AuthOrchestrationOperateScope,
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 

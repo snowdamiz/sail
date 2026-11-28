@@ -65,6 +65,7 @@ import * as IssueTrackerConnections from "./issue/IssueTrackerConnections.ts";
 import * as IssueTrackerBindings from "./persistence/IssueTrackerBindings.ts";
 import * as IssueTrackerRegistry from "./issue/IssueTrackerRegistry.ts";
 import * as SqlitePersistence from "./persistence/Sqlite.ts";
+import * as SessionTransferRepository from "./persistence/SessionTransferRepository.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import { makeAdmission, ServerAdmission } from "./serverAdmission.ts";
 import {
@@ -450,7 +451,9 @@ const layerPlatformServices = DocumentText.layer.pipe(
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, layerSpawner)),
 );
 
-const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
+const layerPersistence = SessionTransferRepository.layer.pipe(
+  Layer.provideMerge(SqlitePersistence.layerConfig),
+);
 const layerAdmission = Layer.effect(
   ServerAdmission,
   Effect.gen(function* () {
