@@ -16,7 +16,11 @@ import {
   OrchestrationV2CheckpointFileSummary,
   repositoryRewindCheckpoint,
   OrchestrationV2ProviderCapabilities,
+  OrchestrationV2AppThread,
+  OrchestrationV2AppThreadJson,
   OrchestrationV2Command,
+  OrchestrationV2DomainEvent,
+  OrchestrationV2DomainEventJson,
   OrchestrationV2ProviderThread,
   OrchestrationV2Run,
   OrchestrationV2RunJson,
@@ -47,6 +51,16 @@ const encodeOrchestrationV2ProviderThreadJson = Schema.encodeSync(
 const decodeOrchestrationV2ProviderThread = Schema.decodeUnknownSync(OrchestrationV2ProviderThread);
 const decodeOrchestrationV2ProviderCapabilities = Schema.decodeUnknownSync(
   OrchestrationV2ProviderCapabilities,
+);
+const decodeOrchestrationV2AppThreadCodec = Schema.decodeUnknownSync(
+  Schema.toCodecJson(OrchestrationV2AppThread),
+);
+const decodeOrchestrationV2AppThreadJson = Schema.decodeUnknownSync(OrchestrationV2AppThreadJson);
+const decodeOrchestrationV2DomainEventCodec = Schema.decodeUnknownSync(
+  Schema.toCodecJson(OrchestrationV2DomainEvent),
+);
+const decodeOrchestrationV2DomainEventJson = Schema.decodeUnknownSync(
+  OrchestrationV2DomainEventJson,
 );
 
 describe("orchestration V2 contracts", () => {
@@ -846,6 +860,111 @@ describe("usage limit failover run metadata", () => {
       expect(cmd.usageLimitFailoverOfRunId).toBe("run-1");
       expect(cmd.failoverAttemptedInstanceIds).toEqual(["claudeAgent"]);
       expect(cmd.failoverNotice?.kind).toBe("cross_provider_handoff");
+    }
+  });
+});
+
+describe("session transfer thread provenance", () => {
+  it("defaults transferOrigin and transferredTo to null when decoding existing thread payloads", () => {
+    const baseThreadJson = {
+      createdBy: "user",
+      creationSource: "web",
+      id: "thread-1",
+      projectId: "project-1",
+      title: "Existing thread",
+      providerInstanceId: "codex",
+      modelSelection: { instanceId: "codex", model: "gpt-5-codex" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      activeProviderThreadId: null,
+      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: "thread-1" },
+      forkedFrom: null,
+      createdAt: DateTime.formatIso(now),
+      updatedAt: DateTime.formatIso(now),
+      archivedAt: null,
+      deletedAt: null,
+    };
+
+    const decodedApp = decodeOrchestrationV2AppThreadCodec(baseThreadJson);
+    expect(decodedApp.transferOrigin).toBeNull();
+    expect(decodedApp.transferredTo).toBeNull();
+
+    const decodedWire = decodeOrchestrationV2AppThreadJson(baseThreadJson);
+    expect(decodedWire.transferOrigin).toBeNull();
+    expect(decodedWire.transferredTo).toBeNull();
+
+    const withProvenance = decodeOrchestrationV2AppThreadJson({
+      ...baseThreadJson,
+      transferOrigin: {
+        transferId: "transfer-1",
+        environmentId: "env-local",
+        environmentName: "MacBook Pro",
+        machineId: null,
+        projectId: "project-local",
+        threadId: "thread-local",
+        transferredAt: DateTime.formatIso(now),
+      },
+      transferredTo: {
+        transferId: "transfer-2",
+        environmentId: "env-local",
+        environmentName: "MacBook Pro",
+        machineId: null,
+        projectId: "project-local",
+        threadId: "thread-local-2",
+        transferredAt: DateTime.formatIso(now),
+      },
+    });
+    expect(withProvenance.transferOrigin?.transferId).toBe("transfer-1");
+    expect(withProvenance.transferredTo?.threadId).toBe("thread-local-2");
+  });
+
+  it("round-trips thread.transfer-state-updated domain events", () => {
+    const rawEvent = {
+      id: "event-transfer-1",
+      type: "thread.transfer-state-updated",
+      threadId: "thread-1",
+      occurredAt: DateTime.formatIso(now),
+      payload: {
+        createdBy: "user",
+        creationSource: "web",
+        id: "thread-1",
+        projectId: "project-1",
+        title: "Transferred thread",
+        providerInstanceId: "codex",
+        modelSelection: { instanceId: "codex", model: "gpt-5-codex" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        activeProviderThreadId: null,
+        lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: "thread-1" },
+        forkedFrom: null,
+        transferOrigin: null,
+        transferredTo: {
+          transferId: "transfer-1",
+          environmentId: "env-boat",
+          environmentName: "dev-boat",
+          machineId: "machine-1",
+          projectId: "project-boat",
+          threadId: "thread-boat",
+          transferredAt: DateTime.formatIso(now),
+        },
+        createdAt: DateTime.formatIso(now),
+        updatedAt: DateTime.formatIso(now),
+        archivedAt: DateTime.formatIso(now),
+        deletedAt: null,
+      },
+    };
+
+    const decodedDomain = decodeOrchestrationV2DomainEventCodec(rawEvent);
+    expect(decodedDomain.type).toBe("thread.transfer-state-updated");
+    const decodedJson = decodeOrchestrationV2DomainEventJson(rawEvent);
+    expect(decodedJson.type).toBe("thread.transfer-state-updated");
+    if (decodedJson.type === "thread.transfer-state-updated") {
+      expect(decodedJson.payload.transferOrigin).toBeNull();
+      expect(decodedJson.payload.transferredTo?.threadId).toBe("thread-boat");
     }
   });
 });
