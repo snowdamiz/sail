@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "result": "pass",
+  "trunkSourceSha": "2ea2e7a8941a48c2499f29c139a516eadc876ae1",
+  "checkerSourceSha": "22bffa865ce2d77d0ad05f33236b5590a8714b29",
+  "incumbentSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "protocol": 2,
+  "testFiles": [
+    "tests/migration/wire/incumbent.test.ts",
+    "apps/server/src/ws.test.ts",
+    "packages/client-runtime/src/rpc/session.test.ts",
+    "apps/server/src/assets/SessionTransferToken.test.ts",
+    "apps/server/src/orchestration-v2/SessionTransferEndpointService.test.ts"
+  ],
+  "testsPassed": 101,
+  "copiedFixtureSha256": {
+    "README.md": "2d58ad5a050377a2e9fc2962f2b2bbfd4013f5ecc738ad895b0f8917d283ed32",
+    "check.ts": "e1c5e7842868baec11f7652b0e80795a5cf36302c16105dd242a9612d90a17d9",
+    "incumbent-replay-v2.json": "6b1c10080d6693ed8961702b423ae02642c97ab375d2c9ed0a80c4b9b39127c7",
+    "incumbent-v2.json": "5f5ab0ae840196164ede6a80751bb8e342c915d9e1386fef984444503e834a1e",
+    "incumbent.test.ts": "9bd0d5b5fc054c7b116c72e90f891246ced8f5811776205ca044b0786e73f786",
+    "replay.ts": "2e1e50b4049e2fea9eb871d0614b2a52503cbe329d36d5c19d9e8e73ac5b5b70",
+    "socket.ts": "ae9c818522a499dbbe7074d3d97db3eb6e7b721472946395dab3a1078c457499"
+  },
+  "scope": "Source server with isolated loopback homes. The two frozen v0.1.17 fixture checks, WebSocket and client session tests, and the two added session-transfer suites passed. The fixture files were copied unchanged into the detached trunk checkout."
+}

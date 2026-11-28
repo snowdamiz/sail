@@ -21,6 +21,7 @@
     "result": "pass",
     "fixture": "../../wire/incumbent-v2.json",
     "check": "The published ZIP's bundled backend passed the standalone checker on a fresh seeded loopback server with a read-only token.",
+    "currentTrunkRegression": "trunk-wire-2ea2e7a8.json",
     "replay": {
       "fixture": "../../wire/incumbent-replay-v2.json",
       "check": "A fresh Showcase turn over Effect RPC v2 retained its three messages, original send receipt, completed run and typed denial across reconnect, retry and read-only access.",
