@@ -109,7 +109,12 @@ jobs:
           set -euo pipefail
           vp run build:desktop
           test -f apps/server/dist/client/index.html
+          test -f apps/server/dist/builtin-skills/pstack/.claude-plugin/plugin.json
+          test -f apps/server/dist/builtin-skills/pstack/LICENSE
+          test -x apps/server/dist/builtin-skills/pstack/skills/statechart/scripts/statechart
+          test -x apps/server/dist/builtin-skills/pstack/skills/poteto-mode/scripts/watch-pr/watch-pr
           test -d apps/desktop/dist-electron
+          tar -C apps/server/dist -czf sail-bundle-server-dist.tar.gz .
       - name: Render CLI installer script
         run: |
           node scripts/build-desktop-installers.ts \
@@ -120,7 +125,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sail-bundle-server-dist
-          path: apps/server/dist
+          path: sail-bundle-server-dist.tar.gz
           if-no-files-found: error
           retention-days: 1
       - name: Upload desktop dist bundle
@@ -219,16 +224,23 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: sail-bundle-server-dist
-          path: apps/server/dist
+          path: ${{ runner.temp }}/sail-bundle-server-dist
       - name: Download desktop dist bundle
         uses: actions/download-artifact@v4
         with:
           name: sail-bundle-desktop-dist
           path: apps/desktop/dist-electron
-      - name: Verify downloaded JS bundles
+      - name: Extract and verify downloaded JS bundles
         run: |
           set -euo pipefail
+          rm -rf apps/server/dist
+          mkdir -p apps/server/dist
+          tar -C apps/server/dist -xzf "${{ runner.temp }}/sail-bundle-server-dist/sail-bundle-server-dist.tar.gz"
           test -f apps/server/dist/client/index.html
+          test -f apps/server/dist/builtin-skills/pstack/.claude-plugin/plugin.json
+          test -f apps/server/dist/builtin-skills/pstack/LICENSE
+          test -x apps/server/dist/builtin-skills/pstack/skills/statechart/scripts/statechart
+          test -x apps/server/dist/builtin-skills/pstack/skills/poteto-mode/scripts/watch-pr/watch-pr
           test -d apps/desktop/dist-electron
       - name: Align workspace package versions
         run: node scripts/update-release-package-versions.ts "${{ needs.prepare.outputs.version }}"
@@ -328,7 +340,16 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: sail-bundle-server-dist
-          path: apps/server/dist
+          path: ${{ runner.temp }}/sail-bundle-server-dist
+      - name: Extract server dist bundle
+        run: |
+          set -euo pipefail
+          rm -rf apps/server/dist
+          mkdir -p apps/server/dist
+          tar -C apps/server/dist -xzf "${{ runner.temp }}/sail-bundle-server-dist/sail-bundle-server-dist.tar.gz"
+          test -f apps/server/dist/builtin-skills/pstack/.claude-plugin/plugin.json
+          test -f apps/server/dist/builtin-skills/pstack/LICENSE
+          test -x apps/server/dist/builtin-skills/pstack/skills/statechart/scripts/statechart
       - name: Build the CLI and package it with both Rust sidecars
         env:
           ARCH: ${{ matrix.arch }}

@@ -9,6 +9,7 @@ import {
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "@t3tools/provider-core/server/maintenanceResolver";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -81,6 +82,25 @@ describe("BuiltinSkills", () => {
         NodeFS.existsSync(NodePath.join(first.pluginDir, ".claude-plugin", "plugin.json")),
       );
       assert.isTrue(NodeFS.existsSync(NodePath.join(first.pluginDir, "agents", "poteto-agent.md")));
+      assert.isTrue(NodeFS.existsSync(NodePath.join(first.pluginDir, "LICENSE")));
+      assert.include(
+        NodeFS.readFileSync(NodePath.join(first.pluginDir, "LICENSE"), "utf8"),
+        "Lauren Tan",
+      );
+      if (HostProcess.Platform.defaultValue() !== "win32") {
+        for (const helper of [
+          NodePath.join(first.skillsDir, "statechart", "scripts", "statechart"),
+          NodePath.join(first.skillsDir, "poteto-mode", "scripts", "watch-pr", "watch-pr"),
+          NodePath.join(first.skillsDir, "poteto-mode", "scripts", "worktree-audit.sh"),
+          NodePath.join(first.skillsDir, "show-me-your-work", "scripts", "log.sh"),
+        ]) {
+          assert.notEqual(
+            NodeFS.statSync(helper).mode & 0o111,
+            0,
+            `expected executable bit on ${helper}`,
+          );
+        }
+      }
 
       // Plant a stale version directory and verify re-materialization is idempotent and cleans it up.
       const staleVersionDir = NodePath.join(first.pluginDir, "skills.versions", "stale-deadbeef");

@@ -102,6 +102,10 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
     executable,
     path.join(contentDir, "client/index.html"),
     path.join(contentDir, "builtin-skills/pstack/skills/poteto-mode/SKILL.md"),
+    path.join(contentDir, "builtin-skills/pstack/.claude-plugin/plugin.json"),
+    path.join(contentDir, "builtin-skills/pstack/LICENSE"),
+    path.join(contentDir, "builtin-skills/pstack/skills/statechart/scripts/statechart"),
+    path.join(contentDir, "builtin-skills/pstack/skills/poteto-mode/scripts/watch-pr/watch-pr"),
     ...(platform === "linux" ? [bundledLibatomic, `${bundledLibatomic}.LICENSE`] : []),
   ]) {
     if (!(yield* fs.exists(required))) {
@@ -109,6 +113,21 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
         step: "checking the archive layout",
         detail: `missing ${path.relative(contentDir, required)}`,
       });
+    }
+  }
+
+  if (platform !== "win32") {
+    for (const helper of [
+      path.join(contentDir, "builtin-skills/pstack/skills/statechart/scripts/statechart"),
+      path.join(contentDir, "builtin-skills/pstack/skills/poteto-mode/scripts/watch-pr/watch-pr"),
+    ]) {
+      const info = yield* fs.stat(helper);
+      if ((info.mode & 0o111) === 0) {
+        return yield* new CliArchiveSmokeError({
+          step: "checking built-in skill helper permissions",
+          detail: `${path.relative(contentDir, helper)} is not executable`,
+        });
+      }
     }
   }
 

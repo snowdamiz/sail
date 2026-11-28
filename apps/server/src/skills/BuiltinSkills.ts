@@ -270,6 +270,23 @@ function syncSupportSubdir(sourceRoot: string, packRoot: string, subdir: string)
   }
 }
 
+function syncSupportFile(sourceRoot: string, packRoot: string, filename: string): void {
+  const src = NodePath.join(sourceRoot, filename);
+  if (!NodeFS.existsSync(src)) return;
+
+  const dst = NodePath.join(packRoot, filename);
+  const tmp = NodePath.join(packRoot, `.${filename}.tmp-${NodeCrypto.randomUUID()}`);
+  NodeFS.copyFileSync(src, tmp);
+  try {
+    NodeFS.renameSync(tmp, dst);
+  } catch (error) {
+    try {
+      NodeFS.rmSync(tmp, { force: true });
+    } catch {}
+    throw error;
+  }
+}
+
 function cleanupStaleVersions(versionsDir: string, activeHash: string, nowMs?: number): void {
   for (const entry of NodeFS.readdirSync(versionsDir)) {
     if (entry === activeHash) continue;
@@ -362,12 +379,15 @@ export function materializeBuiltinPstackSync(
       return undefined;
     }
   })();
+  const sourceHasLicense = NodeFS.existsSync(NodePath.join(sourceDir, "LICENSE"));
   if (
     recordedHash !== hash ||
-    !NodeFS.existsSync(NodePath.join(packRoot, ".claude-plugin", "plugin.json"))
+    !NodeFS.existsSync(NodePath.join(packRoot, ".claude-plugin", "plugin.json")) ||
+    (sourceHasLicense && !NodeFS.existsSync(NodePath.join(packRoot, "LICENSE")))
   ) {
     syncSupportSubdir(sourceDir, packRoot, ".claude-plugin");
     syncSupportSubdir(sourceDir, packRoot, "agents");
+    syncSupportFile(sourceDir, packRoot, "LICENSE");
     const tmpHash = NodePath.join(packRoot, `.pack-hash.tmp-${NodeCrypto.randomUUID()}`);
     NodeFS.writeFileSync(tmpHash, `${hash}\n`, "utf8");
     NodeFS.renameSync(tmpHash, hashFile);
