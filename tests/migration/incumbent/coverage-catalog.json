@@ -1125,7 +1125,7 @@
             {
               "kind": "state-receipt",
               "path": "observations/served-chromium-macos/settled/capture-timings.json",
-              "sha256": "17da05ab57c8fa099d536bee337e5d315b811ea57e812977b84cdd746a97dbba"
+              "sha256": "ce2873c7365465d0a082cf08ea9101638f5766685d5a26d97ba871e7a3b4c9a4"
             }
           ]
         },
@@ -1171,7 +1171,7 @@
             {
               "kind": "state-receipt",
               "path": "observations/served-chromium-macos/settled/capture-timings.json",
-              "sha256": "17da05ab57c8fa099d536bee337e5d315b811ea57e812977b84cdd746a97dbba"
+              "sha256": "ce2873c7365465d0a082cf08ea9101638f5766685d5a26d97ba871e7a3b4c9a4"
             }
           ]
         }
@@ -1185,7 +1185,12 @@
         {
           "kind": "action-and-state",
           "path": "observations/served-chromium-macos/settled/capture-timings.json",
-          "sha256": "17da05ab57c8fa099d536bee337e5d315b811ea57e812977b84cdd746a97dbba"
+          "sha256": "ce2873c7365465d0a082cf08ea9101638f5766685d5a26d97ba871e7a3b4c9a4"
+        },
+        {
+          "kind": "action-traces",
+          "path": "observations/served-chromium-macos/settled/capture-traces.ndjson",
+          "sha256": "9798b65dc117cd3a6fd6e15046a2c2338a2b71e639ea13cf24c66d4ef29cafc8"
         }
       ]
     }

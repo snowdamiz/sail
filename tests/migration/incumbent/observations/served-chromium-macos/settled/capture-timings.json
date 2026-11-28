@@ -716,5 +716,7 @@
         "screenshot": 62
       }
     }
-  }
+  },
+  "tracePayloadsFile": "capture-traces.ndjson",
+  "tracePayloadsSha256": "9798b65dc117cd3a6fd6e15046a2c2338a2b71e639ea13cf24c66d4ef29cafc8"
 }
