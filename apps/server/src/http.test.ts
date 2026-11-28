@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- tests verify Node FileHandle descriptor closure and SHA-256 checksums for bundle downloads.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
+import * as NodeHttp from "node:http";
 import type * as NodeFSP from "node:fs/promises";
 import { expect, it } from "@effect/vitest";
 import { describe, vi } from "vite-plus/test";
@@ -19,7 +20,13 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Queue from "effect/Queue";
 import * as Tracer from "effect/Tracer";
-import { HttpClient, HttpClientRequest, HttpRouter, HttpServerResponse } from "effect/http";
+import {
+  HttpClient,
+  HttpClientRequest,
+  HttpRouter,
+  HttpServer,
+  HttpServerResponse,
+} from "effect/http";
 import { openMediaFile } from "./assets/MediaFile.ts";
 
 import {
@@ -1110,6 +1117,174 @@ describe("session transfer bundle download HEAD handling", () => {
           expect(yield* tamperedHead.text).toBe("");
 
           expect(openedHandles).toHaveLength(3);
+          for (const handle of openedHandles) {
+            expect(handle.fd).toBe(-1);
+          }
+        } finally {
+          openSpy.mockRestore();
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "closes the verified bundle FileHandle on pre-stream GET client disconnect without starting the stream",
+    () =>
+      Effect.gen(function* () {
+        const assetLayer = AssetSigner.layer.pipe(
+          Layer.provideMerge(ServerSecretStore.layer),
+          Layer.provideMerge(
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3-http-xfer-prestream-" }),
+          ),
+          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer)),
+        );
+
+        const nodeServer = NodeHttp.createServer();
+        let serverResClosedResolve: (() => void) | null = null;
+        const serverResClosed = new Promise<void>((resolve) => {
+          serverResClosedResolve = resolve;
+        });
+        let observeFirstDisconnect = true;
+        nodeServer.on("request", (_req, res) => {
+          if (observeFirstDisconnect) {
+            observeFirstDisconnect = false;
+            res.once("close", () => {
+              serverResClosedResolve?.();
+            });
+          }
+        });
+
+        const services = yield* Layer.build(
+          HttpRouter.serve(ServerHttp.layerSessionTransferBundleDownloadRoute, {
+            disableListenLog: true,
+            disableLogger: true,
+          }).pipe(
+            Layer.provideMerge(
+              NodeHttpServer.layer(() => nodeServer, { port: 0, host: "127.0.0.1" }),
+            ),
+            Layer.provideMerge(assetLayer),
+          ),
+        );
+
+        const server = Context.get(services, HttpServer.HttpServer);
+        const config = Context.get(services, ServerConfig.ServerConfig);
+        const fs = Context.get(services, FileSystem.FileSystem);
+        const path = Context.get(services, Path.Path);
+        expect(server.address._tag).toBe("InetAddressV4");
+        if (server.address._tag !== "InetAddressV4") return;
+        const port = server.address.port;
+
+        const transferId = "xfer-http-prestream-disconnect";
+        const payload = new Uint8Array(64 * 1024);
+        for (let i = 0; i < payload.byteLength; i += 1) {
+          payload[i] = (i * 29) % 251;
+        }
+        const payloadSha256 = NodeCrypto.createHash("sha256").update(payload).digest("hex");
+
+        const exportPath = resolveExportBundlePath(config.stateDir, transferId, path)!;
+        yield* fs.makeDirectory(path.dirname(exportPath), { recursive: true });
+        yield* fs.writeFile(exportPath, payload);
+
+        const downloadUrl = yield* issueSessionTransferBundleUrl({
+          transferId,
+          operation: "download",
+          expectedSizeBytes: payload.byteLength,
+          expectedSha256: payloadSha256,
+        }).pipe(Effect.provide(services));
+
+        const openedHandles: Array<NodeFSP.FileHandle> = [];
+        let createReadStreamCalls = 0;
+        let openEnteredResolve: (() => void) | null = null;
+        const openEntered = new Promise<void>((resolve) => {
+          openEnteredResolve = resolve;
+        });
+        let firstHandleClosedResolve: (() => void) | null = null;
+        const firstHandleClosed = new Promise<void>((resolve) => {
+          firstHandleClosedResolve = resolve;
+        });
+        let pauseFirstStat = true;
+
+        const realOpen = NodeFS.promises.open;
+        const openSpy = vi.spyOn(NodeFS.promises, "open").mockImplementation(async (...args) => {
+          const handle = await realOpen(...args);
+          if (String(args[0]) === exportPath) {
+            openedHandles.push(handle);
+            const realCreateReadStream = handle.createReadStream.bind(handle);
+            handle.createReadStream = ((...streamArgs: Parameters<typeof realCreateReadStream>) => {
+              createReadStreamCalls += 1;
+              return realCreateReadStream(...streamArgs);
+            }) as typeof handle.createReadStream;
+
+            if (pauseFirstStat) {
+              pauseFirstStat = false;
+              const realStat = handle.stat.bind(handle);
+              handle.stat = (async (...statArgs: Parameters<typeof realStat>) => {
+                openEnteredResolve?.();
+                await serverResClosed;
+                return realStat(...statArgs);
+              }) as typeof handle.stat;
+
+              const realClose = handle.close.bind(handle);
+              handle.close = (async () => {
+                try {
+                  return await realClose();
+                } finally {
+                  firstHandleClosedResolve?.();
+                }
+              }) as typeof handle.close;
+            }
+          }
+          return handle;
+        });
+
+        try {
+          // 1. Client starts GET, then destroys the socket while verification is in flight so
+          //    nodeResponse.destroyed is true BEFORE NodeHttpServer starts consuming bundle.stream.
+          const abortedReq = NodeHttp.request({
+            host: "127.0.0.1",
+            port,
+            path: downloadUrl.relativeUrl,
+            method: "GET",
+            agent: false,
+          });
+          abortedReq.on("error", () => undefined);
+          abortedReq.end();
+
+          yield* Effect.promise(() => openEntered);
+          abortedReq.destroy();
+
+          // Await deterministic FileHandle closure via request Scope finalizer.
+          yield* Effect.promise(() => firstHandleClosed);
+          expect(openedHandles).toHaveLength(1);
+          expect(createReadStreamCalls).toBe(0);
+          expect(openedHandles[0]?.fd).toBe(-1);
+
+          // 2. Subsequent normal GET streams the full verified payload and closes its handle cleanly.
+          const normalBody = yield* Effect.promise(
+            () =>
+              new Promise<{ readonly status: number; readonly body: Uint8Array }>(
+                (resolve, reject) => {
+                  const req = NodeHttp.get(
+                    { host: "127.0.0.1", port, path: downloadUrl.relativeUrl, agent: false },
+                    (res) => {
+                      const chunks: Array<Buffer> = [];
+                      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+                      res.on("end", () =>
+                        resolve({
+                          status: res.statusCode ?? 0,
+                          body: new Uint8Array(Buffer.concat(chunks)),
+                        }),
+                      );
+                      res.on("error", reject);
+                    },
+                  );
+                  req.on("error", reject);
+                },
+              ),
+          );
+          expect(normalBody.status).toBe(200);
+          expect(normalBody.body).toEqual(payload);
+          expect(createReadStreamCalls).toBe(1);
+          expect(openedHandles).toHaveLength(2);
           for (const handle of openedHandles) {
             expect(handle.fd).toBe(-1);
           }

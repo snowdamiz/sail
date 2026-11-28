@@ -50,6 +50,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -165,10 +166,10 @@ interface EndpointTestHooks {
   readonly onExportWorkspaceBundle?: <A, E>(
     next: Effect.Effect<A, E>,
   ) => Effect.Effect<A, E | WorkspaceBundle.WorkspaceBundleError>;
-  readonly onFileSystemRemove?: <E>(ctx: {
+  readonly onFileSystemRemove?: (ctx: {
     readonly targetPath: string;
-    readonly next: Effect.Effect<void, E>;
-  }) => Effect.Effect<void, E>;
+    readonly next: Effect.Effect<void, PlatformError.PlatformError>;
+  }) => Effect.Effect<void, PlatformError.PlatformError>;
   readonly onProjectGetById?: <A, E>(next: Effect.Effect<A, E>) => Effect.Effect<A, E>;
 }
 
@@ -4675,6 +4676,195 @@ describe("SessionTransferEndpointService", () => {
             });
             expect(committed.resumed).toBe(false);
             expect(recorder.sentMessages).toHaveLength(0);
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "completes source staging cleanup uninterruptibly on mid-cleanup Fiber.interrupt and propagates unexpected staging removal errors",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-xfer-unint-abort-"));
+        const repoDir = NodePath.join(tmpRoot, "repo");
+        initGitRepo(repoDir);
+
+        const projectId = ProjectId.make("proj-unint-abort");
+        const modelSelection: ModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+        const recorder: MockRecorder = {
+          dispatches: [],
+          forceStops: [],
+          detachedSessions: [],
+          sentMessages: [],
+        };
+
+        const cleanupEntered = yield* Deferred.make<void>();
+        const allowCleanupFinish = yield* Deferred.make<void>();
+        const failEntered = yield* Deferred.make<void>();
+        const allowFailFinish = yield* Deferred.make<void>();
+        let hookMode: "none" | "pause" | "fail" = "none";
+        let cleanupTargetPrefix = "";
+        let removeCalls = 0;
+
+        const layer = makeEndpointTestLayer({
+          environmentId: "env-unint-abort",
+          environmentLabel: "Uninterruptible Abort Env",
+          projects: [{ id: projectId, title: "Repo", workspaceRoot: repoDir }],
+          providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+          recorder,
+          hooks: {
+            onFileSystemRemove: ({ targetPath, next }) =>
+              Effect.gen(function* () {
+                if (cleanupTargetPrefix.length > 0 && targetPath.includes(cleanupTargetPrefix)) {
+                  removeCalls += 1;
+                  if (hookMode === "pause") {
+                    hookMode = "none";
+                    yield* Deferred.succeed(cleanupEntered, undefined);
+                    yield* Deferred.await(allowCleanupFinish);
+                  } else if (hookMode === "fail") {
+                    hookMode = "none";
+                    yield* Deferred.succeed(failEntered, undefined);
+                    yield* Deferred.await(allowFailFinish);
+                    return yield* PlatformError.systemError({
+                      _tag: "PermissionDenied",
+                      module: "FileSystem",
+                      method: "remove",
+                      pathOrDescriptor: targetPath,
+                    });
+                  }
+                }
+                return yield* next;
+              }),
+          },
+        });
+
+        try {
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const threadId = ThreadId.make("thread-unint-abort");
+            const transferId1 = SessionTransferId.make("xfer-unint-abort-1");
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId,
+                threadId,
+                branch: "main",
+                worktreePath: repoDir,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            // Part A: Explicit Fiber.interrupt on the owning abort mid-cleanup must NOT release
+            // the lock or resolve cleanupDeferred before staging deletion actually completes.
+            yield* svc.prepareSource({
+              transferId: transferId1,
+              threadId,
+              direction: "local_to_boat",
+            });
+            const stagingDir1 = resolveTransferStagingDir(config.stateDir, transferId1, path)!;
+            expect(NodeFS.existsSync(stagingDir1)).toBe(true);
+
+            cleanupTargetPrefix = NodePath.basename(stagingDir1);
+            hookMode = "pause";
+
+            const abortFiber1 = yield* Effect.forkChild(
+              svc.abort({ role: "source", transferId: transferId1 }),
+            );
+            yield* Deferred.await(cleanupEntered);
+            expect(removeCalls).toBe(1);
+
+            const abortFiber2 = yield* Effect.forkChild(
+              svc.abort({ role: "source", transferId: transferId1 }),
+            );
+            yield* Effect.yieldNow;
+            yield* Effect.yieldNow;
+            expect(abortFiber2.pollUnsafe()).toBeUndefined();
+
+            // Interrupt the first abort fiber while staging removal is blocked mid-flight.
+            const interruptFiber = yield* Effect.forkChild(Fiber.interrupt(abortFiber1));
+            yield* Effect.yieldNow;
+            yield* Effect.yieldNow;
+            yield* Effect.yieldNow;
+
+            // Cleanup must STILL be running uninterruptibly: lock held, staging intact, waiter blocked.
+            expect(abortFiber1.pollUnsafe()).toBeUndefined();
+            expect(abortFiber2.pollUnsafe()).toBeUndefined();
+            expect(NodeFS.existsSync(stagingDir1)).toBe(true);
+
+            const blockedRetry = yield* Effect.result(
+              svc.prepareSource({
+                transferId: SessionTransferId.make("xfer-blocked-during-interrupted-cleanup"),
+                threadId,
+                direction: "local_to_boat",
+              }),
+            );
+            expect(Result.isFailure(blockedRetry)).toBe(true);
+            if (Result.isFailure(blockedRetry)) {
+              expect(blockedRetry.failure.code).toBe("already_in_flight");
+            }
+
+            // Unblock staging removal -> deletion finishes before lock release and before waiter resolves.
+            yield* Deferred.succeed(allowCleanupFinish, undefined);
+            yield* Fiber.join(interruptFiber);
+            const abort2Result = yield* Fiber.join(abortFiber2);
+            expect(abort2Result.cleanedUp).toBe(true);
+            expect(removeCalls).toBe(1);
+            expect(NodeFS.existsSync(stagingDir1)).toBe(false);
+
+            // Part B: Unexpected non-ENOENT staging deletion error fails both owning and waiting
+            // aborts instead of falsely returning cleanedUp: true, while still releasing the lock.
+            const transferId2 = SessionTransferId.make("xfer-unint-abort-2");
+            yield* svc.prepareSource({
+              transferId: transferId2,
+              threadId,
+              direction: "local_to_boat",
+            });
+            const stagingDir2 = resolveTransferStagingDir(config.stateDir, transferId2, path)!;
+            expect(NodeFS.existsSync(stagingDir2)).toBe(true);
+
+            cleanupTargetPrefix = NodePath.basename(stagingDir2);
+            hookMode = "fail";
+
+            const failAbort1 = yield* Effect.forkChild(
+              Effect.result(svc.abort({ role: "source", transferId: transferId2 })),
+            );
+            yield* Deferred.await(failEntered);
+
+            const failAbort2 = yield* Effect.forkChild(
+              Effect.result(svc.abort({ role: "source", transferId: transferId2 })),
+            );
+            yield* Effect.yieldNow;
+            yield* Effect.yieldNow;
+            expect(failAbort2.pollUnsafe()).toBeUndefined();
+
+            yield* Deferred.succeed(allowFailFinish, undefined);
+            const [failRes1, failRes2] = yield* Effect.all([
+              Fiber.join(failAbort1),
+              Fiber.join(failAbort2),
+            ]);
+            expect(Result.isFailure(failRes1)).toBe(true);
+            expect(Result.isFailure(failRes2)).toBe(true);
+            if (Result.isFailure(failRes1)) {
+              expect(failRes1.failure.code).toBe("internal");
+            }
+            if (Result.isFailure(failRes2)) {
+              expect(failRes2.failure.code).toBe("internal");
+            }
+            expect(NodeFS.existsSync(stagingDir2)).toBe(true);
+
+            // Lock was released despite cleanup error, so a subsequent abort succeeds and deletes staging.
+            const retryAbort = yield* svc.abort({ role: "source", transferId: transferId2 });
+            expect(retryAbort.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(stagingDir2)).toBe(false);
           }).pipe(Effect.provide(layer));
         } finally {
           NodeFS.rmSync(tmpRoot, { recursive: true, force: true });

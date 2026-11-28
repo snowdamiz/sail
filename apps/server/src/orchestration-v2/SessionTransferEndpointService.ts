@@ -57,12 +57,14 @@ import {
   type UserInputAttachmentAnswerPayload,
 } from "@t3tools/contracts";
 import { remapComposerContextAttachments } from "@t3tools/shared/composerContextReferences";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -123,7 +125,7 @@ type SourceLockEntry =
       readonly transferId: SessionTransferId;
       readonly attemptId: string;
       readonly phase: "cleaning";
-      readonly cleanupDeferred: Deferred.Deferred<void>;
+      readonly cleanupDeferred: Deferred.Deferred<void, SessionTransferError>;
     };
 
 interface StagedImportState {
@@ -565,6 +567,52 @@ const make = Effect.gen(function* () {
   const secureRandom = yield* SecureRandom.SecureRandom;
 
   const sourceLocks = yield* Ref.make(new Map<ThreadId, SourceLockEntry>());
+
+  const cleanupSourceStagingDir = (transferId: SessionTransferId) =>
+    runWithAssetContext(cleanupTransferStagingDir(transferId)).pipe(
+      Effect.mapError(
+        (cause) =>
+          new SessionTransferError({
+            code: "internal",
+            transferId,
+            message: `Failed to remove session transfer staging directory for '${transferId}': ${String(cause)}`,
+            cause,
+          }),
+      ),
+    );
+
+  const runSourceCleanupUninterruptible = <A>(args: {
+    readonly transferId: SessionTransferId;
+    readonly releaseLock: Effect.Effect<void>;
+    readonly cleanupDeferred: Deferred.Deferred<void, SessionTransferError>;
+    readonly runCleanup: Effect.Effect<A, SessionTransferError>;
+  }): Effect.Effect<A, SessionTransferError> =>
+    Effect.uninterruptible(
+      Effect.gen(function* () {
+        const exit = yield* Effect.exit(args.runCleanup);
+        if (Exit.isSuccess(exit)) {
+          yield* args.releaseLock;
+          yield* Deferred.succeed(args.cleanupDeferred, undefined);
+          return exit.value;
+        }
+        const failureOption = Cause.findErrorOption(exit.cause);
+        const error = Option.isSome(failureOption)
+          ? failureOption.value
+          : new SessionTransferError({
+              code: "internal",
+              transferId: args.transferId,
+              message: `Unexpected failure cleaning up session transfer staging for '${args.transferId}': ${Cause.pretty(exit.cause)}`,
+              cause: Cause.squash(exit.cause),
+            });
+        yield* Effect.logWarning("Failed to clean up session transfer source staging directory.", {
+          transferId: args.transferId,
+          cause: error,
+        });
+        yield* args.releaseLock;
+        yield* Deferred.fail(args.cleanupDeferred, error);
+        return yield* Effect.failCause(exit.cause);
+      }),
+    );
   const preparedSources = yield* Ref.make(
     new Map<SessionTransferId, SessionTransferPrepareSourceResult>(),
   );
@@ -978,42 +1026,36 @@ const make = Effect.gen(function* () {
     }
 
     // Remove staging files and cache entries BEFORE releasing the source lock so an immediate
-    // retry cannot race with cleanup deleting files underneath it.
-    const cleanupOnOwnError = Effect.gen(function* () {
-      const cleanupDeferred = yield* Deferred.make<void>();
-      const owned = yield* Ref.modify(sourceLocks, (current) => {
-        const holder = current.get(input.threadId);
-        if (holder === undefined || holder.attemptId !== attemptId || holder.phase === "cleaning") {
-          return [false, current] as const;
-        }
-        const next = new Map(current);
-        next.set(input.threadId, {
-          transferId: holder.transferId,
-          attemptId: holder.attemptId,
-          phase: "cleaning",
-          cleanupDeferred,
-        });
-        return [true, next] as const;
-      });
-      if (!owned) return;
-
-      yield* Effect.ensuring(
-        Effect.gen(function* () {
-          yield* Ref.update(preparedSources, (current) => {
-            const existing = current.get(input.transferId);
-            if (existing === undefined || existing.manifest.sourceThreadId !== input.threadId) {
-              return current;
-            }
-            const next = new Map(current);
-            next.delete(input.transferId);
-            return next;
+    // retry cannot race with cleanup deleting files underneath it. Run the entire cleaning
+    // sequence uninterruptibly so staging deletion always finishes before releasing the lock
+    // and resolving cleanupDeferred.
+    const cleanupOnOwnError = Effect.uninterruptible(
+      Effect.gen(function* () {
+        const cleanupDeferred = yield* Deferred.make<void, SessionTransferError>();
+        const owned = yield* Ref.modify(sourceLocks, (current) => {
+          const holder = current.get(input.threadId);
+          if (
+            holder === undefined ||
+            holder.attemptId !== attemptId ||
+            holder.phase === "cleaning"
+          ) {
+            return [false, current] as const;
+          }
+          const next = new Map(current);
+          next.set(input.threadId, {
+            transferId: holder.transferId,
+            attemptId: holder.attemptId,
+            phase: "cleaning",
+            cleanupDeferred,
           });
-          yield* runWithAssetContext(cleanupTransferStagingDir(input.transferId)).pipe(
-            Effect.ignore,
-          );
-        }),
-        Effect.gen(function* () {
-          yield* Ref.update(sourceLocks, (current) => {
+          return [true, next] as const;
+        });
+        if (!owned) return;
+
+        yield* runSourceCleanupUninterruptible({
+          transferId: input.transferId,
+          cleanupDeferred,
+          releaseLock: Ref.update(sourceLocks, (current) => {
             const holder = current.get(input.threadId);
             if (holder === undefined || holder.attemptId !== attemptId) {
               return current;
@@ -1021,11 +1063,26 @@ const make = Effect.gen(function* () {
             const next = new Map(current);
             next.delete(input.threadId);
             return next;
-          });
-          yield* Deferred.succeed(cleanupDeferred, undefined);
-        }),
-      );
-    });
+          }),
+          runCleanup: Effect.gen(function* () {
+            yield* Ref.update(preparedSources, (current) => {
+              const existing = current.get(input.transferId);
+              if (existing === undefined || existing.manifest.sourceThreadId !== input.threadId) {
+                return current;
+              }
+              const next = new Map(current);
+              next.delete(input.transferId);
+              return next;
+            });
+            yield* cleanupSourceStagingDir(input.transferId);
+          }),
+        }).pipe(
+          // Preserve prepareSource's original error cause; any staging deletion failure has
+          // already been logged and propagated to cleanupDeferred waiters.
+          Effect.ignore,
+        );
+      }),
+    );
 
     return yield* Effect.gen(function* () {
       let projection = yield* projectionStore.getThreadProjection(input.threadId).pipe(
@@ -1755,7 +1812,15 @@ const make = Effect.gen(function* () {
     }
 
     // Clean up temporary imported bundle staging file after commit.
-    yield* runWithAssetContext(cleanupTransferStagingDir(input.transferId)).pipe(Effect.ignore);
+    yield* runWithAssetContext(cleanupTransferStagingDir(input.transferId)).pipe(
+      Effect.tapError((cause) =>
+        Effect.logWarning(
+          "Failed to clean up session transfer staging directory after commitImport.",
+          { transferId: input.transferId, cause },
+        ),
+      ),
+      Effect.ignore,
+    );
 
     return {
       resumed,
@@ -2631,70 +2696,97 @@ const make = Effect.gen(function* () {
       archived = true;
     }
 
-    // Delete temporary export bundle files & cache BEFORE releasing the source lock.
-    // If another cleanup owner already transitioned the lock into `cleaning`, wait for it
-    // instead of overwriting its attemptId or running a competing cleanup/release.
-    const finalizeAttemptId = yield* secureRandom.uuidV4();
-    const finalizeCleanupDeferred = yield* Deferred.make<void>();
-    const finalizeLockState = yield* Ref.modify(
-      sourceLocks,
-      (
-        current,
-      ): readonly [
-        (
-          | { readonly kind: "claimed" }
-          | { readonly kind: "await"; readonly deferred: Deferred.Deferred<void> }
-          | { readonly kind: "unclaimed" }
-        ),
-        Map<ThreadId, SourceLockEntry>,
-      ] => {
-        const holder = current.get(input.threadId);
-        if (holder?.transferId !== input.transferId) {
-          return [{ kind: "unclaimed" }, current];
-        }
-        if (holder.phase === "cleaning") {
-          return [{ kind: "await", deferred: holder.cleanupDeferred }, current];
-        }
-        const next = new Map(current);
-        next.set(input.threadId, {
-          transferId: holder.transferId,
-          attemptId: finalizeAttemptId,
-          phase: "cleaning",
-          cleanupDeferred: finalizeCleanupDeferred,
-        });
-        return [{ kind: "claimed" }, next];
-      },
-    );
+    // Delete staging & cache uninterruptibly before releasing the source lock and resolving
+    // cleanupDeferred; await any cleanup owner already in `cleaning`.
+    yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const finalizeAttemptId = yield* secureRandom.uuidV4();
+        const finalizeCleanupDeferred = yield* Deferred.make<void, SessionTransferError>();
+        const finalizeLockState = yield* Ref.modify(
+          sourceLocks,
+          (
+            current,
+          ): readonly [
+            (
+              | { readonly kind: "claimed" }
+              | {
+                  readonly kind: "await";
+                  readonly deferred: Deferred.Deferred<void, SessionTransferError>;
+                }
+              | { readonly kind: "unclaimed" }
+            ),
+            Map<ThreadId, SourceLockEntry>,
+          ] => {
+            const holder = current.get(input.threadId);
+            if (holder?.transferId !== input.transferId) {
+              return [{ kind: "unclaimed" }, current];
+            }
+            if (holder.phase === "cleaning") {
+              return [{ kind: "await", deferred: holder.cleanupDeferred }, current];
+            }
+            const next = new Map(current);
+            next.set(input.threadId, {
+              transferId: holder.transferId,
+              attemptId: finalizeAttemptId,
+              phase: "cleaning",
+              cleanupDeferred: finalizeCleanupDeferred,
+            });
+            return [{ kind: "claimed" }, next];
+          },
+        );
 
-    if (finalizeLockState.kind === "await") {
-      yield* Deferred.await(finalizeLockState.deferred);
-    } else {
-      const cleanupBody = Effect.gen(function* () {
-        yield* Ref.update(preparedSources, (current) => {
-          if (!current.has(input.transferId)) return current;
-          const next = new Map(current);
-          next.delete(input.transferId);
-          return next;
+        if (finalizeLockState.kind === "await") {
+          yield* restore(Deferred.await(finalizeLockState.deferred)).pipe(
+            Effect.tapError((cause) =>
+              Effect.logWarning("Awaited source staging cleanup failed during finalizeSource.", {
+                transferId: input.transferId,
+                cause,
+              }),
+            ),
+            Effect.ignore,
+          );
+          return;
+        }
+
+        const cleanupBody = Effect.gen(function* () {
+          yield* Ref.update(preparedSources, (current) => {
+            if (!current.has(input.transferId)) return current;
+            const next = new Map(current);
+            next.delete(input.transferId);
+            return next;
+          });
+          yield* cleanupSourceStagingDir(input.transferId);
         });
-        yield* runWithAssetContext(cleanupTransferStagingDir(input.transferId)).pipe(Effect.ignore);
-      });
-      if (finalizeLockState.kind === "claimed") {
-        yield* Effect.ensuring(
-          cleanupBody,
-          Effect.gen(function* () {
-            yield* Ref.update(sourceLocks, (current) => {
+
+        if (finalizeLockState.kind === "claimed") {
+          yield* runSourceCleanupUninterruptible({
+            transferId: input.transferId,
+            cleanupDeferred: finalizeCleanupDeferred,
+            releaseLock: Ref.update(sourceLocks, (current) => {
               if (current.get(input.threadId)?.attemptId !== finalizeAttemptId) return current;
               const next = new Map(current);
               next.delete(input.threadId);
               return next;
-            });
-            yield* Deferred.succeed(finalizeCleanupDeferred, undefined);
-          }),
-        );
-      } else {
-        yield* cleanupBody;
-      }
-    }
+            }),
+            runCleanup: cleanupBody,
+          }).pipe(
+            // Source thread is already marked transferred and archived; any staging deletion error
+            // has already been logged and propagated to cleanupDeferred waiters.
+            Effect.ignore,
+          );
+        } else {
+          yield* cleanupBody.pipe(
+            Effect.tapError((cause) =>
+              Effect.logWarning(
+                "Failed to clean up unclaimed source staging directory during finalizeSource.",
+                { transferId: input.transferId, cause },
+              ),
+            ),
+            Effect.ignore,
+          );
+        }
+      }),
+    );
 
     return { archived } satisfies SessionTransferFinalizeSourceResult;
   });
@@ -2703,97 +2795,100 @@ const make = Effect.gen(function* () {
     "SessionTransferEndpointService.abort",
   )(function* (input) {
     if (input.role === "source") {
-      const abortAttemptId = yield* secureRandom.uuidV4();
-      const abortCleanupDeferred = yield* Deferred.make<void>();
-      const abortLockState = yield* Ref.modify(
-        sourceLocks,
-        (
-          current,
-        ): readonly [
-          (
-            | { readonly kind: "claimed" }
-            | {
-                readonly kind: "await";
-                readonly deferreds: ReadonlyArray<Deferred.Deferred<void>>;
-              }
-            | { readonly kind: "unclaimed" }
-          ),
-          Map<ThreadId, SourceLockEntry>,
-        ] => {
-          const existingCleaning: Array<Deferred.Deferred<void>> = [];
-          const claimableThreadIds: Array<ThreadId> = [];
-          for (const [threadId, holder] of current) {
-            if (holder.transferId !== input.transferId) continue;
-            if (holder.phase === "cleaning") {
-              existingCleaning.push(holder.cleanupDeferred);
-            } else {
-              claimableThreadIds.push(threadId);
-            }
-          }
-          if (existingCleaning.length > 0 && claimableThreadIds.length === 0) {
-            return [{ kind: "await", deferreds: existingCleaning }, current];
-          }
-          if (claimableThreadIds.length === 0) {
-            return [{ kind: "unclaimed" }, current];
-          }
-          const next = new Map(current);
-          for (const threadId of claimableThreadIds) {
-            const holder = next.get(threadId)!;
-            next.set(threadId, {
-              transferId: holder.transferId,
-              attemptId: abortAttemptId,
-              phase: "cleaning",
-              cleanupDeferred: abortCleanupDeferred,
-            });
-          }
-          return [{ kind: "claimed" }, next];
-        },
-      );
-
-      if (abortLockState.kind === "await") {
-        for (const deferred of abortLockState.deferreds) {
-          yield* Deferred.await(deferred);
-        }
-        return { cleanedUp: true } satisfies SessionTransferAbortResult;
-      }
-
-      const cleanupBody = Effect.gen(function* () {
-        const removedCache = yield* Ref.modify(preparedSources, (current) => {
-          if (!current.has(input.transferId)) return [false, current] as const;
-          const next = new Map(current);
-          next.delete(input.transferId);
-          return [true, next] as const;
-        });
-        const deletedStaging = yield* runWithAssetContext(
-          cleanupTransferStagingDir(input.transferId),
-        ).pipe(Effect.orElseSucceed(() => false));
-        return { removedCache, deletedStaging };
-      });
-
-      const { removedCache, deletedStaging } =
-        abortLockState.kind === "claimed"
-          ? yield* Effect.ensuring(
-              cleanupBody,
-              Effect.gen(function* () {
-                yield* Ref.update(sourceLocks, (current) => {
-                  let changed = false;
-                  const next = new Map(current);
-                  for (const [threadId, holder] of next) {
-                    if (holder.attemptId === abortAttemptId) {
-                      next.delete(threadId);
-                      changed = true;
-                    }
+      return yield* Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const abortAttemptId = yield* secureRandom.uuidV4();
+          const abortCleanupDeferred = yield* Deferred.make<void, SessionTransferError>();
+          const abortLockState = yield* Ref.modify(
+            sourceLocks,
+            (
+              current,
+            ): readonly [
+              (
+                | { readonly kind: "claimed" }
+                | {
+                    readonly kind: "await";
+                    readonly deferreds: ReadonlyArray<
+                      Deferred.Deferred<void, SessionTransferError>
+                    >;
                   }
-                  return changed ? next : current;
+                | { readonly kind: "unclaimed" }
+              ),
+              Map<ThreadId, SourceLockEntry>,
+            ] => {
+              const existingCleaning: Array<Deferred.Deferred<void, SessionTransferError>> = [];
+              const claimableThreadIds: Array<ThreadId> = [];
+              for (const [threadId, holder] of current) {
+                if (holder.transferId !== input.transferId) continue;
+                if (holder.phase === "cleaning") {
+                  existingCleaning.push(holder.cleanupDeferred);
+                } else {
+                  claimableThreadIds.push(threadId);
+                }
+              }
+              if (existingCleaning.length > 0 && claimableThreadIds.length === 0) {
+                return [{ kind: "await", deferreds: existingCleaning }, current];
+              }
+              if (claimableThreadIds.length === 0) {
+                return [{ kind: "unclaimed" }, current];
+              }
+              const next = new Map(current);
+              for (const threadId of claimableThreadIds) {
+                const holder = next.get(threadId)!;
+                next.set(threadId, {
+                  transferId: holder.transferId,
+                  attemptId: abortAttemptId,
+                  phase: "cleaning",
+                  cleanupDeferred: abortCleanupDeferred,
                 });
-                yield* Deferred.succeed(abortCleanupDeferred, undefined);
-              }),
-            )
-          : yield* cleanupBody;
+              }
+              return [{ kind: "claimed" }, next];
+            },
+          );
 
-      return {
-        cleanedUp: abortLockState.kind === "claimed" || removedCache || deletedStaging,
-      } satisfies SessionTransferAbortResult;
+          if (abortLockState.kind === "await") {
+            for (const deferred of abortLockState.deferreds) {
+              yield* restore(Deferred.await(deferred));
+            }
+            return { cleanedUp: true } satisfies SessionTransferAbortResult;
+          }
+
+          const cleanupBody = Effect.gen(function* () {
+            const removedCache = yield* Ref.modify(preparedSources, (current) => {
+              if (!current.has(input.transferId)) return [false, current] as const;
+              const next = new Map(current);
+              next.delete(input.transferId);
+              return [true, next] as const;
+            });
+            const deletedStaging = yield* cleanupSourceStagingDir(input.transferId);
+            return { removedCache, deletedStaging };
+          });
+
+          const { removedCache, deletedStaging } =
+            abortLockState.kind === "claimed"
+              ? yield* runSourceCleanupUninterruptible({
+                  transferId: input.transferId,
+                  cleanupDeferred: abortCleanupDeferred,
+                  releaseLock: Ref.update(sourceLocks, (current) => {
+                    let changed = false;
+                    const next = new Map(current);
+                    for (const [threadId, holder] of next) {
+                      if (holder.attemptId === abortAttemptId) {
+                        next.delete(threadId);
+                        changed = true;
+                      }
+                    }
+                    return changed ? next : current;
+                  }),
+                  runCleanup: cleanupBody,
+                })
+              : yield* cleanupBody;
+
+          return {
+            cleanedUp: abortLockState.kind === "claimed" || removedCache || deletedStaging,
+          } satisfies SessionTransferAbortResult;
+        }),
+      );
     }
 
     // Destination abort: serialized with stageImport and commitImport per transferId, never deletes
@@ -2814,13 +2909,20 @@ const make = Effect.gen(function* () {
             ),
           );
 
-        const deletedStaging = yield* runWithAssetContext(
-          cleanupTransferStagingDir(input.transferId),
-        ).pipe(Effect.orElseSucceed(() => false));
-
         if (alreadyCommitted) {
+          yield* runWithAssetContext(cleanupTransferStagingDir(input.transferId)).pipe(
+            Effect.tapError((cause) =>
+              Effect.logWarning(
+                "Failed to clean up committed destination staging directory during abort.",
+                { transferId: input.transferId, cause },
+              ),
+            ),
+            Effect.ignore,
+          );
           return { cleanedUp: false } satisfies SessionTransferAbortResult;
         }
+
+        const deletedStaging = yield* cleanupSourceStagingDir(input.transferId);
 
         let cleanedWorktree = false;
         if (staged?.worktreePath !== null && staged?.worktreePath !== undefined) {

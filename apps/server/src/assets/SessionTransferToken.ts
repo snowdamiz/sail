@@ -227,9 +227,19 @@ export const cleanupTransferStagingDir = Effect.fn("SessionTransferToken.cleanup
     const path = yield* Path.Path;
     const dir = resolveTransferStagingDir(config.stateDir, transferId, path);
     if (dir === null) return false;
-    const existed = yield* fileSystem.exists(dir).pipe(Effect.orElseSucceed(() => false));
+    const existed = yield* fileSystem.exists(dir).pipe(
+      Effect.catchIf(
+        (error) => error.reason._tag === "NotFound",
+        () => Effect.succeed(false),
+      ),
+    );
     if (!existed) return false;
-    yield* fileSystem.remove(dir, { recursive: true, force: true }).pipe(Effect.ignore);
+    yield* fileSystem.remove(dir, { recursive: true, force: true }).pipe(
+      Effect.catchIf(
+        (error) => error.reason._tag === "NotFound",
+        () => Effect.void,
+      ),
+    );
     return true;
   },
 );
@@ -433,47 +443,81 @@ export const resolveExportBundleForDownload = Effect.fn(
   // Open the file once, verify fstat + SHA-256 on that open descriptor, and stream directly
   // from the same FileHandle so replacing or unlinking the path cannot introduce a TOCTOU window.
   const openFlags = NodeFS.constants.O_RDONLY | (NodeFS.constants.O_NOFOLLOW ?? 0);
-  const openResult = yield* Effect.tryPromise({
-    try: async (signal) => {
-      let handle: NodeFSP.FileHandle;
-      try {
-        handle = await NodeFS.promises.open(bundlePath, openFlags);
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException | undefined)?.code;
-        if (code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP") {
-          return { ok: false, status: 404, detail: "Not Found" } as const;
-        }
-        throw error;
-      }
+  let acquiredHandle: NodeFSP.FileHandle | null = null;
+  const openResult = yield* Effect.uninterruptibleMask((restore) =>
+    restore(
+      Effect.tryPromise({
+        try: async (signal) => {
+          let handle: NodeFSP.FileHandle;
+          try {
+            handle = await NodeFS.promises.open(bundlePath, openFlags);
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException | undefined)?.code;
+            if (code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP") {
+              return { ok: false, status: 404, detail: "Not Found" } as const;
+            }
+            throw error;
+          }
 
-      let handedOff = false;
-      try {
-        options?.onFileOpen?.(handle);
-        const stat = await handle.stat();
-        if (!stat.isFile()) {
-          return { ok: false, status: 404, detail: "Not Found" } as const;
-        }
-        const sizeBytes = stat.size;
-        const maxBytes = Math.min(claims.maxBytes, SESSION_TRANSFER_MAX_BUNDLE_BYTES);
-        if (sizeBytes > maxBytes) {
-          return {
-            ok: false,
-            status: 409,
-            detail: `Exported bundle size (${sizeBytes} bytes) exceeds signed token limit (${maxBytes} bytes).`,
-          } as const;
-        }
-        if (claims.expectedSizeBytes !== undefined && sizeBytes !== claims.expectedSizeBytes) {
-          return {
-            ok: false,
-            status: 409,
-            detail: `Exported bundle size (${sizeBytes} bytes) does not match signed size (${claims.expectedSizeBytes} bytes).`,
-          } as const;
-        }
-        if (claims.expectedSha256 !== undefined) {
-          const hash = NodeCrypto.createHash("sha256");
-          const chunk = new Uint8Array(64 * 1024);
-          let offset = 0;
-          while (offset < sizeBytes) {
+          let handedOff = false;
+          try {
+            options?.onFileOpen?.(handle);
+            const stat = await handle.stat();
+            if (!stat.isFile()) {
+              return { ok: false, status: 404, detail: "Not Found" } as const;
+            }
+            const sizeBytes = stat.size;
+            const maxBytes = Math.min(claims.maxBytes, SESSION_TRANSFER_MAX_BUNDLE_BYTES);
+            if (sizeBytes > maxBytes) {
+              return {
+                ok: false,
+                status: 409,
+                detail: `Exported bundle size (${sizeBytes} bytes) exceeds signed token limit (${maxBytes} bytes).`,
+              } as const;
+            }
+            if (claims.expectedSizeBytes !== undefined && sizeBytes !== claims.expectedSizeBytes) {
+              return {
+                ok: false,
+                status: 409,
+                detail: `Exported bundle size (${sizeBytes} bytes) does not match signed size (${claims.expectedSizeBytes} bytes).`,
+              } as const;
+            }
+            if (claims.expectedSha256 !== undefined) {
+              const hash = NodeCrypto.createHash("sha256");
+              const chunk = new Uint8Array(64 * 1024);
+              let offset = 0;
+              while (offset < sizeBytes) {
+                if (signal.aborted) {
+                  return {
+                    ok: false,
+                    status: 500,
+                    detail: "Exported session transfer bundle verification was aborted.",
+                  } as const;
+                }
+                const toRead = Math.min(chunk.byteLength, sizeBytes - offset);
+                const { bytesRead } = await handle.read(chunk, 0, toRead, offset);
+                if (bytesRead === 0) break;
+                hash.update(chunk.subarray(0, bytesRead));
+                offset += bytesRead;
+              }
+              if (offset !== sizeBytes) {
+                return {
+                  ok: false,
+                  status: 409,
+                  detail: "Exported session transfer bundle size changed during verification.",
+                } as const;
+              }
+              const actualSha256 = hash.digest("hex");
+              if (actualSha256 !== claims.expectedSha256.toLowerCase()) {
+                return {
+                  ok: false,
+                  status: 409,
+                  detail:
+                    "Exported session transfer bundle SHA-256 checksum does not match signed claims.",
+                } as const;
+              }
+            }
+
             if (signal.aborted) {
               return {
                 ok: false,
@@ -481,67 +525,45 @@ export const resolveExportBundleForDownload = Effect.fn(
                 detail: "Exported session transfer bundle verification was aborted.",
               } as const;
             }
-            const toRead = Math.min(chunk.byteLength, sizeBytes - offset);
-            const { bytesRead } = await handle.read(chunk, 0, toRead, offset);
-            if (bytesRead === 0) break;
-            hash.update(chunk.subarray(0, bytesRead));
-            offset += bytesRead;
-          }
-          if (offset !== sizeBytes) {
+
+            if (sizeBytes === 0) {
+              return {
+                ok: true,
+                filePath: bundlePath,
+                sizeBytes: 0,
+                handle: null as NodeFSP.FileHandle | null,
+              } as const;
+            }
+
+            handedOff = true;
+            acquiredHandle = handle;
             return {
-              ok: false,
-              status: 409,
-              detail: "Exported session transfer bundle size changed during verification.",
+              ok: true,
+              filePath: bundlePath,
+              sizeBytes,
+              handle,
             } as const;
+          } finally {
+            if (!handedOff) {
+              await handle.close().catch(() => undefined);
+            }
           }
-          const actualSha256 = hash.digest("hex");
-          if (actualSha256 !== claims.expectedSha256.toLowerCase()) {
-            return {
-              ok: false,
-              status: 409,
-              detail:
-                "Exported session transfer bundle SHA-256 checksum does not match signed claims.",
-            } as const;
-          }
-        }
-
-        if (signal.aborted) {
-          return {
-            ok: false,
-            status: 500,
-            detail: "Exported session transfer bundle verification was aborted.",
-          } as const;
-        }
-
-        if (sizeBytes === 0) {
-          return {
-            ok: true,
-            filePath: bundlePath,
-            sizeBytes: 0,
-            handle: null as NodeFSP.FileHandle | null,
-          } as const;
-        }
-
-        handedOff = true;
-        return {
-          ok: true,
-          filePath: bundlePath,
-          sizeBytes,
-          handle,
-        } as const;
-      } finally {
-        if (!handedOff) {
-          await handle.close().catch(() => undefined);
-        }
-      }
-    },
-    catch: (cause) => new SessionTransferBundleStreamError({ cause }),
-  }).pipe(
-    Effect.orElseSucceed(() => ({
-      ok: false as const,
-      status: 500 as const,
-      detail: "Failed to verify exported session transfer bundle checksum.",
-    })),
+        },
+        catch: (cause) => new SessionTransferBundleStreamError({ cause }),
+      }).pipe(
+        Effect.orElseSucceed(() => ({
+          ok: false as const,
+          status: 500 as const,
+          detail: "Failed to verify exported session transfer bundle checksum.",
+        })),
+      ),
+    ).pipe(
+      Effect.onInterrupt(() =>
+        acquiredHandle === null
+          ? Effect.void
+          : Effect.promise(() => acquiredHandle!.close().catch(() => undefined)),
+      ),
+    ),
   );
 
   if (!openResult.ok) {
@@ -567,7 +589,7 @@ export const resolveExportBundleForDownload = Effect.fn(
             openResult.handle!.createReadStream({
               start: 0,
               end: openResult.sizeBytes - 1,
-              autoClose: true,
+              autoClose: false,
             }),
           onError: (cause) => new SessionTransferBundleStreamError({ cause }),
         }).pipe(Stream.ensuring(close));

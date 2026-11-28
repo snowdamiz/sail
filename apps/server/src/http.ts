@@ -661,41 +661,40 @@ export const layerSessionTransferBundleDownloadRoute = HttpRouter.add(
       return HttpServerResponse.text("Not Found", { status: 404 });
     }
 
-    return yield* Effect.uninterruptibleMask((restore) =>
-      Effect.gen(function* () {
-        const bundle = yield* restore(resolveExportBundleForDownload(claims));
-        if (!bundle.ok) {
-          return HttpServerResponse.text(bundle.detail, { status: bundle.status });
-        }
-
-        // Handle HEAD explicitly: Node/Web HTTP responders skip consuming a streamed body on HEAD,
-        // so returning HttpServerResponse.stream would leak the open bundle FileHandle.
-        return yield* Effect.gen(function* () {
-          if (request.method === "HEAD") {
-            yield* bundle.close;
-            return HttpServerResponse.empty({
-              status: 200,
-              headers: {
-                "content-type": "application/octet-stream",
-                "content-length": String(bundle.sizeBytes),
-                "cache-control": "private, no-store",
-                "x-content-type-options": "nosniff",
-              },
-            });
-          }
-
-          return HttpServerResponse.stream(bundle.stream, {
-            status: 200,
-            contentType: "application/octet-stream",
-            contentLength: bundle.sizeBytes,
-            headers: {
-              "cache-control": "private, no-store",
-              "x-content-type-options": "nosniff",
-            },
-          });
-        }).pipe(Effect.onError(() => bundle.close));
-      }),
+    // Bind the verified FileHandle lifetime to the HTTP request Scope so NodeHttpServer
+    // pre-stream GET disconnects (nodeResponse.destroyed / writableEnded), synchronous writeHead
+    // errors, middleware failures, and HEAD requests all close the FileHandle even when the
+    // responder never starts consuming `bundle.stream`.
+    const bundle = yield* Effect.acquireRelease(
+      resolveExportBundleForDownload(claims),
+      (resolved) => (resolved.ok ? resolved.close : Effect.void),
     );
+    if (!bundle.ok) {
+      return HttpServerResponse.text(bundle.detail, { status: bundle.status });
+    }
+
+    if (request.method === "HEAD") {
+      yield* bundle.close;
+      return HttpServerResponse.empty({
+        status: 200,
+        headers: {
+          "content-type": "application/octet-stream",
+          "content-length": String(bundle.sizeBytes),
+          "cache-control": "private, no-store",
+          "x-content-type-options": "nosniff",
+        },
+      });
+    }
+
+    return HttpServerResponse.stream(bundle.stream, {
+      status: 200,
+      contentType: "application/octet-stream",
+      contentLength: bundle.sizeBytes,
+      headers: {
+        "cache-control": "private, no-store",
+        "x-content-type-options": "nosniff",
+      },
+    });
   }),
   SIGNED_URL_ROUTE_OPTIONS,
 );
