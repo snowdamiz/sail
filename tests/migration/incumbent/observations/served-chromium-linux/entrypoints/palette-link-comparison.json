@@ -1,0 +1,20 @@
+{
+  "fixtureId": "palette-link",
+  "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "changedSteps": [],
+  "pixels": {
+    "baseline": "tests/migration/incumbent/observations/served-chromium-linux/entrypoints/a/palette-link/capture.png",
+    "candidate": "tests/migration/incumbent/observations/served-chromium-linux/entrypoints/b/palette-link/capture.png",
+    "diff": "tests/migration/incumbent/observations/served-chromium-linux/entrypoints/palette-link-diff.png",
+    "baselineSize": [1280, 1200],
+    "candidateSize": [1280, 1200],
+    "differentPixels": 0,
+    "bounds": null
+  },
+  "artifactSha256": {
+    "baselineReceipt": "7e53097306f2f64784d73a6b1728b3c35ce146111edb0ce0d20d5b6c9ac9b62b",
+    "candidateReceipt": "fdd8ffd1751b1fc0a191ffdba6d952f9ac36d3da4d4b76463a78ea7c6c2504c2",
+    "diff": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+  }
+}

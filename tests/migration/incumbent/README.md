@@ -208,6 +208,8 @@ python3 tests/migration/incumbent/linux-electron/seed-entrypoints.py "$input" "$
 
 The seed script adds a second Replay thread through the packaged CLI. Its isolated Replay recording replies with an internal link to the existing `Compatibility replay` thread. Put the published Debian packages in `$navigation_input` and use it as the `/input` mount. Append `--entrypoints` to the Linux capture command. The probe opens the source thread before each action, clicks the rendered link chip, and then uses Ctrl+K, search, and Enter for the palette. It checks the saved destination and composer focus before clearing focus for each full-window capture.
 
+For served web, use the same navigation seed and thread IDs with the [Linux Chromium capture command](#linux). Mount `$navigation_input/source-thread-id` at `/source-thread-id` read-only and append `--entrypoints`. Both actions must open the saved thread in its original environment, focus its composer, and preserve the stored Replay payloads. The screenshots capture the destination after clearing focus. [Linux Chromium navigation](observations/served-chromium-linux/entrypoints)
+
 The Rust verifier binds each capture to the observed route and raw state digest in the [Linux capture witness ledger](runtime/linux-capture-witnesses.json). The same ledger pins the display captures to their observed pixels and independent runs.
 
 ## Capture Replay approval and denied access
@@ -239,6 +241,6 @@ For two Linux Chromium repeats, use the [Linux capture command](#linux) with sep
 
 Serve the page from [the title-change scenario](../../../scripts/scenarios/browser-tab-follows-page-title.e2e.ts) on loopback. Open it in the seeded thread's **Browser** panel and click the page canvas. Wait for the tab to display **Updated title** at the same address. Select **Release control** and use the thread provider's `preview_status` to locate the tab. Call `preview_evaluate` on that tab with the expression in the [Browser panel receipt](observations/served-chromium-macos/browser-panel/receipt.json). The receipt includes the packaged v0.1.17 screenshots and the tool's returned value.
 
-The [browser availability receipt](observations/browser-availability.json) records WebDriver startup failures for Safari and stock Firefox on macOS. Those macOS Replay profiles remain open.
+The [browser availability receipt](observations/browser-availability.json) records earlier WebDriver startup attempts. The [coverage catalog](coverage-catalog.json) lists the current qualification targets.
 
 The [run receipt](observations/run.json) records the installer, wire, and SQLite checks. Use the [launcher and runtime probe](runtime/README.md) to reproduce the installed package's startup and capability observations.

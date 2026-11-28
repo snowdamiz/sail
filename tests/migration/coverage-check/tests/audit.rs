@@ -418,20 +418,35 @@ fn rejects_rehashing_dark_pixels_into_a_light_display_reference() {
 
 #[test]
 fn verifies_both_witnessed_linux_navigation_entrypoints() {
-    for (case, state) in [
-        ("chat-link", "linked-thread-opened"),
-        ("palette-link", "selected-thread-opened"),
+    for platform in [
+        "electron-linux-arm64",
+        "electron-linux-x64",
+        "served-chromium-linux",
     ] {
-        let fixture = Fixture::visual(case, state, "electron-linux-arm64");
-        let output = fixture.run();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(report["verifiedVisualReferenceObservations"], 1);
+        for (case, state) in [
+            ("chat-link", "linked-thread-opened"),
+            ("palette-link", "selected-thread-opened"),
+        ] {
+            let fixture = Fixture::visual(case, state, platform);
+            let output = fixture.run();
+            assert!(
+                output.status.success(),
+                "{platform} {state}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(report["verifiedVisualReferenceObservations"], 1);
+        }
     }
+}
+
+#[test]
+fn rejects_a_rehashed_chromium_navigation_trace_with_the_wrong_environment() {
+    let mut fixture = Fixture::visual("chat-link", "linked-thread-opened", "served-chromium-linux");
+    fixture.edit_process_json(0, "capture-receipt", |capture| {
+        capture["trace"][1]["observed"]["sameActiveEnvironment"] = json!(false);
+    });
+    fixture.rejects("navigation trace disagrees with the observed action or destination");
 }
 
 #[test]
@@ -866,8 +881,8 @@ fn rejects_an_observation_outside_the_declared_matrix() {
 fn rejects_relabeling_a_capture_as_a_different_platform_or_state() {
     let mut fixture = Fixture::new();
     fixture.catalog["platformSets"]["app"] =
-        json!(["served-chromium-macos", "served-safari-macos"]);
-    fixture.catalog["observations"][0]["platformId"] = json!("served-safari-macos");
+        json!(["served-chromium-macos", "served-firefox-macos"]);
+    fixture.catalog["observations"][0]["platformId"] = json!("served-firefox-macos");
     fixture.rejects("different coverage cell or configuration");
 
     fixture.catalog["observations"][0]["platformId"] = json!("served-chromium-macos");

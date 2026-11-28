@@ -275,29 +275,23 @@ fn load_capture(
     }
     let image_path = evidence.resolve(&image.path)?;
     capture_witness::verify_known_platform(&capture, &observation.cell)?;
-    if matches!(
+    match (
         observation.cell.platform_id.as_str(),
-        "electron-linux-arm64" | "electron-linux-x64"
+        observation.cell.case_id.as_str(),
     ) {
-        match observation.cell.case_id.as_str() {
-            "chat-display" => display::verify(evidence, observation, run, &capture, &image_path)?,
-            "chat-link" | "palette-link" => {
-                navigation::verify(evidence, observation, run, &capture, &image_path)?;
-            }
-            _ => {}
+        ("electron-linux-arm64" | "electron-linux-x64", "chat-display") => {
+            display::verify(evidence, observation, run, &capture, &image_path)?;
         }
-    }
-    if observation.cell.platform_id == "served-chromium-linux"
-        && matches!(
-            observation.cell.case_id.as_str(),
-            "chat-view-states"
-                | "disconnect-recover"
-                | "browser-preview"
-                | "approval"
-                | "version-rejection"
-        )
-    {
-        chromium_chat::verify(evidence, observation, run, &capture, &image_path)?;
+        (
+            "electron-linux-arm64" | "electron-linux-x64" | "served-chromium-linux",
+            "chat-link" | "palette-link",
+        ) => navigation::verify(evidence, observation, run, &capture, &image_path)?,
+        (
+            "served-chromium-linux",
+            "chat-view-states" | "disconnect-recover" | "browser-preview" | "approval"
+            | "version-rejection",
+        ) => chromium_chat::verify(evidence, observation, run, &capture, &image_path)?,
+        _ => {}
     }
     Ok((capture, image_path, receipt_path))
 }

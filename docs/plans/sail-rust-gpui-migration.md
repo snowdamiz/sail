@@ -57,7 +57,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 
 - [ ] Fetch the named branch and use an isolated worktree at the exact head SHA. Run the owning checkout's setup and `vp i` if required.
 - [ ] Start an isolated server with a copy of `statev2.sqlite` from the test fixture or a consented sanitized snapshot. Copy settings, secrets, and attachments only for cases that require them. Preserve live user data and use a unique state directory and port per lane.
-- [ ] Drive legacy web and Electron with `.agents/skills/test-t3-app/SKILL.md` and the existing Replay provider. Start the browser WASM build from the same release asset. Use Chromium through the T3 Browser panel. Run the same flow with Firefox and Safari on their supported hosts. Drive native GPUI windows with the OS accessibility driver specified in P02.
+- [ ] Drive legacy web and Electron with `.agents/skills/test-t3-app/SKILL.md` and the existing Replay provider. Start the browser WASM build from the same release asset. Use Chromium through the T3 Browser panel for the opt-in web flow. Run the Firefox checks specified by each stage. Drive native GPUI windows with the OS accessibility driver specified in P02.
 - [ ] Use the installed binary for installer and updater lanes. Run server and CLI lanes with real HTTP, WebSocket, and process transcripts. Capture the harness or terminal result as an image when the lane has no application screen. Keep the machine-readable transcript beside it.
 - [ ] Save each image to `/tmp/swarm-<pr-id>/worker-<n>/<slug>.png` and return its path with the fixture ID, OS, browser or installer target, head SHA, server implementation, and observed result.
 - [ ] Record a prior release baseline first for performance. Alternate trunk and head on the same machine with the same saved data and load. Warm up each build, capture at least 12 pairs, and report the p95 and the raw samples. The per-PR budgets are proposed limits for the program. Record any baseline-driven adjustment before judging head.
@@ -73,8 +73,8 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 
 ### Ship a versioned release
 
-- [ ] Publish **R1, planned 0.2.0**, after P04. Offer the same qualified GPUI chat workflow as an opt-in desktop window and an opt-in WASM page. Electron and React own the normal entry points and remaining workflows. Upgrade from the previous public installer and use one existing server from all three clients.
-- [ ] Publish **R2, planned 0.3.0**, after P09. Make the qualified GPUI WASM web app the default. Keep a public React fallback and the preceding web asset revision. Ship the broader GPUI desktop workflow as opt-in.
+- [ ] Publish **R1, planned 0.2.0**, after P04. Offer the same qualified GPUI chat workflow as an opt-in desktop window and an opt-in WASM page for qualified Chromium configurations. Electron and React own the normal entry points and remaining workflows. Upgrade from the previous public installer and use one existing server from all three clients.
+- [ ] Publish **R2, planned 0.3.0**, after P09. Make GPUI WASM the web default on qualified browser configurations. Keep a public React fallback and the preceding web asset revision. Ship the broader GPUI desktop workflow as opt-in.
 - [ ] Publish **R3, planned 0.4.0**, after P10. Make the GPUI desktop launcher the default. Bundle the Node server independently. Include an Electron recovery launch path and retain the web rollback route.
 - [ ] Publish **R4, planned 0.5.0**, after P11 and P12. Use the qualified Rust workers under the Node server. Provide per-worker or per-provider selection for rollback. Keep the Node host as the sole writer for each environment.
 - [ ] Publish **R5, planned 0.6.0**, after P15. Offer the Rust server and Rust launcher for selected environments. Start with a test home and then a canary upgrade with a verified backup. Keep Node the default until R6.
@@ -145,7 +145,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 
 **Build.**
 
-- [ ] Pin an upstream GPUI revision and Rust toolchain. Build the same view crate into a native GPUI window and a WASM preview page. Use macOS Accessibility APIs and Linux AT-SPI for native controls. Add matching browser automation and screenshot capture for Chromium, Firefox, and Safari. Keep fixtures and styling aligned with P01 when both PRs land. Establish font loading, shadows, scaling, keyboard focus, and screenshot capture before shipping UI.
+- [ ] Pin an upstream GPUI revision and Rust toolchain. Build the same view crate into a native GPUI window and a WASM preview page. Use macOS Accessibility APIs and Linux AT-SPI for native controls. Add matching browser automation and screenshot capture for Chromium and Firefox. Keep fixtures and styling aligned with P01 when both PRs land. Establish font loading, shadows, scaling, keyboard focus, and screenshot capture before shipping UI.
 
 **You see.**
 
@@ -155,18 +155,17 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 
 - [ ] Run `cargo test --locked --manifest-path native/sail-client/Cargo.toml` and `cargo build --locked --target wasm32-unknown-unknown --manifest-path native/sail-client/Cargo.toml` for the client target. Verify a deliberate style change fails the pixel comparison.
 
-**Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `gpt-6.2-sol` at the PR head, per the boot recipe.
+**Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Nine lanes on `gpt-6.2-sol` at the PR head, per the boot recipe.
 
 - [ ] Lane 1. Regression lane against trunk. Replay incumbent startup, then open the new native fixture. Save `gpui-native.png`. Pass when the old launch works and the native window is interactive.
 - [ ] Lane 2. Boot the same fixture in browser Chromium. Save `wasm-chromium.png`. Pass when the expected thread is visible.
 - [ ] Lane 3. Boot the fixture in Firefox. Save `wasm-firefox.png`. Pass when fallback rendering and input work.
-- [ ] Lane 4. Boot the fixture in Safari. Save `wasm-safari.png`. Pass when focus and text entry work.
-- [ ] Lane 5. Force WebGL2. Save `wasm-webgl.png`. Pass when the render matches the WebGPU fixture.
-- [ ] Lane 6. Disable both graphics backends. Save `wasm-unavailable.png`. Pass when the legacy web entry works.
-- [ ] Lane 7. Render the pinned fonts at 1x and 2x. Save `gpui-scale.png`. Pass when the renderer resolves the required glyphs and geometry.
-- [ ] Lane 8. Drive keyboard focus and selected text. Save `gpui-input.png`. Pass when events and visible selection match the fixture.
-- [ ] Lane 9. Inspect accessible name and role for the composer. Save `gpui-a11y.png`. Pass when the OS driver finds and can activate it.
-- [ ] Lane 10. Close and reopen the separate native process. Save `gpui-reopen.png`. Pass when the app exits cleanly and opens once.
+- [ ] Lane 4. Force WebGL2. Save `wasm-webgl.png`. Pass when the render matches the WebGPU fixture.
+- [ ] Lane 5. Disable both graphics backends. Save `wasm-unavailable.png`. Pass when the legacy web entry works.
+- [ ] Lane 6. Render the pinned fonts at 1x and 2x. Save `gpui-scale.png`. Pass when the renderer resolves the required glyphs and geometry.
+- [ ] Lane 7. Drive keyboard focus and selected text. Save `gpui-input.png`. Pass when events and visible selection match the fixture.
+- [ ] Lane 8. Inspect accessible name and role for the composer. Save `gpui-a11y.png`. Pass when the OS driver finds and can activate it.
+- [ ] Lane 9. Close and reopen the separate native process. Save `gpui-reopen.png`. Pass when the app exits cleanly and opens once.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
@@ -486,7 +485,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 
 **Build.**
 
-- [ ] Serve the qualified GPUI WASM entry on server-hosted and supported hosted web origins. Preserve existing URLs, cache keys, redirects, authentication callbacks, keyboard navigation, and history. Keep the complete React app and a legacy route while the compatibility window is open. Ship R2 only after the full web manifest passes.
+- [ ] Serve the qualified GPUI WASM entry on server-hosted and supported hosted web origins. Record the supported browser configurations before changing the default. Preserve existing URLs, cache keys, redirects, authentication callbacks, keyboard navigation, and history. Keep the complete React app and a legacy route while the compatibility window is open. Serve React by default on configurations that still need qualification. Ship R2 only after the full web manifest passes.
 
 **You see.**
 
@@ -496,18 +495,17 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 
 - [ ] Run WASM builds, asset routing tests, and the P01 matrix. Run the existing pairing and Replay scenarios through the candidate and the legacy route.
 
-**Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `gpt-6.2-sol` at the PR head, per the boot recipe.
+**Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Nine lanes on `gpt-6.2-sol` at the PR head, per the boot recipe.
 
 - [ ] Lane 1. Regression lane against trunk. Run the full web parity manifest against the previous public client. Save `web-parity.png`. Pass when every app-owned image and behavioral trace passes.
 - [ ] Lane 2. Load a saved deep link in Chromium. Save `web-chromium.png`. Pass when the same thread and history are shown.
 - [ ] Lane 3. Load the same link in Firefox. Save `web-firefox.png`. Pass when input and graphics match its own baseline.
-- [ ] Lane 4. Load the same link in Safari. Save `web-safari.png`. Pass when input and graphics match its own baseline.
-- [ ] Lane 5. Pair via a hosted HTTPS link. Save `web-hosted.png`. Pass when the secret exchange and route work.
-- [ ] Lane 6. Pair on a server-served origin. Save `web-server.png`. Pass when cookie and return navigation work.
-- [ ] Lane 7. Open the app with an old cached bundle. Save `web-cache.png`. Pass when the versioned assets resolve together.
-- [ ] Lane 8. Reject GPU initialization. Save `web-no-gpu.png`. Pass when the incumbent path opens the same destination.
-- [ ] Lane 9. Exercise a sign-in popup and an attachment. Save `web-platform.png`. Pass when redirect, focus, and persisted result match.
-- [ ] Lane 10. Restore the prior web revision. Save `web-alias-rollback.png`. Pass when thread data stays current and previously saved links still open.
+- [ ] Lane 4. Pair via a hosted HTTPS link. Save `web-hosted.png`. Pass when the secret exchange and route work.
+- [ ] Lane 5. Pair on a server-served origin. Save `web-server.png`. Pass when cookie and return navigation work.
+- [ ] Lane 6. Open the app with an old cached bundle. Save `web-cache.png`. Pass when the versioned assets resolve together.
+- [ ] Lane 7. Reject GPU initialization. Save `web-no-gpu.png`. Pass when the incumbent path opens the same destination.
+- [ ] Lane 8. Exercise a sign-in popup and an attachment. Save `web-platform.png`. Pass when redirect, focus, and persisted result match.
+- [ ] Lane 9. Restore the prior web revision. Save `web-alias-rollback.png`. Pass when thread data stays current and previously saved links still open.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 

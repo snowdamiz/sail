@@ -59,11 +59,6 @@
       "browserFamily": "firefox",
       "os": "linux"
     },
-    "served-safari-macos": {
-      "surface": "server-served-web",
-      "browserFamily": "safari",
-      "os": "macos"
-    },
     "hosted-chromium-macos": {
       "surface": "hosted-web",
       "browserFamily": "chromium",
@@ -83,11 +78,6 @@
       "surface": "hosted-web",
       "browserFamily": "firefox",
       "os": "linux"
-    },
-    "hosted-safari-macos": {
-      "surface": "hosted-web",
-      "browserFamily": "safari",
-      "os": "macos"
     },
     "cli-linux-arm64": {
       "surface": "cli",
@@ -125,12 +115,10 @@
       "served-chromium-linux",
       "served-firefox-macos",
       "served-firefox-linux",
-      "served-safari-macos",
       "hosted-chromium-macos",
       "hosted-chromium-linux",
       "hosted-firefox-macos",
-      "hosted-firefox-linux",
-      "hosted-safari-macos"
+      "hosted-firefox-linux"
     ],
     "desktop": [
       "electron-macos-arm64",
@@ -142,15 +130,13 @@
       "served-chromium-macos",
       "served-chromium-linux",
       "served-firefox-macos",
-      "served-firefox-linux",
-      "served-safari-macos"
+      "served-firefox-linux"
     ],
     "hosted-web": [
       "hosted-chromium-macos",
       "hosted-chromium-linux",
       "hosted-firefox-macos",
-      "hosted-firefox-linux",
-      "hosted-safari-macos"
+      "hosted-firefox-linux"
     ],
     "packaged": [
       "electron-macos-arm64",
@@ -1134,7 +1120,7 @@
     {
       "id": "browser-versions",
       "status": "unresolved",
-      "detail": "Pin exact qualifying versions for Chromium, Firefox and Safari. The incumbent release states no browser version support bounds."
+      "detail": "Pin exact qualifying Chromium and Firefox versions. The incumbent release states no browser version support bounds."
     },
     {
       "id": "updater-support-window",
@@ -8696,6 +8682,236 @@
           "kind": "action-and-state",
           "path": "observations/served-chromium-linux/version-rejection/exact-version-rejected-comparison.json",
           "sha256": "8c97ce039c5543df7a0d02b4c57e0afe38386c1300de3c033e5299b975c46c39"
+        }
+      ]
+    },
+    {
+      "caseId": "chat-link",
+      "platformId": "served-chromium-linux",
+      "state": "linked-thread-opened",
+      "entrypoint": "chat",
+      "configurationId": "chrome-158.0.8127.88-debian-arm64-en-light-640x600-2x",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-link",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Google Chrome for Testing 158.0.8127.88",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "server-served loopback",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/served-chromium-linux/entrypoints/a/chat-link/capture.png",
+              "sha256": "12050ffdd938e9a26b6242e6d23f54737e088d9b846f999661ac46cc6524bdc2"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/served-chromium-linux/entrypoints/a/chat-link/receipt.json",
+              "sha256": "b1c753c7bff81e54db464e09a7bfb990bb0d8ec8d15f02cd75b1ced3b67d7c8f"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/served-chromium-linux/entrypoints/a/state.json",
+              "sha256": "e92f856efb68e4084c3c5d87e0e1474b9d05cfe9151e23830fa02ee7a0bbfaac"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-link",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Google Chrome for Testing 158.0.8127.88",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "server-served loopback",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/served-chromium-linux/entrypoints/b/chat-link/capture.png",
+              "sha256": "12050ffdd938e9a26b6242e6d23f54737e088d9b846f999661ac46cc6524bdc2"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/served-chromium-linux/entrypoints/b/chat-link/receipt.json",
+              "sha256": "2e99a4573f1566b0c32908bebc0c15ec90626c363049fa318a01732e7e01a65b"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/served-chromium-linux/entrypoints/b/state.json",
+              "sha256": "299658bbf73577ed5b8495ba9106a6dc1527605657257b21d13e0e50906fdd0a"
+            }
+          ]
+        }
+      ],
+      "comparisonArtifacts": [
+        {
+          "kind": "pixel-diff",
+          "path": "observations/served-chromium-linux/entrypoints/chat-link-diff.png",
+          "sha256": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+        },
+        {
+          "kind": "action-and-state",
+          "path": "observations/served-chromium-linux/entrypoints/chat-link-comparison.json",
+          "sha256": "af2c28a29184b4916405ffa4da8977d251394b31714c45db3ae442411d8b02f9"
+        }
+      ]
+    },
+    {
+      "caseId": "palette-link",
+      "platformId": "served-chromium-linux",
+      "state": "selected-thread-opened",
+      "entrypoint": "command-palette",
+      "configurationId": "chrome-158.0.8127.88-debian-arm64-en-light-640x600-2x",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "palette-link",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Google Chrome for Testing 158.0.8127.88",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "server-served loopback",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/served-chromium-linux/entrypoints/a/palette-link/capture.png",
+              "sha256": "12050ffdd938e9a26b6242e6d23f54737e088d9b846f999661ac46cc6524bdc2"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/served-chromium-linux/entrypoints/a/palette-link/receipt.json",
+              "sha256": "7e53097306f2f64784d73a6b1728b3c35ce146111edb0ce0d20d5b6c9ac9b62b"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/served-chromium-linux/entrypoints/a/state.json",
+              "sha256": "e92f856efb68e4084c3c5d87e0e1474b9d05cfe9151e23830fa02ee7a0bbfaac"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "palette-link",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Google Chrome for Testing 158.0.8127.88",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "server-served loopback",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/served-chromium-linux/entrypoints/b/palette-link/capture.png",
+              "sha256": "12050ffdd938e9a26b6242e6d23f54737e088d9b846f999661ac46cc6524bdc2"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/served-chromium-linux/entrypoints/b/palette-link/receipt.json",
+              "sha256": "fdd8ffd1751b1fc0a191ffdba6d952f9ac36d3da4d4b76463a78ea7c6c2504c2"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/served-chromium-linux/entrypoints/b/state.json",
+              "sha256": "299658bbf73577ed5b8495ba9106a6dc1527605657257b21d13e0e50906fdd0a"
+            }
+          ]
+        }
+      ],
+      "comparisonArtifacts": [
+        {
+          "kind": "pixel-diff",
+          "path": "observations/served-chromium-linux/entrypoints/palette-link-diff.png",
+          "sha256": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+        },
+        {
+          "kind": "action-and-state",
+          "path": "observations/served-chromium-linux/entrypoints/palette-link-comparison.json",
+          "sha256": "a9a84aba1851c3050c887f32ecf09d0d0e568474de8caf04c315a5bff1e4ff51"
         }
       ]
     }

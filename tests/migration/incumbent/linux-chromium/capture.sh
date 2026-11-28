@@ -11,6 +11,7 @@ case "${2:-}" in
   --browser-preview) touch "$root/browser-preview" ;;
   --approval) touch "$root/approval" ;;
   --version-rejection) touch "$root/version-rejection" ;;
+  --entrypoints) touch "$root/entrypoints" ;;
   "") ;;
   *) exit 2 ;;
 esac
@@ -137,6 +138,10 @@ elif [ -f "$root/approval" ]; then
   done
 elif [ -f "$root/version-rejection" ]; then
   for state in exact-version-rejected retry-update; do
+    test -s "$root/$state/capture.png"
+  done
+elif [ -f "$root/entrypoints" ]; then
+  for state in chat-link palette-link; do
     test -s "$root/$state/capture.png"
   done
 else

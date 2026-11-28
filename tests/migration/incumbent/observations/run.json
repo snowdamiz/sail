@@ -552,5 +552,21 @@
       }
     },
     "scope": "Two isolated published v0.1.17 Linux Chromium runs verified HTTP 426 with required protocol 2 on the real server. A separate simulated protocol-1 boot service showed Client not supported, offered Update, and recorded the authenticated update socket and RPC after the click. Its deliberate refusal produced Retry update, with the simulator descriptor unchanged. Candidate comparisons and timing remain open."
+  },
+  "linuxChromiumNavigation": {
+    "directory": "served-chromium-linux/entrypoints",
+    "comparisons": {
+      "chat-link": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "palette-link": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      }
+    },
+    "scope": "Two isolated published v0.1.17 Linux Chromium installations opened the original Replay route through the rendered chat link and Ctrl+K search and selection. The destination composer had focus on arrival and the original environment and saved payloads were preserved. Captures clear focus. Candidate comparisons and timing remain open."
   }
 }

@@ -42,36 +42,71 @@ pub(super) fn verify(
     };
     let record = &state["entrypointCaptures"][&cell.case_id];
     let profile = &record["profile"];
+    let chromium = cell.platform_id == "served-chromium-linux";
+    let (width, height, scale) = if chromium {
+        ensure!(
+            state["browser"] == "Google Chrome for Testing 158.0.8127.88"
+                && state["browser"].as_str() == run.environment.browser_version.as_deref()
+                && state["pairing"] == "browser-session-cookie"
+                && state["osVersion"] == "Debian 12.15"
+                && state["arch"] == "arm64"
+                && observation.configuration_id
+                    == "chrome-158.0.8127.88-debian-arm64-en-light-640x600-2x"
+                && capture.profile["surface"] == "server-served-web"
+                && capture.profile["origin"] == "server-served loopback"
+                && profile["browser"] == "Chrome/158.0.0.0",
+            "navigation does not match the observed Chromium capture profile"
+        );
+        ensure!(
+            state["seedSha256"]
+                == "64fd80ad657dbcaaa159795b1581ede5a7a9e3875d98cac4a8825c12f16cae95"
+                && state["stateFingerprint"]
+                    == json!({
+                        "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+                        "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+                    }),
+            "Chromium navigation does not preserve the pinned Replay fixture"
+        );
+        (640, 600, 2)
+    } else {
+        ensure!(
+            state["electronVersion"] == "44.10.1"
+                && state["osVersion"] == "Debian 13.8"
+                && observation.configuration_id
+                    == "electron-44.10.1-debian-13.8-deb-en-light-1100x780-1x"
+                && capture.profile["surface"] == "desktop"
+                && capture.profile["browser"].is_null(),
+            "navigation does not match the observed desktop capture profile"
+        );
+        (1100, 780, 1)
+    };
     ensure!(
-        state["electronVersion"] == "44.10.1"
-            && state["osVersion"] == "Debian 13.8"
-            && observation.configuration_id
-                == "electron-44.10.1-debian-13.8-deb-en-light-1100x780-1x"
-            && capture.profile["surface"] == "desktop"
-            && capture.profile["browser"].is_null()
-            && profile["theme"] == "light"
+        profile["theme"] == "light"
             && profile["locale"] == "en"
-            && profile["viewport"] == json!({"width": 1100, "height": 780, "scale": 1, "zoom": 1})
+            && profile["viewport"]
+                == json!({"width": width, "height": height, "scale": scale, "zoom": 1})
             && record["screenshotSha256"] == capture.screenshot_sha256,
-        "navigation screenshot disagrees with the observed desktop profile or pixels"
+        "navigation screenshot disagrees with the observed display profile or pixels"
     );
-    for field in ["locale", "theme", "motion", "fonts", "viewport"] {
+    for field in ["browser", "locale", "theme", "motion", "fonts", "viewport"] {
         ensure!(
             profile[field] == capture.profile[field],
             "navigation receipt profile disagrees on {field}"
         );
     }
     let destination = &record["destination"];
+    let mut expected = json!({
+        "sameSavedRoute": true, "title": "Compatibility replay",
+        "focus": "Message Compatibility replay",
+        "windowFocusedOnArrival": true, "paletteClosed": true, "reply": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "table": [["Step", "Tool", "Result"], ["Read", "read", "1 file"], ["Edit", "edit", "+4 lines"], ["Test", "execute", "12 passed"]]
+    });
+    if chromium {
+        expected["sameActiveEnvironment"] = json!(true);
+    }
     ensure!(
-        destination
-            == &json!({
-                "sameSavedRoute": true, "title": "Compatibility replay",
-                "focus": "Message Compatibility replay",
-                "windowFocusedOnArrival": true, "paletteClosed": true, "reply": true,
-                "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
-                "table": [["Step", "Tool", "Result"], ["Read", "read", "1 file"], ["Edit", "edit", "+4 lines"], ["Test", "execute", "12 passed"]]
-            })
-            && record["action"] == action,
+        *destination == expected && record["action"] == action,
         "navigation did not prove the saved Replay route and composer focus"
     );
     let [performed, arrived] = capture.trace.as_slice() else {
@@ -84,5 +119,5 @@ pub(super) fn verify(
             && serde_json::to_value(&arrived.observed)? == *destination,
         "navigation trace disagrees with the observed action or destination"
     );
-    capture_witness::verify_png(image, 1100, 780)
+    capture_witness::verify_png(image, width * scale, height * scale)
 }
