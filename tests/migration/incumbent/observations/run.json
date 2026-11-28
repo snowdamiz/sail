@@ -343,5 +343,11 @@
     "arm64": "electron-linux-arm64/deb-settled",
     "x64": "electron-linux-x64/deb-settled",
     "scope": "Two independent v0.1.17 Debian installations per architecture on Debian 13.8, with x64 under Rosetta. Each cold argv activation paired with its bundled backend, focused the copied Replay thread, and preserved all saved message and run payloads through shutdown. The architecture-specific X11 comparisons use the whole unmasked 1100 \u00d7 780 window after a resize-triggered repaint. Capture timing and candidate comparisons remain open."
+  },
+  "ociLifecycle": {
+    "result": "pass",
+    "arm64": "oci-linux-arm64/lifecycle",
+    "amd64": "oci-linux-amd64/lifecycle",
+    "scope": "Two fresh and two copied-home boots per published v0.1.17 OCI platform manifest on Debian 12.15. The amd64 image ran under emulation on an arm64 Docker engine. Each container used the published entrypoint, owned loopback host port, and unprivileged server. One-time read-only cookie pairing and listener cleanup passed. Fresh homes passed the frozen v2 wire check. Copied homes reopened the saved Replay thread and preserved its full message and run payloads through shutdown."
   }
 }

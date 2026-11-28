@@ -4,28 +4,13 @@ use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Evidence, is_hex, one_artifact, read_json};
+use super::{Evidence, Fingerprint, HomeMode, Seed, is_hex, one_artifact, read_json};
 use crate::catalog::{Artifact, Inventory, Observation, Platform, Run};
 
 mod terminal;
 pub(crate) use terminal::render_cli_terminal;
 use terminal::verify_image;
 
-#[derive(Clone, Copy, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-enum HomeMode {
-    Fresh,
-    Copied,
-}
-
-impl HomeMode {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Fresh => "fresh",
-            Self::Copied => "copied",
-        }
-    }
-}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Boot {
@@ -137,21 +122,6 @@ enum StateHome {
         thread_read: Value,
         after_stop: Fingerprint,
     },
-}
-
-#[derive(Deserialize, Eq, PartialEq)]
-struct Fingerprint {
-    messages: String,
-    runs: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Seed {
-    seed_database_sha256: String,
-    fingerprint: Fingerprint,
-    thread_title: String,
-    roles: Vec<String>,
 }
 
 fn verify_package(boot: &Boot, inventory: &Inventory, run: &Run) -> Result<()> {

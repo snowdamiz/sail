@@ -138,3 +138,22 @@ The [arm64 receipt](../observations/electron-linux-arm64/deb-update/receipt.json
 The [OCI receipt](v0.1.17-oci.json) records both platform manifests from the pinned v0.1.17 index. Run the default image entrypoint with port 8080 published to loopback and a fresh writable `/data` mount for each case. Run the [wire checker](../../wire/README.md) against the fresh container, using `docker exec … t3` to issue its fixture sessions. For the copied case, put the isolated Replay database under `/data/sail/userdata/` before launch, then read the saved thread with `docker exec … t3 thread show --json`.
 
 Both images ran the server as UID 1000 from `/data/home`. The fresh containers passed the v2 wire checker and the copied containers returned all three Replay messages. On Docker stop, all four removed the runtime record and closed the listener. These observations cover the default image entrypoint on a local host.
+
+### Repeat the published OCI lifecycle
+
+Use Docker, the repository's Node version, and the same [Replay seed](cli-lifecycle-seed.json) as the standalone CLI fixture. Set `$seed` to the SQLite backup, `$thread_id` to its thread ID file, and `$output` to a new directory. Run from the repository root.
+
+```sh
+arch=arm64
+image=$(jq -r --arg arch "$arch" '
+  .ociServer as $oci | $oci.manifests[]
+  | select(.platform.os == "linux" and .platform.architecture == $arch)
+  | $oci.repository + "@" + .digest
+' tests/migration/incumbent/release-inventory.json)
+docker pull --platform "linux/$arch" "$image"
+python3 tests/migration/incumbent/runtime/capture-oci.py "$arch" "$seed" "$thread_id" "$output"
+```
+
+Use `amd64` for the other manifest. The probe runs two fresh and two copied homes on the pinned platform image. It publishes the container port on host loopback, checks the owned unprivileged process and mounted database, and redeems a read-only pairing credential once. Every fresh run checks the frozen v2 frames. Every copied run compares live CLI readback and verifies the full saved payloads after Docker stop. The probe removes the containers it creates.
+
+Format each `process.json` and `state.json` before rendering its terminal evidence. Run `cargo run --locked --manifest-path tests/migration/coverage-check/Cargo.toml -- --render-oci "$capture"` for each capture directory. The audit checks the rendered PNG and the exact receipt digests pinned in the [OCI witness ledger](oci-lifecycle-witnesses.json).

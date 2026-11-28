@@ -12,8 +12,8 @@ use std::{
 
 use catalog::{Catalog, Cell, Inventory, OpenItem};
 use evidence::{
-    Evidence, is_hex, read_json, render_cli_terminal, verify_linux_cli_lifecycle,
-    verify_reference_pair,
+    Evidence, is_hex, oci_manifest, read_json, render_cli_terminal, render_oci_terminal,
+    verify_linux_cli_lifecycle, verify_oci_lifecycle, verify_reference_pair,
 };
 
 #[derive(Serialize)]
@@ -28,6 +28,7 @@ struct Report {
     verified_observations: usize,
     verified_visual_reference_observations: usize,
     verified_cli_reference_observations: usize,
+    verified_oci_reference_observations: usize,
     supplemental_receipts: usize,
     open_matrix_items: Vec<OpenItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -219,6 +220,7 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
     let mut records = BTreeSet::new();
     let mut verified_visual_references = 0;
     let mut verified_cli_references = 0;
+    let mut verified_oci_references = 0;
     for observation in &catalog.observations {
         let cell = &observation.cell;
         let label = format!(
@@ -251,6 +253,35 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
         let pass = observation.result == "pass";
         let release_reference = observation.stage == "p01-release-reference";
         let platform = &catalog.platforms[&cell.platform_id];
+        let oci_arch = match cell.platform_id.as_str() {
+            "oci-linux-arm64" => Some("arm64"),
+            "oci-linux-amd64" => Some("amd64"),
+            _ => None,
+        };
+        if let Some(arch) = oci_arch {
+            ensure!(
+                platform.surface == "oci"
+                    && platform.os.as_deref() == Some("linux")
+                    && platform.arch.as_deref() == Some(arch)
+                    && platform.inventory_target.is_none(),
+                "invalid OCI platform identity: {label}"
+            );
+        }
+        if pass && release_reference && platform.surface == "electron" {
+            let os = platform
+                .os
+                .as_deref()
+                .context("missing Electron platform OS")?;
+            let arch = platform
+                .arch
+                .as_deref()
+                .context("missing Electron platform architecture")?;
+            let expected = format!("{os}-{arch}");
+            ensure!(
+                platform.inventory_target.as_deref() == Some(&expected),
+                "Electron reference requires matching installer target {expected}: {label}"
+            );
+        }
         ensure!(
             !pass || !observation.runs.is_empty(),
             "passing observation has no runs: {label}"
@@ -298,17 +329,25 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
                 } else {
                     platform.inventory_target.clone()
                 };
-                let asset = run
-                    .environment
-                    .installer_asset_digest
-                    .as_deref()
-                    .map(|digest| {
-                        known_assets
-                            .get(digest)
-                            .copied()
-                            .with_context(|| format!("unpublished installer digest: {label}"))
-                    })
-                    .transpose()?;
+                let claimed_digest = run.environment.installer_asset_digest.as_deref();
+                let asset = if let Some(arch) = oci_arch {
+                    let manifest = oci_manifest(&inventory.oci_server, arch)?;
+                    ensure!(
+                        (!pass && claimed_digest.is_none())
+                            || claimed_digest == manifest.strip_prefix("sha256:"),
+                        "installer digest does not match published OCI {arch} manifest: {label}"
+                    );
+                    None
+                } else {
+                    claimed_digest
+                        .map(|digest| {
+                            known_assets
+                                .get(digest)
+                                .copied()
+                                .with_context(|| format!("unpublished installer digest: {label}"))
+                        })
+                        .transpose()?
+                };
                 if let Some(target_id) = target_id {
                     let asset = asset.with_context(|| {
                         format!("missing installer digest for {target_id}: {label}")
@@ -366,6 +405,15 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
                 .with_context(|| label.clone())?;
             verified_cli_references += 1;
         }
+        if let Some(arch) = oci_arch
+            && pass
+            && release_reference
+            && matches!(cell.case_id.as_str(), "cli-open" | "installer-home")
+        {
+            verify_oci_lifecycle(&evidence, &inventory, arch, observation)
+                .with_context(|| label.clone())?;
+            verified_oci_references += 1;
+        }
         let has_visual_reference = evidence_profiles[&cell.case_id]
             .iter()
             .any(|kind| kind == "screenshot")
@@ -391,6 +439,7 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
         verified_observations: catalog.observations.len(),
         verified_visual_reference_observations: verified_visual_references,
         verified_cli_reference_observations: verified_cli_references,
+        verified_oci_reference_observations: verified_oci_references,
         supplemental_receipts: supplemental.len(),
         open_matrix_items: catalog.open_matrix_items,
         missing: list_missing.then(|| {
@@ -404,14 +453,19 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
 
 fn main() -> Result<()> {
     let mut args = env::args_os().skip(1).peekable();
-    if args.peek().is_some_and(|arg| arg == "--render-cli") {
+    let render: Option<fn(&Path) -> Result<()>> = match args.peek().and_then(|arg| arg.to_str()) {
+        Some("--render-cli") => Some(render_cli_terminal),
+        Some("--render-oci") => Some(render_oci_terminal),
+        _ => None,
+    };
+    if let Some(render) = render {
         args.next();
-        let directory = args.next().context("missing CLI capture directory")?;
+        let directory = args.next().context("missing process capture directory")?;
         ensure!(
             args.next().is_none(),
-            "usage: sail-migration-coverage --render-cli CAPTURE_DIRECTORY"
+            "expected exactly one process capture directory"
         );
-        return render_cli_terminal(Path::new(&directory));
+        return render(Path::new(&directory));
     }
     let mut path = None;
     let mut list_missing = false;

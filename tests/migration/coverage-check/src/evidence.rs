@@ -11,7 +11,41 @@ use std::{
 use crate::catalog::{Artifact, Cell, Observation, Run};
 
 mod linux_cli;
+mod oci;
+mod process_terminal;
 pub(crate) use linux_cli::{render_cli_terminal, verify_linux_cli_lifecycle};
+pub(crate) use oci::{oci_manifest, render_oci_terminal, verify_oci_lifecycle};
+
+#[derive(Clone, Copy, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+enum HomeMode {
+    Fresh,
+    Copied,
+}
+
+impl HomeMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Copied => "copied",
+        }
+    }
+}
+
+#[derive(Deserialize, Eq, PartialEq)]
+struct Fingerprint {
+    messages: String,
+    runs: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Seed {
+    seed_database_sha256: String,
+    fingerprint: Fingerprint,
+    thread_title: String,
+    roles: Vec<String>,
+}
 
 pub fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;

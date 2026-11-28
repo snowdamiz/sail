@@ -74,12 +74,15 @@ impl Fixture {
     }
 
     fn cli(case_id: &str, state: &str, arch: &str) -> Self {
+        Self::process(case_id, state, &format!("cli-linux-{arch}"))
+    }
+
+    fn process(case_id: &str, state: &str, platform: &str) -> Self {
         let mut fixture = Self::new();
         let source = fixture.repo.join("tests/migration/incumbent");
         let original: Value =
             serde_json::from_slice(&fs::read(source.join("coverage-catalog.json")).unwrap())
                 .unwrap();
-        let platform = format!("cli-linux-{arch}");
         let case = original["cases"]
             .as_array()
             .unwrap()
@@ -115,7 +118,7 @@ impl Fixture {
         fixture
     }
 
-    fn edit_cli_json(&mut self, run: usize, kind: &str, edit: impl FnOnce(&mut Value)) {
+    fn edit_process_json(&mut self, run: usize, kind: &str, edit: impl FnOnce(&mut Value)) {
         let artifact = self.catalog["observations"][0]["runs"][run]["artifacts"]
             .as_array_mut()
             .unwrap()
@@ -194,15 +197,63 @@ fn verifies_native_and_translated_cli_lifecycle_receipts() {
 }
 
 #[test]
+fn verifies_both_published_oci_lifecycle_manifests() {
+    for platform in ["oci-linux-arm64", "oci-linux-amd64"] {
+        for (case, state) in [
+            ("cli-open", "pair"),
+            ("installer-home", "copied-home-boots"),
+        ] {
+            let fixture = Fixture::process(case, state, platform);
+            let output = fixture.run();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(report["verifiedOciReferenceObservations"], 1);
+        }
+    }
+}
+
+#[test]
+fn rejects_an_oci_release_reference_with_the_other_architecture_digest() {
+    let mut fixture = Fixture::process("cli-open", "start", "oci-linux-arm64");
+    let amd64 = Fixture::process("cli-open", "start", "oci-linux-amd64");
+    fixture.catalog["observations"][0]["runs"][0]["environment"]["installerAssetDigest"] =
+        amd64.catalog["observations"][0]["runs"][0]["environment"]["installerAssetDigest"].clone();
+    fixture.rejects("installer digest does not match published OCI arm64 manifest");
+}
+
+#[test]
+fn rejects_a_reused_oci_boot() {
+    let mut fixture = Fixture::process("cli-open", "stop", "oci-linux-arm64");
+    let runs = fixture.catalog["observations"][0]["runs"]
+        .as_array_mut()
+        .unwrap();
+    runs[1]["artifacts"] = runs[0]["artifacts"].clone();
+    fixture.rejects("expected two distinct OCI boots");
+}
+
+#[test]
+fn rejects_an_edited_oci_receipt_even_with_updated_catalog_digest() {
+    let mut fixture = Fixture::process("cli-open", "start", "oci-linux-arm64");
+    fixture.edit_process_json(0, "process-transcript", |receipt| {
+        receipt["start"]["startedAt"] = json!("2026-11-28T00:00:00.000Z");
+    });
+    fixture.rejects("OCI receipt bytes disagree with the observed container witness");
+}
+
+#[test]
 fn rejects_a_rehashed_cli_transcript_named_for_a_different_package() {
     let mut fixture = Fixture::cli("cli-open", "version", "arm64");
-    fixture.edit_cli_json(0, "process-transcript", |data| {
+    fixture.edit_process_json(0, "process-transcript", |data| {
         data["package"]["archive"] = json!("Sail-0.1.17-arm64.deb");
     });
     fixture.rejects("CLI receipt does not match the installed release asset");
 
     let mut fixture = Fixture::cli("cli-open", "version", "arm64");
-    fixture.edit_cli_json(0, "process-transcript", |data| {
+    fixture.edit_process_json(0, "process-transcript", |data| {
         data["package"]["runtimeSha256"] = json!("f".repeat(64));
     });
     fixture.rejects("CLI receipt does not match the installed release asset");
@@ -211,7 +262,7 @@ fn rejects_a_rehashed_cli_transcript_named_for_a_different_package() {
 #[test]
 fn rejects_a_rehashed_cli_pairing_receipt_with_successful_reuse() {
     let mut fixture = Fixture::cli("cli-open", "pair", "arm64");
-    fixture.edit_cli_json(0, "process-transcript", |data| {
+    fixture.edit_process_json(0, "process-transcript", |data| {
         data["pair"]["browserSession"]["reuseStatus"] = json!(200);
     });
     fixture.rejects("incorrect one-time CLI pairing or cookie grants");
@@ -220,7 +271,7 @@ fn rejects_a_rehashed_cli_pairing_receipt_with_successful_reuse() {
 #[test]
 fn rejects_a_rehashed_copied_home_with_a_changed_saved_message_fingerprint() {
     let mut fixture = Fixture::cli("installer-home", "copied-home-boots", "x64");
-    fixture.edit_cli_json(0, "state-receipt", |data| {
+    fixture.edit_process_json(0, "state-receipt", |data| {
         data["afterStop"]["messages"] = json!("f".repeat(64));
     });
     fixture.rejects("copied CLI home did not preserve the pinned fixture payloads");
@@ -233,7 +284,7 @@ fn rejects_relabeling_both_witnessed_cli_boots_to_another_os_version() {
     for run in 0..2 {
         fixture.catalog["observations"][0]["runs"][run]["environment"]["osVersion"] =
             json!("Debian 13.0");
-        fixture.edit_cli_json(run, "process-transcript", |data| {
+        fixture.edit_process_json(run, "process-transcript", |data| {
             data["platform"]["osVersion"] = json!("Debian 13.0");
         });
         fixture.refresh_cli_terminal(run);
@@ -252,7 +303,7 @@ fn rejects_a_fabricated_seed_and_both_copied_home_receipts() {
     seed["fingerprint"]["messages"] = json!("f".repeat(64));
     fs::write(path, serde_json::to_vec(&seed).unwrap()).unwrap();
     for run in 0..2 {
-        fixture.edit_cli_json(run, "state-receipt", |data| {
+        fixture.edit_process_json(run, "state-receipt", |data| {
             data["beforeStart"]["messages"] = seed["fingerprint"]["messages"].clone();
             data["afterStop"]["messages"] = seed["fingerprint"]["messages"].clone();
         });
@@ -531,8 +582,14 @@ fn reference_with_linux_archive(platform: &str, origin: &str, connection_mode: &
 
 #[test]
 fn rejects_a_rehashed_electron_reference_with_a_same_target_cli_archive() {
-    reference_with_linux_archive("electron-linux-arm64", "desktop local", "loopback")
-        .rejects("Electron reference requires a published desktop installer");
+    let mut fixture =
+        reference_with_linux_archive("electron-linux-arm64", "desktop local", "loopback");
+    fixture.rejects("Electron reference requires a published desktop installer");
+    fixture.catalog["platforms"]["electron-linux-arm64"]
+        .as_object_mut()
+        .unwrap()
+        .remove("inventoryTarget");
+    fixture.rejects("Electron reference requires matching installer target linux-arm64");
 }
 
 #[test]

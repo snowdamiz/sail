@@ -1,15 +1,13 @@
 use std::{fs, io::Write, path::Path};
 
 use anyhow::{Context, Result, ensure};
-use font8x8::{BASIC_FONTS, UnicodeFonts};
 use sha2::{Digest, Sha256};
 
 use super::{Boot, Evidence, Run, SavedState, StateHome, one_artifact};
 
-const WIDTH: usize = 1024;
-const HEIGHT: usize = 318;
+use crate::evidence::process_terminal;
 
-fn render(boot: &Boot, state: &SavedState) -> Result<Vec<u8>> {
+fn rows(boot: &Boot, state: &SavedState) -> Result<Vec<String>> {
     let host = &boot.platform;
     let descriptor = &boot.start.descriptor;
     let session = &boot.pair["browserSession"];
@@ -55,35 +53,7 @@ fn render(boot: &Boot, state: &SavedState) -> Result<Vec<u8>> {
         "Ctrl-C: exit {}. Closed listener {}, removed record {}.",
         boot.stop["exitCode"], boot.stop["listenerRefused"], boot.stop["runtimeRecordRemoved"]
     ));
-    let mut pixels = vec![0; WIDTH * HEIGHT * 3];
-    for pixel in pixels.as_chunks_mut::<3>().0 {
-        *pixel = [21, 27, 35];
-    }
-    for (line, row) in rows.iter().enumerate() {
-        ensure!(
-            row.is_ascii() && row.len() * 16 + 48 <= WIDTH,
-            "CLI terminal line exceeds image width"
-        );
-        for (column, character) in row.chars().enumerate() {
-            let glyph = BASIC_FONTS
-                .get(character)
-                .context("unsupported CLI terminal character")?;
-            for (y, bits) in glyph.into_iter().enumerate() {
-                for x in 0..8 {
-                    if bits & (1 << x) != 0 {
-                        let left = 24 + (column * 8 + x) * 2;
-                        let top = 24 + line * 34 + y * 2;
-                        let offset = (top * WIDTH + left) * 3;
-                        let below = offset + WIDTH * 3;
-                        let ink = [220, 229, 237, 220, 229, 237];
-                        pixels[offset..offset + 6].copy_from_slice(&ink);
-                        pixels[below..below + 6].copy_from_slice(&ink);
-                    }
-                }
-            }
-        }
-    }
-    Ok(pixels)
+    Ok(rows)
 }
 
 fn encode(
@@ -92,17 +62,14 @@ fn encode(
     transcript_sha: &str,
     state_sha: &str,
 ) -> Result<Vec<u8>> {
-    let pixels = render(boot, state)?;
-    let mut bytes = Vec::new();
-    let mut encoder = png::Encoder::new(&mut bytes, WIDTH as u32, HEIGHT as u32);
-    encoder.set_color(png::ColorType::Rgb);
-    encoder.add_text_chunk("SailBoot".to_owned(), boot.boot_id.clone())?;
-    encoder.add_text_chunk("SailTranscriptSha256".to_owned(), transcript_sha.to_owned())?;
-    encoder.add_text_chunk("SailStateSha256".to_owned(), state_sha.to_owned())?;
-    let mut writer = encoder.write_header()?;
-    writer.write_image_data(&pixels)?;
-    writer.finish()?;
-    Ok(bytes)
+    process_terminal::encode(
+        &rows(boot, state)?,
+        &[
+            ("SailBoot", &boot.boot_id),
+            ("SailTranscriptSha256", transcript_sha),
+            ("SailStateSha256", state_sha),
+        ],
+    )
 }
 
 pub(crate) fn render_cli_terminal(directory: &Path) -> Result<()> {

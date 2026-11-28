@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "homeMode": "fresh",
+  "database": "sail/userdata/statev2.sqlite",
+  "databaseAbsentBeforeStart": true,
+  "wire": {
+    "result": "pass",
+    "fixtureSha256": "5f5ab0ae840196164ede6a80751bb8e342c915d9e1386fef984444503e834a1e"
+  },
+  "bootId": "1e500ef652c8000f641b6a677d99ec7c8f3ef35e8bdef6050a7ecdbe04677b78",
+  "runtimeOwnerSha256": "9b3e64c00b9d8f5ab09eec6be25bc02f5985060538b9c5890e1e049c00a82ad6"
+}

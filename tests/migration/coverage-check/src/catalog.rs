@@ -116,6 +116,27 @@ pub struct Inventory {
     pub migration_base_sha: String,
     pub github_release: Release,
     pub installer_targets: Vec<InstallerTarget>,
+    pub oci_server: OciServer,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OciServer {
+    pub repository: String,
+    pub index_digest: String,
+    pub manifests: Vec<OciManifest>,
+}
+
+#[derive(Deserialize)]
+pub struct OciManifest {
+    pub digest: String,
+    pub platform: OciPlatform,
+}
+
+#[derive(Deserialize)]
+pub struct OciPlatform {
+    pub os: String,
+    pub architecture: String,
 }
 
 #[derive(Deserialize)]
