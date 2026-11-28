@@ -1,8 +1,11 @@
 import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  AUTH_OWNER_PASSWORD_TOKEN_PATH,
   authScopeResponse,
   AuthAdministrativeClientScopes,
+  AuthOwnerPasswordSubject,
+  AuthOwnerPasswordV1Scopes,
   AuthStandardClientScopes,
   type ManagedPolicyDocument,
   connectDeviceVerificationCode,
@@ -290,20 +293,350 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
         ),
     );
 
-    it.effect("omits browser password setup when policy disallows remote clients", () =>
+    it.effect(
+      "omits browser password setup and rejects token sign-in when policy disallows remote clients",
+      () =>
+        Effect.gen(function* () {
+          const auth = yield* EnvironmentAuth.EnvironmentAuth;
+          expect((yield* auth.getDescriptor()).ownerPassword).toBeUndefined();
+          const tokenReq = HttpServerRequest.fromWeb(
+            new Request(`https://sail.example${AUTH_OWNER_PASSWORD_TOKEN_PATH}`, {
+              method: "POST",
+              headers: { host: "sail.example" },
+            }),
+          );
+          const error = yield* Effect.flip(
+            auth.createOwnerPasswordAccessToken(
+              Redacted.make("policy-disallowed-password"),
+              tokenReq,
+              requestMetadata,
+            ),
+          );
+          expect(error._tag).toBe("ServerAuthInvalidCredentialError");
+        }).pipe(
+          Effect.provide(
+            layerEnvironmentAuth(
+              {
+                mode: "web",
+                ownerPasswordEnabled: true,
+                initialOwnerPassword: Redacted.make("policy-disallowed-password"),
+                publicUrl: new URL("https://sail.example"),
+              },
+              {
+                schemaVersion: 1,
+                organization: "Example Corp",
+                limits: { clients: ["local-browser"] },
+              },
+            ),
+          ),
+        ),
+    );
+
+    it.effect(
+      "enforces owner-password token origins, shared cooldown, DPoP proofs, coexistence, and rotation",
+      () =>
+        Effect.gen(function* () {
+          const auth = yield* EnvironmentAuth.EnvironmentAuth;
+          const sessions = yield* SessionStore.SessionStore;
+          const rawPassword = "  pässwörd 🚀 \t ";
+          const password = Redacted.make(rawPassword);
+          const rotatedPassword = Redacted.make("rotated-owner-password-value");
+          const origin = "https://sail.example";
+          const tokenUrl = `${origin}${AUTH_OWNER_PASSWORD_TOKEN_PATH}`;
+          const cookieRequest = (
+            token: string,
+            url = `${origin}/api/auth/owner-password/session`,
+          ) =>
+            HttpServerRequest.fromWeb(
+              new Request(url, {
+                method: "POST",
+                headers: {
+                  host: "sail.example",
+                  origin,
+                  ...(token ? { cookie: `${sessions.cookieName}=${token}` } : {}),
+                },
+              }),
+            );
+          const tokenRequest = (input?: {
+            readonly url?: string;
+            readonly host?: string;
+            readonly origin?: string;
+            readonly dpop?: string;
+          }) =>
+            HttpServerRequest.fromWeb(
+              new Request(input?.url ?? tokenUrl, {
+                method: "POST",
+                headers: {
+                  host: input?.host ?? "sail.example",
+                  ...(input?.origin !== undefined ? { origin: input.origin } : {}),
+                  ...(input?.dpop !== undefined ? { dpop: input.dpop } : {}),
+                },
+              }),
+            );
+          const decodeClaims = (token: string) =>
+            JSON.parse(Buffer.from(token.split(".")[0]!, "base64url").toString("utf8")) as {
+              readonly rnw?: number;
+              readonly sub?: string;
+            };
+
+          expect(
+            (yield* Effect.flip(
+              auth.createOwnerPasswordAccessToken(password, tokenRequest(), requestMetadata),
+            ))._tag,
+          ).toBe("ServerAuthInvalidCredentialError");
+
+          const pairing = yield* auth.issuePairingCredential();
+          const ownerBrowser = yield* auth.createBrowserSession(
+            pairing.credential,
+            requestMetadata,
+          );
+          const ownerCookieReq = cookieRequest(
+            ownerBrowser.sessionToken,
+            `${origin}/api/auth/owner-password`,
+          );
+          yield* auth.setOwnerPassword(password, ownerCookieReq);
+
+          for (const badReq of [
+            tokenRequest({ origin: "https://evil.example" }),
+            tokenRequest({ origin: "sail-dev://app" }),
+            tokenRequest({ origin: "null" }),
+            tokenRequest({ origin: "" }),
+            tokenRequest({ url: `http://sail.example${AUTH_OWNER_PASSWORD_TOKEN_PATH}` }),
+            tokenRequest({ host: "other.example" }),
+          ]) {
+            expect(
+              (yield* Effect.flip(
+                auth.createOwnerPasswordAccessToken(password, badReq, requestMetadata),
+              ))._tag,
+            ).toBe("ServerAuthInvalidCredentialError");
+          }
+
+          const emptyDpopError = yield* Effect.flip(
+            auth.createOwnerPasswordAccessToken(
+              password,
+              tokenRequest({ dpop: "" }),
+              requestMetadata,
+            ),
+          );
+          expect(emptyDpopError).toMatchObject({
+            _tag: "ServerAuthInvalidCredentialError",
+            dpopFailureReason: "invalid_proof",
+          });
+
+          const desktopKey = makeDpopKey();
+          const nowSec = Math.floor((yield* DateTime.now).epochMilliseconds / 1_000);
+          const skewedProof = desktopKey.sign({
+            method: "POST",
+            url: tokenUrl,
+            token: "",
+            iat: nowSec - 600,
+          });
+          const skewError = yield* Effect.flip(
+            auth.createOwnerPasswordAccessToken(
+              password,
+              tokenRequest({ dpop: skewedProof }),
+              requestMetadata,
+            ),
+          );
+          expect(skewError).toMatchObject({
+            _tag: "ServerAuthInvalidCredentialError",
+            dpopFailureReason: "time_window",
+          });
+
+          const validProof = desktopKey.sign({
+            method: "POST",
+            url: tokenUrl,
+            token: "",
+            iat: nowSec,
+          });
+          const dpopIssued = yield* auth.createOwnerPasswordAccessToken(
+            password,
+            tokenRequest({ dpop: validProof }),
+            { ...requestMetadata, label: "Desktop DPoP" },
+          );
+          expect(dpopIssued.token_type).toBe("DPoP");
+          expect(dpopIssued.expires_in).toBe(60 * 60);
+          expect(decodeClaims(dpopIssued.access_token)).toMatchObject({
+            rnw: 1,
+            sub: AuthOwnerPasswordSubject,
+          });
+          const dpopVerified = yield* sessions.verify(dpopIssued.access_token);
+          expect(dpopVerified.subject).toBe(AuthOwnerPasswordSubject);
+          expect(dpopVerified.scopes).toEqual(AuthOwnerPasswordV1Scopes);
+          const listedDpop = (yield* auth.listSessions()).find(
+            (session) => session.sessionId === dpopVerified.sessionId,
+          );
+          expect(listedDpop?.expiresAt.epochMilliseconds).toBe(
+            (yield* DateTime.now).epochMilliseconds + 30 * 24 * 60 * 60 * 1000,
+          );
+
+          expect(
+            (yield* Effect.flip(
+              auth.createOwnerPasswordSession(password, cookieRequest(""), requestMetadata),
+            ))._tag,
+          ).toBe("ServerAuthInvalidCredentialError");
+
+          yield* TestClock.adjust("1 second");
+          const replayError = yield* Effect.flip(
+            auth.createOwnerPasswordAccessToken(
+              password,
+              tokenRequest({ dpop: validProof }),
+              requestMetadata,
+            ),
+          );
+          expect(replayError).toMatchObject({
+            _tag: "ServerAuthInvalidCredentialError",
+            dpopFailureReason: "replay",
+          });
+
+          yield* TestClock.adjust("1 second");
+          const bearerIssued = yield* auth.createOwnerPasswordAccessToken(
+            password,
+            tokenRequest({ origin }),
+            { ...requestMetadata, label: "Desktop Bearer" },
+          );
+          expect(bearerIssued.token_type).toBe("Bearer");
+          const bearerVerified = yield* sessions.verify(bearerIssued.access_token);
+          expect(bearerVerified.subject).toBe(AuthOwnerPasswordSubject);
+          expect(bearerVerified.scopes).toEqual(AuthOwnerPasswordV1Scopes);
+
+          yield* TestClock.adjust("1 second");
+          const secondBearerIssued = yield* auth.createOwnerPasswordAccessToken(
+            password,
+            tokenRequest(),
+            { ...requestMetadata, label: "Second Desktop" },
+          );
+          const secondBearerVerified = yield* sessions.verify(secondBearerIssued.access_token);
+          expect(secondBearerVerified.sessionId).not.toBe(bearerVerified.sessionId);
+
+          yield* TestClock.adjust("1 second");
+          const browserPasswordSession = yield* auth.createOwnerPasswordSession(
+            password,
+            cookieRequest(""),
+            requestMetadata,
+          );
+          expect(
+            (yield* Effect.flip(
+              auth.createOwnerPasswordAccessToken(password, tokenRequest(), requestMetadata),
+            ))._tag,
+          ).toBe("ServerAuthInvalidCredentialError");
+
+          const renewed = yield* auth.renewAccessToken(
+            dpopIssued.access_token,
+            desktopKey.thumbprint,
+            Effect.void,
+          );
+          const renewedVerified = yield* sessions.verify(renewed.access_token);
+          expect(renewedVerified.sessionId).toBe(dpopVerified.sessionId);
+          expect(renewedVerified.scopes).toEqual(AuthOwnerPasswordV1Scopes);
+          expect(decodeClaims(renewed.access_token).rnw).toBe(1);
+
+          const dpopSetPasswordReq = HttpServerRequest.fromWeb(
+            new Request(`${origin}/api/auth/owner-password`, {
+              method: "POST",
+              headers: {
+                host: "sail.example",
+                origin,
+                authorization: `DPoP ${renewed.access_token}`,
+                dpop: desktopKey.sign({
+                  method: "POST",
+                  url: `${origin}/api/auth/owner-password`,
+                  token: renewed.access_token,
+                  iat: Math.floor((yield* DateTime.now).epochMilliseconds / 1_000),
+                }),
+              },
+            }),
+          );
+          expect(
+            (yield* Effect.flip(auth.setOwnerPassword(rotatedPassword, dpopSetPasswordReq)))._tag,
+          ).toBe("ServerAuthInvalidCredentialError");
+          const bearerSetPasswordReq = HttpServerRequest.fromWeb(
+            new Request(`${origin}/api/auth/owner-password`, {
+              method: "POST",
+              headers: {
+                host: "sail.example",
+                origin,
+                authorization: `Bearer ${bearerIssued.access_token}`,
+              },
+            }),
+          );
+          expect(
+            (yield* Effect.flip(auth.setOwnerPassword(rotatedPassword, bearerSetPasswordReq)))._tag,
+          ).toBe("ServerAuthInvalidCredentialError");
+
+          const pairedLink = yield* auth.issuePairingCredential();
+          const pairedToken = yield* auth.exchangeBootstrapCredentialForAccessToken(
+            pairedLink.credential,
+            undefined,
+            requestMetadata,
+          );
+
+          yield* auth.setOwnerPassword(rotatedPassword, ownerCookieReq);
+          expect(
+            (yield* auth.getSessionState(cookieRequest(browserPasswordSession.sessionToken)))
+              .authenticated,
+          ).toBe(false);
+          expect((yield* Effect.flip(sessions.verify(renewed.access_token)))._tag).toBe(
+            "SessionTokenRevokedError",
+          );
+          expect(
+            (yield* Effect.flip(
+              auth.renewAccessToken(renewed.access_token, desktopKey.thumbprint, Effect.void),
+            ))._tag,
+          ).toBe("ServerAuthInvalidCredentialError");
+          expect((yield* Effect.flip(sessions.verify(bearerIssued.access_token)))._tag).toBe(
+            "SessionTokenRevokedError",
+          );
+          expect((yield* Effect.flip(sessions.verify(secondBearerIssued.access_token)))._tag).toBe(
+            "SessionTokenRevokedError",
+          );
+          expect(
+            (yield* auth.authenticateHttpRequest(makeBearerRequest(pairedToken.access_token)))
+              .subject,
+          ).toBe("one-time-token");
+          expect((yield* auth.getSessionState(ownerCookieReq)).authenticated).toBe(true);
+        }).pipe(
+          Effect.provide(
+            layerEnvironmentAuth({
+              mode: "web",
+              ownerPasswordEnabled: true,
+              publicUrl: new URL("https://sail.example"),
+            }),
+          ),
+        ),
+    );
+
+    it.effect.each([
+      { label: "without devUrl", devUrl: undefined },
+      { label: "with devUrl", devUrl: new URL("http://127.0.0.1:5173") },
+    ])("accepts dev Desktop sail-dev://app origin against loopback HTTPS ($label)", ({ devUrl }) =>
       Effect.gen(function* () {
         const auth = yield* EnvironmentAuth.EnvironmentAuth;
-        expect((yield* auth.getDescriptor()).ownerPassword).toBeUndefined();
+        const password = Redacted.make("loopback-dev-password");
+        const request = HttpServerRequest.fromWeb(
+          new Request(`https://127.0.0.1:8443${AUTH_OWNER_PASSWORD_TOKEN_PATH}`, {
+            method: "POST",
+            headers: {
+              host: "127.0.0.1:8443",
+              origin: "sail-dev://app",
+            },
+          }),
+        );
+        const issued = yield* auth.createOwnerPasswordAccessToken(
+          password,
+          request,
+          requestMetadata,
+        );
+        expect(issued.token_type).toBe("Bearer");
       }).pipe(
         Effect.provide(
-          layerEnvironmentAuth(
-            { mode: "web", ownerPasswordEnabled: true, publicUrl: new URL("https://sail.example") },
-            {
-              schemaVersion: 1,
-              organization: "Example Corp",
-              limits: { clients: ["local-browser"] },
-            },
-          ),
+          layerEnvironmentAuth({
+            mode: "web",
+            ownerPasswordEnabled: true,
+            initialOwnerPassword: Redacted.make("loopback-dev-password"),
+            publicUrl: new URL("https://127.0.0.1:8443"),
+            ...(devUrl ? { devUrl } : {}),
+          }),
         ),
       ),
     );

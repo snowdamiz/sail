@@ -25,6 +25,15 @@ model.
   bearer auth. Plain paired DPoP sessions renew in place so live sockets and Sharing & access rows
   stay stable; T3 Connect, CLI, and desktop sessions never self-renew so revoking/unlinking cuts
   them off.
+- **Owner password sessions (browser and Desktop).** When an owner password is set on the
+  server, browsers obtain cookie sessions via `/api/auth/owner-password/login` and Sail Desktop
+  obtains direct bearer or DPoP-bound sessions via `/api/auth/owner-password/token` (probed
+  first over HTTPS via `/api/auth/session`). Both issue standard scoped sessions with
+  `subject: "owner-password"` (`AuthOwnerPasswordSubject`). Changing or removing the owner
+  password revokes every `owner-password` session across browsers and Desktop while leaving
+  independently paired devices signed in. Re-authenticating a refused direct route replaces that
+  saved route's session in place (`connectionId`) rather than triggering the root-mounted
+  `MainServerOfferHost` promotion prompt.
 - **WebSocket tickets and per-RPC authorization.** Bearer and DPoP clients mint short-lived tickets
   over authenticated HTTP so long-lived tokens never appear in socket URLs. DPoP RPC tickets stay
   proof-key bound at upgrade. A successful handshake grants no extra authority: every RPC declares

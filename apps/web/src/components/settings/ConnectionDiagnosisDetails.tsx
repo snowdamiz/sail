@@ -138,11 +138,13 @@ export function ConnectionDiagnosisPanel({
   diagnosis,
   onRetry,
   onAddRoute,
+  onSignInAgain = null,
 }: {
   readonly hostLabel: string;
   readonly diagnosis: ConnectionDiagnosis;
   readonly onRetry: () => void;
   readonly onAddRoute: (() => void) | null;
+  readonly onSignInAgain?: (() => void) | null;
 }) {
   const gt = useGT();
   const m = useMessages();
@@ -212,6 +214,11 @@ export function ConnectionDiagnosisPanel({
         <Button type="button" size="xs" variant="outline" onClick={onRetry}>
           <T>Retry now</T>
         </Button>
+        {onSignInAgain ? (
+          <Button type="button" size="xs" variant="outline" onClick={onSignInAgain}>
+            <T>Sign in again</T>
+          </Button>
+        ) : null}
         <Button
           type="button"
           size="xs"

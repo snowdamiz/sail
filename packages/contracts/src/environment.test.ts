@@ -1,8 +1,9 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ExecutionEnvironmentDescriptor } from "./environment.ts";
+import { ExecutionEnvironmentCapabilities, ExecutionEnvironmentDescriptor } from "./environment.ts";
 
+const decodeCapabilities = Schema.decodeUnknownSync(ExecutionEnvironmentCapabilities);
 const decodeDescriptor = Schema.decodeUnknownSync(ExecutionEnvironmentDescriptor);
 
 const descriptor = {
@@ -47,5 +48,23 @@ describe("ExecutionEnvironmentDescriptor", () => {
         }).capabilities.serverInstallation,
       ).toBeUndefined();
     }
+  });
+
+  it("decodes ExecutionEnvironmentCapabilities with and without ownerPasswordToken", () => {
+    expect(decodeCapabilities({ repositoryIdentity: true }).ownerPasswordToken).toBeUndefined();
+    expect(
+      decodeCapabilities({ repositoryIdentity: true, ownerPasswordToken: true }).ownerPasswordToken,
+    ).toBe(true);
+    expect(
+      decodeCapabilities({ repositoryIdentity: true, ownerPasswordToken: false })
+        .ownerPasswordToken,
+    ).toBe(false);
+    expect(decodeDescriptor(descriptor).capabilities.ownerPasswordToken).toBeUndefined();
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: { ...descriptor.capabilities, ownerPasswordToken: true },
+      }).capabilities.ownerPasswordToken,
+    ).toBe(true);
   });
 });

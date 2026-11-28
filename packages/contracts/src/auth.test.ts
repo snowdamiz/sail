@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
-import { EnvironmentAuthInvalidError } from "./environmentHttp.ts";
+import { EnvironmentAuthInvalidError, EnvironmentHttpApi } from "./environmentHttp.ts";
 import {
+  AUTH_OWNER_PASSWORD_TOKEN_PATH,
+  AuthOwnerPasswordSubject,
+  AuthOwnerPasswordTokenRequest,
   AuthEnvironmentScopes,
   AuthEnvironmentScope,
   authScopeRequiredResponse,
@@ -148,5 +152,52 @@ describe("pairing link failures", () => {
     expect(decode({ ...rejection, pairingFailureReason: "revoked" })).not.toHaveProperty(
       "pairingFailureReason",
     );
+  });
+});
+
+describe("owner password token request", () => {
+  const decodeRequest = Schema.decodeUnknownSync(AuthOwnerPasswordTokenRequest);
+
+  it("preserves whitespace and Unicode in a redacted password", () => {
+    const rawPassword = "  pässwörd 🚀 \t ";
+    const decoded = decodeRequest({ password: rawPassword });
+
+    expect(Redacted.isRedacted(decoded.password)).toBe(true);
+    expect(Redacted.value(decoded.password)).toBe(rawPassword);
+    expect(decoded.client_label).toBeUndefined();
+    expect(decoded.client_device_type).toBeUndefined();
+    expect(decoded.client_os).toBeUndefined();
+  });
+
+  it("accepts optional client metadata and rejects invalid client_device_type", () => {
+    const decoded = decodeRequest({
+      password: "correct horse battery staple",
+      client_label: "  Work MacBook  ",
+      client_device_type: "desktop",
+      client_os: "  macOS  ",
+    });
+
+    expect(decoded.client_label).toBe("Work MacBook");
+    expect(decoded.client_device_type).toBe("desktop");
+    expect(decoded.client_os).toBe("macOS");
+    expect(() =>
+      decodeRequest({
+        password: "correct horse battery staple",
+        client_device_type: "watch",
+      }),
+    ).toThrow();
+  });
+
+  it("registers ownerPasswordToken with raw optional DPoP headers", () => {
+    const endpoint = EnvironmentHttpApi.groups.auth.endpoints.ownerPasswordToken;
+    expect(AUTH_OWNER_PASSWORD_TOKEN_PATH).toBe("/api/auth/owner-password/token");
+    expect(AuthOwnerPasswordSubject).toBe("owner-password");
+    expect(endpoint.path).toBe(AUTH_OWNER_PASSWORD_TOKEN_PATH);
+    expect(endpoint.headers).toBeDefined();
+
+    const decodeHeaders = Schema.decodeUnknownSync(endpoint.headers as Schema.Codec<unknown>);
+    expect(decodeHeaders({})).toEqual({});
+    expect(decodeHeaders({ dpop: "" })).toEqual({ dpop: "" });
+    expect(decodeHeaders({ dpop: " proof " })).toEqual({ dpop: " proof " });
   });
 });

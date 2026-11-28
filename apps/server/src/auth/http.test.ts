@@ -1,19 +1,24 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  AUTH_OWNER_PASSWORD_TOKEN_PATH,
   AuthTokenExchangeGrantType,
   AuthEnvironmentBootstrapTokenType,
   AuthAccessTokenType,
   AuthAccessTokenResult,
+  AuthOwnerPasswordV1Scopes,
   EnvironmentHttpApi,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as TestClock from "effect/testing/TestClock";
 import * as DateTime from "effect/DateTime";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
+import { encodeOAuthScope } from "@t3tools/shared/oauthScope";
 import * as Schema from "effect/Schema";
 import * as Etag from "effect/http/Etag";
 import * as HttpPlatform from "effect/http/HttpPlatform";
@@ -28,11 +33,14 @@ import * as EnvironmentAuth from "./EnvironmentAuth.ts";
 import { makeDpopKey } from "./dpop.testkit.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 import * as AuthHttp from "./http.ts";
+import * as ServerHttp from "../http.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import { makeAdmission, ServerAdmission } from "../serverAdmission.ts";
 
 const DEV_TOKEN = "reusable-dev-auth-token-that-is-long-enough";
-class AuthTestApi extends HttpApi.make("environment").add(EnvironmentHttpApi.groups.auth) {}
+class AuthTestApi extends HttpApi.make("environment")
+  .add(EnvironmentHttpApi.groups.auth)
+  .add(EnvironmentHttpApi.groups.metadata) {}
 
 const layerConfig = Layer.effect(
   ServerConfig.ServerConfig,
@@ -59,7 +67,10 @@ const layerEnvironmentAuth = EnvironmentAuth.layer.pipe(
 const layerRoutes = HttpApiBuilder.layer(AuthTestApi).pipe(
   Layer.provide(AuthHttp.layer),
   Layer.provide(AuthHttp.layerAuthenticatedAuth),
+  Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
+  Layer.provide(ServerEnvironment.layer),
   Layer.provideMerge(layerEnvironmentAuth),
+  Layer.provide(ServerSecretStore.layer),
   Layer.provide(layerConfig),
   Layer.provideMerge(
     HttpPlatform.layer.pipe(
@@ -416,4 +427,518 @@ it.live("checks token-endpoint DPoP proofs without writing replay state", () =>
       (environment) => Effect.promise(() => environment.dispose()),
     );
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
+
+it.effect(
+  "exposes ownerPasswordToken capability and enforces HTTP token, DPoP, CORS, and rotation flows",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(1_700_000_000_000);
+      const clock = yield* Clock.Clock;
+      const random = yield* SecureRandom.SecureRandom;
+      const initialPassword = "http-owner-password-value";
+      const rotatedPassword = "http-rotated-owner-password-value";
+      const origin = "https://sail.example";
+      const tokenUrl = `${origin}${AUTH_OWNER_PASSWORD_TOKEN_PATH}`;
+      const layerProdConfig = Layer.effect(
+        ServerConfig.ServerConfig,
+        Effect.gen(function* () {
+          const config = yield* ServerConfig.ServerConfig;
+          return {
+            ...config,
+            mode: "web",
+            ownerPasswordEnabled: true,
+            initialOwnerPassword: Redacted.make(initialPassword),
+            publicUrl: new URL(origin),
+            devUrl: undefined,
+          } satisfies ServerConfig.ServerConfig["Service"];
+        }),
+      ).pipe(
+        Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-auth-http-pw-test-" })),
+      );
+      const layerProdSecrets = ServerSecretStore.layer.pipe(
+        Layer.provide(layerProdConfig),
+        Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      );
+      const layerProdAuth = EnvironmentAuth.layer.pipe(
+        Layer.provide(ManagedPolicy.layerTest()),
+        Layer.provide(SqlitePersistence.layerMemory),
+        Layer.provide(layerProdSecrets),
+        Layer.provide(ServerEnvironment.layerIdentity),
+        Layer.provide(layerProdConfig),
+      );
+      const layerProdRoutes = Layer.merge(
+        HttpApiBuilder.layer(AuthTestApi).pipe(
+          Layer.provide(AuthHttp.layer),
+          Layer.provide(AuthHttp.layerAuthenticatedAuth),
+          Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
+          Layer.provide(ServerEnvironment.layer),
+          Layer.provideMerge(layerProdAuth),
+          Layer.provideMerge(layerProdSecrets),
+          Layer.provide(layerProdConfig),
+        ),
+        ServerHttp.layerBrowserApiCors.pipe(Layer.provide(layerProdConfig)),
+      ).pipe(
+        Layer.provideMerge(
+          HttpPlatform.layer.pipe(
+            Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+            Layer.provideMerge(Etag.layerWeak),
+          ),
+        ),
+        Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      );
+
+      const requestContext = Context.make(SecureRandom.SecureRandom, random).pipe(
+        Context.add(Clock.Clock, clock),
+      );
+      return yield* Effect.acquireUseRelease(
+        Effect.sync(() => HttpRouter.toWebHandler(layerProdRoutes, { disableLogger: true })),
+        (environment) =>
+          Effect.gen(function* () {
+            const send = (input: Request) =>
+              Effect.promise(() => environment.handler(input, requestContext));
+            const postToken = (body: unknown, headers?: Readonly<Record<string, string>>) =>
+              send(
+                new Request(tokenUrl, {
+                  method: "POST",
+                  headers: {
+                    host: "sail.example",
+                    "content-type": "application/json",
+                    ...headers,
+                  },
+                  body: encodeJson(body),
+                }),
+              );
+
+            const metadataResponse = yield* send(
+              new Request(`${origin}/.well-known/t3/environment`, {
+                headers: { host: "sail.example" },
+              }),
+            );
+            expect(metadataResponse.status).toBe(200);
+            expect(yield* Effect.promise(() => metadataResponse.json())).toMatchObject({
+              capabilities: { ownerPasswordToken: true },
+            });
+
+            const evilPreflight = yield* send(
+              new Request(tokenUrl, {
+                method: "OPTIONS",
+                headers: { host: "sail.example", origin: "https://evil.example" },
+              }),
+            );
+            expect(evilPreflight.headers.get("access-control-allow-origin")).toBeNull();
+            const evilPost = yield* postToken(
+              { password: initialPassword },
+              { origin: "https://evil.example" },
+            );
+            expect(evilPost.status).toBe(401);
+            expect(evilPost.headers.get("access-control-allow-origin")).toBeNull();
+            expect(evilPost.headers.get("www-authenticate")).toBeNull();
+            expect(evilPost.headers.get("cache-control")).toBe("no-store");
+            expect(yield* Effect.promise(() => evilPost.json())).toMatchObject({
+              reason: "invalid_credential",
+            });
+
+            const emptyDpop = yield* postToken({ password: initialPassword }, { dpop: "" });
+            expect(emptyDpop.status).toBe(401);
+            expect(emptyDpop.headers.get("www-authenticate")).toBe('DPoP algs="ES256"');
+            expect(yield* Effect.promise(() => emptyDpop.json())).toMatchObject({
+              reason: "invalid_credential",
+              dpopFailureReason: "invalid_proof",
+            });
+
+            const desktopKey = makeDpopKey();
+            const nowSec = Math.floor((yield* DateTime.now).epochMilliseconds / 1_000);
+            const skewedProof = desktopKey.sign({
+              method: "POST",
+              url: tokenUrl,
+              token: "",
+              iat: nowSec - 600,
+            });
+            const skewed = yield* postToken({ password: initialPassword }, { dpop: skewedProof });
+            expect(skewed.status).toBe(401);
+            expect(skewed.headers.get("www-authenticate")).toBe('DPoP algs="ES256"');
+            expect(yield* Effect.promise(() => skewed.json())).toMatchObject({
+              reason: "invalid_credential",
+              dpopFailureReason: "time_window",
+            });
+
+            const validProof = desktopKey.sign({
+              method: "POST",
+              url: tokenUrl,
+              token: "",
+              iat: nowSec,
+            });
+            const dpopResponse = yield* postToken(
+              {
+                password: initialPassword,
+                client_label: "Work MacBook",
+                client_device_type: "desktop",
+                client_os: "macOS",
+              },
+              { dpop: validProof },
+            );
+            expect(dpopResponse.status).toBe(200);
+            expect(dpopResponse.headers.get("cache-control")).toBe("no-store");
+            expect(dpopResponse.headers.get("pragma")).toBe("no-cache");
+            expect(dpopResponse.headers.getSetCookie()).toEqual([]);
+            expect(dpopResponse.headers.get("access-control-allow-origin")).toBe("*");
+            expect(dpopResponse.headers.get("vary")).toContain("Origin");
+            const dpopToken = yield* decodeAccessToken(
+              yield* Effect.promise(() => dpopResponse.json()),
+            );
+            expect(dpopToken.token_type).toBe("DPoP");
+            expect(dpopToken.scope).toBe(encodeOAuthScope(AuthOwnerPasswordV1Scopes));
+
+            yield* TestClock.adjust("1 second");
+            const replayed = yield* postToken({ password: initialPassword }, { dpop: validProof });
+            expect(replayed.status).toBe(401);
+            expect(replayed.headers.get("www-authenticate")).toBe('DPoP algs="ES256"');
+            expect(yield* Effect.promise(() => replayed.json())).toMatchObject({
+              reason: "invalid_credential",
+              dpopFailureReason: "replay",
+            });
+
+            yield* TestClock.adjust("1 second");
+            const bearerResponse = yield* postToken({ password: initialPassword });
+            expect(bearerResponse.status).toBe(200);
+            expect(bearerResponse.headers.get("cache-control")).toBe("no-store");
+            expect(bearerResponse.headers.getSetCookie()).toEqual([]);
+            const bearerToken = yield* decodeAccessToken(
+              yield* Effect.promise(() => bearerResponse.json()),
+            );
+            expect(bearerToken.token_type).toBe("Bearer");
+
+            const oauthUrl = `${origin}/oauth/token`;
+            const renewNowSec = Math.floor((yield* DateTime.now).epochMilliseconds / 1_000);
+            const renewResponse = yield* send(
+              new Request(oauthUrl, {
+                method: "POST",
+                headers: {
+                  host: "sail.example",
+                  dpop: desktopKey.sign({
+                    method: "POST",
+                    url: oauthUrl,
+                    token: "",
+                    iat: renewNowSec,
+                  }),
+                },
+                body: new URLSearchParams({
+                  grant_type: AuthTokenExchangeGrantType,
+                  subject_token: dpopToken.access_token,
+                  subject_token_type: AuthAccessTokenType,
+                  requested_token_type: AuthAccessTokenType,
+                }),
+              }),
+            );
+            expect(renewResponse.status).toBe(200);
+            const renewedToken = yield* decodeAccessToken(
+              yield* Effect.promise(() => renewResponse.json()),
+            );
+            expect(renewedToken.token_type).toBe("DPoP");
+            expect(renewedToken.scope).toBe(encodeOAuthScope(AuthOwnerPasswordV1Scopes));
+
+            const rotateUrl = `${origin}/api/auth/owner-password`;
+            const dpopRotate = yield* send(
+              new Request(rotateUrl, {
+                method: "POST",
+                headers: {
+                  host: "sail.example",
+                  origin,
+                  "content-type": "application/json",
+                  authorization: `DPoP ${renewedToken.access_token}`,
+                  dpop: desktopKey.sign({
+                    method: "POST",
+                    url: rotateUrl,
+                    token: renewedToken.access_token,
+                    iat: renewNowSec,
+                  }),
+                },
+                body: encodeJson({ password: rotatedPassword }),
+              }),
+            );
+            expect(dpopRotate.status).toBe(401);
+            const bearerRotate = yield* send(
+              new Request(rotateUrl, {
+                method: "POST",
+                headers: {
+                  host: "sail.example",
+                  origin,
+                  "content-type": "application/json",
+                  authorization: `Bearer ${bearerToken.access_token}`,
+                },
+                body: encodeJson({ password: rotatedPassword }),
+              }),
+            );
+            expect(bearerRotate.status).toBe(401);
+
+            const pairForBrowser = yield* send(
+              new Request(`${origin}/api/auth/pairing-token`, {
+                method: "POST",
+                headers: {
+                  host: "sail.example",
+                  "content-type": "application/json",
+                  authorization: `Bearer ${bearerToken.access_token}`,
+                },
+                body: encodeJson({}),
+              }),
+            );
+            expect(pairForBrowser.status).toBe(200);
+            const browserPair = (yield* Effect.promise(() => pairForBrowser.json())) as {
+              credential: string;
+            };
+            const pairedBrowser = yield* send(
+              new Request(`${origin}/api/auth/browser-session`, {
+                method: "POST",
+                headers: {
+                  host: "sail.example",
+                  "content-type": "application/json",
+                },
+                body: encodeJson({ credential: browserPair.credential }),
+              }),
+            );
+            expect(pairedBrowser.status).toBe(200);
+            const pairedCookie = pairedBrowser.headers.getSetCookie()[0]?.split(";", 1)[0] ?? "";
+
+            const pairForClient = yield* send(
+              new Request(`${origin}/api/auth/pairing-token`, {
+                method: "POST",
+                headers: {
+                  host: "sail.example",
+                  "content-type": "application/json",
+                  cookie: pairedCookie,
+                },
+                body: encodeJson({}),
+              }),
+            );
+            const clientPair = (yield* Effect.promise(() => pairForClient.json())) as {
+              credential: string;
+            };
+            const pairedTokenResp = yield* send(
+              new Request(oauthUrl, {
+                method: "POST",
+                headers: { host: "sail.example" },
+                body: new URLSearchParams({
+                  grant_type: AuthTokenExchangeGrantType,
+                  subject_token: clientPair.credential,
+                  subject_token_type: AuthEnvironmentBootstrapTokenType,
+                  requested_token_type: AuthAccessTokenType,
+                }),
+              }),
+            );
+            expect(pairedTokenResp.status).toBe(200);
+            const pairedAccessToken = yield* decodeAccessToken(
+              yield* Effect.promise(() => pairedTokenResp.json()),
+            );
+
+            yield* TestClock.adjust("1 second");
+            const browserPwResp = yield* send(
+              new Request(`${origin}/api/auth/owner-password/session`, {
+                method: "POST",
+                headers: {
+                  host: "sail.example",
+                  origin,
+                  "content-type": "application/json",
+                },
+                body: encodeJson({ password: initialPassword }),
+              }),
+            );
+            expect(browserPwResp.status).toBe(200);
+            const pwCookie = browserPwResp.headers.getSetCookie()[0]?.split(";", 1)[0] ?? "";
+
+            const rotated = yield* send(
+              new Request(rotateUrl, {
+                method: "POST",
+                headers: {
+                  host: "sail.example",
+                  origin,
+                  "content-type": "application/json",
+                  cookie: pairedCookie,
+                },
+                body: encodeJson({ password: rotatedPassword }),
+              }),
+            );
+            expect(rotated.status).toBe(200);
+
+            const sessionUrl = `${origin}/api/auth/session`;
+            const pwCookieState = yield* send(
+              new Request(sessionUrl, { headers: { host: "sail.example", cookie: pwCookie } }),
+            );
+            expect(yield* Effect.promise(() => pwCookieState.json())).toMatchObject({
+              authenticated: false,
+            });
+            const bearerState = yield* send(
+              new Request(sessionUrl, {
+                headers: {
+                  host: "sail.example",
+                  authorization: `Bearer ${bearerToken.access_token}`,
+                },
+              }),
+            );
+            expect(yield* Effect.promise(() => bearerState.json())).toMatchObject({
+              authenticated: false,
+            });
+            const afterRotateSec = Math.floor((yield* DateTime.now).epochMilliseconds / 1_000);
+            const dpopState = yield* send(
+              new Request(sessionUrl, {
+                headers: {
+                  host: "sail.example",
+                  authorization: `DPoP ${renewedToken.access_token}`,
+                  dpop: desktopKey.sign({
+                    method: "GET",
+                    url: sessionUrl,
+                    token: renewedToken.access_token,
+                    iat: afterRotateSec,
+                  }),
+                },
+              }),
+            );
+            expect(yield* Effect.promise(() => dpopState.json())).toMatchObject({
+              authenticated: false,
+            });
+            const revokedRenew = yield* send(
+              new Request(oauthUrl, {
+                method: "POST",
+                headers: {
+                  host: "sail.example",
+                  dpop: desktopKey.sign({
+                    method: "POST",
+                    url: oauthUrl,
+                    token: "",
+                    iat: afterRotateSec,
+                  }),
+                },
+                body: new URLSearchParams({
+                  grant_type: AuthTokenExchangeGrantType,
+                  subject_token: renewedToken.access_token,
+                  subject_token_type: AuthAccessTokenType,
+                  requested_token_type: AuthAccessTokenType,
+                }),
+              }),
+            );
+            expect(revokedRenew.status).toBe(401);
+
+            const pairedCookieState = yield* send(
+              new Request(sessionUrl, { headers: { host: "sail.example", cookie: pairedCookie } }),
+            );
+            expect(yield* Effect.promise(() => pairedCookieState.json())).toMatchObject({
+              authenticated: true,
+            });
+            const pairedTokenState = yield* send(
+              new Request(sessionUrl, {
+                headers: {
+                  host: "sail.example",
+                  authorization: `Bearer ${pairedAccessToken.access_token}`,
+                },
+              }),
+            );
+            expect(yield* Effect.promise(() => pairedTokenState.json())).toMatchObject({
+              authenticated: true,
+            });
+          }),
+        (environment) => Effect.promise(() => environment.dispose()),
+      );
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
+
+it.effect(
+  "allows desktop renderer Origin on *.localhost HTTPS hosts without devUrl for owner-password token requests",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(1_700_000_000_000);
+      const clock = yield* Clock.Clock;
+      const random = yield* SecureRandom.SecureRandom;
+      const initialPassword = "localhost-subdomain-owner-password";
+      const origin = "https://sail.localhost";
+      const tokenUrl = `${origin}${AUTH_OWNER_PASSWORD_TOKEN_PATH}`;
+      const layerLoopbackConfig = Layer.effect(
+        ServerConfig.ServerConfig,
+        Effect.gen(function* () {
+          const config = yield* ServerConfig.ServerConfig;
+          return {
+            ...config,
+            mode: "web",
+            ownerPasswordEnabled: true,
+            initialOwnerPassword: Redacted.make(initialPassword),
+            publicUrl: new URL(origin),
+            devUrl: undefined,
+          } satisfies ServerConfig.ServerConfig["Service"];
+        }),
+      ).pipe(
+        Layer.provide(
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-auth-http-localhost-test-" }),
+        ),
+      );
+      const layerLoopbackSecrets = ServerSecretStore.layer.pipe(
+        Layer.provide(layerLoopbackConfig),
+        Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      );
+      const layerLoopbackAuth = EnvironmentAuth.layer.pipe(
+        Layer.provide(ManagedPolicy.layerTest()),
+        Layer.provide(SqlitePersistence.layerMemory),
+        Layer.provide(layerLoopbackSecrets),
+        Layer.provide(ServerEnvironment.layerIdentity),
+        Layer.provide(layerLoopbackConfig),
+      );
+      const layerLoopbackRoutes = Layer.merge(
+        HttpApiBuilder.layer(AuthTestApi).pipe(
+          Layer.provide(AuthHttp.layer),
+          Layer.provide(AuthHttp.layerAuthenticatedAuth),
+          Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
+          Layer.provide(ServerEnvironment.layer),
+          Layer.provideMerge(layerLoopbackAuth),
+          Layer.provideMerge(layerLoopbackSecrets),
+          Layer.provide(layerLoopbackConfig),
+        ),
+        ServerHttp.layerBrowserApiCors.pipe(Layer.provide(layerLoopbackConfig)),
+      ).pipe(
+        Layer.provideMerge(
+          HttpPlatform.layer.pipe(
+            Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+            Layer.provideMerge(Etag.layerWeak),
+          ),
+        ),
+        Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      );
+
+      const requestContext = Context.make(SecureRandom.SecureRandom, random).pipe(
+        Context.add(Clock.Clock, clock),
+      );
+      return yield* Effect.acquireUseRelease(
+        Effect.sync(() => HttpRouter.toWebHandler(layerLoopbackRoutes, { disableLogger: true })),
+        (environment) =>
+          Effect.gen(function* () {
+            const send = (input: Request) =>
+              Effect.promise(() => environment.handler(input, requestContext));
+
+            const preflight = yield* send(
+              new Request(tokenUrl, {
+                method: "OPTIONS",
+                headers: { host: "sail.localhost", origin: "sail-dev://app" },
+              }),
+            );
+            expect(preflight.status).toBe(204);
+            expect(preflight.headers.get("access-control-allow-origin")).toBe("sail-dev://app");
+
+            const tokenResponse = yield* send(
+              new Request(tokenUrl, {
+                method: "POST",
+                headers: {
+                  host: "sail.localhost",
+                  origin: "sail-dev://app",
+                  "content-type": "application/json",
+                },
+                body: encodeJson({ password: initialPassword }),
+              }),
+            );
+            expect(tokenResponse.status).toBe(200);
+            expect(tokenResponse.headers.get("access-control-allow-origin")).toBe("sail-dev://app");
+            const issued = yield* decodeAccessToken(
+              yield* Effect.promise(() => tokenResponse.json()),
+            );
+            expect(issued.token_type).toBe("Bearer");
+          }),
+        (environment) => Effect.promise(() => environment.dispose()),
+      );
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

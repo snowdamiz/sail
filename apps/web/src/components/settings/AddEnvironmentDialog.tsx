@@ -1,15 +1,24 @@
-import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { errorDisplayMessage, thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { m } from "~/i18n/messages";
 import { pipe } from "effect/Function";
-import { ChevronsLeftRightEllipsisIcon, PlusIcon, TerminalIcon } from "lucide-react";
+import { ChevronsLeftRightEllipsisIcon, KeyRoundIcon, PlusIcon, TerminalIcon } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
-import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+} from "react";
 import { T, useGT, useMessages, Var } from "gt-react";
 import {
   type DesktopDiscoveredSshHost,
   type DesktopSshEnvironmentTarget,
+  type EnvironmentId,
 } from "@t3tools/contracts";
 import {
+  ConnectionOnboarding,
   RelayConnectionRegistration,
   RelayConnectionTarget,
 } from "@t3tools/client-runtime/connection";
@@ -17,7 +26,10 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { resolveRemotePairingTarget } from "@t3tools/shared/remote";
 import * as Option from "effect/Option";
+import * as Redacted from "effect/Redacted";
+import * as Schema from "effect/Schema";
 
 import { cn } from "../../lib/utils";
 import { formatDesktopSshTarget } from "./EnvironmentRow";
@@ -45,10 +57,13 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import { AnimatedHeight } from "../AnimatedHeight";
+import { useOfferMainServer } from "../desktop/MainServerDialog";
 import { environmentCatalog } from "~/connection/catalog";
 import {
+  connectOwnerPassword as connectOwnerPasswordAtom,
   connectPairing as connectPairingAtom,
   connectSshEnvironment as connectSshEnvironmentAtom,
+  probeOwnerPassword as probeOwnerPasswordAtom,
 } from "~/connection/onboarding";
 import { useEnvironmentQuery } from "~/state/query";
 import { desktopSshHostsStateAtom, filterDiscoveredSshHosts } from "~/state/desktopSshHosts";
@@ -71,35 +86,134 @@ import {
 
 const SSH_PROTOCOL_NAME = "SSH";
 const EMPTY_DISCOVERED_SSH_HOSTS: ReadonlyArray<DesktopDiscoveredSshHost> = [];
+const EMPTY_SAVED_ENVIRONMENTS: ReadonlyArray<EnvironmentPresentation> = [];
+
 // known_hosts can list one host on several ports. Its own bracketed form keeps an IPv6
 // host's port separate from the address; no portless known_hosts entry has that form.
 const sshHostSuggestionValue = (target: DesktopDiscoveredSshHost) =>
   target.port === null ? target.alias : `[${target.alias}]:${target.port}`;
 
+export interface ReauthenticateRouteTarget {
+  readonly environment: EnvironmentPresentation;
+  readonly connectionId: string;
+  readonly httpBaseUrl: string;
+}
+
+type ConnectionMode = "password" | "remote" | "ssh";
+
+type ReadyOwnerPasswordHost = Extract<
+  ConnectionOnboarding.OwnerPasswordHost,
+  { readonly kind: "ready" }
+>;
+type UnavailableOwnerPasswordHost = Extract<
+  ConnectionOnboarding.OwnerPasswordHost,
+  { readonly kind: "unavailable" }
+>;
+
+type PasswordStep =
+  | { readonly kind: "host" }
+  | { readonly kind: "checking"; readonly host: string }
+  | {
+      readonly kind: "unavailable";
+      readonly host: string;
+      readonly result: UnavailableOwnerPasswordHost;
+    }
+  | {
+      readonly kind: "ready";
+      readonly host: string;
+      readonly server: ReadyOwnerPasswordHost;
+    }
+  | {
+      readonly kind: "activation-failed";
+      readonly host: string;
+      readonly environmentId: EnvironmentId;
+      readonly origin: string;
+      readonly message: string;
+    };
+
+const isSavedConnectionActivationErrorSchema = Schema.is(
+  ConnectionOnboarding.SavedConnectionActivationError,
+);
+
+function isSavedConnectionActivationError(
+  error: unknown,
+): error is ConnectionOnboarding.SavedConnectionActivationError {
+  return (
+    isSavedConnectionActivationErrorSchema(error) ||
+    (typeof error === "object" &&
+      error !== null &&
+      "_tag" in error &&
+      error._tag === "SavedConnectionActivationError" &&
+      "environmentId" in error &&
+      typeof error.environmentId === "string")
+  );
+}
+
+function isHttpsUrl(value: string): boolean {
+  return URL.parse(value)?.protocol === "https:";
+}
+
+function resolveDefaultMode(input: {
+  readonly isDesktop: boolean;
+  readonly prefill: AddEnvironmentPrefill | null;
+  readonly reauthTarget: ReauthenticateRouteTarget | null;
+}): ConnectionMode {
+  if (!input.isDesktop) return "remote";
+  if (input.reauthTarget !== null) {
+    return isHttpsUrl(input.reauthTarget.httpBaseUrl) ? "password" : "remote";
+  }
+  if (input.prefill !== null) return "remote";
+  return "password";
+}
+
+function hostFromUrlOrRaw(value: string): string {
+  return URL.parse(value)?.host ?? value;
+}
+
 export function AddEnvironmentDialog({
   open,
   prefill = null,
-  routeTarget,
-  error,
-  savedEnvironments,
+  routeTarget = null,
+  reauthTarget = null,
+  error: controlledError,
+  savedEnvironments = EMPTY_SAVED_ENVIRONMENTS,
   initialHost = "",
+  showTrigger = true,
+  openedFrom = "settings",
+  onConnected,
   onOpenChange,
   onErrorChange,
 }: {
   readonly open: boolean;
   /** A machine the user chose elsewhere to pair with; they supply only the pairing code. */
   readonly prefill?: AddEnvironmentPrefill | null;
-  readonly routeTarget: EnvironmentPresentation | null;
+  readonly routeTarget?: EnvironmentPresentation | null;
+  /** An existing refused direct route being re-authenticated in place. */
+  readonly reauthTarget?: ReauthenticateRouteTarget | null;
   /** An address already known for the machine being added, such as one a link uses. */
   readonly initialHost?: string;
-  readonly error: string | null;
-  readonly savedEnvironments: ReadonlyArray<EnvironmentPresentation>;
+  readonly error?: string | null;
+  readonly savedEnvironments?: ReadonlyArray<EnvironmentPresentation>;
+  readonly showTrigger?: boolean;
+  readonly openedFrom?: "welcome" | "empty-state" | "settings";
+  readonly onConnected?: (environmentId: EnvironmentId) => void;
   readonly onOpenChange: (open: boolean) => void;
-  readonly onErrorChange: (error: string | null) => void;
+  readonly onErrorChange?: (error: string | null) => void;
 }) {
   const gt = useGT();
+  const messages = useMessages();
   const desktopBridge = window.desktopBridge;
+  const isDesktop = desktopBridge !== undefined;
+  const isHttpsReauth = reauthTarget !== null && isHttpsUrl(reauthTarget.httpBaseUrl);
+  const canUsePasswordMode = isDesktop && (reauthTarget === null || isHttpsReauth);
+  const canUseSshMode = isDesktop && reauthTarget === null;
+  const defaultMode = resolveDefaultMode({ isDesktop, prefill, reauthTarget });
+  const resolvedInitialHost = reauthTarget?.httpBaseUrl ?? prefill?.host ?? initialHost;
+  const isNewDirectAdd = routeTarget === null && reauthTarget === null && prefill === null;
+
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const probeOwnerPassword = useAtomCommand(probeOwnerPasswordAtom, { reportFailure: false });
+  const connectOwnerPassword = useAtomCommand(connectOwnerPasswordAtom, { reportFailure: false });
   const connectPairing = useAtomCommand(connectPairingAtom, { reportFailure: false });
   const connectSshEnvironment = useAtomCommand(connectSshEnvironmentAtom, {
     reportFailure: false,
@@ -107,10 +221,23 @@ export function AddEnvironmentDialog({
   const registerEnvironment = useAtomCommand(environmentCatalog.register, {
     reportFailure: false,
   });
+  const setEnvironmentEnabled = useAtomCommand(environmentCatalog.setEnabled, {
+    reportFailure: false,
+  });
+  const offerMainServer = useOfferMainServer();
   const relayDiscoveryState = useRelayEnvironmentDiscovery();
+
+  const [uncontrolledError, setUncontrolledError] = useState<string | null>(null);
+  const error = controlledError !== undefined ? controlledError : uncontrolledError;
+  const setError = (next: string | null) => {
+    if (onErrorChange) onErrorChange(next);
+    else setUncontrolledError(next);
+  };
+
   const savedDesktopSshEnvironmentKeys = (() => {
     const keys = new Set<string>();
     for (const environment of savedEnvironments) {
+      if (!environment.entry) continue;
       const profile = environment.entry.profile;
       if (
         environment.entry.target._tag !== "SshConnectionTarget" ||
@@ -125,9 +252,21 @@ export function AddEnvironmentDialog({
     }
     return keys;
   })();
-  const [savedBackendMode, setSavedBackendMode] = useState<"remote" | "ssh">("remote");
-  const [savedBackendHost, setSavedBackendHost] = useState(prefill?.host ?? initialHost);
+
+  const initialPasswordStep: PasswordStep =
+    reauthTarget !== null && isHttpsReauth && defaultMode === "password"
+      ? { kind: "checking", host: reauthTarget.httpBaseUrl }
+      : { kind: "host" };
+  const [savedBackendMode, setSavedBackendMode] = useState<ConnectionMode>(defaultMode);
+  const [savedBackendHost, setSavedBackendHost] = useState(resolvedInitialHost);
   const [savedBackendPairingCode, setSavedBackendPairingCode] = useState("");
+  const [passwordStep, setPasswordStep] = useState<PasswordStep>(initialPasswordStep);
+  const [ownerPassword, setOwnerPassword] = useState("");
+  const [isCommittingPassword, setIsCommittingPassword] = useState(false);
+  const passwordSubmittingRef = useRef(false);
+  const probeGenerationRef = useRef(0);
+  const probeAbortControllerRef = useRef<AbortController | null>(null);
+
   const [savedBackendSshHost, setSavedBackendSshHost] = useState("");
   const [savedBackendSshUsername, setSavedBackendSshUsername] = useState("");
   const [savedBackendSshPort, setSavedBackendSshPort] = useState("");
@@ -135,10 +274,28 @@ export function AddEnvironmentDialog({
   const highlightedSshHostRef = useRef<DesktopDiscoveredSshHost | undefined>(undefined);
   const [isAddingSavedBackend, setIsAddingSavedBackend] = useState(false);
   const savedBackendSessionRef = useRef(0);
-  const isSshDiscoveryActive = desktopBridge !== undefined && open && savedBackendMode === "ssh";
+
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (open !== prevOpen) {
+    setPrevOpen(open);
+    if (open) {
+      setSavedBackendMode(defaultMode);
+      setPasswordStep(initialPasswordStep);
+      setOwnerPassword("");
+      setSavedBackendHost(resolvedInitialHost);
+      setSavedBackendPairingCode("");
+      setSavedBackendSshHost("");
+      setSavedBackendSshUsername("");
+      setSavedBackendSshPort("");
+      if (controlledError === undefined) setUncontrolledError(null);
+    }
+  }
+
+  const isBusy = isAddingSavedBackend || isCommittingPassword;
+  const isSshDiscoveryActive = canUseSshMode && open && savedBackendMode === "ssh";
   const desktopSshHosts = useEnvironmentQuery(
     isSshDiscoveryActive ? desktopSshHostsStateAtom : null,
-    useMessages(),
+    messages,
   );
   // The discovery atom is kept alive across dialog opens, so re-read SSH config
   // each time the SSH tab is shown; stale hosts stay visible while it refreshes.
@@ -147,6 +304,151 @@ export function AddEnvironmentDialog({
   useEffect(() => {
     if (isSshDiscoveryActive) refreshDesktopSshHosts();
   }, [isSshDiscoveryActive, refreshDesktopSshHosts]);
+
+  const abortProbe = () => {
+    probeGenerationRef.current += 1;
+    probeAbortControllerRef.current?.abort();
+    probeAbortControllerRef.current = null;
+  };
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- aborts any in-flight host probe when the dialog closes or unmounts
+  useEffect(() => {
+    if (!open) {
+      probeGenerationRef.current += 1;
+      probeAbortControllerRef.current?.abort();
+      probeAbortControllerRef.current = null;
+    }
+    return () => {
+      probeGenerationRef.current += 1;
+      probeAbortControllerRef.current?.abort();
+      probeAbortControllerRef.current = null;
+    };
+  }, [open]);
+
+  const applyOwnerPasswordProbeResult = (input: {
+    readonly host: string;
+    readonly generation: number;
+    readonly controller: AbortController;
+    readonly result: Awaited<ReturnType<typeof probeOwnerPassword>>;
+  }) => {
+    if (input.generation !== probeGenerationRef.current || input.controller.signal.aborted) {
+      return;
+    }
+    if (probeAbortControllerRef.current === input.controller) {
+      probeAbortControllerRef.current = null;
+    }
+
+    if (input.result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(input.result)) {
+        const cause = squashAtomCommandFailure(input.result);
+        setError(
+          errorDisplayMessage(cause, m) ??
+            thrownErrorMessage(cause, m) ??
+            gt("Could not reach this server."),
+        );
+      }
+      setPasswordStep({ kind: "host" });
+      return;
+    }
+
+    if (input.result.value.kind === "unavailable") {
+      setPasswordStep({ kind: "unavailable", host: input.host, result: input.result.value });
+      return;
+    }
+
+    setPasswordStep({ kind: "ready", host: input.host, server: input.result.value });
+  };
+
+  const runOwnerPasswordProbe = async (hostInput: string) => {
+    const trimmed = hostInput.trim();
+    if (reauthTarget === null) {
+      if (!trimmed) {
+        setError(gt("Enter a server address."));
+        return;
+      }
+      const parsedPairingUrl = parsePairingUrlFields(trimmed);
+      if (parsedPairingUrl) {
+        abortProbe();
+        setError(null);
+        setOwnerPassword("");
+        setPasswordStep({ kind: "host" });
+        setSavedBackendHost(parsedPairingUrl.host);
+        setSavedBackendPairingCode(parsedPairingUrl.pairingCode);
+        setSavedBackendMode("remote");
+        return;
+      }
+    }
+
+    abortProbe();
+    const generation = probeGenerationRef.current;
+    const controller = new AbortController();
+    probeAbortControllerRef.current = controller;
+    setError(null);
+    setOwnerPassword("");
+    setPasswordStep({ kind: "checking", host: trimmed });
+
+    const destination: ConnectionOnboarding.OwnerPasswordDestination =
+      reauthTarget !== null
+        ? {
+            kind: "reauthenticate",
+            environmentId: reauthTarget.environment.environmentId,
+            connectionId: reauthTarget.connectionId,
+          }
+        : routeTarget !== null
+          ? {
+              kind: "add-route",
+              host: trimmed,
+              environmentId: routeTarget.environmentId,
+            }
+          : {
+              kind: "add",
+              host: trimmed,
+              ...(prefill?.environmentId !== undefined
+                ? { expectedEnvironmentId: prefill.environmentId }
+                : {}),
+            };
+
+    const result = await probeOwnerPassword(destination, { signal: controller.signal });
+    applyOwnerPasswordProbeResult({ host: trimmed, generation, controller, result });
+  };
+
+  const runReauthOwnerPasswordProbe = useEffectEvent(
+    async (generation: number, controller: AbortController) => {
+      if (reauthTarget === null) return;
+      const host = reauthTarget.httpBaseUrl.trim();
+      const result = await probeOwnerPassword(
+        {
+          kind: "reauthenticate",
+          environmentId: reauthTarget.environment.environmentId,
+          connectionId: reauthTarget.connectionId,
+        },
+        { signal: controller.signal },
+      );
+      applyOwnerPasswordProbeResult({ host, generation, controller, result });
+    },
+  );
+
+  const reauthConnectionId = reauthTarget?.connectionId ?? null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- probes the saved HTTPS route automatically when opening re-authentication in password mode
+  useEffect(() => {
+    if (!open || reauthConnectionId === null || !isHttpsReauth || savedBackendMode !== "password") {
+      return;
+    }
+    probeAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    probeAbortControllerRef.current = controller;
+    const generation = probeGenerationRef.current + 1;
+    probeGenerationRef.current = generation;
+    void runReauthOwnerPasswordProbe(generation, controller);
+    return () => {
+      probeGenerationRef.current += 1;
+      controller.abort();
+      if (probeAbortControllerRef.current === controller) {
+        probeAbortControllerRef.current = null;
+      }
+    };
+  }, [open, reauthConnectionId, isHttpsReauth, savedBackendMode]);
+
   const discoveredSshHosts = desktopSshHosts.data ?? EMPTY_DISCOVERED_SSH_HOSTS;
   const unsavedDiscoveredSshHosts = discoveredSshHosts.filter((target) => {
     const address = formatDesktopSshTarget(target);
@@ -162,24 +464,178 @@ export function AddEnvironmentDialog({
   const isLoadingDiscoveredSshHosts = desktopSshHosts.isPending && desktopSshHosts.data === null;
   const discoveredSshHostsError = desktopSshHosts.error;
   const hasSshHostSuggestionContent =
-    desktopBridge !== undefined &&
-    (isLoadingDiscoveredSshHosts || unsavedDiscoveredSshHosts.length > 0);
+    canUseSshMode && (isLoadingDiscoveredSshHosts || unsavedDiscoveredSshHosts.length > 0);
+
+  const resetDialogState = () => {
+    abortProbe();
+    savedBackendSessionRef.current += 1;
+    setSavedBackendMode(defaultMode);
+    setPasswordStep({ kind: "host" });
+    setOwnerPassword("");
+    setSavedBackendHost(resolvedInitialHost);
+    setSavedBackendPairingCode("");
+    setSavedBackendSshHost("");
+    setSavedBackendSshUsername("");
+    setSavedBackendSshPort("");
+    setError(null);
+  };
+
   const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen && (isCommittingPassword || passwordSubmittingRef.current)) return;
     if (!nextOpen) {
-      savedBackendSessionRef.current += 1;
-      setSavedBackendMode("remote");
-      setSavedBackendHost(initialHost);
-      setSavedBackendPairingCode("");
-      setSavedBackendSshHost("");
-      setSavedBackendSshUsername("");
-      setSavedBackendSshPort("");
+      resetDialogState();
     }
     onOpenChange(nextOpen);
   };
+
+  const switchMode = (nextMode: ConnectionMode) => {
+    if (isBusy || savedBackendMode === nextMode) return;
+    abortProbe();
+    setError(null);
+    setOwnerPassword("");
+    setPasswordStep(
+      nextMode === "password" && reauthTarget !== null && isHttpsReauth
+        ? { kind: "checking", host: reauthTarget.httpBaseUrl }
+        : { kind: "host" },
+    );
+    setSavedBackendMode(nextMode);
+  };
+
+  const switchToPairingWithHost = (hostValue: string) => {
+    if (isBusy) return;
+    abortProbe();
+    setError(null);
+    setOwnerPassword("");
+    setPasswordStep({ kind: "host" });
+    if (hostValue.trim().length > 0) {
+      setSavedBackendHost(hostValue.trim());
+    }
+    setSavedBackendMode("remote");
+  };
+
+  const finishDirectConnection = (environmentId: EnvironmentId, hostForOffer: string) => {
+    resetDialogState();
+    onOpenChange(false);
+    onConnected?.(environmentId);
+
+    if (isNewDirectAdd) {
+      if (offerMainServer({ environmentId, host: hostForOffer })) return;
+      toastManager.add({
+        type: "success",
+        title: gt("Backend added"),
+        description: gt("The environment is saved and will reconnect on app startup."),
+      });
+      return;
+    }
+
+    if (reauthTarget !== null) {
+      toastManager.add({
+        type: "success",
+        title: gt("Signed in again"),
+        description: gt("{environment} is signed in and reconnecting.", {
+          environment: reauthTarget.environment.label,
+        }),
+      });
+      return;
+    }
+
+    if (routeTarget !== null) {
+      toastManager.add({
+        type: "success",
+        title: gt("Route added"),
+        description: gt("{environment} now has another way to connect.", {
+          environment: routeTarget.label,
+        }),
+      });
+      return;
+    }
+
+    toastManager.add({
+      type: "success",
+      title: gt("Backend added"),
+      description: gt("The environment is saved and will reconnect on app startup."),
+    });
+  };
+
+  const handleSignInWithPassword = async () => {
+    if (passwordSubmittingRef.current || passwordStep.kind !== "ready") return;
+    if (ownerPassword.length === 0) {
+      setError(gt("Enter the owner password."));
+      return;
+    }
+
+    const redactedPassword = Redacted.make(ownerPassword);
+    // Clear the input synchronously before awaiting so credentials do not linger in React state.
+    setOwnerPassword("");
+    passwordSubmittingRef.current = true;
+    setIsCommittingPassword(true);
+    setError(null);
+
+    const server = passwordStep.server;
+    const host = passwordStep.host;
+    const result = await connectOwnerPassword({ server, password: redactedPassword });
+    passwordSubmittingRef.current = false;
+    setIsCommittingPassword(false);
+
+    if (result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(result)) {
+        const cause = squashAtomCommandFailure(result);
+        const message =
+          errorDisplayMessage(cause, m) ?? thrownErrorMessage(cause, m) ?? gt("Could not sign in.");
+        if (isSavedConnectionActivationError(cause)) {
+          setPasswordStep({
+            kind: "activation-failed",
+            host,
+            environmentId: cause.environmentId,
+            origin: server.origin,
+            message,
+          });
+          return;
+        }
+        setError(message);
+      }
+      return;
+    }
+
+    finishDirectConnection(result.value, hostFromUrlOrRaw(server.origin));
+  };
+
+  const handleRetryEnableEnvironment = async () => {
+    if (passwordSubmittingRef.current || passwordStep.kind !== "activation-failed") return;
+    passwordSubmittingRef.current = true;
+    setIsCommittingPassword(true);
+    setError(null);
+
+    const { environmentId, origin, host } = passwordStep;
+    const result = await setEnvironmentEnabled({ environmentId, enabled: true });
+    passwordSubmittingRef.current = false;
+    setIsCommittingPassword(false);
+
+    if (result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(result)) {
+        const cause = squashAtomCommandFailure(result);
+        const message =
+          errorDisplayMessage(cause, m) ??
+          thrownErrorMessage(cause, m) ??
+          gt("Failed to switch the backend on.");
+        setPasswordStep({
+          kind: "activation-failed",
+          host,
+          environmentId,
+          origin,
+          message,
+        });
+      }
+      return;
+    }
+
+    finishDirectConnection(environmentId, hostFromUrlOrRaw(origin));
+  };
+
   const connectSavedBackendSshTarget = async (target: DesktopSshEnvironmentTarget) => {
     const session = savedBackendSessionRef.current;
     setIsAddingSavedBackend(true);
-    onErrorChange(null);
+    setError(null);
     const result = await connectSshEnvironment({
       target,
       label: "",
@@ -187,13 +643,15 @@ export function AddEnvironmentDialog({
     });
     if (result._tag === "Failure") {
       if (session === savedBackendSessionRef.current && !isAtomCommandInterrupted(result)) {
-        pipe(squashAtomCommandFailure(result), formatDesktopSshConnectionError, onErrorChange);
+        pipe(squashAtomCommandFailure(result), formatDesktopSshConnectionError, setError);
       }
       setIsAddingSavedBackend(false);
       return;
     }
 
-    handleOpenChange(false);
+    resetDialogState();
+    onOpenChange(false);
+    onConnected?.(result.value);
     toastManager.add({
       type: "success",
       title: routeTarget ? gt("Route added") : gt("Environment connected"),
@@ -216,8 +674,8 @@ export function AddEnvironmentDialog({
           username: savedBackendSshUsername,
           port: savedBackendSshPort,
         });
-      } catch (error) {
-        onErrorChange(formatDesktopSshConnectionError(error));
+      } catch (cause) {
+        setError(formatDesktopSshConnectionError(cause));
         return;
       }
 
@@ -226,19 +684,19 @@ export function AddEnvironmentDialog({
     }
 
     setIsAddingSavedBackend(true);
-    onErrorChange(null);
+    setError(null);
     let remotePairingInput: ReturnType<typeof parseRemotePairingFields>;
     try {
       remotePairingInput = parseRemotePairingFields({
         host: savedBackendHost,
         pairingCode: savedBackendPairingCode,
       });
-    } catch (error) {
+    } catch (cause) {
       const message =
-        error instanceof Error
-          ? (thrownErrorMessage(error, m) ?? error.message)
+        cause instanceof Error
+          ? (thrownErrorMessage(cause, m) ?? cause.message)
           : gt("Failed to add backend.");
-      onErrorChange(message);
+      setError(message);
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -250,19 +708,27 @@ export function AddEnvironmentDialog({
       return;
     }
 
-    const expected = routeTarget ?? prefill;
-    const result = await connectPairing({
-      ...remotePairingInput,
-      ...(expected ? { expectedEnvironmentId: expected.environmentId } : {}),
-    });
+    const expected = reauthTarget?.environment ?? routeTarget ?? prefill;
+    const result = await connectPairing(
+      reauthTarget !== null
+        ? {
+            ...remotePairingInput,
+            expectedEnvironmentId: reauthTarget.environment.environmentId,
+            replaceConnectionId: reauthTarget.connectionId,
+          }
+        : {
+            ...remotePairingInput,
+            ...(expected ? { expectedEnvironmentId: expected.environmentId } : {}),
+          },
+    );
     if (result._tag === "Failure") {
       if (!isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
+        const cause = squashAtomCommandFailure(result);
         const message =
-          error instanceof Error
-            ? (thrownErrorMessage(error, m) ?? error.message)
+          cause instanceof Error
+            ? (thrownErrorMessage(cause, m) ?? cause.message)
             : gt("Failed to add backend.");
-        onErrorChange(message);
+        setError(message);
         toastManager.add(
           stackedThreadToast({
             type: "error",
@@ -275,23 +741,15 @@ export function AddEnvironmentDialog({
       return;
     }
 
-    handleOpenChange(false);
-    toastManager.add(
-      routeTarget
-        ? {
-            type: "success",
-            title: gt("Route added"),
-            description: gt("{environment} now has another way to connect.", {
-              environment: routeTarget.label,
-            }),
-          }
-        : {
-            type: "success",
-            title: gt("Backend added"),
-            description: gt("The environment is saved and will reconnect on app startup."),
-          },
-    );
+    let resolvedHost = hostFromUrlOrRaw(remotePairingInput.host);
+    try {
+      resolvedHost = new URL(resolveRemotePairingTarget(remotePairingInput).httpBaseUrl).host;
+    } catch {
+      // Keep parsed host fallback when pairing input resolves without a full URL.
+    }
+
     setIsAddingSavedBackend(false);
+    finishDirectConnection(result.value, resolvedHost);
   };
 
   const handleSavedBackendSshFieldKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -303,18 +761,18 @@ export function AddEnvironmentDialog({
   };
 
   const handleSelectSshHostSuggestion = async (target: DesktopDiscoveredSshHost) => {
-    if (isAddingSavedBackend || !desktopBridge) return;
+    if (isBusy || !desktopBridge) return;
 
     const session = savedBackendSessionRef.current;
     setIsAddingSavedBackend(true);
-    onErrorChange(null);
+    setError(null);
     setSavedBackendSshHost(target.alias);
     let resolved: DesktopSshEnvironmentTarget;
     try {
       resolved = await desktopBridge.resolveSshHost(target.alias);
-    } catch (error) {
+    } catch (cause) {
       if (session === savedBackendSessionRef.current) {
-        onErrorChange(formatDesktopSshConnectionError(error));
+        setError(formatDesktopSshConnectionError(cause));
       }
       setIsAddingSavedBackend(false);
       return;
@@ -371,14 +829,28 @@ export function AddEnvironmentDialog({
   const handleSavedBackendHostChange = (value: string) => {
     const parsedPairingUrl = parsePairingUrlFields(value);
     if (parsedPairingUrl) {
+      abortProbe();
+      setError(null);
+      setOwnerPassword("");
+      setPasswordStep({ kind: "host" });
       setSavedBackendHost(parsedPairingUrl.host);
       setSavedBackendPairingCode(parsedPairingUrl.pairingCode);
+      setSavedBackendMode("remote");
       return;
     }
     setSavedBackendHost(value);
+    if (savedBackendMode === "password") {
+      abortProbe();
+      setError(null);
+      setOwnerPassword("");
+      if (passwordStep.kind !== "host") {
+        setPasswordStep({ kind: "host" });
+      }
+    }
   };
+
   const renderConnectionModeCard = (input: {
-    readonly mode: "remote" | "ssh";
+    readonly mode: ConnectionMode;
     readonly title: string;
     readonly description: string;
     readonly icon?: ReactNode;
@@ -392,11 +864,8 @@ export function AddEnvironmentDialog({
           "group flex min-h-24 items-start gap-3 rounded-lg border p-4 text-left",
           selected ? "border-primary/50 bg-primary/5" : "border-border/60 hover:bg-muted/40",
         )}
-        disabled={isAddingSavedBackend}
-        onClick={() => {
-          if (!selected) onErrorChange(null);
-          setSavedBackendMode(input.mode);
-        }}
+        disabled={isBusy}
+        onClick={() => switchMode(input.mode)}
       >
         {input.icon ? (
           <span
@@ -420,6 +889,267 @@ export function AddEnvironmentDialog({
     );
   };
 
+  const unavailableReasonMessage = (reason: UnavailableOwnerPasswordHost["reason"]): string => {
+    switch (reason) {
+      case "unset":
+        return gt(
+          "This server does not have an owner password set yet. Open it in a browser and set one under Settings \u2192 Sharing & access, or connect with a pairing code.",
+        );
+      case "disabled":
+        return gt(
+          "Owner password sign-in is disabled on this server. Connect with a pairing code instead.",
+        );
+      case "older-server":
+        return gt(
+          "This server does not support owner password sign-in yet. Update it or connect with a pairing code instead.",
+        );
+    }
+  };
+
+  const renderPasswordModeBody = () => {
+    if (passwordStep.kind === "activation-failed") {
+      return (
+        <div className="space-y-4">
+          <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+            <p className="text-2xs font-medium text-muted-foreground">
+              <T>Server</T>
+            </p>
+            <p className="mt-0.5 truncate font-mono text-xs text-foreground">
+              {passwordStep.origin}
+            </p>
+          </div>
+          <Alert variant="error">
+            <AlertDescription>{passwordStep.message}</AlertDescription>
+          </Alert>
+          <Button
+            type="button"
+            className="w-full"
+            disabled={isCommittingPassword}
+            onClick={() => void handleRetryEnableEnvironment()}
+          >
+            {isCommittingPassword ? gt("Enabling\u2026") : gt("Enable environment")}
+          </Button>
+        </div>
+      );
+    }
+
+    if (passwordStep.kind === "ready") {
+      return (
+        <form
+          className="space-y-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void handleSignInWithPassword();
+          }}
+        >
+          <div className="flex items-center justify-between gap-3 rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+            <div className="min-w-0">
+              <p className="truncate text-xs font-medium text-foreground">
+                {passwordStep.server.label}
+              </p>
+              <p className="truncate font-mono text-2xs text-muted-foreground">
+                {passwordStep.server.origin}
+              </p>
+            </div>
+            {reauthTarget === null ? (
+              <Button
+                type="button"
+                size="xs"
+                variant="ghost-muted"
+                disabled={isCommittingPassword}
+                onClick={() => {
+                  setError(null);
+                  setOwnerPassword("");
+                  setPasswordStep({ kind: "host" });
+                }}
+              >
+                <T>Change</T>
+              </Button>
+            ) : null}
+          </div>
+          <label className="block">
+            <span className="mb-1.5 block text-xs font-medium text-foreground">
+              <T>Owner password</T>
+            </span>
+            <Input
+              nativeInput
+              type="password"
+              autoComplete="current-password"
+              autoFocus
+              value={ownerPassword}
+              onChange={(event) => setOwnerPassword(event.currentTarget.value)}
+              placeholder={gt("Enter owner password")}
+              disabled={isCommittingPassword}
+            />
+          </label>
+          {error ? (
+            <p role="alert" className="text-xs text-destructive">
+              {error}
+            </p>
+          ) : null}
+          <Button
+            type="submit"
+            className="w-full"
+            disabled={isCommittingPassword || ownerPassword.length === 0}
+          >
+            {isCommittingPassword ? gt("Signing in\u2026") : gt("Sign in")}
+          </Button>
+        </form>
+      );
+    }
+
+    if (passwordStep.kind === "unavailable") {
+      return (
+        <div className="space-y-4">
+          {reauthTarget !== null ? (
+            <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+              <p className="text-2xs font-medium text-muted-foreground">
+                <T>Server</T>
+              </p>
+              <p className="mt-0.5 truncate font-mono text-xs text-foreground">
+                {reauthTarget.httpBaseUrl}
+              </p>
+            </div>
+          ) : (
+            <label className="block">
+              <span className="mb-1.5 block text-xs font-medium text-foreground">
+                <T>Server URL</T>
+              </span>
+              <Input
+                value={savedBackendHost}
+                onChange={(event) => handleSavedBackendHostChange(event.target.value)}
+                placeholder="https://sail.example.com"
+                disabled={isBusy}
+                spellCheck={false}
+              />
+            </label>
+          )}
+          <Alert>
+            <AlertDescription>
+              {unavailableReasonMessage(passwordStep.result.reason)}
+            </AlertDescription>
+          </Alert>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="flex-1"
+              disabled={isBusy}
+              onClick={() =>
+                switchToPairingWithHost(
+                  reauthTarget?.httpBaseUrl ?? (passwordStep.result.origin || savedBackendHost),
+                )
+              }
+            >
+              <T>Use a pairing code</T>
+            </Button>
+            {reauthTarget === null ? (
+              <Button
+                type="button"
+                variant="ghost-muted"
+                disabled={isBusy}
+                onClick={() => void runOwnerPasswordProbe(savedBackendHost)}
+              >
+                <T>Check again</T>
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      );
+    }
+
+    if (reauthTarget !== null) {
+      return (
+        <div className="space-y-4">
+          <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+            <p className="text-2xs font-medium text-muted-foreground">
+              <T>Server</T>
+            </p>
+            <p className="mt-0.5 truncate font-mono text-xs text-foreground">
+              {reauthTarget.httpBaseUrl}
+            </p>
+          </div>
+          {passwordStep.kind === "checking" ? (
+            <p role="status" className="text-xs text-muted-foreground">
+              <T>Checking server…</T>
+            </p>
+          ) : null}
+          {error ? (
+            <p role="alert" className="text-xs text-destructive">
+              {error}
+            </p>
+          ) : null}
+          {passwordStep.kind !== "checking" ? (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="flex-1"
+                disabled={isBusy}
+                onClick={() => void runOwnerPasswordProbe(reauthTarget.httpBaseUrl)}
+              >
+                <T>Check again</T>
+              </Button>
+              <Button
+                type="button"
+                variant="ghost-muted"
+                disabled={isBusy}
+                onClick={() => switchToPairingWithHost(reauthTarget.httpBaseUrl)}
+              >
+                <T>Use a pairing code</T>
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      );
+    }
+
+    const isChecking = passwordStep.kind === "checking";
+    return (
+      <form
+        className="space-y-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void runOwnerPasswordProbe(savedBackendHost);
+        }}
+      >
+        <div className="space-y-1.5">
+          <label className="block">
+            <span className="mb-1.5 block text-xs font-medium text-foreground">
+              <T>Server URL</T>
+            </span>
+            <Input
+              value={savedBackendHost}
+              onChange={(event) => handleSavedBackendHostChange(event.target.value)}
+              placeholder="https://sail.example.com"
+              disabled={isBusy}
+              spellCheck={false}
+              autoFocus
+            />
+          </label>
+          <span className="block text-2xs text-muted-foreground">
+            <T>
+              Enter your server&apos;s HTTPS address, or paste a pairing link to switch to pairing
+              code.
+            </T>
+          </span>
+        </div>
+        {error ? (
+          <p role="alert" className="text-xs text-destructive">
+            {error}
+          </p>
+        ) : null}
+        <Button
+          type="submit"
+          className="w-full"
+          disabled={isBusy || isChecking || savedBackendHost.trim().length === 0}
+        >
+          {isChecking ? gt("Checking\u2026") : gt("Continue")}
+        </Button>
+      </form>
+    );
+  };
+
   const renderRemoteFields = () => (
     <div className="space-y-3">
       <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem]">
@@ -431,7 +1161,8 @@ export function AddEnvironmentDialog({
             value={savedBackendHost}
             onChange={(event) => handleSavedBackendHostChange(event.target.value)}
             placeholder="backend.example.com"
-            disabled={isAddingSavedBackend}
+            disabled={isBusy || reauthTarget !== null}
+            readOnly={reauthTarget !== null}
             spellCheck={false}
           />
         </label>
@@ -443,24 +1174,28 @@ export function AddEnvironmentDialog({
             value={savedBackendPairingCode}
             onChange={(event) => setSavedBackendPairingCode(event.target.value)}
             placeholder={gt("PAIRCODE")}
-            disabled={isAddingSavedBackend}
+            disabled={isBusy}
             spellCheck={false}
           />
         </label>
       </div>
-      <div>
-        <span className="mt-1 block text-2xs text-muted-foreground">
-          <T>Paste a full pairing URL here to fill both fields automatically.</T>
-        </span>
-      </div>
+      {reauthTarget === null ? (
+        <div>
+          <span className="mt-1 block text-2xs text-muted-foreground">
+            <T>Paste a full pairing URL here to fill both fields automatically.</T>
+          </span>
+        </div>
+      ) : null}
     </div>
   );
+
   const relayRouteOffer =
     routeTarget !== null &&
     !routeTarget.relayManaged &&
     relayDiscoveryState.environments.has(routeTarget.environmentId)
       ? relayDiscoveryState.environments.get(routeTarget.environmentId)!.environment
       : null;
+
   const addRelayRoute = async () => {
     if (relayRouteOffer === null || routeTarget === null) return;
     setIsAddingSavedBackend(true);
@@ -475,16 +1210,18 @@ export function AddEnvironmentDialog({
     setIsAddingSavedBackend(false);
     if (result._tag === "Failure") {
       if (!isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
-        onErrorChange(
-          error instanceof Error
-            ? (thrownErrorMessage(error, m) ?? error.message)
+        const cause = squashAtomCommandFailure(result);
+        setError(
+          cause instanceof Error
+            ? (thrownErrorMessage(cause, m) ?? cause.message)
             : gt("Could not add the route."),
         );
       }
       return;
     }
-    handleOpenChange(false);
+    resetDialogState();
+    onOpenChange(false);
+    onConnected?.(relayRouteOffer.environmentId);
     toastManager.add({
       type: "success",
       title: gt("Route added"),
@@ -494,6 +1231,7 @@ export function AddEnvironmentDialog({
       ),
     });
   };
+
   const renderRemoteModeBody = () => (
     <div className="space-y-4">
       {relayRouteOffer !== null ? (
@@ -504,7 +1242,7 @@ export function AddEnvironmentDialog({
           <Button
             size="xs"
             variant="outline"
-            disabled={isAddingSavedBackend}
+            disabled={isBusy}
             onClick={() => void addRelayRoute()}
           >
             <T>Add T3 Connect</T>
@@ -512,22 +1250,31 @@ export function AddEnvironmentDialog({
         </div>
       ) : null}
       {renderRemoteFields()}
-      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      {error ? (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      ) : null}
       <Button
         variant="outline"
         className="w-full"
-        disabled={isAddingSavedBackend}
+        disabled={isBusy}
         onClick={() => void handleAddSavedBackend()}
       >
         <PlusIcon className="size-3.5" />
         {isAddingSavedBackend
-          ? gt("Adding…")
-          : routeTarget
-            ? gt("Add route")
-            : gt("Add environment")}
+          ? reauthTarget !== null
+            ? gt("Signing in\u2026")
+            : gt("Adding\u2026")
+          : reauthTarget !== null
+            ? gt("Sign in again")
+            : routeTarget
+              ? gt("Add route")
+              : gt("Add environment")}
       </Button>
     </div>
   );
+
   const renderSshFields = () => (
     <div className="space-y-4">
       <div className="space-y-3">
@@ -563,7 +1310,7 @@ export function AddEnvironmentDialog({
               id="saved-backend-ssh-host"
               onKeyDown={handleSavedBackendSshHostKeyDown}
               placeholder={gt("Search hosts or type devbox")}
-              disabled={isAddingSavedBackend}
+              disabled={isBusy}
               spellCheck={false}
             />
             {hasSshHostSuggestionContent ? (
@@ -624,7 +1371,7 @@ export function AddEnvironmentDialog({
               onChange={(event) => setSavedBackendSshUsername(event.target.value)}
               onKeyDown={handleSavedBackendSshFieldKeyDown}
               placeholder="root"
-              disabled={isAddingSavedBackend}
+              disabled={isBusy}
               spellCheck={false}
             />
           </label>
@@ -638,7 +1385,7 @@ export function AddEnvironmentDialog({
               onKeyDown={handleSavedBackendSshFieldKeyDown}
               placeholder="22"
               inputMode="numeric"
-              disabled={isAddingSavedBackend}
+              disabled={isBusy}
               spellCheck={false}
             />
           </label>
@@ -651,7 +1398,7 @@ export function AddEnvironmentDialog({
         <Button
           variant="outline"
           className="w-full"
-          disabled={isAddingSavedBackend}
+          disabled={isBusy}
           onClick={() => void handleAddSavedBackend()}
         >
           <PlusIcon className="size-3.5" />
@@ -665,69 +1412,107 @@ export function AddEnvironmentDialog({
     </div>
   );
 
+  const modeCount = (canUsePasswordMode ? 1 : 0) + 1 + (canUseSshMode ? 1 : 0);
+
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <DialogTrigger
-              render={
-                <Button size="xs" variant="ghost-muted" aria-label={gt("Add environment")}>
-                  <PlusIcon className="size-3" />
-                  <span>
-                    <T>Add environment</T>
-                  </span>
-                </Button>
-              }
-            />
-          }
-        />
-        <TooltipPopup side="top">
-          <T>Add environment</T>
-        </TooltipPopup>
-      </Tooltip>
+      {showTrigger ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <DialogTrigger
+                render={
+                  <Button size="xs" variant="ghost-muted" aria-label={gt("Add environment")}>
+                    <PlusIcon className="size-3" />
+                    <span>
+                      <T>Add environment</T>
+                    </span>
+                  </Button>
+                }
+              />
+            }
+          />
+          <TooltipPopup side="top">
+            <T>Add environment</T>
+          </TooltipPopup>
+        </Tooltip>
+      ) : null}
       <DialogPopup className="max-h-[80dvh] sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>
-            {routeTarget
-              ? gt("Add a route to {environment}", { environment: routeTarget.label })
-              : prefill
-                ? gt("Connect to {environment}", { environment: prefill.label })
-                : gt("Add Environment")}
+            {reauthTarget !== null
+              ? gt("Sign in again to {environment}", {
+                  environment: reauthTarget.environment.label,
+                })
+              : routeTarget
+                ? gt("Add a route to {environment}", { environment: routeTarget.label })
+                : prefill
+                  ? gt("Connect to {environment}", { environment: prefill.label })
+                  : openedFrom === "welcome" || openedFrom === "empty-state"
+                    ? gt("Sign in to a Sail server")
+                    : gt("Add Environment")}
           </DialogTitle>
           <DialogDescription>
-            {routeTarget
-              ? gt(
-                  "Pair this machine again over another address, such as its Tailscale name. It joins the existing routes instead of adding a second machine.",
-                )
-              : prefill
+            {reauthTarget !== null
+              ? canUsePasswordMode
                 ? gt(
-                    "Create a pairing code on {environment}, in its Settings → Sharing & access or with `t3 auth pairing create`, and enter it here.",
-                    { environment: prefill.label },
+                    "Enter this server's owner password or a fresh pairing code to reconnect this route.",
                   )
-                : gt("Pair another environment to this client.")}
+                : gt("Enter a fresh pairing code to reconnect this route.")
+              : routeTarget
+                ? isDesktop
+                  ? gt(
+                      "Connect to this machine over another address, such as its Tailscale name. It joins the existing routes instead of adding a second machine.",
+                    )
+                  : gt(
+                      "Pair this machine again over another address, such as its Tailscale name. It joins the existing routes instead of adding a second machine.",
+                    )
+                : prefill
+                  ? gt(
+                      "Create a pairing code on {environment}, in its Settings → Sharing & access or with `t3 auth pairing create`, and enter it here.",
+                      { environment: prefill.label },
+                    )
+                  : isDesktop
+                    ? gt("Sign in with an owner password, a pairing code, or SSH.")
+                    : gt("Pair another environment to this client.")}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
           <div className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-2">
-              {renderConnectionModeCard({
-                mode: "remote",
-                title: gt("Remote link"),
-                description: gt("Enter a backend host and pairing code."),
-                icon: <ChevronsLeftRightEllipsisIcon aria-hidden className="size-4" />,
-              })}
-              {desktopBridge
-                ? renderConnectionModeCard({
-                    mode: "ssh",
-                    title: SSH_PROTOCOL_NAME,
-                    description: gt("Use local SSH config, agent, and tunnels for the backend."),
-                    icon: <TerminalIcon aria-hidden className="size-4" />,
-                  })
-                : null}
-            </div>
+            {modeCount > 1 ? (
+              <div
+                className={cn("grid gap-3", modeCount === 3 ? "sm:grid-cols-3" : "sm:grid-cols-2")}
+              >
+                {canUsePasswordMode
+                  ? renderConnectionModeCard({
+                      mode: "password",
+                      title: gt("Password"),
+                      description: gt("Sign in with a server's HTTPS URL and owner password."),
+                      icon: <KeyRoundIcon aria-hidden className="size-4" />,
+                    })
+                  : null}
+                {renderConnectionModeCard({
+                  mode: "remote",
+                  title: gt("Pairing code"),
+                  description: gt("Enter a backend host and pairing code."),
+                  icon: <ChevronsLeftRightEllipsisIcon aria-hidden className="size-4" />,
+                })}
+                {canUseSshMode
+                  ? renderConnectionModeCard({
+                      mode: "ssh",
+                      title: SSH_PROTOCOL_NAME,
+                      description: gt("Use local SSH config, agent, and tunnels for the backend."),
+                      icon: <TerminalIcon aria-hidden className="size-4" />,
+                    })
+                  : null}
+              </div>
+            ) : null}
             <AnimatedHeight>
-              {savedBackendMode === "ssh" ? renderSshFields() : renderRemoteModeBody()}
+              {savedBackendMode === "password" && canUsePasswordMode
+                ? renderPasswordModeBody()
+                : savedBackendMode === "ssh" && canUseSshMode
+                  ? renderSshFields()
+                  : renderRemoteModeBody()}
             </AnimatedHeight>
           </div>
         </DialogPanel>

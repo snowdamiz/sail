@@ -350,6 +350,19 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
           }),
         ),
       ),
+    replaceRenewedCredential: (connectionId, expectedPrevious, nextCredential) =>
+      Ref.modify(storedCredentials, (current) => {
+        const existing = current.get(connectionId);
+        if (
+          existing === undefined ||
+          !ConnectionCredentialStore.connectionCredentialsEqual(existing, expectedPrevious)
+        ) {
+          return [false, current] as const;
+        }
+        const next = new Map(current);
+        next.set(connectionId, nextCredential);
+        return [true, next] as const;
+      }),
     remove: (connectionId) =>
       Ref.update(storedCredentials, (current) => {
         const next = new Map(current);
@@ -2338,5 +2351,211 @@ describe("EnvironmentRegistry routes", () => {
         expect(entry?.alternateRoutes ?? []).toEqual([]);
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
+  );
+
+  it.effect(
+    "preserves a non-first legacy connectionId and route order when register passes replaceConnectionId",
+    () =>
+      Effect.gen(function* () {
+        const environmentId = LAN_TARGET.environmentId;
+        const legacyId = "legacy-public-direct";
+        const legacyTarget = new BearerConnectionTarget({
+          environmentId,
+          label: "Legacy HTTPS",
+          connectionId: legacyId,
+        });
+        const legacyProfile = new BearerConnectionProfile({
+          connectionId: legacyId,
+          environmentId,
+          label: "Legacy HTTPS",
+          httpBaseUrl: "https://my-sail.example.test/",
+          wsBaseUrl: "wss://my-sail.example.test/",
+        });
+        const harness = yield* makeHarness(
+          [LAN_TARGET, legacyTarget],
+          [LAN_PROFILE, legacyProfile],
+          [
+            [LAN_TARGET.connectionId, BEARER_CREDENTIAL],
+            [legacyId, new BearerConnectionCredential({ token: "old-legacy-token" })],
+          ],
+        );
+
+        yield* Effect.gen(function* () {
+          const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+          const updated = yield* registry.register(
+            new BearerConnectionRegistration({
+              target: new BearerConnectionTarget({
+                environmentId,
+                label: "Renamed HTTPS",
+                connectionId: `bearer:${environmentId}:https://my-sail.example.test`,
+              }),
+              profile: new BearerConnectionProfile({
+                connectionId: `bearer:${environmentId}:https://my-sail.example.test`,
+                environmentId,
+                label: "Renamed HTTPS",
+                httpBaseUrl: "https://my-sail.example.test/",
+                wsBaseUrl: "wss://my-sail.example.test/",
+              }),
+              credential: new BearerConnectionCredential({ token: "fresh-legacy-token" }),
+            }),
+            { replaceConnectionId: legacyId },
+          );
+
+          expect(updated).toBe(true);
+          const entry = (yield* SubscriptionRef.get(registry.entries)).get(environmentId);
+          expect(entry?.target).toEqual(LAN_TARGET);
+          expect(entry?.alternateRoutes).toHaveLength(1);
+          expect(entry?.alternateRoutes?.[0]?.target).toMatchObject({
+            _tag: "BearerConnectionTarget",
+            connectionId: legacyId,
+            label: "Renamed HTTPS",
+          });
+          expect(
+            Option.getOrNull(entry?.alternateRoutes?.[0]?.profile ?? Option.none()),
+          ).toMatchObject({
+            connectionId: legacyId,
+            httpBaseUrl: "https://my-sail.example.test/",
+          });
+          expect((yield* Ref.get(harness.storedCredentials)).get(legacyId)).toMatchObject({
+            _tag: "BearerConnectionCredential",
+            token: "fresh-legacy-token",
+          });
+          expect(
+            (yield* Ref.get(harness.storedCredentials)).has(
+              `bearer:${environmentId}:https://my-sail.example.test`,
+            ),
+          ).toBe(false);
+        }).pipe(Effect.provide(harness.layer), Effect.scoped);
+      }),
+  );
+
+  it.effect(
+    "fails cleanly without resurrecting or overwriting a route when replaceConnectionId was removed or edited concurrently",
+    () =>
+      Effect.gen(function* () {
+        const environmentId = LAN_TARGET.environmentId;
+        const legacyId = "legacy-public-direct";
+        const legacyTarget = new BearerConnectionTarget({
+          environmentId,
+          label: "Legacy HTTPS",
+          connectionId: legacyId,
+        });
+        const legacyProfile = new BearerConnectionProfile({
+          connectionId: legacyId,
+          environmentId,
+          label: "Legacy HTTPS",
+          httpBaseUrl: "https://my-sail.example.test/",
+          wsBaseUrl: "wss://my-sail.example.test/",
+        });
+        const editedProfile = new BearerConnectionProfile({
+          connectionId: legacyId,
+          environmentId,
+          label: "Edited HTTPS",
+          httpBaseUrl: "https://edited-sail.example.test/",
+          wsBaseUrl: "wss://edited-sail.example.test/",
+        });
+        const editedCredential = new BearerConnectionCredential({ token: "edited-token" });
+        const staleReauthRegistration = new BearerConnectionRegistration({
+          target: new BearerConnectionTarget({
+            environmentId,
+            label: "Legacy HTTPS",
+            connectionId: `bearer:${environmentId}:https://my-sail.example.test`,
+          }),
+          profile: new BearerConnectionProfile({
+            connectionId: `bearer:${environmentId}:https://my-sail.example.test`,
+            environmentId,
+            label: "Legacy HTTPS",
+            httpBaseUrl: "https://my-sail.example.test/",
+            wsBaseUrl: "wss://my-sail.example.test/",
+          }),
+          credential: new BearerConnectionCredential({ token: "stale-reauth-token" }),
+        });
+
+        // 1. Concurrent address edit must not be overwritten.
+        const editHarness = yield* makeHarness(
+          [LAN_TARGET, legacyTarget],
+          [LAN_PROFILE, editedProfile],
+          [
+            [LAN_TARGET.connectionId, BEARER_CREDENTIAL],
+            [legacyId, editedCredential],
+          ],
+        );
+        yield* Effect.gen(function* () {
+          const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+          const editError = yield* registry
+            .register(staleReauthRegistration, { replaceConnectionId: legacyId })
+            .pipe(Effect.flip);
+          expect(editError).toMatchObject({
+            _tag: "ConnectionBlockedError",
+            reason: "configuration",
+          });
+          const entry = (yield* SubscriptionRef.get(registry.entries)).get(environmentId);
+          expect(entry?.alternateRoutes).toHaveLength(1);
+          expect(
+            Option.getOrNull(entry?.alternateRoutes?.[0]?.profile ?? Option.none()),
+          ).toMatchObject({
+            connectionId: legacyId,
+            httpBaseUrl: "https://edited-sail.example.test/",
+          });
+          expect((yield* Ref.get(editHarness.storedCredentials)).get(legacyId)).toEqual(
+            editedCredential,
+          );
+        }).pipe(Effect.provide(editHarness.layer), Effect.scoped);
+
+        // 2. Concurrent route removal must not resurrect the route.
+        const removeRouteHarness = yield* makeHarness(
+          [LAN_TARGET, legacyTarget],
+          [LAN_PROFILE, legacyProfile],
+          [
+            [LAN_TARGET.connectionId, BEARER_CREDENTIAL],
+            [legacyId, new BearerConnectionCredential({ token: "old-legacy-token" })],
+          ],
+        );
+        yield* Effect.gen(function* () {
+          const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+          yield* registry.removeRoute(environmentId, legacyId);
+          const removedRouteError = yield* registry
+            .register(staleReauthRegistration, { replaceConnectionId: legacyId })
+            .pipe(Effect.flip);
+          expect(removedRouteError).toMatchObject({
+            _tag: "ConnectionBlockedError",
+            reason: "configuration",
+          });
+          const entry = (yield* SubscriptionRef.get(registry.entries)).get(environmentId);
+          expect(entry?.target).toEqual(LAN_TARGET);
+          expect(entry?.alternateRoutes ?? []).toEqual([]);
+          expect(yield* Ref.get(removeRouteHarness.storedTargets)).toEqual([LAN_TARGET]);
+          expect(
+            (yield* Ref.get(removeRouteHarness.storedCredentials)).get(legacyId),
+          ).toMatchObject({
+            token: "old-legacy-token",
+          });
+          expect(
+            (yield* Ref.get(removeRouteHarness.storedCredentials)).has(
+              staleReauthRegistration.target.connectionId,
+            ),
+          ).toBe(false);
+        }).pipe(Effect.provide(removeRouteHarness.layer), Effect.scoped);
+
+        // 3. Concurrent full environment removal must not resurrect the environment.
+        const removeEnvHarness = yield* makeHarness(
+          [legacyTarget],
+          [legacyProfile],
+          [[legacyId, new BearerConnectionCredential({ token: "old-legacy-token" })]],
+        );
+        yield* Effect.gen(function* () {
+          const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+          yield* registry.remove(environmentId);
+          const removedEnvError = yield* registry
+            .register(staleReauthRegistration, { replaceConnectionId: legacyId })
+            .pipe(Effect.flip);
+          expect(removedEnvError).toMatchObject({
+            _tag: "ConnectionBlockedError",
+            reason: "configuration",
+          });
+          expect((yield* SubscriptionRef.get(registry.entries)).has(environmentId)).toBe(false);
+          expect((yield* Ref.get(removeEnvHarness.storedCredentials)).size).toBe(0);
+        }).pipe(Effect.provide(removeEnvHarness.layer), Effect.scoped);
+      }),
   );
 });

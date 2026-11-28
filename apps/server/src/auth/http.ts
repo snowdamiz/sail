@@ -60,6 +60,11 @@ const appendDpopChallengeHeader = HttpEffect.appendPreResponseHandler((_request,
   Effect.succeed(HttpServerResponse.setHeader(response, "www-authenticate", "DPoP")),
 );
 
+const appendOwnerPasswordDpopChallengeHeader = HttpEffect.appendPreResponseHandler(
+  (_request, response) =>
+    Effect.succeed(HttpServerResponse.setHeader(response, "www-authenticate", 'DPoP algs="ES256"')),
+);
+
 const appendDpopChallengeOnUnauthorized =
   /* Request instrumentation already owns the span; keep this helper in that context. */
   Effect.fnUntraced(function* (error: EnvironmentAuthInvalidError) {
@@ -427,6 +432,40 @@ export const layer = HttpApiBuilder.group(
           ),
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
             failEnvironmentAuthInternal("browser_session_issuance_failed", error),
+          ),
+        ),
+      )
+      .handle(
+        "ownerPasswordToken",
+        Effect.fn("environment.auth.ownerPasswordToken")(
+          function* (args) {
+            yield* annotateEnvironmentRequest(args.endpoint.name);
+            yield* appendCredentialResponseHeaders;
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            return yield* serverAuth.createOwnerPasswordAccessToken(
+              args.payload.password,
+              request,
+              deriveAuthClientMetadata({
+                request,
+                presented: {
+                  ...(args.payload.client_label ? { label: args.payload.client_label } : {}),
+                  ...(args.payload.client_device_type
+                    ? { deviceType: args.payload.client_device_type }
+                    : {}),
+                  ...(args.payload.client_os ? { os: args.payload.client_os } : {}),
+                },
+              }),
+            );
+          },
+          Effect.catchIf(EnvironmentAuth.isServerAuthCredentialError, (error) => {
+            const dpopFailureReason = EnvironmentAuth.serverAuthDpopFailureReason(error);
+            const failure = failEnvironmentAuthInvalid("invalid_credential", dpopFailureReason);
+            return dpopFailureReason !== undefined
+              ? appendOwnerPasswordDpopChallengeHeader.pipe(Effect.andThen(failure))
+              : failure;
+          }),
+          Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
+            failEnvironmentAuthInternal("access_token_issuance_failed", error),
           ),
         ),
       )

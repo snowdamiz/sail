@@ -288,6 +288,7 @@ const prepareDirectBearer = Effect.fn("TestRemoteAuthorization.prepareDirectBear
         Layer.succeed(ConnectionCredentialStore.ConnectionCredentialStore, {
           get: () => Effect.succeedSome(new BearerConnectionCredential({ token: "bearer-token" })),
           put: unused,
+          replaceRenewedCredential: unused,
           remove: unused,
         }),
         Layer.succeed(ClientCapabilities.PrimaryEnvironmentAuth, {
@@ -424,6 +425,100 @@ describe("RemoteEnvironmentAuthorization", () => {
         release.resolve(accessToken("renewed-first-token"));
         expect((yield* Fiber.join(pending)).accessToken).toBe("renewed-first-token");
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(harness.layer, TestClock.layer())));
+    }),
+  );
+
+  it.effect(
+    "does not let a delayed direct DPoP renewal overwrite a fresher credential installed by re-authentication",
+    () =>
+      Effect.gen(function* () {
+        const started = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<Response>();
+        const connection = { connectionId: "direct-1", httpBaseUrl: ENDPOINT.httpBaseUrl };
+        const harness = yield* makeHarness({
+          responses: [
+            () => {
+              started.resolve();
+              return release.promise;
+            },
+          ],
+          credentials: [
+            [
+              connection.connectionId,
+              new DpopConnectionCredential({
+                accessToken: "expired-direct-token",
+                expiresAtEpochMs: 0,
+              }),
+            ],
+          ],
+        });
+
+        const [authorized, stored] = yield* Effect.gen(function* () {
+          const remote = yield* RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
+          const credentials = yield* ConnectionCredentialStore.ConnectionCredentialStore;
+          const pending = yield* remote.authorizeDirectDpopHttp(connection).pipe(Effect.forkScoped);
+          yield* Effect.promise(() => started.promise);
+          yield* credentials.put(
+            connection.connectionId,
+            new DpopConnectionCredential({
+              accessToken: "reauthenticated-direct-token",
+              expiresAtEpochMs: Number.MAX_SAFE_INTEGER,
+            }),
+          );
+          release.resolve(accessToken("stale-renewed-token"));
+          const result = yield* Fiber.join(pending);
+          return [result, yield* credentials.get(connection.connectionId)] as const;
+        }).pipe(Effect.scoped, Effect.provide(harness.layer));
+
+        expect(authorized.accessToken).toBe("reauthenticated-direct-token");
+        expect(Option.getOrThrow(stored)).toMatchObject({
+          _tag: "DpopConnectionCredential",
+          accessToken: "reauthenticated-direct-token",
+        });
+      }),
+  );
+
+  it.effect("does not revive a removed credential when a delayed direct DPoP renewal settles", () =>
+    Effect.gen(function* () {
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<Response>();
+      const connection = { connectionId: "direct-1", httpBaseUrl: ENDPOINT.httpBaseUrl };
+      const harness = yield* makeHarness({
+        responses: [
+          () => {
+            started.resolve();
+            return release.promise;
+          },
+        ],
+        credentials: [
+          [
+            connection.connectionId,
+            new DpopConnectionCredential({
+              accessToken: "expired-direct-token",
+              expiresAtEpochMs: 0,
+            }),
+          ],
+        ],
+      });
+
+      const [failure, stored] = yield* Effect.gen(function* () {
+        const remote = yield* RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
+        const credentials = yield* ConnectionCredentialStore.ConnectionCredentialStore;
+        const pending = yield* remote
+          .authorizeDirectDpopHttp(connection)
+          .pipe(Effect.flip, Effect.forkScoped);
+        yield* Effect.promise(() => started.promise);
+        yield* credentials.remove(connection.connectionId);
+        release.resolve(accessToken("revived-direct-token"));
+        const error = yield* Fiber.join(pending);
+        return [error, yield* credentials.get(connection.connectionId)] as const;
+      }).pipe(Effect.scoped, Effect.provide(harness.layer));
+
+      expect(failure).toMatchObject({
+        _tag: "ConnectionBlockedError",
+        reason: "authentication",
+      });
+      expect(Option.isNone(stored)).toBe(true);
     }),
   );
 
