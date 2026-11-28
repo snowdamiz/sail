@@ -5,7 +5,6 @@
   "artifact": "Sail-0.1.17-arm64.zip",
   "artifactSha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
   "os": "macOS 27.0.1 (26A434) arm64",
-  "origin": "server-served loopback via thread loading gate",
   "states": [
     {
       "state": "empty",
@@ -109,6 +108,10 @@
         "path": "empty.png",
         "sha256": "201b1a064470be5b6a4031038832beeb53ca83f61e4ae529ad739150a858fe97",
         "pixels": [1280, 1200]
+      },
+      "capture": {
+        "origin": "http://localhost:47876",
+        "capturedAtUtc": "2026-11-28T06:00:45Z"
       }
     },
     {
@@ -199,6 +202,10 @@
         "path": "ref-states.png",
         "sha256": "244f1aa4a5cd2d0adf13200bf6842d7a2ac61176384c5b577c6ae4c3527a2ebc",
         "pixels": [1280, 1200]
+      },
+      "capture": {
+        "origin": "http://127.0.0.1:47878",
+        "capturedAtUtc": "2026-11-28T06:02:42Z"
       }
     },
     {
@@ -245,6 +252,10 @@
         "path": "error.png",
         "sha256": "5d885b4fa679256d2a7e0afdb05db91c773537ef09c3816ec32874f40a92718e",
         "pixels": [1280, 1200]
+      },
+      "capture": {
+        "origin": "http://localhost:47876",
+        "capturedAtUtc": "2026-11-28T06:01:10Z"
       }
     }
   ],
@@ -255,11 +266,14 @@
       "loading": false,
       "messagesLoadingControl": false,
       "reply": true
-    }
+    },
+    "origin": "http://127.0.0.1:47878"
   },
   "errorRecovery": {
     "action": "Open Environments",
     "path": "/settings/connections",
-    "opened": true
-  }
+    "opened": true,
+    "origin": "http://localhost:47876"
+  },
+  "captureSetup": "Published server-served pages behind the loopback gate. Empty and error share one browser origin. Loading and its release share a second browser origin."
 }

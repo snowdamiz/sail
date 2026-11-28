@@ -1,0 +1,32 @@
+{
+  "incumbentRepeat": {
+    "fixtureId": "chat-turn",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "changedSteps": [],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/electron-macos-arm64/migration-head-4807bdae/a/capture.png",
+      "candidate": "tests/migration/incumbent/observations/electron-macos-arm64/migration-head-4807bdae/b/capture.png",
+      "diff": "tests/migration/incumbent/observations/electron-macos-arm64/migration-head-4807bdae/repeat-diff.png",
+      "baselineSize": [2200, 1560],
+      "candidateSize": [2200, 1560],
+      "differentPixels": 0,
+      "bounds": null
+    }
+  },
+  "migrationHead": {
+    "fixtureId": "chat-turn",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "4807bdae945354ade96b40ad7d5116483ff0d308",
+    "changedSteps": [2],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/electron-macos-arm64/migration-head-4807bdae/a/capture.png",
+      "candidate": "tests/migration/incumbent/observations/electron-macos-arm64/migration-head-4807bdae/head/capture.png",
+      "diff": "tests/migration/incumbent/observations/electron-macos-arm64/migration-head-4807bdae/head-diff.png",
+      "baselineSize": [2200, 1560],
+      "candidateSize": [2200, 1560],
+      "differentPixels": 3417,
+      "bounds": [1299, 1457, 1647, 1484]
+    }
+  }
+}

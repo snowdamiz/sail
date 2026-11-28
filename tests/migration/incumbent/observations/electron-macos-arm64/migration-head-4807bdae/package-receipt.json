@@ -1,0 +1,23 @@
+{
+  "archiveTimeUtc": "2026-11-28T06:15:54Z",
+  "artifact": "Sail-0.1.18-arm64.zip",
+  "bundleId": "com.sail.desktop",
+  "bundleVersion": "0.1.18",
+  "bundledCliVersion": "0.1.18",
+  "command": "vp run dist:desktop:artifact --platform mac --target zip --arch arm64 --output-dir <scratch>",
+  "mainSourceSha": "386d27b43c1b2e5eadbf4856dd096fba3a4ba866",
+  "packagedWire": {
+    "result": "pass",
+    "fixture": "../../../../wire/incumbent-v2.json",
+    "transcript": "wire-check.txt",
+    "sha256": "c92f2651ff143e3defa4f83f0efd9674c412f00fc9253b3a51d9eba057efe6ff",
+    "scope": "The bundled server ran on a fresh loopback home. The standalone v0.1.17 checker used an orchestration:read session after seeding the two expected project events."
+  },
+  "protocol": 2,
+  "role": "local macOS arm64 package built from the migration head",
+  "rustToolchain": "1.100.0",
+  "sha256": "a1a555c2de491651795d34ec039f8031ba9c55bcd15440280d5cb9de57b85134",
+  "size": 229537104,
+  "sourceSha": "4807bdae945354ade96b40ad7d5116483ff0d308",
+  "updaterSha512": "vY77gjLWi2ut8wvD26U6hS3woqKXw4WSerTH+eex4O9YNTAVZV43ROoYrM3NXrYBSPh4LEmQxTVJhj0RS9mNuQ=="
+}

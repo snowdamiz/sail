@@ -6,7 +6,13 @@ const [portText, upstreamPortText, threadId, gateFile] = process.argv.slice(2);
 const port = Number(portText);
 const upstreamPort = Number(upstreamPortText);
 if (
-  ![port, upstreamPort].every((value) => Number.isInteger(value) && value > 0 && value <= 65535) ||
+  !portText ||
+  !Number.isInteger(port) ||
+  port < 0 ||
+  port > 65535 ||
+  !Number.isInteger(upstreamPort) ||
+  upstreamPort < 1 ||
+  upstreamPort > 65535 ||
   port === upstreamPort ||
   !threadId ||
   !gateFile
@@ -88,9 +94,14 @@ server.on("upgrade", (request, socket, head) => {
   socket.on("close", () => upstream.terminate());
   upstream.once("open", () => {
     sockets.handleUpgrade(request, socket, head, (browser) => {
+      const heldRequests = new Map();
       browser.on("error", () => upstream.terminate());
       upstream.on("close", () => browser.terminate());
-      browser.on("close", () => upstream.terminate());
+      browser.on("close", () => {
+        for (const deliver of heldRequests.values()) pending.delete(deliver);
+        heldRequests.clear();
+        upstream.terminate();
+      });
       upstream.on("message", (data, binary) => {
         if (browser.readyState === WebSocket.OPEN) browser.send(data, { binary });
       });
@@ -105,13 +116,29 @@ server.on("upgrade", (request, socket, head) => {
           forward();
           return;
         }
+        if (frame?._tag === "Interrupt") {
+          const id = String(frame.requestId);
+          const deliver = heldRequests.get(id);
+          if (deliver) {
+            heldRequests.delete(id);
+            pending.delete(deliver);
+            return;
+          }
+        }
         if (
           frame?._tag === "Request" &&
           frame.tag === "orchestration.subscribeThread" &&
           frame.payload?.threadId === threadId &&
+          (typeof frame.id === "string" || typeof frame.id === "number") &&
           readGate()
         ) {
-          hold("held-thread-rpc", forward);
+          const id = String(frame.id);
+          const deliver = () => {
+            heldRequests.delete(id);
+            forward();
+          };
+          heldRequests.set(id, deliver);
+          hold("held-thread-rpc", deliver);
           return;
         }
         forward();
@@ -121,4 +148,6 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 readGate();
-server.listen(port, loopback, () => process.stdout.write(`Listening on ${loopback}:${port}\n`));
+server.listen(port, loopback, () =>
+  process.stdout.write(`Listening on ${loopback}:${server.address().port}\n`),
+);

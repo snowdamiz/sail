@@ -72,6 +72,16 @@
       "differentPixels": 0,
       "changedSteps": [],
       "scope": "settled replay in the recorded Linux arm64 Firefox ESR profile"
+    },
+    "electronMigrationHead": {
+      "result": "fail",
+      "sourceSha": "4807bdae945354ade96b40ad7d5116483ff0d308",
+      "package": "electron-macos-arm64/migration-head-4807bdae/package-receipt.json",
+      "comparison": "electron-macos-arm64/migration-head-4807bdae/comparisons.json",
+      "timing": "electron-macos-arm64/migration-head-4807bdae/capture-timings.json",
+      "differentPixels": 3417,
+      "changedSteps": [2],
+      "scope": "Settled Replay in the pinned macOS dark Electron profile. The delta is the Poteto composer control introduced by trunk 386d27b4. Timing passed against incumbent A and exceeded the budget against incumbent B."
     }
   },
   "launcherRuntime": {

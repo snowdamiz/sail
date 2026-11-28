@@ -141,7 +141,14 @@
     "stoppedDirectListener": "connection refused",
     "stoppedProxyHttp": 503,
     "recoveredProtocol": 2,
-    "sameEnvironment": true
+    "sameEnvironment": true,
+    "repeatedTransportProbe": {
+      "origin": "http://127.0.0.1:47876",
+      "path": "/.well-known/t3/environment",
+      "transcript": "offline-http.txt",
+      "sha256": "bffb07ff0f5d0bc2b40e29f4665dca8012c93bab09a7dccdb668d07cf6010b2c",
+      "listenerRestored": true
+    }
   },
   "serverRecords": {
     "threadsBeforeRestart": 1,
