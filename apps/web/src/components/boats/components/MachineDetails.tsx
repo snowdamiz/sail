@@ -23,7 +23,6 @@ import {
   money,
   resizeHint,
   shortDate,
-  signInTo,
   sizeOf,
   timeLeft,
   useMachineActionLabel,
@@ -103,7 +102,7 @@ export function MachineDetails({
               control={controls.detailsPrimary}
               onRequest={controls.request}
               size="sm"
-              pendingLabel={controls.pendingLabel}
+              pendingLabel={controls.pending?.label ?? null}
             />
           </div>
         </div>
@@ -202,16 +201,11 @@ function PowerSection({
 }) {
   const gt = useGT();
   const actionLabel = useMachineActionLabel();
-  const [optimisticAutoSleep, setOptimisticAutoSleep] = useState<{
-    readonly baseline: boolean;
-    readonly value: boolean;
-  } | null>(null);
-
+  const pendingAction = controls.pending?.action;
   const autoSleepOn =
-    optimisticAutoSleep !== null &&
-    optimisticAutoSleep.baseline === power.autoSleep.checked &&
-    controls.busy
-      ? optimisticAutoSleep.value
+    pendingAction?.cmd === "keep_awake" &&
+    (pendingAction.minutes === null || pendingAction.minutes === 0)
+      ? pendingAction.minutes === 0
       : power.autoSleep.checked;
 
   const powerControl = power.power;
@@ -232,10 +226,9 @@ function PowerSection({
             aria-label={gt("Auto sleep")}
             checked={autoSleepOn}
             disabled={power.autoSleep.disabled}
-            onCheckedChange={(checked) => {
-              setOptimisticAutoSleep({ baseline: power.autoSleep.checked, value: checked });
-              controls.request({ kind: "run", action: power.autoSleep.actionFor(checked) });
-            }}
+            onCheckedChange={(checked) =>
+              controls.request({ kind: "run", action: power.autoSleep.actionFor(checked) })
+            }
           />
         </div>
 
@@ -245,12 +238,12 @@ function PowerSection({
             variant="outline"
             disabled={powerControl === null || powerControl.disabled}
             onClick={() => {
-              if (powerControl?.kind === "ordinary") {
+              if (powerControl !== null) {
                 controls.request({ kind: "run", action: powerControl.action });
               }
             }}
           >
-            {actionLabel(powerControl?.kind === "ordinary" ? powerControl.action : ACTIONS.sleep)}
+            {actionLabel(powerControl !== null ? powerControl.action : ACTIONS.sleep)}
           </Button>
           {autoSleepOn ? (
             <StayAwakeControl machine={machine} power={power} controls={controls} />
@@ -286,11 +279,7 @@ function StayAwakeControl({
           size="xs"
           variant="ghost"
           disabled={power.stopStayingAwake.disabled}
-          onClick={() => {
-            if (power.stopStayingAwake.kind === "ordinary") {
-              controls.request({ kind: "run", action: power.stopStayingAwake.action });
-            }
-          }}
+          onClick={() => controls.request({ kind: "run", action: power.stopStayingAwake.action })}
         >
           {gt("Stop")}
         </Button>
@@ -308,7 +297,6 @@ function StayAwakeControl({
       </MenuTrigger>
       <MenuPopup align="start" width="content">
         {power.temporaryAwake.map((item) => {
-          if (item.kind !== "ordinary" || item.action.cmd !== "keep_awake") return null;
           const minutes = item.action.minutes ?? 0;
           return (
             <MenuItem
@@ -345,7 +333,9 @@ function AgentsSection({
           details.agents.length > 0 ? (
             details.agents.map((agent) => {
               const control = controls.signInAgentControl(agent.name);
-              const running = controls.pendingLabel === signInTo(agent.name).busy;
+              const running =
+                controls.pending?.action.cmd === "sign_in_agent" &&
+                controls.pending.action.agent === agent.name;
               return (
                 <div
                   key={agent.name}
@@ -363,11 +353,7 @@ function AgentsSection({
                       variant="outline"
                       disabled={control.disabled}
                       aria-busy={running}
-                      onClick={() => {
-                        if (control.kind === "ordinary") {
-                          controls.request({ kind: "run", action: control.action });
-                        }
-                      }}
+                      onClick={() => controls.request({ kind: "run", action: control.action })}
                     >
                       {running ? (
                         <>
@@ -408,7 +394,7 @@ function ConnectSection({
   readonly controls: MachineControls;
 }) {
   const gt = useGT();
-  const running = controls.pendingLabel === ACTIONS.connect.busy;
+  const running = controls.pending?.action.cmd === "turn_on_connect";
 
   return (
     <Section title={gt("Other devices")}>
@@ -434,11 +420,9 @@ function ConnectSection({
                 variant="outline"
                 disabled={controls.connectControl.disabled}
                 aria-busy={running}
-                onClick={() => {
-                  if (controls.connectControl.kind === "ordinary") {
-                    controls.request({ kind: "run", action: controls.connectControl.action });
-                  }
-                }}
+                onClick={() =>
+                  controls.request({ kind: "run", action: controls.connectControl.action })
+                }
               >
                 {running ? (
                   <>
@@ -568,7 +552,7 @@ function MachineDangerSection({
                       aria-checked={current}
                       disabled={!current && control.disabled}
                       onClick={() => {
-                        if (!current && control.kind === "ordinary") {
+                        if (!current) {
                           controls.request({ kind: "run", action: control.action });
                         }
                       }}

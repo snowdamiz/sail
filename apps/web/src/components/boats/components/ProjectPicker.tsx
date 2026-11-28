@@ -36,18 +36,20 @@ export function ProjectPicker({
 }) {
   const gt = useGT();
   const [open, setOpen] = useState(initialOpen);
+  const isOpen = !disabled && open;
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={isOpen} onOpenChange={(next) => setOpen(disabled ? false : next)}>
       <PopoverTrigger render={<Button size="xs" variant="outline" disabled={disabled} />}>
         <PlusIcon aria-hidden="true" className="size-3.5" />
         {gt("Add a project…")}
       </PopoverTrigger>
       <PopoverPopup align="start" width="md" padding="compact">
-        {open ? (
+        {isOpen ? (
           <PickerBody
             m={m}
             onPick={(project) => {
+              if (disabled) return;
               setOpen(false);
               onAdd(project);
             }}

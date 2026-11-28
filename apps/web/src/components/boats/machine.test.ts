@@ -12,7 +12,6 @@ import {
   machineKey,
   menuActions,
   primaryAction,
-  stateTag,
   suggestName,
 } from "./machine";
 import type { MachineState, MachineView, Size } from "./types";
@@ -48,10 +47,10 @@ describe("Sail Boats helpers", () => {
     expect(errorText({ message: "rpc error" })).toBe("Something went wrong");
   });
 
-  it("derives Sail-branded actions, state tags, and names", () => {
+  it("derives Sail-branded actions, statuses, and names", () => {
     const unpaired = makeMachine({ state: "idle", paired: false });
     expect(machineKey(unpaired)).toBe("m-1");
-    expect(stateTag(unpaired.state)).toBe("idle");
+    expect(MACHINE_STATUS[unpaired.state].badgeVariant).toBe("success");
     expect(primaryAction(unpaired, false)?.label).toBe("Add to Sail");
     expect(ACTIONS.open.label).toBe("Open last thread in Sail");
 
@@ -77,7 +76,7 @@ describe("Sail Boats helpers", () => {
 
     const creating = makeMachine({ id: "", state: "creating" });
     expect(machineKey(creating)).toBe("new:harbor");
-    expect(stateTag(creating.state)).toBe("building");
+    expect(MACHINE_STATUS[creating.state].badgeVariant).toBe("warning");
     expect(isMachineOpenable(creating)).toBe(false);
     expect(isMachineOpenable(unpaired)).toBe(true);
 
@@ -86,7 +85,7 @@ describe("Sail Boats helpers", () => {
     expect(duration(7500)).toBe("2h 5m");
   });
 
-  it("covers every machine state in MACHINE_STATUS and derives legacy tags from it", () => {
+  it("covers every machine state in MACHINE_STATUS", () => {
     const states: readonly MachineState[] = [
       "working",
       "idle",
@@ -99,13 +98,13 @@ describe("Sail Boats helpers", () => {
       "unknown",
     ];
     for (const state of states) {
-      expect(stateTag(state)).toBe(MACHINE_STATUS[state].legacyTag);
+      expect(MACHINE_STATUS[state].label).toBeTruthy();
       expect(MACHINE_STATUS[state].dotClassName).toBeTruthy();
       expect(MACHINE_STATUS[state].badgeVariant).toBeTruthy();
     }
   });
 
-  it("derives machine controls from access, local project support, and pending state", () => {
+  it("derives narrowed machine controls from access, local project support, and pending state", () => {
     const envId = EnvironmentId.make("boat-env");
     const access: BoatAccess = {
       environmentId: EnvironmentId.make("host-env"),
@@ -124,7 +123,7 @@ describe("Sail Boats helpers", () => {
       sizes: SIZES,
       access,
       supportsLocalProjects: false,
-      pendingLabel: null,
+      pending: null,
       deleteRefusal: null,
       signingIn: false,
     });
@@ -147,20 +146,37 @@ describe("Sail Boats helpers", () => {
     ).toBe(false);
     expect(remoteControls.needsProject).toBe(false);
 
+    const busyControls = deriveMachineControls({
+      machine: asleep,
+      sizes: SIZES,
+      access: { ...access, onHost: true },
+      supportsLocalProjects: true,
+      pending: { action: ACTIONS.wake, label: "Waking…" },
+      deleteRefusal: null,
+      signingIn: false,
+    });
+    expect(busyControls.canAddProject).toBe(false);
+
     const missingControls = deriveMachineControls({
       machine: makeMachine({ id: "m-3", state: "missing" }),
       sizes: SIZES,
       access: { ...access, onHost: true },
       supportsLocalProjects: true,
-      pendingLabel: null,
+      pending: null,
       deleteRefusal: null,
       signingIn: false,
     });
     expect(missingControls.rowPrimary).toMatchObject({
       kind: "armDelete",
-      deletion: { kind: "removeMissing" },
+      deletion: { kind: "removeMissing", action: ACTIONS.remove },
       disabled: false,
     });
+    expect(missingControls.deleteControl).toMatchObject({
+      kind: "armDelete",
+      deletion: { kind: "removeMissing", action: ACTIONS.remove },
+      disabled: false,
+    });
+    expect(missingControls.menuItems).toEqual([]);
     expect(missingControls.power).toBeNull();
   });
 

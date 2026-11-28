@@ -94,20 +94,16 @@ export function MachineRow({
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5">
-          {controls.pendingLabel !== null ? (
-            <Button size="xs" variant="outline" disabled aria-busy={true}>
-              <Spinner aria-hidden="true" />
-              {controls.pendingLabel}
-            </Button>
-          ) : controls.rowPrimary !== null ? (
-            <MachineActionButton
-              targetKey={key}
-              control={controls.rowPrimary}
-              onRequest={controls.request}
-              size="xs"
-            />
-          ) : null}
-          {machine.id && !controls.busy ? (
+          <MachineActionButton
+            targetKey={key}
+            control={controls.rowPrimary}
+            onRequest={controls.request}
+            pendingLabel={controls.pending?.label ?? null}
+            size="xs"
+          />
+          {machine.id &&
+          !controls.busy &&
+          (controls.menuItems.length > 0 || controls.rowPrimary?.kind !== "armDelete") ? (
             <MachineMenu
               targetKey={key}
               machineName={machine.name}
@@ -137,11 +133,9 @@ export function MachineRow({
                       size="xs"
                       variant="outline"
                       disabled={signInControl.disabled}
-                      onClick={() => {
-                        if (signInControl.kind === "ordinary") {
-                          controls.request({ kind: "run", action: signInControl.action });
-                        }
-                      }}
+                      onClick={() =>
+                        controls.request({ kind: "run", action: signInControl.action })
+                      }
                     >
                       {machine.signedOut.length > 1 ? <AgentName name={agent} /> : gt("Sign in")}
                     </Button>

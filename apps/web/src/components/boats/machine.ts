@@ -2,17 +2,12 @@ import { ProjectId, type EnvironmentId } from "@t3tools/contracts";
 import { msg, useGT } from "gt-react";
 import type { MachineState, MachineView, Size } from "./types";
 
-export type StatusDotClassName =
-  | "bg-success"
-  | "bg-warning"
-  | "bg-destructive"
-  | "bg-muted-foreground/40";
+type StatusDotClassName = "bg-success" | "bg-warning" | "bg-destructive" | "bg-muted-foreground/40";
 
-export type StatusBadgeVariant = "success" | "warning" | "error" | "secondary" | "outline";
+type StatusBadgeVariant = "success" | "warning" | "error" | "secondary" | "outline";
 
-export interface StatusPresentation {
+interface StatusPresentation {
   readonly label: ReturnType<typeof msg>;
-  readonly legacyTag: string;
   readonly dotClassName: StatusDotClassName;
   readonly badgeVariant: StatusBadgeVariant;
 }
@@ -20,61 +15,50 @@ export interface StatusPresentation {
 export const MACHINE_STATUS = {
   working: {
     label: msg("Working"),
-    legacyTag: "working",
     dotClassName: "bg-success",
     badgeVariant: "success",
   },
   idle: {
     label: msg("Idle"),
-    legacyTag: "idle",
     dotClassName: "bg-success",
     badgeVariant: "success",
   },
   sleeping: {
     label: msg("Going to sleep"),
-    legacyTag: "dozing off",
     dotClassName: "bg-warning",
     badgeVariant: "warning",
   },
   asleep: {
     label: msg("Asleep"),
-    legacyTag: "zzz",
     dotClassName: "bg-muted-foreground/40",
     badgeVariant: "secondary",
   },
   waking: {
     label: msg("Waking"),
-    legacyTag: "waking",
     dotClassName: "bg-warning",
     badgeVariant: "warning",
   },
   creating: {
     label: msg("Creating"),
-    legacyTag: "building",
     dotClassName: "bg-warning",
     badgeVariant: "warning",
   },
   error: {
     label: msg("Error"),
-    legacyTag: "error",
     dotClassName: "bg-destructive",
     badgeVariant: "error",
   },
   missing: {
     label: msg("Missing"),
-    legacyTag: "gone",
     dotClassName: "bg-destructive",
     badgeVariant: "error",
   },
   unknown: {
     label: msg("Unknown"),
-    legacyTag: "…",
     dotClassName: "bg-muted-foreground/40",
     badgeVariant: "outline",
   },
 } satisfies Record<MachineState, StatusPresentation>;
-
-export const stateTag = (s: MachineState) => MACHINE_STATUS[s].legacyTag;
 
 export function managedBoatOriginProject(
   machines: readonly MachineView[],
@@ -92,23 +76,55 @@ export const machineKey = (m: MachineView) => m.id || `new:${m.name}`;
 
 export const isMachineOpenable = (m: MachineView) => !!m.id && m.state !== "creating";
 
-export type Action = {
-  label: string;
-  busy: string;
-  solid?: boolean;
-} & (
-  | { cmd: "open_machine" | "pair_machine" | "wake_machine" | "sleep_machine" | "turn_on_connect" }
-  | { cmd: "resize_machine"; size: string }
-  | { cmd: "keep_awake"; minutes: number | null }
-  | { cmd: "sign_in_agent"; agent: string }
-  | { cmd: "delete_machine"; discard: boolean }
-);
+interface ActionMeta {
+  readonly label: string;
+  readonly busy: string;
+  readonly solid?: boolean;
+}
+
+type SimpleMachineAction = ActionMeta & {
+  readonly cmd:
+    | "open_machine"
+    | "pair_machine"
+    | "wake_machine"
+    | "sleep_machine"
+    | "turn_on_connect";
+};
+
+export type ResizeMachineAction = ActionMeta & {
+  readonly cmd: "resize_machine";
+  readonly size: string;
+};
+
+export type KeepAwakeAction = ActionMeta & {
+  readonly cmd: "keep_awake";
+  readonly minutes: number | null;
+};
+
+type SignInAgentAction = ActionMeta & {
+  readonly cmd: "sign_in_agent";
+  readonly agent: string;
+};
+
+export type DeleteMachineAction =
+  | (ActionMeta & { readonly cmd: "delete_machine"; readonly discard: true })
+  | (ActionMeta & { readonly cmd: "delete_machine"; readonly discard: false });
+
+export type NonDeleteAction =
+  | SimpleMachineAction
+  | ResizeMachineAction
+  | KeepAwakeAction
+  | SignInAgentAction;
+
+export type Action = NonDeleteAction | DeleteMachineAction;
+
+export type PendingAction = Action | { readonly cmd: "add_project"; readonly projectId: string };
 
 const PICK_PROJECT = { kind: "pickProject", label: "Add a project…" } as const;
 
-export type MenuItem = Action | typeof PICK_PROJECT;
+type MenuItem = NonDeleteAction | typeof PICK_PROJECT;
 
-export const signInTo = (agent: string): Action => ({
+export const signInTo = (agent: string): SignInAgentAction => ({
   cmd: "sign_in_agent",
   label: `Sign in ${agent}`,
   busy: "Signing in…",
@@ -126,7 +142,7 @@ export const ACTIONS = {
   remove: { cmd: "delete_machine", label: "Remove", busy: "Removing…", discard: true },
   del: { cmd: "delete_machine", label: "Delete", busy: "Deleting…", discard: false },
   deleteAnyway: { cmd: "delete_machine", label: "Delete anyway", busy: "Deleting…", discard: true },
-} satisfies Record<string, Action>;
+} as const satisfies Record<string, Action>;
 
 export function primaryAction(m: MachineView, paired: boolean): Action | null {
   switch (m.state) {
@@ -145,7 +161,22 @@ export function primaryAction(m: MachineView, paired: boolean): Action | null {
 
 export function useMachineActionLabel() {
   const gt = useGT();
-  return (action: MenuItem) => {
+  return (action: Action | typeof PICK_PROJECT) => {
+    if ("kind" in action) return gt("Add a project…");
+    switch (action.cmd) {
+      case "resize_machine":
+        return gt("Resize to {size}", { size: action.size });
+      case "sign_in_agent":
+        return gt("Sign in {agent}", { agent: action.agent });
+      case "keep_awake":
+        return action.minutes === null
+          ? gt("Turn off auto sleep")
+          : action.minutes === 0
+            ? gt("Stop staying awake")
+            : gt("Stay awake for {duration}", { duration: duration(action.minutes * 60) });
+      default:
+        break;
+    }
     switch (action.label) {
       case ACTIONS.pair.label:
         return gt("Add to Sail");
@@ -163,8 +194,6 @@ export function useMachineActionLabel() {
         return gt("Remove");
       case ACTIONS.connect.label:
         return gt("Turn on");
-      case PICK_PROJECT.label:
-        return gt("Add a project…");
       default:
         return action.label;
     }
@@ -173,21 +202,21 @@ export function useMachineActionLabel() {
 
 export const STAY_AWAKE = [15, 30, 60, 120] as const;
 
-export const keepAwake = (minutes: number): Action => ({
+export const keepAwake = (minutes: number): KeepAwakeAction => ({
   cmd: "keep_awake",
   label: minutes ? `Stay awake for ${duration(minutes * 60)}` : "Stop staying awake",
   busy: minutes ? "Waking…" : "Stopping…",
   minutes,
 });
 
-export const autoSleep = (on: boolean): Action => ({
+export const autoSleep = (on: boolean): KeepAwakeAction => ({
   cmd: "keep_awake",
   label: on ? "Turn on auto sleep" : "Turn off auto sleep",
   busy: on ? "Turning on auto sleep…" : "Turning off auto sleep…",
   minutes: on ? 0 : null,
 });
 
-export const resizeTo = (size: string): Action => ({
+export const resizeTo = (size: string): ResizeMachineAction => ({
   cmd: "resize_machine",
   label: `Resize to ${size}`,
   busy: "Resizing…",
@@ -205,7 +234,7 @@ export function menuActions(m: MachineView, sizes: readonly Size[], paired: bool
   return out;
 }
 
-export function powerAction(m: MachineView): Action | null {
+export function powerAction(m: MachineView): SimpleMachineAction | null {
   if (m.state === "asleep") return ACTIONS.wake;
   if (m.state === "working" || m.state === "idle") return ACTIONS.sleep;
   return null;

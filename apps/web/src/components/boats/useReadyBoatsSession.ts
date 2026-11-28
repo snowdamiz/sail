@@ -16,7 +16,7 @@ import {
   type MachineControls,
 } from "./components/MachineActions";
 import type { CreateMachineInput } from "./components/NewMachine";
-import { isMachineOpenable, machineKey, type Action } from "./machine";
+import { ACTIONS, isMachineOpenable, machineKey, type Action, type PendingAction } from "./machine";
 import { errorText } from "./reply";
 import type { LocalProject, MachineView, McpClient, Settings, UiState } from "./types";
 
@@ -37,6 +37,7 @@ type ReadyView =
 
 interface PendingOperation {
   readonly requestId: symbol;
+  readonly action: PendingAction;
   readonly label: string;
 }
 
@@ -148,12 +149,7 @@ export function useReadyBoatsSession({
       action = request.deletion.action;
     } else {
       if (!refused.has(key)) return;
-      action = {
-        cmd: "delete_machine",
-        label: "Delete anyway",
-        busy: "Deleting…",
-        discard: true,
-      };
+      action = ACTIONS.deleteAnyway;
     }
 
     if (!access.can(action.cmd)) return;
@@ -167,7 +163,7 @@ export function useReadyBoatsSession({
     const label = busyLabelFor(action);
     setPending((current) => {
       const next = new Map(current);
-      next.set(key, { requestId, label });
+      next.set(key, { requestId, action, label });
       return next;
     });
 
@@ -293,7 +289,11 @@ export function useReadyBoatsSession({
     const requestId = Symbol("add_project");
     setPending((current) => {
       const next = new Map(current);
-      next.set(key, { requestId, label: gt("Adding project…") });
+      next.set(key, {
+        requestId,
+        action: { cmd: "add_project", projectId: project.id },
+        label: gt("Adding project…"),
+      });
       return next;
     });
     void call("add_project", { id: machine.id, projectId: project.id })
@@ -332,12 +332,13 @@ export function useReadyBoatsSession({
 
   const controlsFor = (machine: MachineView): MachineControls => {
     const key = machineKey(machine);
+    const pendingOp = pending.get(key) ?? null;
     const presentation = deriveMachineControls({
       machine,
       sizes: state.sizes,
       access,
       supportsLocalProjects,
-      pendingLabel: pending.get(key)?.label ?? null,
+      pending: pendingOp === null ? null : { action: pendingOp.action, label: pendingOp.label },
       deleteRefusal: refused.get(key) ?? null,
       signingIn: signIn !== null,
     });
