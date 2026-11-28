@@ -11,6 +11,28 @@ const projection = "orchestration.getThreadProjection";
 
 type WireRecord = Readonly<Record<string, unknown>>;
 
+const entityFields: Readonly<Record<string, string | undefined>> = {
+  "run.created": "runs",
+  "run.updated": "runs",
+  "run-attempt.created": "attempts",
+  "run-attempt.updated": "attempts",
+  "node.updated": "nodes",
+  "subagent.updated": "subagents",
+  "provider-session.attached": "providerSessions",
+  "provider-session.updated": "providerSessions",
+  "provider-thread.updated": "providerThreads",
+  "provider-turn.updated": "providerTurns",
+  "runtime-request.updated": "runtimeRequests",
+  "message.updated": "messages",
+  "plan.updated": "plans",
+  "turn-item.updated": "turnItems",
+  "checkpoint-scope.created": "checkpointScopes",
+  "checkpoint.captured": "checkpoints",
+  "context-handoff.created": "contextHandoffs",
+  "context-handoff.updated": "contextHandoffs",
+  "context-transfer.updated": "contextTransfers",
+};
+
 function object(value: unknown, context: string): WireRecord {
   NodeAssert.ok(value && typeof value === "object" && !Array.isArray(value), context);
   return value as WireRecord;
@@ -88,12 +110,35 @@ function messageFields(value: unknown) {
   return { role: message.role, text: message.text, streaming: message.streaming };
 }
 
+function checkProjectionShape(state: WireRecord, expected: typeof replay.expected) {
+  NodeAssert.deepEqual(
+    [...expected.projectionArrays, "thread", "updatedAt"].filter(
+      (field) => !Object.hasOwn(state, field),
+    ),
+    [],
+    "Projection is missing published wire fields",
+  );
+  const thread = object(state.thread, "Expected a thread projection");
+  NodeAssert.deepEqual(
+    expected.threadFields.filter((field) => !Object.hasOwn(thread, field)),
+    [],
+    "Thread is missing published wire fields",
+  );
+  NodeAssert.deepEqual(threadFields(thread), expected.thread);
+  NodeAssert.ok(
+    typeof state.updatedAt === "string" && Number.isFinite(Date.parse(state.updatedAt)),
+    "Expected projection update time",
+  );
+  for (const field of expected.projectionArrays)
+    array(state[field], `Expected projection ${field}`);
+}
+
 async function start(stream: ThreadStream, expected: typeof replay.expected) {
   const snapshot = await next(stream);
   NodeAssert.equal(snapshot.kind, "snapshot");
   const state = object(snapshot.projection, "Expected the initial thread projection");
-  NodeAssert.deepEqual(threadFields(state.thread), expected.thread);
-  for (const key of ["runs", "messages", "turnItems"]) {
+  checkProjectionShape(state, expected);
+  for (const key of expected.projectionArrays) {
     NodeAssert.deepEqual(state[key], [], `Expected empty ${key} in the initial snapshot`);
   }
   NodeAssert.deepEqual(await next(stream), replay.publishedExamples.synchronized);
@@ -193,7 +238,11 @@ export async function checkReplay(
   await writer.close();
 
   const messages = new Map<string, WireRecord>();
-  const turnItems = new Map<string, WireRecord>();
+  const entities = new Map(
+    expected.projectionArrays
+      .filter((field) => field !== "visibleTurnItems")
+      .map((field) => [field, field === "messages" ? messages : new Map<string, WireRecord>()]),
+  );
   const streamedMessages = new Set<string>();
   let acceptedEvent: WireRecord | undefined;
   let cursor = snapshotCursor;
@@ -210,15 +259,22 @@ export async function checkReplay(
       NodeAssert.equal(update.payload.messageId, sendMessage.messageId);
       acceptedEvent = update.payload;
     }
-    if (update.type === "message.updated" || update.type === "turn-item.updated") {
+    NodeAssert.equal(typeof update.type, "string", "Expected a domain event type");
+    const field = entityFields[String(update.type)];
+    if (field !== undefined) {
+      const rows = entities.get(field);
+      NodeAssert.ok(rows, `Unexpected projection category ${field}`);
       const id = update.payload.id;
       NodeAssert.ok(typeof id === "string" && id.length > 0, "Expected a stable entity ID");
-      if (update.type === "message.updated") {
-        if (update.payload.streaming === true) streamedMessages.add(id);
-        messages.set(id, update.payload);
-      } else {
-        turnItems.set(id, update.payload);
+      if (field === "messages" && update.payload.streaming === true) streamedMessages.add(id);
+      if (field === "runs" && rows.get(id)?.status === "completed") {
+        NodeAssert.equal(
+          update.payload.status,
+          "completed",
+          "A completed run regressed during replay",
+        );
       }
+      rows.set(id, update.payload);
     }
     return update;
   }
@@ -323,11 +379,22 @@ export async function checkReplay(
   checkMessages();
 
   const settled = await call(resumed, "2", projection, { threadId });
-  NodeAssert.deepEqual(threadFields(settled.thread), expected.thread);
+  checkProjectionShape(settled, expected);
+  for (const [field, applied] of entities) {
+    const projected = new Map<string, WireRecord>();
+    for (const entry of array(settled[field], `Expected ${field}`)) {
+      const row = object(entry, `Expected a ${field} row`);
+      const id = row.id;
+      NodeAssert.ok(typeof id === "string" && id.length > 0, `Expected a ${field} ID`);
+      NodeAssert.ok(!projected.has(id), `Duplicate ${field} ID ${id}`);
+      projected.set(id, row);
+    }
+    NodeAssert.deepEqual(projected, applied, `Projection disagrees with streamed ${field}`);
+  }
   NodeAssert.deepEqual(
-    settled.messages,
-    [...messages.values()],
-    "Projection disagrees with replayed messages",
+    array(settled.messages, "Expected projected messages").map(messageFields),
+    expected.messages,
+    "Projection changed conversation order",
   );
   const runs = array(settled.runs, "Expected completed runs").map((run) =>
     object(run, "Expected a run"),
@@ -365,15 +432,7 @@ export async function checkReplay(
     items.map((item) => item.type),
     expected.turnItemTypes,
   );
-  NodeAssert.equal(
-    items.length,
-    turnItems.size,
-    "Projection has a different number of turn items than the stream",
-  );
   for (const item of items) {
-    const id = item.id;
-    NodeAssert.ok(typeof id === "string");
-    NodeAssert.deepEqual(item, turnItems.get(id), "Projection changed a replayed turn item");
     if (item.type === "user_message" || item.type === "assistant_message") {
       const messageId = item.messageId;
       NodeAssert.ok(typeof messageId === "string");
@@ -391,7 +450,8 @@ export async function checkReplay(
     items,
     "Visible transcript disagrees with the turn items",
   );
-  for (const entry of visible) {
+  for (const [position, entry] of visible.entries()) {
+    NodeAssert.equal(entry.position, position);
     NodeAssert.equal(entry.visibility, "local");
     NodeAssert.equal(entry.sourceThreadId, threadId);
     NodeAssert.equal(entry.sourceItemId, object(entry.item, "Expected an item reference").id);

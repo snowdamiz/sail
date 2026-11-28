@@ -21,6 +21,7 @@ import {
 } from "../../../packages/contracts/src/environment.ts";
 import { ORCHESTRATION_V2_WS_METHODS } from "../../../packages/contracts/src/orchestrationV2.ts";
 import { WS_METHODS } from "../../../packages/contracts/src/rpc.ts";
+import * as HostProcess from "../../../packages/shared/src/hostProcess.ts";
 import { checkWire } from "./check.ts";
 import replayFixture from "./incumbent-replay-v2.json" with { type: "json" };
 import { checkReplay } from "./replay.ts";
@@ -83,7 +84,14 @@ async function withServerFixture(
   const workspaceRoot = NodePath.join(home, "project");
   try {
     await Promise.all([NodeFSP.mkdir(userdata), NodeFSP.mkdir(workspaceRoot)]);
-    const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home };
+    const env = {
+      PATH:
+        HostProcess.Platform.defaultValue() === "win32"
+          ? process.env.PATH
+          : [NodePath.dirname(process.execPath), "/usr/bin", "/bin"].join(NodePath.delimiter),
+      HOME: home,
+      USERPROFILE: home,
+    };
     if (withReplayProvider) {
       await NodeFSP.writeFile(
         NodePath.join(userdata, "settings.json"),

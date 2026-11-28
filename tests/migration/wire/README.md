@@ -61,9 +61,12 @@ receipt and disconnects the reading socket after the first streaming reply. A se
 read-only subscription waits for completion before a new socket resumes at the saved
 cursor. The checker compares overlapping event cursors and payloads with the live witness
 after coalescing superseded running updates. It ties the send receipt to the delivered
-user item, reconstructs all three messages through cancellation, and verifies the visible
-transcript and run references. The original command can be retried with its original
+user item and applies projection events through cancellation. The final projection
+must retain the captured v2 fields, match the streamed rows by unique ID, and show
+each transcript item once in order. The original command can be retried with its original
 receipt. A fresh read-only send receives the typed denial. The checker compares the
-full settled projection before and after each action. The sample records preserve dynamic IDs, timestamps,
-and sequence values as examples. The checker compares stable fields and cursor
-relationships across runs. Credentials and download tickets stay out of the fixture.
+full settled projection before and after each action. New fields may be added to the
+projection while established fields and references remain compatible. The sample
+records preserve dynamic IDs, timestamps, and sequence values as examples. The checker
+compares stable fields and cursor relationships across runs. Credentials and download
+tickets stay out of the fixture.
