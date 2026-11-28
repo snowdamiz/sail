@@ -3790,6 +3790,136 @@ describe("SessionTransferCoordinator", () => {
   );
 
   it.effect(
+    "cancelling a newly forked retry before its worker starts does not leave a stale activeTransfers entry",
+    () =>
+      Effect.gen(function* () {
+        const transferId = SessionTransferId.make("tx-cancel-newly-forked-retry");
+        const stream1Started = yield* Deferred.make<void>();
+        const stream1Hold = yield* Deferred.make<void>();
+        const stalledRemoteAbortStarted = yield* Deferred.make<void>();
+        const stalledRemoteAbortRelease = yield* Deferred.make<void>();
+
+        let streamCount = 0;
+        let remoteAbortMode: "fail" | "stall_once" | "succeed" = "fail";
+
+        const harness = makeHarness({
+          onStreamHttpTransfer: () => {
+            streamCount += 1;
+            if (streamCount === 1) {
+              return Deferred.succeed(stream1Started, undefined).pipe(
+                Effect.andThen(Deferred.await(stream1Hold)),
+                Effect.as({ bytesTransferred: 0, status: 200 }),
+              );
+            }
+            return Effect.succeed({ bytesTransferred: 0, status: 200 });
+          },
+          onRemoteAbort: () => {
+            if (remoteAbortMode === "fail") {
+              return Effect.fail(
+                new SessionTransferError({
+                  code: "target_unavailable",
+                  message: "Transient Boat error on initial cancel",
+                }),
+              );
+            }
+            if (remoteAbortMode === "stall_once") {
+              remoteAbortMode = "succeed";
+              return Deferred.succeed(stalledRemoteAbortStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(stalledRemoteAbortRelease)),
+                Effect.as({ cleanedUp: true }),
+              );
+            }
+            return Effect.succeed({ cleanedUp: true });
+          },
+        });
+
+        yield* Effect.gen(function* () {
+          const repo = yield* SessionTransferRepository.SessionTransferRepository;
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+
+          yield* coordinator.start({
+            transferId,
+            direction: "local_to_boat",
+            sourceEnvironmentId: LOCAL_ENV_ID,
+            sourceThreadId: LOCAL_THREAD_ID,
+            target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+          });
+
+          yield* Deferred.await(stream1Started);
+
+          // Initial cancel fails remote abort, leaving record non-terminal in transferring_workspace.
+          const initialCancelErr = yield* Effect.flip(coordinator.cancel({ transferId }));
+          expect(initialCancelErr.code).toBe("target_unavailable");
+
+          // Hold first cancel inside remoteAbort while holding withTransferLock(transferId),
+          // then queue retry AHEAD of a second cancel so releasing cancel1 causes retry to fork
+          // a fresh worker and cancel2 to immediately interrupt it before its first step.
+          remoteAbortMode = "stall_once";
+          const cancel1Fiber = yield* Effect.forkScoped(coordinator.cancel({ transferId }));
+          yield* Deferred.await(stalledRemoteAbortStarted);
+
+          const retryFiber = yield* Effect.forkScoped(coordinator.retry({ transferId }));
+          for (let i = 0; i < 5; i += 1) {
+            yield* Effect.yieldNow;
+          }
+          const cancel2Fiber = yield* Effect.forkScoped(coordinator.cancel({ transferId }));
+          for (let i = 0; i < 5; i += 1) {
+            yield* Effect.yieldNow;
+          }
+
+          yield* Deferred.succeed(stalledRemoteAbortRelease, undefined);
+
+          const [cancel1Record, retryRecord, cancel2Record] = yield* Effect.all([
+            Fiber.join(cancel1Fiber),
+            Fiber.join(retryFiber),
+            Fiber.join(cancel2Fiber),
+          ]);
+          expect(cancel1Record.phase).toBe("cancelled");
+          expect(retryRecord.transferId).toBe(transferId);
+          expect(cancel2Record.phase).toBe("cancelled");
+
+          // Transfer must NOT be stranded in queued or in listActive().
+          const activeAfterCancel2 = yield* repo.listActive();
+          expect(activeAfterCancel2.map((r) => r.transferId)).not.toContain(transferId);
+          const persisted = yield* repo.getById(transferId);
+          expect(Option.isSome(persisted) && persisted.value.phase).toBe("cancelled");
+
+          // Subsequent cancel and reconcileOnStartup must succeed cleanly without
+          // "worker is still winding down".
+          const repeatCancel = yield* coordinator.cancel({ transferId });
+          expect(repeatCancel.phase).toBe("cancelled");
+          yield* coordinator.reconcileOnStartup;
+
+          // And a subsequent retry can launch cleanly (proving activeTransfers has no stale entry).
+          const subscribed = yield* Deferred.make<void>();
+          const completedFiber = yield* Effect.forkScoped(
+            coordinator.subscribe.pipe(
+              Stream.tap((event) =>
+                event._tag === "snapshot" ? Deferred.succeed(subscribed, undefined) : Effect.void,
+              ),
+              Stream.filter(
+                (
+                  event,
+                ): event is Extract<SessionTransferProgressEvent, { readonly _tag: "updated" }> =>
+                  event._tag === "updated" &&
+                  event.transfer.transferId === transferId &&
+                  isTerminalSessionTransferPhase(event.transfer.phase),
+              ),
+              Stream.map((event) => event.transfer),
+              Stream.runHead,
+            ),
+          );
+          yield* Deferred.await(subscribed);
+
+          const followUpRetry = yield* coordinator.retry({ transferId });
+          expect(followUpRetry.phase).toBe("queued");
+          const completed = yield* Fiber.join(completedFiber);
+          expect(Option.isSome(completed) && completed.value.phase).toBe("completed");
+        }).pipe(Effect.scoped, Effect.provide(harness.layer));
+      }),
+  );
+
+  it.effect(
     "cancelling local_to_boat during prepareSource skips unreachable Boat destination on retry cancel and reconcileOnStartup",
     () =>
       Effect.gen(function* () {

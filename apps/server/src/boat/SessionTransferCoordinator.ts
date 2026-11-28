@@ -2258,6 +2258,23 @@ const make = Effect.gen(function* () {
 
   const progressPubSub = yield* PubSub.unbounded<SessionTransferProgressEvent>();
   const activeTransfers = new Map<SessionTransferId, ActiveTransferEntry>();
+  const getLiveActiveTransfer = (
+    transferId: SessionTransferId,
+  ): ActiveTransferEntry | undefined => {
+    const entry = activeTransfers.get(transferId);
+    if (entry === undefined) {
+      return undefined;
+    }
+    // Prune stale entries whose worker fiber already terminated (e.g. interrupted before
+    // entering `executeTransfer` so its inner `Effect.ensuring` finalizer never ran).
+    if (entry.fiber !== null && entry.fiber.pollUnsafe() !== undefined) {
+      activeTransfers.delete(transferId);
+      return undefined;
+    }
+    return entry;
+  };
+  const hasLiveActiveTransfer = (transferId: SessionTransferId): boolean =>
+    getLiveActiveTransfer(transferId) !== undefined;
   const startingTransfers = new Map<
     SessionTransferId,
     Deferred.Deferred<SessionTransferRecord, SessionTransferError>
@@ -2284,7 +2301,7 @@ const make = Effect.gen(function* () {
     if (latestAttemptByTransfer.size > MAX_TRACKED_TRANSFER_ATTEMPTS) {
       for (const candidateId of latestAttemptByTransfer.keys()) {
         if (latestAttemptByTransfer.size <= MAX_TRACKED_TRANSFER_ATTEMPTS) break;
-        if (!activeTransfers.has(candidateId) && !transferLocks.has(candidateId)) {
+        if (!hasLiveActiveTransfer(candidateId) && !transferLocks.has(candidateId)) {
           latestAttemptByTransfer.delete(candidateId);
         }
       }
@@ -2329,7 +2346,7 @@ const make = Effect.gen(function* () {
     }): Effect.fn.Return<SessionTransferRecord | null> {
       if (
         currentTransferAttempt(input.transferId) !== input.expectedAttempt ||
-        activeTransfers.has(input.transferId)
+        hasLiveActiveTransfer(input.transferId)
       ) {
         return null;
       }
@@ -4225,13 +4242,8 @@ const make = Effect.gen(function* () {
         yield* checkCancelled();
 
         // Step 2: Pause & export source thread.
-        yield* transition(transferId, "pausing_source", {
-          phaseDetail: "Pausing active work on source thread...",
-        });
-        yield* transition(transferId, "exporting_source", {
-          phaseDetail: "Exporting thread history and workspace bundle...",
-        });
-
+        // Build payload before writing `exporting_source` so the crash-safety WAL transition
+        // happens immediately ahead of the `prepareSource` RPC.
         const prepareInput: SessionTransferPrepareSourceInput = {
           transferId,
           direction,
@@ -4243,6 +4255,13 @@ const make = Effect.gen(function* () {
           targetMachineName:
             direction === "local_to_boat" ? toNonEmptyTrimmed(boatAccess.machineName) : null,
         };
+        yield* transition(transferId, "pausing_source", {
+          phaseDetail: "Pausing active work on source thread...",
+        });
+        yield* checkCancelled();
+        yield* transition(transferId, "exporting_source", {
+          phaseDetail: "Exporting thread history and workspace bundle...",
+        });
 
         // Mark attempted BEFORE invoking RPC so interruption/drop still calls idempotent abort.
         prepareAttempted = true;
@@ -4289,11 +4308,9 @@ const make = Effect.gen(function* () {
         yield* checkCancelled();
 
         // Step 4: Stage import & stream workspace bundle.
-        yield* transition(transferId, "transferring_workspace", {
-          phaseDetail: "Staging workspace import...",
-          destinationProjectId,
-        });
-
+        // Build the RPC payload before persisting the durable `transferring_workspace` WAL phase
+        // so the phase write happens immediately before `stageImport` (required for crash safety
+        // so recovery aborts destination staging if the process crashes during or after the RPC).
         const stageInput: SessionTransferStageImportInput = {
           transferId,
           manifest: prepared.manifest,
@@ -4302,6 +4319,10 @@ const make = Effect.gen(function* () {
             ? { modelSelectionOverride: resolvedModelSelectionOverride }
             : {}),
         };
+        yield* transition(transferId, "transferring_workspace", {
+          phaseDetail: "Staging workspace import...",
+          destinationProjectId,
+        });
 
         // Mark attempted BEFORE invoking RPC so interruption/drop still calls idempotent abort.
         stageAttempted = true;
@@ -4409,15 +4430,6 @@ const make = Effect.gen(function* () {
 
             // Step 6: Commit & optionally resume on destination.
             // Do NOT mark entry.committed until commitImport actually succeeds.
-            yield* transition(transferId, "committing_target", {
-              phaseDetail: "Importing workspace and history on destination...",
-              destinationProjectId: staged.destinationProjectId,
-              destinationThreadId: staged.destinationThreadId,
-              destinationBranch: staged.destinationBranch,
-              destinationWorktreePath: staged.destinationWorktreePath,
-              warnings: [...warnings],
-            });
-
             const commitInput: SessionTransferCommitImportInput = {
               transferId,
               manifest: prepared.manifest,
@@ -4429,6 +4441,15 @@ const make = Effect.gen(function* () {
               autoResume: params.autoResume,
               attachmentIdMap,
             };
+            yield* transition(transferId, "committing_target", {
+              phaseDetail: "Importing workspace and history on destination...",
+              destinationProjectId: staged.destinationProjectId,
+              destinationThreadId: staged.destinationThreadId,
+              destinationBranch: staged.destinationBranch,
+              destinationWorktreePath: staged.destinationWorktreePath,
+              warnings: [...warnings],
+            });
+
             commitAttempted = true;
             const committed = yield* direction === "local_to_boat"
               ? remoteClient.commitImport(boatEndpoint!, commitInput)
@@ -4886,7 +4907,7 @@ const make = Effect.gen(function* () {
         }
 
         // Synchronous atomic guard so only the single winning creator registers and forks a worker.
-        if (activeTransfers.has(transferId)) {
+        if (hasLiveActiveTransfer(transferId)) {
           return insertResult.record;
         }
         const entry: ActiveTransferEntry = {
@@ -4897,7 +4918,13 @@ const make = Effect.gen(function* () {
         };
         activeTransfers.set(transferId, entry);
 
-        yield* publishRecord(insertResult.record);
+        const clearUnforkedEntry = Effect.sync(() => {
+          if (activeTransfers.get(transferId) === entry && entry.fiber === null) {
+            activeTransfers.delete(transferId);
+          }
+        });
+
+        yield* publishRecord(insertResult.record).pipe(Effect.onError(() => clearUnforkedEntry));
 
         const fiber = yield* Effect.forkIn(
           executeTransfer({
@@ -4921,7 +4948,7 @@ const make = Effect.gen(function* () {
             entry,
           }),
           serviceScope,
-        );
+        ).pipe(Effect.onError(() => clearUnforkedEntry));
         entry.fiber = fiber;
 
         return insertResult.record;
@@ -5004,7 +5031,7 @@ const make = Effect.gen(function* () {
         }
 
         let current = existing;
-        const active = activeTransfers.get(input.transferId);
+        const active = getLiveActiveTransfer(input.transferId);
         if (active) {
           if (active.committed) {
             return yield* toSessionTransferError(
@@ -5014,11 +5041,18 @@ const make = Effect.gen(function* () {
             );
           }
           active.cancelled = true;
+          let fiberTerminated = active.fiber === null;
           if (active.fiber) {
-            yield* Fiber.interrupt(active.fiber).pipe(
-              Effect.timeout(Duration.seconds(5)),
-              Effect.ignore,
+            const interrupted = yield* Fiber.interrupt(active.fiber).pipe(
+              Effect.as(true),
+              Effect.timeoutOption(Duration.seconds(5)),
             );
+            fiberTerminated = Option.isSome(interrupted) || active.fiber.pollUnsafe() !== undefined;
+          }
+          // If the fiber terminated (including when interrupted before its first step, before
+          // `executeTransfer`'s inner `Effect.ensuring` ran), remove the stale entry immediately.
+          if (fiberTerminated && activeTransfers.get(input.transferId) === active) {
+            activeTransfers.delete(input.transferId);
           }
           const afterAbort = yield* repository
             .getById(input.transferId)
@@ -5040,7 +5074,7 @@ const make = Effect.gen(function* () {
               input.transferId,
             );
           }
-          if (activeTransfers.get(input.transferId) === active) {
+          if (getLiveActiveTransfer(input.transferId) === active) {
             return yield* toSessionTransferError(
               "target_unavailable",
               `Session transfer ${input.transferId} worker is still winding down; retry cancellation once cleanup settles.`,
@@ -5224,7 +5258,7 @@ const make = Effect.gen(function* () {
     return yield* withTransferLock(
       input.transferId,
       Effect.gen(function* () {
-        if (activeTransfers.has(input.transferId) || startingTransfers.has(input.transferId)) {
+        if (hasLiveActiveTransfer(input.transferId) || startingTransfers.has(input.transferId)) {
           return yield* toSessionTransferError(
             "already_in_flight",
             `Session transfer ${input.transferId} is already running.`,
@@ -5299,7 +5333,7 @@ const make = Effect.gen(function* () {
           warnings: [],
         });
 
-        if (activeTransfers.has(input.transferId)) {
+        if (hasLiveActiveTransfer(input.transferId)) {
           return reset;
         }
 
@@ -5310,6 +5344,12 @@ const make = Effect.gen(function* () {
           fiber: null,
         };
         activeTransfers.set(input.transferId, entry);
+
+        const clearUnforkedEntry = Effect.sync(() => {
+          if (activeTransfers.get(input.transferId) === entry && entry.fiber === null) {
+            activeTransfers.delete(input.transferId);
+          }
+        });
 
         const fiber = yield* Effect.forkIn(
           executeTransfer({
@@ -5335,7 +5375,7 @@ const make = Effect.gen(function* () {
             entry,
           }),
           serviceScope,
-        );
+        ).pipe(Effect.onError(() => clearUnforkedEntry));
         entry.fiber = fiber;
 
         return reset;
@@ -5381,7 +5421,7 @@ const make = Effect.gen(function* () {
       yield* withTransferLock(
         initialRecord.transferId,
         Effect.gen(function* () {
-          if (activeTransfers.has(initialRecord.transferId)) {
+          if (hasLiveActiveTransfer(initialRecord.transferId)) {
             return;
           }
           const latestOption = yield* repository

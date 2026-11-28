@@ -39,6 +39,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
   TurnItemId,
+  VcsProcessExitError,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Schema from "effect/Schema";
@@ -62,7 +63,9 @@ import {
   resolveImportBundlePath,
   resolveTransferStagingDir,
   resolveWorktreeOwnershipPath,
+  SESSION_TRANSFER_STALE_TTL_MS,
   SESSION_TRANSFER_TOKEN_TTL_MS,
+  sweepStaleSessionTransferStaging,
   validateSessionTransferBundleToken,
 } from "../assets/SessionTransferToken.ts";
 import { createAttachmentId, resolveAttachmentPathById } from "../attachmentStore.ts";
@@ -5480,9 +5483,11 @@ describe("SessionTransferEndpointService", () => {
             if (Result.isFailure(abort1)) {
               expect(abort1.failure.code).toBe("workspace_error");
             }
+            const ownershipPath = resolveWorktreeOwnershipPath(config.stateDir, transferId, path)!;
             expect(NodeFS.existsSync(stagingDir)).toBe(true);
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
             expect(NodeFS.existsSync(NodePath.join(stagingDir, "worktree-ownership.json"))).toBe(
-              true,
+              false,
             );
             expect(NodeFS.existsSync(pendingAttachmentPath)).toBe(false);
             expect(NodeFS.existsSync(worktreePath)).toBe(true);
@@ -6312,6 +6317,1001 @@ describe("SessionTransferEndpointService", () => {
               role: "destination",
             });
             expect(repeatAbort.cleanedUp).toBe(false);
+          }).pipe(Effect.scoped, Effect.provide(coordinator2Layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "retry of commitImport never commits a partially imported worktree and restores dirty files on same and restarted instances",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-partial-wt-retry-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const dstRepo = NodePath.join(tmpRoot, "dst-repo");
+          const sharedBaseDir = NodePath.join(tmpRoot, "state-base");
+          initGitRepo(srcRepo);
+          NodeFS.cpSync(srcRepo, dstRepo, { recursive: true });
+
+          const branchA = "feat/partial-wt-same-instance";
+          const branchB = "feat/partial-wt-restarted-instance";
+          const dirtyFileName = "dirty-untracked.txt";
+          const dirtyFileContent = "important uncommitted dirty work\n";
+
+          git(srcRepo, ["checkout", "-b", branchA]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "committed.ts"), "export const x = 1;\n");
+          git(srcRepo, ["add", "committed.ts"]);
+          git(srcRepo, ["commit", "-m", "feature commit"]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, dirtyFileName), dirtyFileContent);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "app.ts"), "export const v = 999;\n");
+
+          const srcProjectId = ProjectId.make("proj-partial-src");
+          const dstProjectId = ProjectId.make("proj-partial-dst");
+          const srcThreadId = ThreadId.make("thread-partial-src");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          };
+
+          let failDirtyApply = false;
+          let blockCleanup = false;
+          let blockedWorktreePath: string | null = null;
+
+          const makeInstanceLayer = () => {
+            const recorder: MockRecorder = {
+              dispatches: [],
+              forceStops: [],
+              detachedSessions: [],
+              sentMessages: [],
+            };
+            return makeEndpointTestLayer({
+              environmentId: "env-partial-wt-retry",
+              environmentLabel: "Partial Retry Host",
+              sharedBaseDir,
+              projects: [
+                { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+                { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+              ],
+              providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+              recorder,
+              hooks: {
+                onVcsRun: ({ input, next }) => {
+                  if (input.operation === "WorkspaceBundle.addWorktree") {
+                    const sepIdx = input.args.indexOf("--");
+                    if (sepIdx !== -1 && input.args[sepIdx + 1] !== undefined) {
+                      blockedWorktreePath = input.args[sepIdx + 1]!;
+                    }
+                  }
+                  if (failDirtyApply && input.operation === "WorkspaceBundle.applyWorktreeLayer") {
+                    return Effect.succeed({
+                      exitCode: 128 as VcsProcess.VcsProcessOutput["exitCode"],
+                      stdout: "",
+                      stderr: "Simulated interruption before restoring dirty files",
+                      stdoutTruncated: false,
+                      stderrTruncated: false,
+                    });
+                  }
+                  if (
+                    failDirtyApply &&
+                    input.operation === "WorkspaceBundle.applyWorktreeLayerForce"
+                  ) {
+                    return Effect.fail(
+                      new VcsProcessExitError({
+                        operation: input.operation,
+                        command: input.command,
+                        cwd: input.cwd,
+                        exitCode: 128,
+                        detail: "Simulated interruption before restoring dirty files",
+                      }),
+                    );
+                  }
+                  if (blockCleanup && input.operation === "WorkspaceBundle.removeWorktree") {
+                    return Effect.succeed({
+                      exitCode: 128 as VcsProcess.VcsProcessOutput["exitCode"],
+                      stdout: "",
+                      stderr: "Simulated transient worktree cleanup lock",
+                      stdoutTruncated: false,
+                      stderrTruncated: false,
+                    });
+                  }
+                  return next;
+                },
+                onFileSystemRemove: ({ targetPath, next }) => {
+                  if (
+                    blockCleanup &&
+                    blockedWorktreePath !== null &&
+                    (targetPath === blockedWorktreePath ||
+                      targetPath.startsWith(`${blockedWorktreePath}${NodePath.sep}`))
+                  ) {
+                    return Effect.fail(
+                      PlatformError.systemError({
+                        _tag: "Busy",
+                        module: "FileSystem",
+                        method: "remove",
+                        pathOrDescriptor: targetPath,
+                        description: "Simulated busy worktree directory during partial cleanup",
+                      }),
+                    );
+                  }
+                  return next;
+                },
+              },
+            });
+          };
+
+          // Part A: Same-instance retry after partial import + failed first cleanup.
+          const layer1 = makeInstanceLayer();
+          const transferIdA = SessionTransferId.make("xfer-partial-wt-same");
+          const transferIdB = SessionTransferId.make("xfer-partial-wt-restart");
+          let stagedBManifest: {
+            readonly destinationProjectId: ProjectId;
+            readonly destinationThreadId: ThreadId;
+            readonly manifest: Parameters<
+              SessionTransferEndpointService.SessionTransferEndpointServiceShape["commitImport"]
+            >[0]["manifest"];
+          } | null = null;
+          let partialWorktreeB = "";
+          let ownershipPathB = "";
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: branchA,
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            const prepA = yield* svc.prepareSource({
+              transferId: transferIdA,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const stagedA = yield* svc.stageImport({
+              transferId: transferIdA,
+              manifest: prepA.manifest,
+              targetProjectId: dstProjectId,
+            });
+            const exportBundleA = resolveExportBundlePath(config.stateDir, transferIdA, path)!;
+            const importBundleA = resolveImportBundlePath(config.stateDir, transferIdA, path)!;
+            NodeFS.mkdirSync(NodePath.dirname(importBundleA), { recursive: true });
+            NodeFS.copyFileSync(exportBundleA, importBundleA);
+
+            const ownershipPathA = resolveWorktreeOwnershipPath(
+              config.stateDir,
+              transferIdA,
+              path,
+            )!;
+
+            // Fail dirty-layer restore AND block cleanup so partial worktree stays on disk with importCompleted: false.
+            failDirtyApply = true;
+            blockCleanup = true;
+            blockedWorktreePath = null;
+            const attempt1 = yield* Effect.result(
+              svc.commitImport({
+                transferId: transferIdA,
+                destinationProjectId: stagedA.destinationProjectId,
+                destinationThreadId: stagedA.destinationThreadId,
+                manifest: prepA.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(attempt1)).toBe(true);
+            expect(NodeFS.existsSync(ownershipPathA)).toBe(true);
+            const ownershipA = JSON.parse(NodeFS.readFileSync(ownershipPathA, "utf8")) as {
+              readonly worktreePath: string;
+              readonly importCompleted: boolean;
+            };
+            expect(ownershipA.importCompleted).toBe(false);
+            blockedWorktreePath = ownershipA.worktreePath;
+            // Ensure partial worktree exists on disk WITHOUT the dirty file.
+            expect(NodeFS.existsSync(ownershipA.worktreePath)).toBe(true);
+            expect(NodeFS.existsSync(NodePath.join(ownershipA.worktreePath, dirtyFileName))).toBe(
+              false,
+            );
+
+            // Retry while cleanup is STILL blocked -> must fail with workspace_error (never commit partial worktree).
+            failDirtyApply = false;
+            const attempt2 = yield* Effect.result(
+              svc.commitImport({
+                transferId: transferIdA,
+                destinationProjectId: stagedA.destinationProjectId,
+                destinationThreadId: stagedA.destinationThreadId,
+                manifest: prepA.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(attempt2)).toBe(true);
+            if (Result.isFailure(attempt2)) {
+              expect(attempt2.failure.code).toBe("workspace_error");
+            }
+
+            // Unblock cleanup and retry on the SAME service instance -> cleans up partial worktree,
+            // runs a fresh full import, and commits with the dirty file intact!
+            blockCleanup = false;
+            const committedA = yield* svc.commitImport({
+              transferId: transferIdA,
+              destinationProjectId: stagedA.destinationProjectId,
+              destinationThreadId: stagedA.destinationThreadId,
+              manifest: prepA.manifest,
+              autoResume: false,
+            });
+            expect(committedA.destinationWorktreePath).not.toBeNull();
+            expect(
+              NodeFS.readFileSync(
+                NodePath.join(committedA.destinationWorktreePath!, dirtyFileName),
+                "utf8",
+              ),
+            ).toBe(dirtyFileContent);
+            expect(
+              NodeFS.readFileSync(
+                NodePath.join(committedA.destinationWorktreePath!, "app.ts"),
+                "utf8",
+              ),
+            ).toBe("export const v = 999;\n");
+            expect(NodeFS.existsSync(ownershipPathA)).toBe(false);
+
+            // Release source lock from transferIdA before preparing transferIdB from the same source thread.
+            yield* svc.abort({ transferId: transferIdA, role: "source" });
+
+            // Part B setup: prepare second transfer, fail dirty-layer restore + block cleanup on instance 1.
+            git(srcRepo, ["checkout", "-b", branchB]);
+            const prepB = yield* svc.prepareSource({
+              transferId: transferIdB,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const stagedB = yield* svc.stageImport({
+              transferId: transferIdB,
+              manifest: prepB.manifest,
+              targetProjectId: dstProjectId,
+            });
+            const exportBundleB = resolveExportBundlePath(config.stateDir, transferIdB, path)!;
+            const importBundleB = resolveImportBundlePath(config.stateDir, transferIdB, path)!;
+            NodeFS.mkdirSync(NodePath.dirname(importBundleB), { recursive: true });
+            NodeFS.copyFileSync(exportBundleB, importBundleB);
+            ownershipPathB = resolveWorktreeOwnershipPath(config.stateDir, transferIdB, path)!;
+
+            failDirtyApply = true;
+            blockCleanup = true;
+            blockedWorktreePath = null;
+            const attemptB1 = yield* Effect.result(
+              svc.commitImport({
+                transferId: transferIdB,
+                destinationProjectId: stagedB.destinationProjectId,
+                destinationThreadId: stagedB.destinationThreadId,
+                manifest: prepB.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(attemptB1)).toBe(true);
+            const ownershipB = JSON.parse(NodeFS.readFileSync(ownershipPathB, "utf8")) as {
+              readonly worktreePath: string;
+              readonly importCompleted: boolean;
+            };
+            expect(ownershipB.importCompleted).toBe(false);
+            partialWorktreeB = ownershipB.worktreePath;
+            expect(NodeFS.existsSync(partialWorktreeB)).toBe(true);
+            expect(NodeFS.existsSync(NodePath.join(partialWorktreeB, dirtyFileName))).toBe(false);
+
+            stagedBManifest = {
+              destinationProjectId: stagedB.destinationProjectId,
+              destinationThreadId: stagedB.destinationThreadId,
+              manifest: prepB.manifest,
+            };
+          }).pipe(Effect.provide(layer1));
+
+          // Part B: Retry commitImport across a FRESH restarted service instance!
+          failDirtyApply = false;
+          blockCleanup = false;
+          blockedWorktreePath = null;
+          const layer2 = makeInstanceLayer();
+          yield* Effect.gen(function* () {
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const committedB = yield* svc.commitImport({
+              transferId: transferIdB,
+              destinationProjectId: stagedBManifest!.destinationProjectId,
+              destinationThreadId: stagedBManifest!.destinationThreadId,
+              manifest: stagedBManifest!.manifest,
+              autoResume: false,
+            });
+            expect(committedB.destinationWorktreePath).not.toBeNull();
+            expect(
+              NodeFS.readFileSync(
+                NodePath.join(committedB.destinationWorktreePath!, dirtyFileName),
+                "utf8",
+              ),
+            ).toBe(dirtyFileContent);
+            expect(
+              NodeFS.readFileSync(
+                NodePath.join(committedB.destinationWorktreePath!, "app.ts"),
+                "utf8",
+              ),
+            ).toBe("export const v = 999;\n");
+            expect(NodeFS.existsSync(ownershipPathB)).toBe(false);
+          }).pipe(Effect.provide(layer2));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "late destination abort fails and preserves committed worktree, branch, and ownership on projection read error",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-abort-proj-err-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const dstRepo = NodePath.join(tmpRoot, "dst-repo");
+          const sharedBaseDir = NodePath.join(tmpRoot, "state-base");
+          initGitRepo(srcRepo);
+          NodeFS.cpSync(srcRepo, dstRepo, { recursive: true });
+
+          const featureBranch = "feat/abort-proj-read-error";
+          git(srcRepo, ["checkout", "-b", featureBranch]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "kept.ts"), "export const kept = true;\n");
+          git(srcRepo, ["add", "kept.ts"]);
+          git(srcRepo, ["commit", "-m", "committed feature"]);
+
+          const srcProjectId = ProjectId.make("proj-projerr-src");
+          const dstProjectId = ProjectId.make("proj-projerr-dst");
+          const srcThreadId = ThreadId.make("thread-projerr-src");
+          const transferId = SessionTransferId.make("xfer-abort-proj-err");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          };
+
+          let committedWorktreePath = "";
+          let committedBranch = "";
+          let ownershipPath = "";
+          let destinationThreadId: ThreadId | null = null;
+
+          // Instance 1: commit the thread completely, then simulate a surviving ownership file
+          // (as if the host crashed right after SQLite commit before best-effort ownership cleanup).
+          const layer1 = makeEndpointTestLayer({
+            environmentId: "env-projerr-1",
+            environmentLabel: "ProjErr Host",
+            sharedBaseDir,
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: featureBranch,
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const staged = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            const exportBundle = resolveExportBundlePath(config.stateDir, transferId, path)!;
+            const importBundle = resolveImportBundlePath(config.stateDir, transferId, path)!;
+            NodeFS.mkdirSync(NodePath.dirname(importBundle), { recursive: true });
+            NodeFS.copyFileSync(exportBundle, importBundle);
+
+            const committed = yield* svc.commitImport({
+              transferId,
+              destinationProjectId: staged.destinationProjectId,
+              destinationThreadId: staged.destinationThreadId,
+              manifest: prep.manifest,
+              autoResume: false,
+            });
+            committedWorktreePath = committed.destinationWorktreePath!;
+            committedBranch = committed.destinationBranch!;
+            destinationThreadId = committed.destinationThreadId;
+            ownershipPath = resolveWorktreeOwnershipPath(config.stateDir, transferId, path)!;
+
+            // Simulate surviving durable ownership file left behind after commit.
+            NodeFS.mkdirSync(NodePath.dirname(ownershipPath), { recursive: true });
+            NodeFS.writeFileSync(
+              ownershipPath,
+              JSON.stringify({
+                schemaVersion: 1,
+                transferId,
+                destinationProjectId: dstProjectId,
+                projectWorkspaceRoot: dstRepo,
+                destinationThreadId,
+                worktreePath: committedWorktreePath,
+                branch: committedBranch,
+                createdBranch: true,
+                importCompleted: true,
+              }),
+            );
+          }).pipe(Effect.provide(layer1));
+
+          // Instance 2 (fresh restart, empty stagedImports): inject transient SQLite projection
+          // read failure during late abort -> abort MUST fail and preserve worktree, branch, and ownership.
+          let failProjectionRead = true;
+          const layer2 = makeEndpointTestLayer({
+            environmentId: "env-projerr-2",
+            environmentLabel: "ProjErr Host",
+            sharedBaseDir,
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onGetThreadRecords: ({ threadId, next }) => {
+                if (failProjectionRead && threadId === destinationThreadId) {
+                  return Effect.fail(
+                    new ProjectionStore.ProjectionStoreReadError({
+                      threadId,
+                      cause: new Error("SQLITE_BUSY: simulated transient projection read error"),
+                    }),
+                  );
+                }
+                return next;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const failedAbort = yield* Effect.result(
+              svc.abort({
+                transferId,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(failedAbort)).toBe(true);
+            if (Result.isFailure(failedAbort)) {
+              expect(failedAbort.failure.code).toBe("internal");
+            }
+
+            // Worktree, branch, and ownership file must ALL remain completely intact!
+            expect(NodeFS.existsSync(committedWorktreePath)).toBe(true);
+            expect(NodeFS.existsSync(NodePath.join(committedWorktreePath, "kept.ts"))).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", committedBranch])).not.toBe("");
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+
+            // Once projection reads recover, abort observes the committed thread, returns
+            // cleanedUp: false, deletes the stale ownership file, and keeps worktree + branch intact.
+            failProjectionRead = false;
+            const recoveredAbort = yield* svc.abort({
+              transferId,
+              role: "destination",
+            });
+            expect(recoveredAbort.cleanedUp).toBe(false);
+            expect(NodeFS.existsSync(committedWorktreePath)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", committedBranch])).not.toBe("");
+            expect(NodeFS.existsSync(ownershipPath)).toBe(false);
+          }).pipe(Effect.provide(layer2));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "serializes concurrent commitImport calls into the same repo so each gets a distinct worktree/branch and aborting one preserves the other",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-concurrent-repo-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const dstRepo = NodePath.join(tmpRoot, "dst-repo");
+          initGitRepo(srcRepo);
+          NodeFS.cpSync(srcRepo, dstRepo, { recursive: true });
+
+          const sharedBranch = "feat/concurrent-shared";
+          git(srcRepo, ["checkout", "-b", sharedBranch]);
+          NodeFS.writeFileSync(
+            NodePath.join(srcRepo, "concurrent.ts"),
+            "export const winner = true;\n",
+          );
+          git(srcRepo, ["add", "concurrent.ts"]);
+          git(srcRepo, ["commit", "-m", "shared feature commit"]);
+
+          const srcProjectId = ProjectId.make("proj-conc-src");
+          const dstProjectId = ProjectId.make("proj-conc-dst");
+          const srcThread1 = ThreadId.make("thread-conc-src-1");
+          const srcThread2 = ThreadId.make("thread-conc-src-2");
+          const transfer1 = SessionTransferId.make("xfer-conc-1");
+          const transfer2 = SessionTransferId.make("xfer-conc-2");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          };
+
+          let destThread2Id: ThreadId | null = null;
+          const layer = makeEndpointTestLayer({
+            environmentId: "env-conc-repo",
+            environmentLabel: "Concurrent Repo Host",
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onEventSinkWrite: (events) => {
+                if (
+                  destThread2Id !== null &&
+                  events.some((event) => event.threadId === destThread2Id)
+                ) {
+                  return Effect.fail(
+                    new TestHookError({
+                      message: "Simulated commit failure for concurrent transfer 2",
+                    }),
+                  );
+                }
+                return Effect.void;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: [
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThread1,
+                  branch: sharedBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+                ...seedThreadEvents({
+                  projectId: srcProjectId,
+                  threadId: srcThread2,
+                  branch: sharedBranch,
+                  worktreePath: srcRepo,
+                  modelSelection,
+                  running: false,
+                }),
+              ],
+            });
+
+            const [prep1, prep2] = yield* Effect.all([
+              svc.prepareSource({
+                transferId: transfer1,
+                threadId: srcThread1,
+                direction: "boat_to_local",
+              }),
+              svc.prepareSource({
+                transferId: transfer2,
+                threadId: srcThread2,
+                direction: "boat_to_local",
+              }),
+            ]);
+
+            const [staged1, staged2] = yield* Effect.all([
+              svc.stageImport({
+                transferId: transfer1,
+                manifest: prep1.manifest,
+                targetProjectId: dstProjectId,
+              }),
+              svc.stageImport({
+                transferId: transfer2,
+                manifest: prep2.manifest,
+                targetProjectId: dstProjectId,
+              }),
+            ]);
+            destThread2Id = staged2.destinationThreadId;
+
+            for (const txId of [transfer1, transfer2]) {
+              const exportBundle = resolveExportBundlePath(config.stateDir, txId, path)!;
+              const importBundle = resolveImportBundlePath(config.stateDir, txId, path)!;
+              NodeFS.mkdirSync(NodePath.dirname(importBundle), { recursive: true });
+              NodeFS.copyFileSync(exportBundle, importBundle);
+            }
+
+            // Run both commitImport calls concurrently against the SAME destination git repo
+            // and SAME source branch name.
+            const [res1, res2] = yield* Effect.all(
+              [
+                Effect.result(
+                  svc.commitImport({
+                    transferId: transfer1,
+                    destinationProjectId: staged1.destinationProjectId,
+                    destinationThreadId: staged1.destinationThreadId,
+                    manifest: prep1.manifest,
+                    autoResume: false,
+                  }),
+                ),
+                Effect.result(
+                  svc.commitImport({
+                    transferId: transfer2,
+                    destinationProjectId: staged2.destinationProjectId,
+                    destinationThreadId: staged2.destinationThreadId,
+                    manifest: prep2.manifest,
+                    autoResume: false,
+                  }),
+                ),
+              ],
+              { concurrency: "unbounded" },
+            );
+
+            expect(Result.isSuccess(res1)).toBe(true);
+            expect(Result.isFailure(res2)).toBe(true);
+            if (!Result.isSuccess(res1)) {
+              throw new Error("Expected transfer 1 to commit");
+            }
+
+            const winnerWorktree = res1.success.destinationWorktreePath!;
+            const winnerBranch = res1.success.destinationBranch!;
+
+            const ownership2Path = resolveWorktreeOwnershipPath(config.stateDir, transfer2, path)!;
+            expect(NodeFS.existsSync(ownership2Path)).toBe(true);
+            const ownership2 = JSON.parse(NodeFS.readFileSync(ownership2Path, "utf8")) as {
+              readonly worktreePath: string;
+              readonly branch: string;
+              readonly createdBranch: boolean;
+            };
+            const loserWorktree = ownership2.worktreePath;
+            const loserBranch = ownership2.branch;
+
+            // Both transfers must have allocated distinct worktrees and distinct branches!
+            expect(loserWorktree).not.toBe(winnerWorktree);
+            expect(loserBranch).not.toBe(winnerBranch);
+            expect(ownership2.createdBranch).toBe(true);
+            expect(NodeFS.existsSync(winnerWorktree)).toBe(true);
+            expect(NodeFS.existsSync(loserWorktree)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", winnerBranch])).not.toBe("");
+            expect(git(dstRepo, ["branch", "--list", loserBranch])).not.toBe("");
+
+            // Aborting the failed transfer deletes ONLY its own worktree and branch, leaving the
+            // winner's worktree and branch completely intact.
+            const abort2 = yield* svc.abort({
+              transferId: transfer2,
+              role: "destination",
+            });
+            expect(abort2.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(loserWorktree)).toBe(false);
+            expect(git(dstRepo, ["branch", "--list", loserBranch])).toBe("");
+            expect(NodeFS.existsSync(ownership2Path)).toBe(false);
+
+            expect(NodeFS.existsSync(winnerWorktree)).toBe(true);
+            expect(NodeFS.existsSync(NodePath.join(winnerWorktree, "concurrent.ts"))).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", winnerBranch])).not.toBe("");
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "1-hour staging TTL sweep reclaims expired staging dir while preserving worktree ownership ledger for post-restart cleanup",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-ttl-sweep-ownership-"),
+        );
+        try {
+          const srcRepo = NodePath.join(tmpRoot, "src-repo");
+          const dstRepo = NodePath.join(tmpRoot, "dst-repo");
+          const sharedBaseDir = NodePath.join(tmpRoot, "state-base");
+          initGitRepo(srcRepo);
+          NodeFS.cpSync(srcRepo, dstRepo, { recursive: true });
+
+          const featureBranch = "feat/ttl-sweep-survivor";
+          git(srcRepo, ["checkout", "-b", featureBranch]);
+          NodeFS.writeFileSync(NodePath.join(srcRepo, "swept.ts"), "export const s = 1;\n");
+          git(srcRepo, ["add", "swept.ts"]);
+          git(srcRepo, ["commit", "-m", "feature commit"]);
+
+          const localEnvId = EnvironmentId.make("env-ttl-sweep-local");
+          const boatEnvId = EnvironmentId.make("env-ttl-sweep-boat");
+          const srcProjectId = ProjectId.make("proj-ttl-src");
+          const dstProjectId = ProjectId.make("proj-ttl-dst");
+          const srcThreadId = ThreadId.make("thread-ttl-src");
+          const transferId = SessionTransferId.make("xfer-ttl-sweep-ownership");
+          const nowIso = IsoDateTime.make("2026-11-28T08:00:00.000Z");
+          const modelSelection: ModelSelection = {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          };
+
+          let failNextCommitEventWrite = false;
+          let blockWorktreeRemoval = false;
+          let blockedWorktreePath: string | null = null;
+          let worktreePath = "";
+          let stagingDir = "";
+          let ownershipPath = "";
+
+          const instance1Layer = makeEndpointTestLayer({
+            environmentId: localEnvId,
+            environmentLabel: "TTL Sweep Host",
+            sharedBaseDir,
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onEventSinkWrite: () => {
+                if (failNextCommitEventWrite) {
+                  failNextCommitEventWrite = false;
+                  return Effect.fail(
+                    new TestHookError({
+                      message: "Simulated SQLite failure after worktree creation",
+                    }),
+                  );
+                }
+                return Effect.void;
+              },
+              onVcsRun: ({ input, next }) => {
+                if (blockWorktreeRemoval && input.operation === "WorkspaceBundle.removeWorktree") {
+                  return Effect.succeed({
+                    exitCode: 128 as VcsProcess.VcsProcessOutput["exitCode"],
+                    stdout: "",
+                    stderr: "Simulated transient git worktree remove failure",
+                    stdoutTruncated: false,
+                    stderrTruncated: false,
+                  });
+                }
+                return next;
+              },
+              onFileSystemRemove: ({ targetPath, next }) => {
+                if (
+                  blockWorktreeRemoval &&
+                  blockedWorktreePath !== null &&
+                  (targetPath === blockedWorktreePath ||
+                    targetPath.startsWith(`${blockedWorktreePath}${NodePath.sep}`))
+                ) {
+                  return Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "Busy",
+                      module: "FileSystem",
+                      method: "remove",
+                      pathOrDescriptor: targetPath,
+                      description: "Simulated busy worktree directory",
+                    }),
+                  );
+                }
+                return next;
+              },
+            },
+          });
+
+          const repo1Layer = SessionTransferRepository.layer.pipe(
+            Layer.provideMerge(instance1Layer),
+          );
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const repo = yield* SessionTransferRepository.SessionTransferRepository;
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: featureBranch,
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: srcThreadId,
+              direction: "boat_to_local",
+            });
+            const staged = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            const exportBundle = resolveExportBundlePath(config.stateDir, transferId, path)!;
+            const importBundle = resolveImportBundlePath(config.stateDir, transferId, path)!;
+            NodeFS.mkdirSync(NodePath.dirname(importBundle), { recursive: true });
+            NodeFS.copyFileSync(exportBundle, importBundle);
+
+            failNextCommitEventWrite = true;
+            const commitRes = yield* Effect.result(
+              svc.commitImport({
+                transferId,
+                destinationProjectId: staged.destinationProjectId,
+                destinationThreadId: staged.destinationThreadId,
+                manifest: prep.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitRes)).toBe(true);
+
+            stagingDir = resolveTransferStagingDir(config.stateDir, transferId, path)!;
+            ownershipPath = resolveWorktreeOwnershipPath(config.stateDir, transferId, path)!;
+            const ownership = JSON.parse(NodeFS.readFileSync(ownershipPath, "utf8")) as {
+              readonly worktreePath: string;
+            };
+            worktreePath = ownership.worktreePath;
+
+            yield* repo.insertIfAbsent({
+              transferId,
+              direction: "boat_to_local",
+              phase: "committing_target",
+              phaseDetail: "Committing destination...",
+              sourceEnvironmentId: boatEnvId,
+              sourceEnvironmentName: TrimmedNonEmptyString.make("dev-boat"),
+              sourceMachineId: TrimmedNonEmptyString.make("machine-1"),
+              sourceProjectId: srcProjectId,
+              sourceThreadId: srcThreadId,
+              destinationEnvironmentId: localEnvId,
+              destinationEnvironmentName: TrimmedNonEmptyString.make("TTL Sweep Host"),
+              destinationMachineId: null,
+              destinationProjectId: staged.destinationProjectId,
+              destinationThreadId: staged.destinationThreadId,
+              destinationBranch: GitRefName.make(featureBranch),
+              destinationWorktreePath: TrimmedNonEmptyString.make(worktreePath),
+              sourceWasRunning: false,
+              hadPendingRuntimeRequest: false,
+              modelSelectionOverride: null,
+              cloneDestinationPath: null,
+              autoResume: false,
+              warnings: [],
+              errorMessage: null,
+              createdAt: nowIso,
+              updatedAt: nowIso,
+              completedAt: null,
+            });
+
+            // First abort fails worktree removal.
+            blockedWorktreePath = worktreePath;
+            blockWorktreeRemoval = true;
+            const abort1 = yield* Effect.result(
+              svc.abort({
+                transferId,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(abort1)).toBe(true);
+
+            // Age BOTH the staging directory contents AND the ownership file well past the 1-hour
+            // TTL, then run the production staging sweeper.
+            const futureNowMs =
+              (yield* Clock.currentTimeMillis) + SESSION_TRANSFER_STALE_TTL_MS * 3;
+            const oldSec = Math.floor(
+              (futureNowMs - SESSION_TRANSFER_STALE_TTL_MS - 120_000) / 1000,
+            );
+            for (const entry of NodeFS.readdirSync(stagingDir)) {
+              NodeFS.utimesSync(NodePath.join(stagingDir, entry), oldSec, oldSec);
+            }
+            NodeFS.utimesSync(stagingDir, oldSec, oldSec);
+            NodeFS.utimesSync(ownershipPath, oldSec, oldSec);
+
+            const swept = yield* sweepStaleSessionTransferStaging({
+              stateDir: config.stateDir,
+              nowMs: futureNowMs,
+            });
+            expect(swept.deletedDirs).toBeGreaterThanOrEqual(1);
+            // Expired staging payload dir IS swept, while the durable ownership ledger SURVIVES!
+            expect(NodeFS.existsSync(stagingDir)).toBe(false);
+            expect(NodeFS.existsSync(ownershipPath)).toBe(true);
+            expect(NodeFS.existsSync(worktreePath)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", featureBranch])).not.toBe("");
+          }).pipe(Effect.provide(repo1Layer));
+
+          // Simulate destination restart after the 1-hour sweep with worktree removal unblocked.
+          const instance2Layer = makeEndpointTestLayer({
+            environmentId: localEnvId,
+            environmentLabel: "TTL Sweep Host",
+            sharedBaseDir,
+            projects: [
+              { id: srcProjectId, title: "src", workspaceRoot: srcRepo },
+              { id: dstProjectId, title: "dst", workspaceRoot: dstRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+          });
+
+          const coordinator2SupportLayer = Layer.mergeAll(
+            SessionTransferRepository.layer.pipe(Layer.provideMerge(instance2Layer)),
+            Layer.succeed(
+              BoatSupervisor.BoatSupervisor,
+              BoatSupervisor.BoatSupervisor.of({
+                invoke: () => Effect.succeed({ data: { ok: true } }),
+                getMachineProxyAccess: () =>
+                  Effect.succeed({
+                    machineId: "machine-1",
+                    machineName: "dev-boat",
+                    environmentId: boatEnvId,
+                    state: "idle",
+                    localUrl: "http://127.0.0.1:41999",
+                    bearerToken: "internal-boat-token",
+                  }),
+                hasConfiguredBoats: Effect.succeed(true),
+                currentState: Effect.succeedNone,
+                passiveEvents: Stream.empty,
+                events: Stream.empty,
+                notices: Stream.empty,
+              }),
+            ),
+            Layer.succeed(
+              SessionTransferCoordinator.BoatRemoteClient,
+              SessionTransferCoordinator.BoatRemoteClient.of({
+                getServerConfig: () => Effect.die("unused"),
+                getShellSnapshot: () => Effect.die("unused"),
+                getThreadSummary: () => Effect.die("unused"),
+                prepareSource: () => Effect.die("unused"),
+                stageImport: () => Effect.die("unused"),
+                commitImport: () => Effect.die("unused"),
+                finalizeSource: () => Effect.die("unused"),
+                abort: () => Effect.succeed({ cleanedUp: true }),
+                streamHttpTransfer: () => Effect.die("unused"),
+              }),
+            ),
+            Layer.succeed(ProviderRegistry.ProviderRegistry, {
+              getProviders: Effect.succeed([]),
+            } as unknown as ProviderRegistry.ProviderRegistry["Service"]),
+            Layer.succeed(
+              RepositoryIdentityResolver.RepositoryIdentityResolver,
+              RepositoryIdentityResolver.RepositoryIdentityResolver.of({
+                resolve: () => Effect.succeed(null),
+              }),
+            ),
+          );
+
+          const coordinator2Layer = SessionTransferCoordinator.layer.pipe(
+            Layer.provideMerge(coordinator2SupportLayer),
+          );
+
+          yield* Effect.gen(function* () {
+            const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+            const repo = yield* SessionTransferRepository.SessionTransferRepository;
+
+            yield* coordinator.reconcileOnStartup;
+
+            expect(NodeFS.existsSync(worktreePath)).toBe(false);
+            expect(git(dstRepo, ["branch", "--list", featureBranch])).toBe("");
+            expect(NodeFS.existsSync(ownershipPath)).toBe(false);
+            const reconciled = yield* repo.getById(transferId);
+            expect(Option.isSome(reconciled) && reconciled.value.phase).toBe("failed");
           }).pipe(Effect.scoped, Effect.provide(coordinator2Layer));
         } finally {
           NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
