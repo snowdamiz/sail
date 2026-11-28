@@ -182,13 +182,15 @@ function formatByteSize(bytes: number): string {
 interface ParsedWorktreeEntry {
   readonly path: string;
   readonly isMain: boolean;
+  readonly branch: string | null;
   readonly locked: boolean;
   readonly lockReason: string | null;
 }
 
-function parseWorktreeListPorcelain(stdout: string): ReadonlyArray<ParsedWorktreeEntry> {
+function parseWorktreeListPorcelainZ(stdout: string): ReadonlyArray<ParsedWorktreeEntry> {
   const entries: Array<ParsedWorktreeEntry> = [];
   let currentPath: string | null = null;
+  let currentBranch: string | null = null;
   let currentLocked = false;
   let currentLockReason: string | null = null;
 
@@ -197,47 +199,40 @@ function parseWorktreeListPorcelain(stdout: string): ReadonlyArray<ParsedWorktre
       entries.push({
         path: currentPath,
         isMain: entries.length === 0,
+        branch: currentBranch,
         locked: currentLocked,
         lockReason: currentLockReason,
       });
     }
     currentPath = null;
+    currentBranch = null;
     currentLocked = false;
     currentLockReason = null;
   };
 
-  for (const rawLine of stdout.split(/\r?\n/)) {
-    if (rawLine.length === 0) {
+  for (const rawField of stdout.split("\0")) {
+    if (rawField.length === 0) {
       flush();
       continue;
     }
-    if (rawLine.startsWith("worktree ")) {
+    if (rawField.startsWith("worktree ")) {
       flush();
-      currentPath = rawLine.slice("worktree ".length);
+      currentPath = rawField.slice("worktree ".length);
       continue;
     }
     if (currentPath !== null) {
-      if (rawLine === "locked") {
+      if (rawField.startsWith("branch refs/heads/")) {
+        currentBranch = rawField.slice("branch refs/heads/".length);
+      } else if (rawField === "locked") {
         currentLocked = true;
-      } else if (rawLine.startsWith("locked ")) {
+      } else if (rawField.startsWith("locked ")) {
         currentLocked = true;
-        currentLockReason = rawLine.slice("locked ".length).trim() || null;
+        currentLockReason = rawField.slice("locked ".length).trim() || null;
       }
     }
   }
   flush();
   return entries;
-}
-
-function parseWorktreeCheckedOutBranches(stdout: string): ReadonlySet<string> {
-  const branches = new Set<string>();
-  for (const rawLine of stdout.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (line.startsWith("branch refs/heads/")) {
-      branches.add(line.slice("branch refs/heads/".length));
-    }
-  }
-  return branches;
 }
 
 function parseLocalBranchHeads(stdout: string): ReadonlyMap<string, string> {
@@ -347,6 +342,7 @@ const make = Effect.gen(function* () {
       readonly allowNonZeroExit?: boolean;
       readonly timeoutMs?: number;
       readonly maxOutputBytes?: number;
+      readonly outputMode?: VcsProcess.VcsProcessInput["outputMode"];
     },
   ) {
     return yield* vcsProcess
@@ -363,6 +359,7 @@ const make = Effect.gen(function* () {
         ...(options?.maxOutputBytes !== undefined
           ? { maxOutputBytes: options.maxOutputBytes }
           : {}),
+        ...(options?.outputMode !== undefined ? { outputMode: options.outputMode } : {}),
       })
       .pipe(
         Effect.mapError(
@@ -923,17 +920,31 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const listRegisteredWorktrees = Effect.fn("WorkspaceBundle.listRegisteredWorktrees")(function* (
+    repoCwd: string,
+  ) {
+    const listResult = yield* runGit(
+      "WorkspaceBundle.listWorktrees",
+      repoCwd,
+      ["worktree", "list", "--porcelain", "-z"],
+      { outputMode: "error" },
+    );
+    if (listResult.stdoutTruncated) {
+      return yield* new WorkspaceBundleError({
+        code: "git_error",
+        message: `Git command 'WorkspaceBundle.listWorktrees' produced truncated git worktree list output in '${repoCwd}'.`,
+      });
+    }
+    return parseWorktreeListPorcelainZ(listResult.stdout);
+  });
+
   const findRegisteredWorktree = Effect.fn("WorkspaceBundle.findRegisteredWorktree")(function* (
     repoCwd: string,
     worktreePath: string,
   ) {
-    const listResult = yield* runGit("WorkspaceBundle.listWorktrees", repoCwd, [
-      "worktree",
-      "list",
-      "--porcelain",
-    ]);
+    const entries = yield* listRegisteredWorktrees(repoCwd);
     const normalizedTarget = yield* normalizePathForComparison(path.resolve(repoCwd, worktreePath));
-    for (const entry of parseWorktreeListPorcelain(listResult.stdout)) {
+    for (const entry of entries) {
       const normalizedEntry = yield* normalizePathForComparison(path.resolve(repoCwd, entry.path));
       if (normalizedEntry === normalizedTarget) {
         return entry;
@@ -1265,14 +1276,21 @@ const make = Effect.gen(function* () {
         });
       }
 
-      const [localBranchesOutput, worktreeListOutput] = yield* Effect.all([
+      const [localBranchesOutput, registeredWorktrees] = yield* Effect.all([
         runGit("WorkspaceBundle.listLocalBranches", input.repoCwd, [
           "for-each-ref",
           "--format=%(refname:short) %(objectname)",
           "refs/heads",
         ]),
-        runGit("WorkspaceBundle.listWorktrees", input.repoCwd, ["worktree", "list", "--porcelain"]),
+        listRegisteredWorktrees(input.repoCwd),
       ]);
+
+      const checkedOutBranches = new Set<string>();
+      for (const entry of registeredWorktrees) {
+        if (entry.branch !== null) {
+          checkedOutBranches.add(entry.branch);
+        }
+      }
 
       const branchAllocation = allocateDestinationBranch({
         sourceBranch: input.sourceBranch,
@@ -1280,7 +1298,7 @@ const make = Effect.gen(function* () {
         targetLabel: input.targetLabel,
         transferId: input.transferId,
         localBranches: parseLocalBranchHeads(localBranchesOutput.stdout),
-        checkedOutBranches: parseWorktreeCheckedOutBranches(worktreeListOutput.stdout),
+        checkedOutBranches,
       });
 
       const worktreePath =

@@ -4,6 +4,7 @@ import * as NodeFS from "node:fs";
 import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -923,6 +924,209 @@ describe("WorkspaceBundle", () => {
             yield* git(dstRepo, ["worktree", "unlock", imported.worktreePath]).pipe(Effect.ignore);
           }
         }
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "detects a locked worktree whose path contains a literal newline via --porcelain -z and removes cleanly after unlock",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-wb-newline-wt-" });
+        const srcRepo = path.join(root, "src");
+        const dstRepo = path.join(root, "dst");
+        const bundlePath = path.join(root, "newline-wt.bundle");
+        const newlineWorktreePath = path.join(root, "wt-with-newline\nlocked-dir");
+
+        yield* fs.makeDirectory(srcRepo, { recursive: true });
+        yield* git(srcRepo, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(srcRepo, "file.txt"), "base\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "init"]);
+        yield* git(root, ["clone", srcRepo, dstRepo]);
+
+        yield* git(srcRepo, ["checkout", "-b", "feat/newline-locked-wt"]);
+        yield* fs.writeFileString(path.join(srcRepo, "file.txt"), "feature\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "feature"]);
+
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const exported = yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-newline-locked-wt",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+        const imported = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-newline-locked-wt",
+          repoCwd: dstRepo,
+          bundlePath,
+          sourceBranch: exported.branch,
+          targetLabel: "boat",
+          worktreePath: newlineWorktreePath,
+        });
+
+        expect(imported.worktreePath).toBe(newlineWorktreePath);
+        expect(imported.branch).toBe("feat/newline-locked-wt");
+        expect(yield* fs.exists(imported.worktreePath)).toBe(true);
+
+        yield* git(dstRepo, [
+          "worktree",
+          "lock",
+          "--reason",
+          "newline path lock",
+          imported.worktreePath,
+        ]);
+        let unlocked = false;
+        try {
+          const lockedResult = yield* Effect.result(
+            bundleService.removeWorktree({
+              repoCwd: dstRepo,
+              worktreePath: imported.worktreePath,
+              branch: imported.branch,
+            }),
+          );
+          expect(Result.isFailure(lockedResult)).toBe(true);
+          if (Result.isFailure(lockedResult)) {
+            expect(lockedResult.failure.code).toBe("git_error");
+            expect(lockedResult.failure.message).toContain("newline path lock");
+          }
+
+          // Locked worktree directory must NOT be recursively deleted and must stay registered.
+          expect(yield* fs.exists(imported.worktreePath)).toBe(true);
+          expect(yield* fs.readFileString(path.join(imported.worktreePath, "file.txt"))).toBe(
+            "feature\n",
+          );
+          const lockedPorcelainZ = yield* git(dstRepo, ["worktree", "list", "--porcelain", "-z"]);
+          const realWorktreePath = yield* fs.realPath(imported.worktreePath);
+          expect(lockedPorcelainZ).toContain(`worktree ${realWorktreePath}\0`);
+          expect(lockedPorcelainZ).toContain("locked newline path lock\0");
+          expect(
+            (yield* git(dstRepo, ["branch", "--list", "feat/newline-locked-wt"])).trim(),
+          ).not.toBe("");
+
+          // Unlock and retry: must remove directory, unregister worktree, and delete branch cleanly.
+          yield* git(dstRepo, ["worktree", "unlock", imported.worktreePath]);
+          unlocked = true;
+
+          yield* bundleService.removeWorktree({
+            repoCwd: dstRepo,
+            worktreePath: imported.worktreePath,
+            branch: imported.branch,
+          });
+          expect(yield* fs.exists(imported.worktreePath)).toBe(false);
+          const afterPorcelainZ = yield* git(dstRepo, ["worktree", "list", "--porcelain", "-z"]);
+          expect(afterPorcelainZ).not.toContain(`worktree ${realWorktreePath}\0`);
+          expect((yield* git(dstRepo, ["branch", "--list", "feat/newline-locked-wt"])).trim()).toBe(
+            "",
+          );
+        } finally {
+          if (!unlocked) {
+            yield* git(dstRepo, ["worktree", "unlock", imported.worktreePath]).pipe(Effect.ignore);
+          }
+        }
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "fails with WorkspaceBundleError without deleting the worktree directory when git worktree list stdout is truncated",
+    () =>
+      Effect.gen(function* () {
+        const baseFs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseVcsProcess = yield* VcsProcess.VcsProcess;
+
+        const root = yield* baseFs.makeTempDirectoryScoped({ prefix: "t3-wb-truncated-wt-" });
+        const srcRepo = path.join(root, "src");
+        const dstRepo = path.join(root, "dst");
+        const bundlePath = path.join(root, "truncated-wt.bundle");
+
+        yield* baseFs.makeDirectory(srcRepo, { recursive: true });
+        yield* git(srcRepo, ["init", "-b", "main"]);
+        yield* baseFs.writeFileString(path.join(srcRepo, "file.txt"), "base\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "init"]);
+        yield* git(root, ["clone", srcRepo, dstRepo]);
+
+        yield* git(srcRepo, ["checkout", "-b", "feat/truncated-wt"]);
+        yield* baseFs.writeFileString(path.join(srcRepo, "file.txt"), "feature\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "feature"]);
+
+        const baseBundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const exported = yield* baseBundleService.exportWorkspaceBundle({
+          transferId: "xfer-truncated-wt",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+        const imported = yield* baseBundleService.importWorkspaceBundle({
+          transferId: "xfer-truncated-wt",
+          repoCwd: dstRepo,
+          bundlePath,
+          sourceBranch: exported.branch,
+          targetLabel: "boat",
+        });
+
+        expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
+
+        const observedListCalls: Array<{
+          readonly args: ReadonlyArray<string>;
+          readonly outputMode: VcsProcess.VcsProcessInput["outputMode"];
+        }> = [];
+        const truncatedVcsLayer = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) => {
+            if (runInput.operation === "WorkspaceBundle.listWorktrees") {
+              observedListCalls.push({
+                args: runInput.args,
+                outputMode: runInput.outputMode,
+              });
+              return Effect.succeed({
+                exitCode: 0 as VcsProcess.VcsProcessOutput["exitCode"],
+                stdout: `worktree ${dstRepo}\0HEAD 0000000000000000000000000000000000000000\0`,
+                stderr: "",
+                stdoutTruncated: true,
+                stderrTruncated: false,
+              });
+            }
+            return baseVcsProcess.run(runInput);
+          },
+        });
+        const truncatedBundleLayer = Layer.fresh(WorkspaceBundle.layer).pipe(
+          Layer.provide(truncatedVcsLayer),
+        );
+
+        const truncatedResult = yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          return yield* Effect.result(
+            svc.removeWorktree({
+              repoCwd: dstRepo,
+              worktreePath: imported.worktreePath,
+              branch: imported.branch,
+            }),
+          );
+        }).pipe(Effect.provide(truncatedBundleLayer));
+
+        expect(observedListCalls).toEqual([
+          {
+            args: ["worktree", "list", "--porcelain", "-z"],
+            outputMode: "error",
+          },
+        ]);
+        expect(Result.isFailure(truncatedResult)).toBe(true);
+        if (Result.isFailure(truncatedResult)) {
+          expect(truncatedResult.failure.code).toBe("git_error");
+          expect(truncatedResult.failure.message).toContain("truncated");
+        }
+
+        // Worktree directory and files must remain intact on disk.
+        expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
+        expect(yield* baseFs.readFileString(path.join(imported.worktreePath, "file.txt"))).toBe(
+          "feature\n",
+        );
+        expect((yield* git(dstRepo, ["branch", "--list", "feat/truncated-wt"])).trim()).not.toBe(
+          "",
+        );
       }).pipe(Effect.provide(makeTestLayer())),
   );
 });
