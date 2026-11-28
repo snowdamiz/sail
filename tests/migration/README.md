@@ -2,6 +2,19 @@
 
 The [release inventory](incumbent/release-inventory.json) pins the compatibility reference to Sail v0.1.17. The [coverage catalog](incumbent/coverage-catalog.json) lists the cases required by the migration plan. The [wire fixture](wire/README.md) checks HTTP protocol alignment and Effect RPC frames against a running server.
 
+## Audit the coverage catalog
+
+From the repository root, use Rust 1.100 or newer and a checkout with the pinned release tag and migration base commit.
+
+```sh
+cargo run --locked --manifest-path tests/migration/coverage-check/Cargo.toml
+cargo test --locked --manifest-path tests/migration/coverage-check/Cargo.toml
+```
+
+The audit checks the release and source references, observation keys, and artifact SHA-256 values. For a passing incumbent visual reference, it binds both screenshots to their receipts and checks that the pinned profiles, screenshot hashes, and ordered traces agree. Pass `-- --list-missing` to include every unobserved case, platform, state, and entrypoint in the JSON report. Add a catalog path after `--` to audit a scratch copy with its artifacts beside it.
+
+The report counts catalog observations at the case, platform, state, and entrypoint level. It lists supplemental receipts and unresolved applicability separately. Use the capture comparator below to check physical dimensions and decoded pixels. Live actions, configuration coverage, and performance retain their own qualification checks. An incomplete catalog can pass this audit when its recorded evidence is consistent.
+
 ## Record a visual and behavior capture
 
 1. Use an isolated home and the pinned release, or the candidate at the exact SHA under review. For a Replay fixture, build the state through the CLI or API so the runtime writes its own events and projections.

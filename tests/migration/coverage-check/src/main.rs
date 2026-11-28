@@ -1,0 +1,330 @@
+mod catalog;
+mod evidence;
+
+use anyhow::{Context, Result, ensure};
+use serde::Serialize;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env, io,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+use catalog::{Catalog, Cell, Inventory, OpenItem};
+use evidence::{Evidence, is_hex, read_json, verify_reference_pair};
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Report {
+    incumbent_source_sha: String,
+    migration_base_sha: String,
+    cases: usize,
+    declared_cells: usize,
+    observed_cells: usize,
+    unobserved_cells: usize,
+    verified_observations: usize,
+    passing_release_reference_observations: usize,
+    supplemental_receipts: usize,
+    open_matrix_items: Vec<OpenItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    missing: Option<Vec<Cell>>,
+}
+
+fn git(repo: &Path, args: &[&str]) -> Result<String> {
+    let result = Command::new("git").current_dir(repo).args(args).output()?;
+    ensure!(
+        result.status.success(),
+        "git {}: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&result.stderr).trim()
+    );
+    Ok(String::from_utf8(result.stdout)?)
+}
+
+fn require_commit(repo: &Path, sha: &str) -> Result<()> {
+    ensure!(is_hex(sha, 40), "expected a full commit SHA: {sha}");
+    let commit = git(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{sha}^{{commit}}"),
+        ],
+    )?;
+    ensure!(commit.trim() == sha, "expected a commit, found {sha}");
+    Ok(())
+}
+
+fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("resolve {}", path.display()))?;
+    let catalog: Catalog = read_json(&path)?;
+    ensure!(
+        catalog.schema_version == 1,
+        "expected coverage catalog schema version 1"
+    );
+    let mut evidence = Evidence::new(path.parent().context("catalog has no parent directory")?)?;
+    let inventory: Inventory = read_json(&evidence.resolve(&catalog.release_inventory)?)?;
+    let incumbent = &catalog.incumbent_source_sha;
+    ensure!(
+        *incumbent == inventory.incumbent_source_sha
+            && catalog.migration_base_sha == inventory.migration_base_sha,
+        "inventory and catalog pin different source commits"
+    );
+    require_commit(repo, incumbent)?;
+    require_commit(repo, &catalog.migration_base_sha)?;
+    let release_tag = format!("refs/tags/{}^{{commit}}", inventory.github_release.tag_name);
+    let published = git(
+        repo,
+        &["rev-parse", "--verify", "--end-of-options", &release_tag],
+    )?;
+    ensure!(
+        published.trim() == incumbent,
+        "published tag does not resolve to the catalog's incumbent"
+    );
+    let source = git(repo, &["ls-tree", "-r", "-z", "--name-only", incumbent])?;
+    let source_paths: BTreeSet<_> = source.split_terminator('\0').collect();
+    let known_assets: BTreeSet<_> = inventory
+        .github_release
+        .assets
+        .iter()
+        .map(|asset| {
+            asset
+                .digest
+                .strip_prefix("sha256:")
+                .context("expected an inventory SHA-256")
+        })
+        .collect::<Result<_>>()?;
+    ensure!(
+        known_assets.iter().all(|digest| is_hex(digest, 64)),
+        "invalid inventory SHA-256"
+    );
+
+    for (set, platforms) in &catalog.platform_sets {
+        let unique: BTreeSet<_> = platforms.iter().collect();
+        ensure!(
+            !platforms.is_empty() && unique.len() == platforms.len(),
+            "empty or duplicate platform list in {set}"
+        );
+        for id in platforms {
+            ensure!(
+                catalog.platforms.contains_key(id),
+                "unknown platform {id} in {set}"
+            );
+        }
+    }
+    let contract = &catalog.observation_contract;
+    let mut required = BTreeSet::new();
+    let mut evidence_profiles = BTreeMap::new();
+    let mut supplemental = BTreeSet::new();
+    for case in &catalog.cases {
+        ensure!(
+            !case.id.trim().is_empty() && !case.states.is_empty(),
+            "empty case ID or states"
+        );
+        let profile = contract
+            .evidence_profiles
+            .get(&case.evidence_profile)
+            .with_context(|| format!("unknown evidence profile for {}", case.id))?;
+        ensure!(
+            !profile.is_empty(),
+            "empty evidence profile for {}",
+            case.id
+        );
+        ensure!(
+            evidence_profiles.insert(&case.id, profile).is_none(),
+            "duplicate case {}",
+            case.id
+        );
+        ensure!(
+            catalog.entrypoints.contains(&case.entrypoint),
+            "unknown entrypoint for {}",
+            case.id
+        );
+        let platforms = catalog
+            .platform_sets
+            .get(&case.platform_set)
+            .with_context(|| format!("unknown platform set for {}", case.id))?;
+        for state in &case.states {
+            ensure!(!state.trim().is_empty(), "empty state for {}", case.id);
+            for platform in platforms {
+                ensure!(
+                    required.insert(Cell {
+                        case_id: case.id.clone(),
+                        platform_id: platform.clone(),
+                        state: state.clone(),
+                        entrypoint: case.entrypoint.clone(),
+                    }),
+                    "duplicate state {state} for {}",
+                    case.id
+                );
+            }
+        }
+        for source in &case.source_references {
+            ensure!(
+                source_paths.contains(source.as_str()),
+                "source {source} is absent at {incumbent}"
+            );
+        }
+        for receipt in &case.supplemental_receipts {
+            let path = evidence.resolve(receipt)?;
+            if supplemental.insert(path.clone()) {
+                let value: serde_json::Value = read_json(&path)?;
+                ensure!(
+                    value.is_object(),
+                    "expected a supplemental receipt object: {}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    let mut observed = BTreeSet::new();
+    let mut records = BTreeSet::new();
+    let mut passing_references = 0;
+    for observation in &catalog.observations {
+        let cell = &observation.cell;
+        let label = format!(
+            "{}/{}/{} ({})",
+            cell.case_id, cell.platform_id, cell.state, observation.configuration_id
+        );
+        ensure!(
+            required.contains(cell),
+            "observation does not match a declared cell: {label}"
+        );
+        ensure!(
+            !observation.configuration_id.trim().is_empty(),
+            "missing configuration ID: {label}"
+        );
+        ensure!(
+            contract.stages.contains(&observation.stage),
+            "unknown observation stage: {label}"
+        );
+        ensure!(
+            contract.results.contains(&observation.result),
+            "unknown observation result: {label}"
+        );
+        ensure!(
+            records.insert((cell, &observation.configuration_id, &observation.stage)),
+            "duplicate observation in {}: {label}",
+            observation.stage
+        );
+        observed.insert(cell);
+
+        let pass = observation.result == "pass";
+        let release_reference = observation.stage == "p01-release-reference";
+        ensure!(
+            !pass || !observation.runs.is_empty(),
+            "passing observation has no runs: {label}"
+        );
+        for run in &observation.runs {
+            ensure!(
+                contract.role_values.contains(&run.role),
+                "unknown run role: {label}"
+            );
+            ensure!(
+                is_hex(&run.source_sha, 40)
+                    && is_hex(&run.server_source_sha, 40)
+                    && !run.server_implementation.trim().is_empty()
+                    && !run.fixture_id.trim().is_empty(),
+                "missing or invalid run provenance: {label}"
+            );
+            if release_reference {
+                ensure!(
+                    run.source_sha == *incumbent && run.server_source_sha == *incumbent,
+                    "release reference uses a different source: {label}"
+                );
+                if let Some(digest) = &run.environment.installer_asset_digest {
+                    ensure!(
+                        known_assets.contains(digest.as_str()),
+                        "unpublished installer digest: {label}"
+                    );
+                }
+            }
+            if let Some(arch) = &catalog.platforms[&cell.platform_id].arch {
+                ensure!(
+                    run.environment.arch.as_ref() == Some(arch),
+                    "run architecture disagrees with platform: {label}"
+                );
+            }
+            if pass {
+                for kind in evidence_profiles[&cell.case_id] {
+                    ensure!(
+                        run.artifacts.iter().any(|artifact| artifact.kind == *kind),
+                        "missing {kind} in {}: {label}",
+                        run.role
+                    );
+                }
+            }
+            for artifact in &run.artifacts {
+                evidence.verify(artifact).with_context(|| label.clone())?;
+            }
+        }
+        for artifact in &observation.comparison_artifacts {
+            evidence.verify(artifact).with_context(|| label.clone())?;
+        }
+        if pass && release_reference {
+            if evidence_profiles[&cell.case_id]
+                .iter()
+                .any(|kind| kind == "screenshot")
+            {
+                for kind in ["pixel-diff", "action-and-state"] {
+                    ensure!(
+                        observation
+                            .comparison_artifacts
+                            .iter()
+                            .any(|artifact| artifact.kind == kind),
+                        "missing {kind} comparison artifact: {label}"
+                    );
+                }
+                verify_reference_pair(&evidence, &observation.runs)
+                    .with_context(|| label.clone())?;
+            }
+            passing_references += 1;
+        }
+    }
+    let declared_cells = required.len();
+    let observed_cells = observed.len();
+    Ok(Report {
+        incumbent_source_sha: catalog.incumbent_source_sha,
+        migration_base_sha: catalog.migration_base_sha,
+        cases: catalog.cases.len(),
+        declared_cells,
+        observed_cells,
+        unobserved_cells: declared_cells - observed_cells,
+        verified_observations: catalog.observations.len(),
+        passing_release_reference_observations: passing_references,
+        supplemental_receipts: supplemental.len(),
+        open_matrix_items: catalog.open_matrix_items,
+        missing: list_missing.then(|| {
+            required
+                .into_iter()
+                .filter(|cell| !observed.contains(cell))
+                .collect()
+        }),
+    })
+}
+
+fn main() -> Result<()> {
+    let mut path = None;
+    let mut list_missing = false;
+    for arg in env::args_os().skip(1) {
+        if arg == "--list-missing" {
+            list_missing = true;
+        } else {
+            ensure!(
+                path.is_none() && !arg.to_string_lossy().starts_with('-'),
+                "usage: sail-migration-coverage [--list-missing] [catalog.json]"
+            );
+            path = Some(PathBuf::from(arg));
+        }
+    }
+    let path =
+        path.unwrap_or_else(|| PathBuf::from("tests/migration/incumbent/coverage-catalog.json"));
+    let report = audit(&env::current_dir()?, &path, list_missing)?;
+    serde_json::to_writer_pretty(io::stdout().lock(), &report)?;
+    println!();
+    Ok(())
+}
