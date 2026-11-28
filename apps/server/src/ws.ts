@@ -3030,10 +3030,12 @@ export const layerWsRpc = (
               patch.providerInstances !== undefined || providerInstanceMutation !== undefined
                 ? (yield* serverSettings.getSettings).providerInstances
                 : undefined;
+            const platform = yield* HostProcess.Platform;
             const nextPatch = withAutoIsolatedProviderInstancesPatch({
               stateDir: config.stateDir,
               patch: { ...patch, ...(deviceHosts ? { deviceHosts } : {}) },
               existingInstances,
+              platform,
               path,
             });
             const nextMutation =
@@ -3043,6 +3045,7 @@ export const layerWsRpc = (
                     stateDir: config.stateDir,
                     mutation: providerInstanceMutation,
                     existingInstances,
+                    platform,
                     path,
                   });
             const settings = yield* nextMutation === undefined

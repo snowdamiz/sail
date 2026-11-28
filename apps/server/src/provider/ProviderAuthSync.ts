@@ -550,12 +550,18 @@ const make = Effect.gen(function* () {
   const hasInstanceEnvironmentVar = (
     instance: ProviderInstanceConfig | undefined,
     name: string,
-  ): boolean =>
-    instance?.environment?.some(
-      (entry) =>
-        entry.name.trim() === name &&
-        (typeof entry.value !== "string" || entry.value.trim().length > 0),
-    ) === true;
+    isWindows: boolean,
+  ): boolean => {
+    const target = isWindows ? name.toUpperCase() : name;
+    return (
+      instance?.environment?.some((entry) => {
+        const entryName = isWindows ? entry.name.trim().toUpperCase() : entry.name.trim();
+        return (
+          entryName === target && (typeof entry.value !== "string" || entry.value.trim().length > 0)
+        );
+      }) === true
+    );
+  };
 
   const resolveClaudePathsForInstance = Effect.fn("ProviderAuthSync.resolveClaudePathsForInstance")(
     function* (
@@ -564,9 +570,10 @@ const make = Effect.gen(function* () {
       createIsolatedIfNonDefault: boolean,
     ) {
       const env = yield* HostProcess.Environment;
+      const isWindows = (yield* HostProcess.Platform) === "win32";
       const instanceEnv = yield* mergeProviderInstanceEnvironment(instance?.environment, env);
       const configuredHome = getStringField(instance?.config, "homePath").trim();
-      const explicitEnvHome = hasInstanceEnvironmentVar(instance, "CLAUDE_CONFIG_DIR")
+      const explicitEnvHome = hasInstanceEnvironmentVar(instance, "CLAUDE_CONFIG_DIR", isWindows)
         ? (instanceEnv.CLAUDE_CONFIG_DIR?.trim() ?? "")
         : "";
       const isDefault =
@@ -605,10 +612,11 @@ const make = Effect.gen(function* () {
   ) {
     const env = yield* HostProcess.Environment;
     const home = yield* HostProcess.HomeDirectory;
+    const isWindows = (yield* HostProcess.Platform) === "win32";
     const instanceEnv = yield* mergeProviderInstanceEnvironment(instance?.environment, env);
     const configuredHome = getStringField(instance?.config, "homePath").trim();
     const configuredShadow = getStringField(instance?.config, "shadowHomePath").trim();
-    const explicitEnvHome = hasInstanceEnvironmentVar(instance, "CODEX_HOME")
+    const explicitEnvHome = hasInstanceEnvironmentVar(instance, "CODEX_HOME", isWindows)
       ? (instanceEnv.CODEX_HOME?.trim() ?? "")
       : "";
     const isDefault = instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make("codex"));

@@ -293,6 +293,21 @@ describe("ProviderIsolatedHomes", () => {
         path: NodePath,
       }),
     ).toBe(envClaude);
+
+    const winMixedCaseClaude = {
+      driver: ProviderDriverKind.make("claudeAgent"),
+      enabled: true,
+      environment: [{ name: "Claude_Config_Dir", value: "C:\\claude-win", sensitive: false }],
+    };
+    expect(
+      withAutoIsolatedProviderHome({
+        stateDir: STATE_DIR,
+        instanceId: ProviderInstanceId.make("claudeAgent_win_env"),
+        instance: winMixedCaseClaude,
+        platform: "win32",
+        path: NodePath,
+      }),
+    ).toBe(winMixedCaseClaude);
   });
 
   it("applies auto-isolation to provider instance mutations and settings patches", () => {

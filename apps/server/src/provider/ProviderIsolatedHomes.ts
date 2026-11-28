@@ -43,10 +43,14 @@ function getTrimmedString(config: Record<string, unknown>, key: string): string 
 function hasConfiguredEnvVar(
   environment: ProviderInstanceEnvironment | undefined,
   envVar: string,
+  platform?: NodeJS.Platform,
 ): boolean {
   if (!environment || environment.length === 0) return false;
+  const isWindows = platform === "win32";
+  const target = isWindows ? envVar.toUpperCase() : envVar;
   return environment.some((entry) => {
-    if (entry.name.trim() !== envVar) return false;
+    const entryName = isWindows ? entry.name.trim().toUpperCase() : entry.name.trim();
+    if (entryName !== target) return false;
     if (typeof entry.value === "string") return entry.value.trim().length > 0;
     return true;
   });
@@ -107,9 +111,10 @@ export function withAutoIsolatedProviderHome(input: {
   readonly instanceId: ProviderInstanceId;
   readonly instance: ProviderInstanceConfig;
   readonly existingInstance?: ProviderInstanceConfig | undefined;
+  readonly platform?: NodeJS.Platform | undefined;
   readonly path: Pick<Path.Path, "join">;
 }): ProviderInstanceConfig {
-  const { instanceId, instance, existingInstance, stateDir, path } = input;
+  const { instanceId, instance, existingInstance, platform, stateDir, path } = input;
   // Never change the home directory of an already-persisted instance on rename/edit.
   if (existingInstance !== undefined) return instance;
 
@@ -118,7 +123,7 @@ export function withAutoIsolatedProviderHome(input: {
   if (instance.driver === CLAUDE_DRIVER) {
     if (instanceId === DEFAULT_CLAUDE_INSTANCE_ID) return instance;
     if (getTrimmedString(existingConfig, "homePath").length > 0) return instance;
-    if (hasConfiguredEnvVar(instance.environment, "CLAUDE_CONFIG_DIR")) return instance;
+    if (hasConfiguredEnvVar(instance.environment, "CLAUDE_CONFIG_DIR", platform)) return instance;
     return {
       ...instance,
       config: {
@@ -134,7 +139,7 @@ export function withAutoIsolatedProviderHome(input: {
     if (
       getTrimmedString(existingConfig, "homePath").length > 0 ||
       getTrimmedString(existingConfig, "shadowHomePath").length > 0 ||
-      hasConfiguredEnvVar(instance.environment, "CODEX_HOME")
+      hasConfiguredEnvVar(instance.environment, "CODEX_HOME", platform)
     ) {
       return instance;
     }
@@ -150,7 +155,7 @@ export function withAutoIsolatedProviderHome(input: {
   const envIsolation = ENV_ISOLATED_DRIVERS.get(instance.driver);
   if (envIsolation !== undefined) {
     if (instanceId === defaultInstanceIdForDriver(instance.driver)) return instance;
-    if (hasConfiguredEnvVar(instance.environment, envIsolation.envVar)) return instance;
+    if (hasConfiguredEnvVar(instance.environment, envIsolation.envVar, platform)) return instance;
     const isolatedDir = resolveIsolatedEnvProviderHomePath({
       stateDir,
       subdir: envIsolation.subdir,
@@ -177,9 +182,10 @@ export function withAutoIsolatedProviderInstanceMutation(input: {
   readonly stateDir: string;
   readonly mutation: ProviderInstanceMutation;
   readonly existingInstances?: Readonly<Record<string, ProviderInstanceConfig>> | undefined;
+  readonly platform?: NodeJS.Platform | undefined;
   readonly path: Pick<Path.Path, "join">;
 }): ProviderInstanceMutation {
-  const { mutation, existingInstances, stateDir, path } = input;
+  const { mutation, existingInstances, platform, stateDir, path } = input;
   if (mutation.operation === "remove") return mutation;
   const nextInstance = withAutoIsolatedProviderHome({
     stateDir,
@@ -187,6 +193,7 @@ export function withAutoIsolatedProviderInstanceMutation(input: {
     instance: mutation.instance,
     existingInstance:
       mutation.operation === "create" ? undefined : existingInstances?.[mutation.instanceId],
+    platform,
     path,
   });
   if (nextInstance === mutation.instance) return mutation;
@@ -200,9 +207,10 @@ export function withAutoIsolatedProviderInstancesPatch(input: {
   readonly stateDir: string;
   readonly patch: ServerSettingsPatch;
   readonly existingInstances?: Readonly<Record<string, ProviderInstanceConfig>> | undefined;
+  readonly platform?: NodeJS.Platform | undefined;
   readonly path: Pick<Path.Path, "join">;
 }): ServerSettingsPatch {
-  const { patch, existingInstances, stateDir, path } = input;
+  const { patch, existingInstances, platform, stateDir, path } = input;
   if (!patch.providerInstances) return patch;
 
   let changed = false;
@@ -217,6 +225,7 @@ export function withAutoIsolatedProviderInstancesPatch(input: {
       instanceId: rawId as ProviderInstanceId,
       instance: entry,
       existingInstance: existingInstances?.[rawId],
+      platform,
       path,
     });
     if (nextEntry !== entry) changed = true;
