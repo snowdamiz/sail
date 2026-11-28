@@ -15,6 +15,8 @@ describe("resolveComposerControlsOwnership", () => {
       accessDisplay: "hidden",
       showModeBlock: false,
       hiddenBlockIds: [],
+      overflowShowsPermissions: false,
+      overflowShowsPotetoMode: false,
       pickerOwnsModeShortcut: true,
     });
   });
@@ -36,6 +38,7 @@ describe("resolveComposerControlsOwnership", () => {
     });
     expect(result.hiddenBlockIds).toEqual(["mode"]);
     expect(result.overflowShowsPermissions).toBe(true);
+    expect(result.overflowShowsPotetoMode).toBe(false);
     expect(result.pickerOwnsModeShortcut).toBe(false);
   });
 
@@ -46,5 +49,38 @@ describe("resolveComposerControlsOwnership", () => {
       collapsed: true,
     });
     expect(result.accessDisplay).toBe("icon");
+  });
+
+  it("overflows permissions before poteto mode, then overflows both on ultra-narrow rows", () => {
+    const onlyModeOverflow = resolveComposerControlsOwnership({
+      ...base,
+      matchesDefault: false,
+      showPotetoBlock: true,
+      measuredHiddenBlockCount: 1,
+    });
+    expect(onlyModeOverflow.hiddenBlockIds).toEqual(["mode"]);
+    expect(onlyModeOverflow.overflowShowsPermissions).toBe(true);
+    expect(onlyModeOverflow.overflowShowsPotetoMode).toBe(false);
+
+    const bothOverflow = resolveComposerControlsOwnership({
+      ...base,
+      matchesDefault: false,
+      showPotetoBlock: true,
+      measuredHiddenBlockCount: 2,
+    });
+    expect(bothOverflow.hiddenBlockIds).toEqual(["poteto", "mode"]);
+    expect(bothOverflow.overflowShowsPermissions).toBe(true);
+    expect(bothOverflow.overflowShowsPotetoMode).toBe(true);
+
+    const potetoOnlyOverflow = resolveComposerControlsOwnership({
+      ...base,
+      matchesDefault: true,
+      showPotetoBlock: true,
+      measuredHiddenBlockCount: 1,
+    });
+    expect(potetoOnlyOverflow.hiddenBlockIds).toEqual(["poteto"]);
+    expect(potetoOnlyOverflow.overflowShowsPermissions).toBe(false);
+    expect(potetoOnlyOverflow.overflowShowsPotetoMode).toBe(true);
+    expect(potetoOnlyOverflow.pickerOwnsModeShortcut).toBe(true);
   });
 });

@@ -37,6 +37,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as ServerConfig from "../config.ts";
 import {
   materializeBuiltinPstack,
+  prependClaudePotetoModeDirective,
   resolveBuiltinSkillPromptHint,
 } from "../skills/BuiltinSkills.ts";
 import {
@@ -58,7 +59,11 @@ import * as EventSink from "./EventSink.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { canForkBusySourceNatively, isActiveRun } from "./CommandPolicy.ts";
-import { contextBoundaryOrdinal, isScheduledFreshRun } from "./contextBoundary.ts";
+import {
+  contextBoundaryOrdinal,
+  hasPotetoModeTriggeredInSessionBeforeRun,
+  isScheduledFreshRun,
+} from "./contextBoundary.ts";
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
   handoffTokenCapConfig,
@@ -2228,13 +2233,28 @@ export const layer: Layer.Layer<
           // A resume that must be prompted still needs a request, or the agent has nothing to do.
           const requestText =
             turnInput.resume && prompted && userText === "" ? RESUME_PROMPT : userText;
+          const triggerPotetoMode =
+            !compact &&
+            run.potetoMode === true &&
+            builtinPstack !== undefined &&
+            !hasPotetoModeTriggeredInSessionBeforeRun(projection, run);
+          const claudePotetoActivated =
+            session.driver === CLAUDE_PROVIDER && triggerPotetoMode && !slashCommand;
+          const effectiveRequestText = claudePotetoActivated
+            ? prependClaudePotetoModeDirective(requestText, builtinPstack)
+            : requestText;
           const builtinSkillHint =
             session.driver === CLAUDE_PROVIDER
               ? undefined
-              : resolveBuiltinSkillPromptHint(requestText, builtinPstack);
-          const baseText = slashCommand ? userText : withInlineContext(context, requestText);
+              : resolveBuiltinSkillPromptHint(requestText, builtinPstack, {
+                  forcePotetoMode: triggerPotetoMode,
+                });
+          const baseText = slashCommand
+            ? userText
+            : withInlineContext(context, effectiveRequestText);
           const text =
             builtinSkillHint === undefined ? baseText : `${builtinSkillHint}\n\n${baseText}`;
+          const inlineSuffix = claudePotetoActivated ? effectiveRequestText : userText;
           const operation =
             turnInput.resume && !prompted
               ? (session.resumeTurn?.({ ...resumeInput, messageId: resumeMessage.messageId }) ??
@@ -2253,9 +2273,9 @@ export const layer: Layer.Layer<
                       ? {}
                       : { attachments: [...missedAttachments, ...turnInput.message.attachments] }),
                   },
-                  ...(text === userText
+                  ...(text === inlineSuffix
                     ? {}
-                    : { inlineContextLength: text.length - userText.length }),
+                    : { inlineContextLength: text.length - inlineSuffix.length }),
                 });
           yield* operation.pipe(
             // Clear pending handoff markers for refused prompts so the next turn retains the native session.
@@ -2318,9 +2338,22 @@ export const layer: Layer.Layer<
               }),
         ),
       );
-      const deliverySession = carriesPendingContext
-        ? makeDeliverySession(session, startWithHandoffs)
-        : session;
+      const shouldTriggerPotetoMode =
+        run.potetoMode === true &&
+        builtinPstack !== undefined &&
+        !hasPotetoModeTriggeredInSessionBeforeRun(projection, run);
+      const hasBuiltinPromptTransform =
+        session.driver === CLAUDE_PROVIDER
+          ? shouldTriggerPotetoMode &&
+            !slashCommand &&
+            prependClaudePotetoModeDirective(userText, builtinPstack) !== userText
+          : resolveBuiltinSkillPromptHint(userText, builtinPstack, {
+              forcePotetoMode: shouldTriggerPotetoMode,
+            }) !== undefined;
+      const deliverySession =
+        carriesPendingContext || hasBuiltinPromptTransform
+          ? makeDeliverySession(session, startWithHandoffs)
+          : session;
       return runExecution.startRootRun({
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,

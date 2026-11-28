@@ -93,4 +93,36 @@ describe("progressive composer controls", () => {
       }
     }
   });
+
+  it("keeps a single icon-only block visible when the overflow trigger is no narrower", () => {
+    const singleBlock = {
+      gap: 4,
+      naturalFixedWidth: 180,
+      minimumFixedWidth: 60,
+      blockWidths: [84],
+      iconOnlyBlockWidths: [34],
+      overflowWidth: 34,
+    };
+    expect(resolveRestingComposerControlsLayout({ ...singleBlock, hostWidth: 210 })).toEqual({
+      hiddenCount: 0,
+      iconOnlyCount: 1,
+      visible: true,
+    });
+  });
+
+  it("still collapses two icon-only blocks into one overflow trigger when that saves space", () => {
+    const twoBlocks = {
+      gap: 4,
+      naturalFixedWidth: 180,
+      minimumFixedWidth: 60,
+      blockWidths: [84, 96],
+      iconOnlyBlockWidths: [34, 34],
+      overflowWidth: 34,
+    };
+    expect(resolveRestingComposerControlsLayout({ ...twoBlocks, hostWidth: 220 })).toEqual({
+      hiddenCount: 2,
+      iconOnlyCount: 2,
+      visible: true,
+    });
+  });
 });

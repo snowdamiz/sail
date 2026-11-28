@@ -1459,6 +1459,8 @@ export function planComposerTurn(input: {
   readonly dispatchMode: ComposerDispatchMode;
   /** The turn starts a new provider session, so it neither compacts first nor steers. */
   readonly freshContext: boolean;
+  /** Triggers built-in pstack poteto-mode on this turn; queues rather than steering. */
+  readonly potetoMode?: boolean;
 }) {
   const isFirstMessage =
     !input.sendQueuesBehindSetup && (!input.isServerThread || input.activeMessageCount === 0);
@@ -1473,7 +1475,8 @@ export function planComposerTurn(input: {
     !input.keepFullHistory &&
     !COMPACT_COMMAND_PATTERN.test(input.messageText);
   const dispatchMode =
-    input.freshContext && (input.dispatchMode === "steer" || input.dispatchMode === "restart")
+    (input.freshContext || input.potetoMode === true) &&
+    (input.dispatchMode === "steer" || input.dispatchMode === "restart")
       ? "queue"
       : input.dispatchMode;
   return {

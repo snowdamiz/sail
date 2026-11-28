@@ -55,3 +55,29 @@ export function turnItemsSinceContextBoundary(
     turnItems: projection.turnItems.filter((item) => item.runId !== null && kept.has(item.runId)),
   };
 }
+
+/**
+ * Whether an earlier started run in the current provider session already triggered built-in
+ * pstack poteto-mode. Fresh-context runs start a new session, so they never inherit an earlier
+ * session's trigger. Pre-start failures and cancellations never reached the provider.
+ */
+export function hasPotetoModeTriggeredInSessionBeforeRun(
+  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "turnItems">,
+  currentRun: Pick<OrchestrationV2Run, "id" | "ordinal" | "freshContext" | "userMessageId">,
+): boolean {
+  if (currentRun.freshContext === true && !isScheduledFreshRun(currentRun, projection.turnItems)) {
+    return false;
+  }
+  const boundary = contextBoundaryOrdinal(projection);
+  return projection.runs.some(
+    (run) =>
+      run.id !== currentRun.id &&
+      run.ordinal >= boundary &&
+      run.ordinal < currentRun.ordinal &&
+      run.potetoMode === true &&
+      run.status !== "queued" &&
+      !cancelledBeforeStart(run) &&
+      !(run.status === "failed" && run.startedAt === null) &&
+      !isScheduledFreshRun(run, projection.turnItems),
+  );
+}

@@ -7806,6 +7806,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       dispatchMode = { type: "start_immediately" };
     }
     const freshContext = command.freshContext === true;
+    const potetoMode = command.potetoMode === true;
     // A result is asked of one whole turn, so a send that declares one never joins a running turn.
     // A run that continues one cut short still owes that run's result.
     const continuedRunId =
@@ -7831,7 +7832,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     const output = outputSchema === undefined ? {} : { outputSchema };
     if (
-      (freshContext || command.outputSchema !== undefined) &&
+      (freshContext || potetoMode || command.outputSchema !== undefined) &&
       (dispatchMode.type === "steer_active" || dispatchMode.type === "restart_active")
     ) {
       dispatchMode = { type: "queue_after_active" };
@@ -8430,6 +8431,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.failoverNotice === undefined ? {} : { failoverNotice: command.failoverNotice }),
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
         ...(freshContext ? { freshContext: true } : {}),
+        ...(potetoMode ? { potetoMode: true } : {}),
         ...output,
       };
       const attempt: OrchestrationV2RunAttempt = {
@@ -8864,6 +8866,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
         ...wakeWorkStartedAt(projection, command),
         ...(freshContext ? { freshContext: true } : {}),
+        ...(potetoMode ? { potetoMode: true } : {}),
         ...output,
       };
       const attempt: OrchestrationV2RunAttempt = {
