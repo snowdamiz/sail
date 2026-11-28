@@ -83,6 +83,16 @@
       "changedSteps": [2],
       "scope": "Settled Replay in the pinned macOS dark Electron profile. The delta is the Poteto composer control introduced by trunk 386d27b4. Timing passed against incumbent A and exceeded the budget against incumbent B."
     },
+    "electronMigrationHeadRepeat": {
+      "result": "fail",
+      "sourceSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+      "package": "electron-macos-arm64/migration-head-9982ba07/package-receipt.json",
+      "comparison": "electron-macos-arm64/migration-head-9982ba07/comparisons.json",
+      "timing": "electron-macos-arm64/migration-head-9982ba07/capture-timings.json",
+      "differentPixels": 3417,
+      "changedSteps": [2],
+      "scope": "The two incumbent installations and the two migration-head installations each matched within their build. The cross-source difference remains confined to the composer. One migration-head installation exceeded both timing budgets."
+    },
     "chromiumMigrationHead": {
       "result": "fail",
       "sourceSha": "4807bdae945354ade96b40ad7d5116483ff0d308",
@@ -106,6 +116,10 @@
   "ociRuntime": {
     "receipt": "../runtime/v0.1.17-oci.json",
     "scope": "The published linux/arm64 and linux/amd64 manifests each passed the v2 wire check from a fresh data mount and opened the saved Replay thread from a copied mount."
+  },
+  "foregroundCliUpgrade": {
+    "receipt": "../runtime/v0.1.17-to-v0.1.18-cli.json",
+    "scope": "Published Linux foreground CLI upgrade on arm64 and emulated x64. The restarted host preserved the Replay transcript, environment identity, and scoped browser and bearer sessions. Both launchers rejected a deliberately invalid checksum."
   },
   "negativeControls": {
     "result": "pass",

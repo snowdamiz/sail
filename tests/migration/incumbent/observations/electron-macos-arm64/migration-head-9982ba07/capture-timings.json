@@ -1,0 +1,181 @@
+{
+  "fixtureId": "chat-turn",
+  "scope": "Settled Replay already open. App startup, archive unpacking, navigation and receipt hashing are outside the timed interval.",
+  "measurement": [
+    "Activate the app window and move the native pointer to (570, 543).",
+    "Read the settled renderer state through the packaged Electron DevTools endpoint. Blur the composer once if window activation focused it.",
+    "Use the unchanged Swift capture source compiled ahead of time to run the native macOS screenshot command and validate capture geometry."
+  ],
+  "order": "a, head-a, b, head-b rotated one position each round. Each host occupies each measured position three times.",
+  "statistic": "nearest-rank p95, excluding the first two samples per installation",
+  "warmupsPerHost": 2,
+  "measuredRunsPerHost": 12,
+  "priorSetupAttempts": "Two setup attempts timed out before the first sample when app activation restored composer focus. The retained run put the same one-time blur in the trace probe for all installations.",
+  "hosts": {
+    "a": {
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "version": "0.1.17",
+      "databaseMigration": 118,
+      "controls": {
+        "buttons": [
+          {
+            "name": "Attach files",
+            "pressed": null
+          },
+          {
+            "name": "Showcase",
+            "pressed": null
+          },
+          {
+            "name": "Submit message",
+            "pressed": null
+          }
+        ]
+      },
+      "electronVersion": "44.10.1",
+      "timing": {
+        "medianMs": 413.245271,
+        "p95Ms": 1023.413458,
+        "p95Round": 12,
+        "p95StagesMs": {
+          "activateAndHover": 78.453792,
+          "trace": 181.988458,
+          "screenshotAndGeometry": 762.971208
+        }
+      }
+    },
+    "head-a": {
+      "sourceSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+      "version": "0.1.18",
+      "databaseMigration": 119,
+      "controls": {
+        "buttons": [
+          {
+            "name": "Attach files",
+            "pressed": null
+          },
+          {
+            "name": "Showcase",
+            "pressed": null
+          },
+          {
+            "name": "Enable Poteto mode for this session",
+            "pressed": "false"
+          },
+          {
+            "name": "Submit message",
+            "pressed": null
+          }
+        ]
+      },
+      "electronVersion": "44.10.1",
+      "timing": {
+        "medianMs": 424.31908350000003,
+        "p95Ms": 516.084792,
+        "p95Round": 12,
+        "p95StagesMs": {
+          "activateAndHover": 97.751292,
+          "trace": 192.479125,
+          "screenshotAndGeometry": 225.854375
+        }
+      }
+    },
+    "b": {
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "version": "0.1.17",
+      "databaseMigration": 118,
+      "controls": {
+        "buttons": [
+          {
+            "name": "Attach files",
+            "pressed": null
+          },
+          {
+            "name": "Showcase",
+            "pressed": null
+          },
+          {
+            "name": "Submit message",
+            "pressed": null
+          }
+        ]
+      },
+      "electronVersion": "44.10.1",
+      "timing": {
+        "medianMs": 451.36170849999996,
+        "p95Ms": 558.820666,
+        "p95Round": 12,
+        "p95StagesMs": {
+          "activateAndHover": 112.772666,
+          "trace": 185.47,
+          "screenshotAndGeometry": 260.578
+        }
+      }
+    },
+    "head-b": {
+      "sourceSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+      "version": "0.1.18",
+      "databaseMigration": 119,
+      "controls": {
+        "buttons": [
+          {
+            "name": "Attach files",
+            "pressed": null
+          },
+          {
+            "name": "Showcase",
+            "pressed": null
+          },
+          {
+            "name": "Enable Poteto mode for this session",
+            "pressed": "false"
+          },
+          {
+            "name": "Submit message",
+            "pressed": null
+          }
+        ]
+      },
+      "electronVersion": "44.10.1",
+      "timing": {
+        "medianMs": 444.7383955,
+        "p95Ms": 1955.734042,
+        "p95Round": 11,
+        "p95StagesMs": {
+          "activateAndHover": 381.45575,
+          "trace": 502.029834,
+          "screenshotAndGeometry": 1072.248458
+        }
+      }
+    }
+  },
+  "p95Comparisons": {
+    "head-a-vs-a": {
+      "baselineP95Ms": 1023.413458,
+      "headP95Ms": 516.084792,
+      "allowedP95Ms": 1176.9254767,
+      "result": "pass"
+    },
+    "head-a-vs-b": {
+      "baselineP95Ms": 558.820666,
+      "headP95Ms": 516.084792,
+      "allowedP95Ms": 642.6437659,
+      "result": "pass"
+    },
+    "head-b-vs-a": {
+      "baselineP95Ms": 1023.413458,
+      "headP95Ms": 1955.734042,
+      "allowedP95Ms": 1176.9254767,
+      "result": "fail"
+    },
+    "head-b-vs-b": {
+      "baselineP95Ms": 558.820666,
+      "headP95Ms": 1955.734042,
+      "allowedP95Ms": 642.6437659,
+      "result": "fail"
+    }
+  },
+  "rawSamples": "capture-samples.ndjson",
+  "rawSamplesSha256": "5e2ef8a78e881678e710bde5dd69be3f5016db5a92a5c6462f9656b6881cd9a1",
+  "traceDigestEncoding": "UTF-8 JSON with sorted keys and no insignificant whitespace"
+}

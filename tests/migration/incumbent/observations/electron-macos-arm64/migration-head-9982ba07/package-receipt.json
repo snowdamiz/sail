@@ -1,0 +1,20 @@
+{
+  "sourceSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+  "mainSourceSha": "165c024a15756ebcf3a7dfd9f01d6163607e67ac",
+  "role": "Local macOS arm64 package built from the migration head",
+  "artifact": "Sail-0.1.18-arm64.zip",
+  "size": 229549818,
+  "sha256": "139921c785019bd432b8582c26eb8c5fc5c80c4e9b2b4e4d9df98e8323cc98b7",
+  "sha512VerifiedAgainstGeneratedManifest": "AhSxAK+bd9hSq8XMiT1ii1O9/bKcOkTyuLxgxB/HG81s2z16anqMIJZJJx4vjCswICmas3Uc0gTjEwoPzbXTlg==",
+  "rustToolchain": "1.100.0",
+  "command": "vp run dist:desktop:artifact --platform mac --target zip --arch arm64 --output-dir <scratch>",
+  "bundleVersion": "0.1.18",
+  "bundledMigration": 119,
+  "protocol": 2,
+  "packagedWire": {
+    "result": "pass",
+    "fixture": "../../../../wire/incumbent-v2.json",
+    "transcript": "wire-check.txt",
+    "sha256": "c92f2651ff143e3defa4f83f0efd9674c412f00fc9253b3a51d9eba057efe6ff"
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "a-vs-b": {
+    "result": "pass",
+    "diff": "a-vs-b.png",
+    "diffSha256": "d3b10c7216bebee659527f9ffa8a0c763befab957d00bad4b8c7897e06aed653",
+    "fixtureId": "chat-turn",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "changedSteps": [],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/electron-macos-arm64/migration-head-9982ba07/a/capture.png",
+      "candidate": "tests/migration/incumbent/observations/electron-macos-arm64/migration-head-9982ba07/b/capture.png",
+      "diff": "tests/migration/incumbent/observations/electron-macos-arm64/migration-head-9982ba07/a-vs-b.png",
+      "baselineSize": [2200, 1560],
+      "candidateSize": [2200, 1560],
+      "differentPixels": 0,
+      "bounds": null
+    }
+  },
+  "head-a-vs-head-b": {
+    "result": "pass",
+    "diff": "head-a-vs-head-b.png",
+    "diffSha256": "d3b10c7216bebee659527f9ffa8a0c763befab957d00bad4b8c7897e06aed653",
+    "fixtureId": "chat-turn",
+    "baselineSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+    "candidateSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+    "changedSteps": [],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/electron-macos-arm64/migration-head-9982ba07/head-a/capture.png",
+      "candidate": "tests/migration/incumbent/observations/electron-macos-arm64/migration-head-9982ba07/head-b/capture.png",
+      "diff": "tests/migration/incumbent/observations/electron-macos-arm64/migration-head-9982ba07/head-a-vs-head-b.png",
+      "baselineSize": [2200, 1560],
+      "candidateSize": [2200, 1560],
+      "differentPixels": 0,
+      "bounds": null
+    }
+  },
+  "a-vs-head-a": {
+    "result": "fail",
+    "diff": "a-vs-head-a.png",
+    "diffSha256": "ad56659730ac478f55507d74497792353b9bfc375804fd0b0d652a588518e617",
+    "fixtureId": "chat-turn",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+    "changedSteps": [2],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/electron-macos-arm64/migration-head-9982ba07/a/capture.png",
+      "candidate": "tests/migration/incumbent/observations/electron-macos-arm64/migration-head-9982ba07/head-a/capture.png",
+      "diff": "tests/migration/incumbent/observations/electron-macos-arm64/migration-head-9982ba07/a-vs-head-a.png",
+      "baselineSize": [2200, 1560],
+      "candidateSize": [2200, 1560],
+      "differentPixels": 3417,
+      "bounds": [1299, 1457, 1647, 1484]
+    }
+  }
+}
