@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en" data-status="loading">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sail GPUI preview</title>
+    <style>
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+      }
+      body {
+        background: #18181b;
+        color: #e8e8eb;
+        font:
+          16px system-ui,
+          sans-serif;
+      }
+      main {
+        position: fixed;
+        inset: 0;
+        z-index: 1;
+        display: grid;
+        place-content: center;
+        padding: 24px;
+      }
+      a {
+        color: #8eb8ff;
+      }
+      html[data-status="ready"] main {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p id="status" role="status">Loading the Sail GPUI preview…</p>
+      <a id="incumbent" href="/">Open Sail</a>
+    </main>
+    <script type="module" src="./boot.js"></script>
+  </body>
+</html>

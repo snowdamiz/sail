@@ -1,0 +1,78 @@
+name: Sail GPUI preview
+
+on:
+  pull_request:
+    paths:
+      - native/sail-client/**
+      - tests/migration/gpui/**
+      - .github/workflows/gpui-preview.yml
+  push:
+    branches: [main]
+    paths:
+      - native/sail-client/**
+      - tests/migration/gpui/**
+      - .github/workflows/gpui-preview.yml
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Native fixture (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    defaults:
+      run:
+        working-directory: native/sail-client
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/sail-client -> target
+      - run: cargo fmt --check
+      - run: cargo test --locked
+      - run: cargo build --locked --bin sail-client
+
+  web:
+    name: WASM fixture
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: native/sail-client
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/sail-client -> target
+          key: wasm
+      - name: Install matching wasm-bindgen CLI
+        run: |
+          version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/"/, "", $3); print $3; exit }' Cargo.lock)"
+          cargo install wasm-bindgen-cli --version "$version" --locked
+      - run: ./build-web.sh
+      - name: Enforce transfer size
+        shell: bash
+        run: |
+          test -s target/preview/sail_client_bg.wasm
+          bytes="$(gzip -n -9 -c target/preview/sail_client_bg.wasm | wc -c)"
+          echo "Gzip WASM bytes: $bytes" >> "$GITHUB_STEP_SUMMARY"
+          test "$bytes" -le "$((8 * 1024 * 1024))"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sail-gpui-web-preview
+          path: native/sail-client/target/preview
+          if-no-files-found: error
