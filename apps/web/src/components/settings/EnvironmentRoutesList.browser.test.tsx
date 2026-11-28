@@ -111,3 +111,49 @@ it("does not offer to remove the only route a found-automatically route depends 
 
   expect(screen.getByRole("button", { name: "Remove LAN route" }).elements()).toHaveLength(0);
 });
+
+it("exposes Sign in again targeting the exact refused direct route on a multi-route environment", async () => {
+  const onReauthenticateRoute = vi.fn();
+  const entry: ConnectionCatalogEntry = {
+    target: TAILNET.target,
+    profile: TAILNET.profile,
+    alternateRoutes: [PUBLIC],
+    enabled: true,
+  };
+  const environment: EnvironmentPresentation = {
+    environmentId: ENVIRONMENT_ID,
+    label: "Desk",
+    displayUrl: null,
+    relayManaged: false,
+    entry,
+    connection: { phase: "available", error: null, traceId: null },
+    serverConfig: null,
+    refusedRouteIds: ["public"],
+  };
+
+  await using screen = await render(
+    <EnvironmentRoutesList
+      environment={environment}
+      onAddRoute={() => undefined}
+      onReauthenticateRoute={onReauthenticateRoute}
+    />,
+  );
+
+  await expect
+    .element(
+      screen.getByText(
+        "The host refused this device's sign-in. Sign in again to reconnect this address.",
+      ),
+    )
+    .toBeVisible();
+
+  const signInAgainButton = screen.getByRole("button", { name: "Sign in again" });
+  await expect.element(signInAgainButton).toBeVisible();
+  await userEvent.click(signInAgainButton);
+
+  expect(onReauthenticateRoute).toHaveBeenCalledExactlyOnceWith({
+    environment,
+    connectionId: "public",
+    httpBaseUrl: "https://desk.example.com/",
+  });
+});

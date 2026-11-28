@@ -157,7 +157,7 @@ import {
   CloudRemoteEnvironmentRows,
   SavedBackendListRow,
 } from "./SavedEnvironmentRows";
-import { AddEnvironmentDialog } from "./AddEnvironmentDialog";
+import { AddEnvironmentDialog, type ReauthenticateRouteTarget } from "./AddEnvironmentDialog";
 import {
   type ConnectDeviceRevokeRequest,
   RevokeConnectDeviceDialog,
@@ -371,6 +371,7 @@ function ConnectionsSettingsContent({
   const [isRevokingOtherDesktopClients, setIsRevokingOtherDesktopClients] = useState(false);
   const [addBackendDialogOpen, setAddBackendDialogOpen] = useState(false);
   const [routeTarget, setRouteTarget] = useState<EnvironmentPresentation | null>(null);
+  const [reauthTarget, setReauthTarget] = useState<ReauthenticateRouteTarget | null>(null);
   // An address the map already knows for the machine being added; remounts the dialog with it.
   const [addBackendHost, setAddBackendHost] = useState("");
   const [savedBackendError, setSavedBackendError] = useState<string | null>(null);
@@ -380,19 +381,31 @@ function ConnectionsSettingsContent({
     setAddBackendDialogOpen(open);
     if (open) {
       setRouteTarget(null);
+      setReauthTarget(null);
       setAddBackendHost("");
     } else {
+      setRouteTarget(null);
+      setReauthTarget(null);
       setSavedBackendError(null);
       setAddPrefill(null);
     }
   };
   const openAddRoute = (target: EnvironmentPresentation) => {
+    setReauthTarget(null);
     setRouteTarget(target);
     setAddBackendHost("");
     setSavedBackendError(null);
     setAddBackendDialogOpen(true);
   };
+  const openReauthenticateRoute = (target: ReauthenticateRouteTarget) => {
+    setRouteTarget(null);
+    setReauthTarget(target);
+    setAddBackendHost("");
+    setSavedBackendError(null);
+    setAddBackendDialogOpen(true);
+  };
   const openAddEnvironment = (host = "") => {
+    setReauthTarget(null);
     setRouteTarget(null);
     setAddBackendHost(host);
     setSavedBackendError(null);
@@ -1887,10 +1900,11 @@ function ConnectionsSettingsContent({
             ) : null}
             <CopySetupDialog />
             <AddEnvironmentDialog
-              key={`${addPrefill?.environmentId ?? "any"}:${addBackendHost}`}
+              key={`${addPrefill?.environmentId ?? "any"}:${routeTarget?.environmentId ?? "none"}:${reauthTarget?.connectionId ?? "none"}:${addBackendHost}`}
               open={addBackendDialogOpen || addPrefill !== null}
               prefill={addPrefill}
               routeTarget={routeTarget}
+              reauthTarget={reauthTarget}
               initialHost={addBackendHost}
               error={savedBackendError}
               savedEnvironments={savedEnvironments}
@@ -1916,6 +1930,7 @@ function ConnectionsSettingsContent({
                   onSetEnabled={handleSetSavedBackendEnabled}
                   onRemove={handleRemoveSavedBackend}
                   onAddRoute={openAddRoute}
+                  onReauthenticateRoute={openReauthenticateRoute}
                 />
               ) : null
             }
@@ -1937,6 +1952,7 @@ function ConnectionsSettingsContent({
                 onSetEnabled={handleSetSavedBackendEnabled}
                 onRemove={handleRemoveSavedBackend}
                 onAddRoute={openAddRoute}
+                onReauthenticateRoute={openReauthenticateRoute}
               />
             ))}
             <CloudRemoteEnvironmentRows

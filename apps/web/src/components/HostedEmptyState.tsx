@@ -14,6 +14,7 @@ import { InstallT3Commands } from "./InstallT3Commands";
 import { retryClerkLoad, useClerkLoadFailed } from "./clerk/clerkLoadFailure";
 import { useT3ConnectAuthPrompt } from "./clerk/useT3ConnectAuthPrompt";
 import { CloudEnvironmentConnectRows } from "./cloud/CloudEnvironmentConnectList";
+import { AddEnvironmentDialog } from "./settings/AddEnvironmentDialog";
 import { Button } from "./ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "./ui/empty";
 import { SidebarInset } from "./ui/sidebar";
@@ -23,6 +24,8 @@ import { WorkspacePageHeader } from "./WorkspacePageHeader";
 export function HostedEmptyState() {
   const cloudEnabled = hasCloudPublicConfig();
   const localEnvironmentOff = isLocalEnvironmentDisabled();
+  const isRemoteOnlyDesktop = localEnvironmentOff && window.desktopBridge !== undefined;
+  const [signInOpen, setSignInOpen] = useState(false);
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
@@ -52,9 +55,20 @@ export function HostedEmptyState() {
           </EmptyHeader>
           <EmptyContent>
             {localEnvironmentOff ? (
-              <Button render={<Link to="/settings/connections" />} size="sm">
-                <T>Open Environments</T>
-              </Button>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                {isRemoteOnlyDesktop ? (
+                  <Button size="sm" onClick={() => setSignInOpen(true)}>
+                    <T>Sign in to a Sail server</T>
+                  </Button>
+                ) : null}
+                <Button
+                  render={<Link to="/settings/connections" />}
+                  size="sm"
+                  variant={isRemoteOnlyDesktop ? "outline" : "default"}
+                >
+                  <T>Open Environments</T>
+                </Button>
+              </div>
             ) : (
               <ol className="w-full space-y-4 text-left">
                 {cloudEnabled ? <T3ConnectSteps /> : <PairingSteps />}
@@ -63,6 +77,14 @@ export function HostedEmptyState() {
           </EmptyContent>
         </Empty>
       </div>
+      {isRemoteOnlyDesktop ? (
+        <AddEnvironmentDialog
+          open={signInOpen}
+          showTrigger={false}
+          openedFrom="empty-state"
+          onOpenChange={setSignInOpen}
+        />
+      ) : null}
     </SidebarInset>
   );
 }

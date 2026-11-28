@@ -30,9 +30,9 @@ export function OwnerPasswordSettings({
 
   return (
     <SettingsRow
-      title={gt("Browser sign-in password")}
+      title={gt("Owner sign-in password")}
       description={gt(
-        "Sign in from future browsers without a pairing link. Use a password of 15–256 characters. Changing it signs out password-based sessions, but not paired devices. Pairing links still work for recovery.",
+        "Sign in from future browsers and Sail Desktop without a pairing link. Use a password of 15\u2013256 characters. Password changes stay in the web app. Changing it signs out every password-based browser and Desktop session, while independently paired devices stay signed in. Pairing links still work for recovery.",
       )}
       control={
         <form
@@ -97,8 +97,8 @@ export function OwnerPasswordSettings({
           {saved ? (
             <p role="status" className="text-xs text-muted-foreground">
               <T>
-                Password saved. Password-based sessions have been signed out. Paired devices remain
-                signed in.
+                Password saved. Password-based browser and Desktop sessions have been signed out.
+                Paired devices remain signed in.
               </T>
             </p>
           ) : null}

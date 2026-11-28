@@ -17,11 +17,14 @@ import {
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
 import {
+  connectionRouteId,
   connectionRoutes,
   hasSavedBearerRoute,
+  isLearned,
   connectionErrorText,
   connectionStatusText,
   environmentMcpUrl,
+  routeHttpBaseUrl,
 } from "@t3tools/client-runtime/connection";
 import * as Option from "effect/Option";
 import { msg, T, useGT, useMessages } from "gt-react";
@@ -33,6 +36,7 @@ import { SettingsRow } from "./settingsLayout";
 import { useSearchableSetting } from "./settingsSearch";
 import { EnvironmentIconMenu } from "./EnvironmentIconPicker";
 import { EnvironmentRoutesList } from "./EnvironmentRoutesList";
+import type { ReauthenticateRouteTarget } from "./AddEnvironmentDialog";
 import {
   ConnectionDiagnosisPanel,
   ConnectionDiagnosisSummary,
@@ -79,6 +83,7 @@ type SavedBackendListRowProps = {
   onSetEnabled: (environmentId: EnvironmentId, enabled: boolean) => void;
   onRemove: (environment: EnvironmentPresentation) => void;
   onAddRoute: (environment: EnvironmentPresentation) => void;
+  onReauthenticateRoute?: (target: ReauthenticateRouteTarget) => void;
   /** The map's details open on a machine's routes; the list keeps them folded. */
   initialRoutesOpen?: boolean;
 };
@@ -131,6 +136,7 @@ export function SavedBackendListRow({
   onSetEnabled,
   onRemove,
   onAddRoute,
+  onReauthenticateRoute,
   initialRoutesOpen = false,
 }: SavedBackendListRowProps) {
   const messages = useMessages();
@@ -232,7 +238,28 @@ export function SavedBackendListRow({
     environment.serverConfig ??
       (lastDescriptor === undefined ? null : { environment: lastDescriptor }),
   );
-  const routeCount = connectionRoutes(environment.entry).length;
+  const routes = connectionRoutes(environment.entry);
+  const routeCount = routes.length;
+  const firstRefusedDirectRoute: ReauthenticateRouteTarget | null = (() => {
+    for (const route of routes) {
+      if (
+        route.target._tag !== "BearerConnectionTarget" ||
+        isLearned(route) ||
+        !environment.refusedRouteIds.includes(connectionRouteId(route.target))
+      ) {
+        continue;
+      }
+      const httpBaseUrl = routeHttpBaseUrl(route);
+      if (httpBaseUrl !== null) {
+        return {
+          environment,
+          connectionId: route.target.connectionId,
+          httpBaseUrl,
+        };
+      }
+    }
+    return null;
+  })();
   const isControlPlane =
     environment.serverConfig !== null &&
     !environmentSupportsLocalSessions(environment.serverConfig);
@@ -364,12 +391,18 @@ export function SavedBackendListRow({
               diagnosis={diagnosis}
               onRetry={() => void retryNow(environmentId)}
               onAddRoute={relayOnly ? () => onAddRoute(environment) : null}
+              onSignInAgain={
+                onReauthenticateRoute && firstRefusedDirectRoute !== null
+                  ? () => onReauthenticateRoute(firstRefusedDirectRoute)
+                  : null
+              }
             />
           ) : null}
           {routesOpen && (
             <EnvironmentRoutesList
               environment={environment}
               onAddRoute={() => onAddRoute(environment)}
+              {...(onReauthenticateRoute ? { onReauthenticateRoute } : {})}
             />
           )}
           {permissionsOpen && (
