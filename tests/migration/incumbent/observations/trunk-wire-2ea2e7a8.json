@@ -22,5 +22,6 @@
     "replay.ts": "2e1e50b4049e2fea9eb871d0614b2a52503cbe329d36d5c19d9e8e73ac5b5b70",
     "socket.ts": "ae9c818522a499dbbe7074d3d97db3eb6e7b721472946395dab3a1078c457499"
   },
-  "scope": "Source server with isolated loopback homes. The two frozen v0.1.17 fixture checks, WebSocket and client session tests, and the two added session-transfer suites passed. The fixture files were copied unchanged into the detached trunk checkout."
+  "scope": "The three cases that exercise the two frozen v0.1.17 wire fixtures started source servers in isolated loopback homes. The selected WebSocket, client session, transfer token and transfer service tests cover their respective interfaces. The fixture files were copied unchanged into the detached trunk checkout.",
+  "reporterOutput": "The retained test report records 5 passing files and 101 passing tests in aggregate."
 }

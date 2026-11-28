@@ -65,6 +65,8 @@ Restore the published manifest, check for updates, and download again. Click **I
 
 Use a separate scratch installation with the packaged GitHub feed to repeat the successful upgrade path while v0.1.18 is the latest stable release. Both installed trees matched all 327 entries inside the v0.1.18 ZIP bundle and preserved the saved payloads. The installer creates the outer app directory with mode `0700`. [Update receipt](../observations/electron-macos-arm64/archive-update/receipt.json)
 
+On Apple silicon with Rosetta, repeat the public-feed check from the verified Intel v0.1.17 ZIP. Confirm the desktop bridge reports `appArch: "x64"` and `runningUnderArm64Translation: true`. When the bridge reports v0.1.18 as available, call `downloadUpdate()` and wait for that version to finish downloading. Call `installUpdate("0.1.18")` and wait for the packaged installer to relaunch the app. Check the executable and server architecture, verify the installed files against the arm64 ZIP, and reopen the saved thread. The translated Settings flow timed out waiting for **Download** in a separate run. Native Intel hardware requires a separate run. [Rosetta update receipt](../observations/electron-macos-x64/rosetta-update/receipt.json)
+
 ## Published arm64 AppImage update
 
 Use writable copies of the released AppImage and the Replay database in a disposable Debian arm64 container running Xvfb. Start v0.1.17 with `APPIMAGE_EXTRACT_AND_RUN=1`. Set `T3CODE_DESKTOP_MOCK_UPDATES=true` and `T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT` to direct the packaged updater to a loopback mirror. Serve the v0.1.18 `latest-linux-arm64.yml` and AppImage. The mirror rejects byte ranges so the updater takes the full-download path.

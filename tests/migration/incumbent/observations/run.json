@@ -193,6 +193,11 @@
     "receipt": "electron-macos-arm64/archive-update/receipt.json",
     "scope": "Published v0.1.17 to v0.1.18 on macOS arm64 through the loopback mirror and configured GitHub feed. Both installed trees matched all 327 entries inside the target ZIP bundle, and both apps relaunched on the same port with the original Replay payloads. The loopback run also verified checksum rejection, retry and reopening the saved thread."
   },
+  "macosRosettaArchiveUpdate": {
+    "result": "observed",
+    "receipt": "electron-macos-x64/rosetta-update/receipt.json",
+    "scope": "The published Intel v0.1.17 app under Rosetta installed the arm64 v0.1.18 archive from the configured GitHub feed through the desktop bridge. The relaunched app kept the environment, port and saved Replay payloads. The translated Settings flow and native Intel execution remain open."
+  },
   "linuxArm64AppImageUpdate": {
     "result": "observed",
     "receipt": "electron-linux-arm64/appimage-update/receipt.json",
