@@ -21,7 +21,7 @@ import {
 } from "../../../packages/contracts/src/environment.ts";
 import { ORCHESTRATION_V2_WS_METHODS } from "../../../packages/contracts/src/orchestrationV2.ts";
 import { WS_METHODS } from "../../../packages/contracts/src/rpc.ts";
-import * as HostProcess from "../../../packages/shared/src/hostProcess.ts";
+import * as HostProcess from "../../../packages/shared/src/HostProcess.ts";
 import { checkWire } from "./check.ts";
 import replayFixture from "./incumbent-replay-v2.json" with { type: "json" };
 import { checkReplay } from "./replay.ts";

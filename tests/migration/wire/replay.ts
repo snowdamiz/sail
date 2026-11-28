@@ -267,11 +267,22 @@ export async function checkReplay(
       const id = update.payload.id;
       NodeAssert.ok(typeof id === "string" && id.length > 0, "Expected a stable entity ID");
       if (field === "messages" && update.payload.streaming === true) streamedMessages.add(id);
+      if (field === "providerTurns") {
+        NodeAssert.ok(typeof update.payload.nodeId === "string", "Expected a provider-turn node");
+      }
       if (field === "runs" && rows.get(id)?.status === "completed") {
         NodeAssert.equal(
           update.payload.status,
           "completed",
           "A completed run regressed during replay",
+        );
+      }
+      if (field === "turnItems" && rows.get(id)?.status === "completed") {
+        NodeAssert.equal(update.payload.status, "completed", "A completed turn item regressed");
+        NodeAssert.notEqual(
+          update.payload.streaming,
+          true,
+          "A completed turn item resumed streaming",
         );
       }
       rows.set(id, update.payload);
@@ -424,6 +435,25 @@ export async function checkReplay(
     NodeAssert.equal(attempt.id, run.activeAttemptId);
     NodeAssert.equal(attempt.runId, run.id);
   }
+  const activeProviderThreadId = object(
+    settled.thread,
+    "Expected a settled thread",
+  ).activeProviderThreadId;
+  NodeAssert.ok(typeof activeProviderThreadId === "string", "Expected an active provider thread");
+  const activeProviderThread = entities.get("providerThreads")?.get(activeProviderThreadId);
+  NodeAssert.ok(activeProviderThread, "Active provider thread is missing from the projection");
+  NodeAssert.equal(activeProviderThread.appThreadId, threadId);
+  NodeAssert.equal(run.providerThreadId, activeProviderThreadId);
+  const providerTurns = entities.get("providerTurns");
+  NodeAssert.ok(providerTurns?.size, "Expected the completed provider turn");
+  for (const turn of providerTurns.values()) {
+    NodeAssert.equal(turn.providerThreadId, activeProviderThreadId);
+    NodeAssert.equal(turn.runAttemptId, run.activeAttemptId);
+    NodeAssert.ok(
+      typeof turn.nodeId === "string" && entities.get("nodes")?.has(turn.nodeId),
+      "Provider turn points to a missing node",
+    );
+  }
 
   const items = array(settled.turnItems, "Expected turn items").map((item) =>
     object(item, "Expected a turn item"),
@@ -432,16 +462,29 @@ export async function checkReplay(
     items.map((item) => item.type),
     expected.turnItemTypes,
   );
+  let lastOrdinal = -1;
+  const itemMessageIds: string[] = [];
   for (const item of items) {
+    const ordinal = sequence(item.ordinal, "Expected a turn item ordinal");
+    NodeAssert.ok(ordinal > lastOrdinal, "Transcript items are out of order");
+    lastOrdinal = ordinal;
     if (item.type === "user_message" || item.type === "assistant_message") {
       const messageId = item.messageId;
       NodeAssert.ok(typeof messageId === "string");
+      itemMessageIds.push(messageId);
       const message = messages.get(messageId);
       NodeAssert.ok(message, "Turn item points to a missing message");
       NodeAssert.equal(item.text, message.text);
       NodeAssert.equal(item.runId, message.runId);
+      NodeAssert.equal(item.status, "completed", "Expected a completed transcript message");
+      if (item.type === "assistant_message") NodeAssert.equal(item.streaming, false);
     }
   }
+  NodeAssert.deepEqual(
+    itemMessageIds,
+    [...messages.keys()],
+    "Transcript messages are out of order",
+  );
   const visible = array(settled.visibleTurnItems, "Expected visible transcript items").map(
     (entry) => object(entry, "Expected a visible turn item"),
   );
