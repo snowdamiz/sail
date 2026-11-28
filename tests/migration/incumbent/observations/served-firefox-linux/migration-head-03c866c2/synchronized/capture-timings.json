@@ -171,5 +171,10 @@
     "measuredPerInstall": 1,
     "pixelAndTraceMatch": true,
     "runner": "tests/migration/incumbent/firefox-capture.py"
+  },
+  "guardedRunnerSmoke": {
+    "samples": 12,
+    "pixelAndTraceMatch": true,
+    "checks": "The paired document is ready before navigation. Synchronization and layout match before and after the final capture."
   }
 }

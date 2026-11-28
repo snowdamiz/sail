@@ -181,6 +181,11 @@
     "receipt": "served-chromium-macos/entrypoints/receipt.json",
     "scope": "chat link and command palette in the recorded Chromium profile"
   },
+  "stopAndRelink": {
+    "result": "observed",
+    "receipt": "served-chromium-macos/stop-and-relink/receipt.json",
+    "scope": "Published served Chromium on macOS. Stopping a Replay Question run awaiting input interrupted that same run and restored the composer. Cookie revocation ended the connection and showed the pairing form on a fresh visit. A new link reopened the same stopped thread."
+  },
   "approval": {
     "result": "pass",
     "receipt": "served-chromium-macos/approval/receipt.json"

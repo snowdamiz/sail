@@ -39,7 +39,7 @@ Run the published Linux arm64 CLI archive twice under separate scratch homes wit
 
 Both installs of the Linux arm64 archive built at `03c866c2` matched the published reference on the first capture of the settled chat with no provider configured. Subsequent captures also showed a sync status, a scroll offset, or reply hover controls across the incumbent and candidate installs. The [first comparisons](observations/served-firefox-linux/migration-head-03c866c2/first-round-comparisons.json) and [incomplete timing runs](observations/served-firefox-linux/migration-head-03c866c2/repeat-receipt.json) retain those outcomes.
 
-Use the paired runner in a disposable Debian arm64 environment with Firefox ESR 153.8.0, GeckoDriver 0.36.0, DejaVu fonts, Xvfb, xdotool, Pillow, and Python's `websocket-client`. Provide the published and locally built archives and the seed database and settings from a scratch fixture. The runner creates four independent server homes and pairs one fresh Firefox profile to each through separate loopback origins.
+Use the paired runner in a disposable Debian arm64 environment with Firefox ESR 153.8.0, GeckoDriver 0.36.0, DejaVu fonts, Xvfb, xdotool, Pillow, and Python's `websocket-client`. Provide the published and locally built archives and the seed database and settings from a scratch fixture. The runner uses one fresh Firefox profile and WebDriver session across four separate loopback origins, each with an independent server home. The measured navigations use that profile after two warmups.
 
 ```sh
 xvfb-run -a --server-args="-screen 0 1920x1400x24" \
@@ -49,7 +49,7 @@ xvfb-run -a --server-args="-screen 0 1920x1400x24" \
   --thread-id "$seed_thread_id" --out "$new_capture_dir"
 ```
 
-The runner waits for the thread's v2 synchronization marker and highlighted transcript, then focuses **Attach files** and settles the transcript at the end of its scroll range before the screenshot. The timer starts at WebDriver navigation and ends when the screenshot arrives. Setup, pairing, and the recorded composer control check run outside that interval. Each install has two warmups and 24 measured rounds by default.
+The runner waits for the thread's v2 synchronization marker and highlighted transcript, then focuses **Attach files** and settles the transcript at the end of its scroll range. It checks synchronization and geometry again after rendering and after the screenshot. The timer starts at WebDriver navigation and ends when the screenshot arrives. Setup, pairing, and the recorded composer control check run outside that interval. Each install has two warmups and 24 measured rounds by default.
 
 The synchronized run captured 104 identical PNGs and action traces across the two published and two candidate installs. Incumbent p95 was 2.886 and 3.248 seconds. Candidate p95 was 2.910 and 2.655 seconds, within both limits against each incumbent. The four copies shared the light English 640 × 600 CSS-pixel profile at scale 2 and a saved conversation with no configured provider. [Comparisons and raw timing samples](observations/served-firefox-linux/migration-head-03c866c2/synchronized)
 
@@ -77,6 +77,14 @@ Open the settled thread in the packaged macOS app. Use **Settings → Appearance
 ## Check approval and client compatibility
 
 The [approval receipt](observations/served-chromium-macos/approval/receipt.json) records the published Chromium client's supervised Replay approval and decline paths, SQLite outcomes, and disabled approval controls in a read-only session. The [version rejection receipt](observations/served-chromium-macos/version-rejection/receipt.json) records the published server's HTTP 426 and the published client's **Update** and **Retry update** states against the [simulated older service](version-rejection/README.md).
+
+## Capture Stop and browser relink
+
+Prepare an isolated published package with the pinned Replay provider. Add the fixture project, then run its CLI with `thread start "$fixture/project" "Ask me something" --provider devReplay --model question --title "Compatibility stop" --json`. Pair a browser through a one-time link labeled for this run and open the new thread. The Question recording keeps the run active until the user answers or stops it.
+
+Close the sidebar and thread details, capture the pending question, then click **Stop generation**. Confirm **Run interrupted · Stopped by user** appears, the composer returns, and `thread show --json` reports the original run as interrupted with no pending request. Keep the paired page open. Use `auth session list --json` to find the scratch browser's labeled cookie session and `auth session revoke` to revoke that session.
+
+Reopen the same thread URL. The published client shows **Pair with this environment** on that fresh visit. Redeem a new link in the same browser profile and reopen the original thread. The [capture receipt](observations/served-chromium-macos/stop-and-relink/receipt.json) records socket closure, rejection of the revoked cookie, and restoration of the same interrupted run. This covers the directly served loopback browser and a Replay run awaiting input.
 
 ## Capture chat loading and reconnect
 

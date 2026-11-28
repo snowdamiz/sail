@@ -27,6 +27,27 @@ BROWSER = "153.8.0"
 HOSTS = ("a", "head-a", "b", "head-b")
 PROBE = (HERE / "settled-replay-browser.js").read_text().strip().removesuffix(";")
 WebDriver = runpy.run_path(MIGRATION / "gpui/browser-verify.py")["WebDriver"]
+READ_LAYOUT = """
+() => {
+  const scroll = document.querySelector(".messages-timeline-scroll");
+  const code = document.querySelector("main .chat-markdown-shiki pre");
+  if (!scroll || !code || document.querySelector("[data-composer-sync-status]") ||
+      !window.__sailCaptureSync?.active) return null;
+  const {x, y, width, height} = code.getBoundingClientRect();
+  const meta = [...document.querySelectorAll('[aria-label="Reply to this response"]')]
+    .map(button => getComputedStyle(button.closest(".transition-opacity") ?? button).opacity);
+  const {scrollTop, scrollHeight, clientHeight} = scroll;
+  return {
+    scroll: [scrollTop, scrollHeight, clientHeight],
+    observed: {
+      status: "settled",
+      scrollAtEnd: Math.abs(scrollHeight - clientHeight - scrollTop) <= 1,
+      metaOpacity: meta,
+      transcript: [x, y, width, height],
+    },
+  };
+}
+"""
 
 
 def wait_http(url, child):
@@ -227,8 +248,16 @@ def installed_host(driver, name, index, state, args):
         while time.monotonic() < deadline:
             try:
                 authenticated = driver.script(
-                    "const done=arguments[arguments.length-1];fetch('/api/auth/session')"
-                    ".then(r=>r.json()).then(v=>done(v.authenticated===true),()=>done(false));",
+                    """const expectedOrigin = arguments[0];
+                    const done = arguments[arguments.length - 1];
+                    if (location.origin !== expectedOrigin || location.hash ||
+                        location.pathname === "/pair" || !document.querySelector("main h2")) {
+                      done(false);
+                      return;
+                    }
+                    fetch("/api/auth/session").then(r=>r.json())
+                      .then(v=>done(v.authenticated===true),()=>done(false));""",
+                    origin,
                     asynchronous=True,
                 )
             except RuntimeError as exc:
@@ -295,47 +324,41 @@ def sampled(driver, url, label, iteration, out):
     )
     focused = time.monotonic_ns()
     layout = driver.script(
-        """
+        "const readLayout = "
+        + READ_LAYOUT
+        + ";"
+        + """
       const done = arguments[arguments.length-1];
       const end = performance.now() + 8500;
       let previous = null;
       let identicalFrames = 0;
       function check(now) {
         const scroll = document.querySelector(".messages-timeline-scroll");
-        const code = document.querySelector("main .chat-markdown-shiki pre");
-        const status = document.querySelector("[data-composer-sync-status]");
-        if (scroll && code && !status && window.__sailCaptureSync?.active) {
-          scroll.scrollTo({top:scroll.scrollHeight, behavior:"instant"});
-          const geometry = code.getBoundingClientRect();
-          const meta = [...document.querySelectorAll('[aria-label="Reply to this response"]')]
-            .map(button => getComputedStyle(button.closest(".transition-opacity") ?? button).opacity);
-          const current = JSON.stringify([scroll.scrollHeight, scroll.clientHeight, scroll.scrollTop,
-              geometry.x, geometry.y, geometry.width, geometry.height, meta]);
-          identicalFrames = current === previous ? identicalFrames+1 : 0;
-          if (identicalFrames >= 2) {
-            done({status:"settled", scrollAtEnd:Math.abs(scroll.scrollHeight-scroll.clientHeight-scroll.scrollTop)<=1,
-                  metaOpacity:meta, transcript:[geometry.x, geometry.y, geometry.width, geometry.height]});
-            return;
-          }
-          previous = current;
-        } else {
-          previous = null;
-          identicalFrames = 0;
+        if (window.__sailCaptureSync?.active) {
+          scroll?.scrollTo({top:scroll.scrollHeight, behavior:"instant"});
         }
+        const layout = readLayout();
+        const current = layout?.observed.scrollAtEnd ? JSON.stringify(layout) : null;
+        identicalFrames = current !== null && current === previous ? identicalFrames+1 : 0;
+        if (identicalFrames >= 2) {
+          done(layout);
+          return;
+        }
+        previous = current;
         if (now >= end) done(null); else requestAnimationFrame(check);
       }
       requestAnimationFrame(check);
     """,
         asynchronous=True,
     )
-    assert layout and layout["scrollAtEnd"], (
-        f"{label} {iteration}: transcript did not settle at end: {layout}"
-    )
+    assert layout, f"{label} {iteration}: transcript did not settle at end: {layout}"
     settled = time.monotonic_ns()
     result = driver.script(
-        "const done=arguments[arguments.length-1]; ("
+        "const done=arguments[arguments.length-1]; const readLayout="
+        + READ_LAYOUT
+        + "; ("
         + PROBE
-        + ").then(v=>done({value:v}),e=>done({error:e.message}));",
+        + ").then(v=>done({value:v,layout:readLayout()}),e=>done({error:e.message}));",
         asynchronous=True,
     )
     if "error" in result:
@@ -345,10 +368,18 @@ def sampled(driver, url, label, iteration, out):
         raise RuntimeError(f"{label} round {iteration}: {result['error']}; {debug}")
     value = result["value"]
     assert value["profile"]["viewport"] == VIEWPORT
-    value["trace"].append({"action": "settleTranscriptAtEnd", "observed": layout})
+    assert result["layout"] == layout, (
+        f"{label} {iteration}: layout changed while rendering"
+    )
+    value["trace"].append(
+        {"action": "settleTranscriptAtEnd", "observed": layout["observed"]}
+    )
     traced = time.monotonic_ns()
     png = base64.b64decode(driver.request("GET", "/screenshot"), validate=True)
     captured = time.monotonic_ns()
+    assert driver.script("return (" + READ_LAYOUT + ")();") == layout, (
+        f"{label} {iteration}: layout changed during the screenshot"
+    )
     target = out / f"{iteration:02}-{label}.png"
     target.write_bytes(png)
     with Image.open(target) as image:

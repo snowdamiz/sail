@@ -269,6 +269,13 @@ export async function checkReplay(
       if (field === "messages" && update.payload.streaming === true) streamedMessages.add(id);
       if (field === "providerTurns") {
         NodeAssert.ok(typeof update.payload.nodeId === "string", "Expected a provider-turn node");
+        if (rows.get(id)?.status === "completed") {
+          NodeAssert.equal(
+            update.payload.status,
+            "completed",
+            "A completed provider turn regressed during replay",
+          );
+        }
       }
       if (field === "runs" && rows.get(id)?.status === "completed") {
         NodeAssert.equal(
