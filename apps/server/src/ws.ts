@@ -222,6 +222,7 @@ import { withSocketHeartbeat } from "./socketHeartbeat.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import * as BoatSupervisor from "./boat/BoatSupervisor.ts";
+import * as SessionTransferCoordinator from "./boat/SessionTransferCoordinator.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
@@ -1453,6 +1454,9 @@ export const layerWsRpc = (
       const sessionTransferEndpointsOption = yield* Effect.serviceOption(
         SessionTransferEndpointService.SessionTransferEndpointService,
       );
+      const sessionTransferCoordinatorOption = yield* Effect.serviceOption(
+        SessionTransferCoordinator.SessionTransferCoordinator,
+      );
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
       const issues = yield* IssueService.IssueService;
@@ -1934,6 +1938,11 @@ export const layerWsRpc = (
           projectCredentialsSync: true,
           portableSecretProviderSync: !isBoatServer,
           portableProviderAuthSync: !isBoatServer,
+          hasConfiguredBoats:
+            isBoatServer || !Object.hasOwn(boats, "hasConfiguredBoats") || !boats.hasConfiguredBoats
+              ? false
+              : yield* boats.hasConfiguredBoats.pipe(Effect.orElseSucceed(() => false)),
+          sessionTransfer: Option.isSome(sessionTransferEndpointsOption),
           featureFlags: {
             secretProviders: featureFlags.secretProviders,
             tanstackSource: featureFlags.tanstackSource,
@@ -3680,53 +3689,80 @@ export const layerWsRpc = (
             ),
         [WS_METHODS.subscribeBoats]: (_input) => boats.events,
         [WS_METHODS.subscribeBoatNotices]: (_input) => boats.notices,
-        [WS_METHODS.sessionTransferPreflight]: (_input) =>
-          Effect.fail(
-            new SessionTransferError({
-              code: "not_implemented",
-              message: "Session transfer preflight is not implemented yet.",
-            }),
-          ),
-        [WS_METHODS.sessionTransferStart]: (_input) =>
-          Effect.fail(
-            new SessionTransferError({
-              code: "not_implemented",
-              message: "Session transfer start is not implemented yet.",
-            }),
-          ),
-        [WS_METHODS.sessionTransferCancel]: (input) =>
-          Effect.fail(
-            new SessionTransferError({
-              code: "not_implemented",
-              transferId: input.transferId,
-              message: "Session transfer cancel is not implemented yet.",
-            }),
-          ),
-        [WS_METHODS.sessionTransferRetry]: (input) =>
-          Effect.fail(
-            new SessionTransferError({
-              code: "not_implemented",
-              transferId: input.transferId,
-              message: "Session transfer retry is not implemented yet.",
-            }),
-          ),
-        [WS_METHODS.sessionTransferList]: (input) =>
-          Option.match(sessionTransfersOption, {
-            onNone: () => Effect.succeed({ transfers: [] }),
-            onSome: (repo) =>
-              (input.activeOnly ? repo.listActive(input.limit) : repo.listRecent(input.limit)).pipe(
-                Effect.map((transfers) => ({ transfers })),
-                Effect.mapError(
-                  (error) =>
-                    new SessionTransferError({
-                      code: "internal",
-                      message: error.message,
-                      cause: error,
-                    }),
-                ),
+        [WS_METHODS.sessionTransferPreflight]: (input) =>
+          Option.match(sessionTransferCoordinatorOption, {
+            onNone: () =>
+              Effect.fail(
+                new SessionTransferError({
+                  code: "not_implemented",
+                  message: "Session transfer coordinator is not configured.",
+                }),
               ),
+            onSome: (coordinator) => coordinator.preflight(input),
           }),
-        [WS_METHODS.subscribeSessionTransfers]: (_input) => Stream.empty,
+        [WS_METHODS.sessionTransferStart]: (input) =>
+          Option.match(sessionTransferCoordinatorOption, {
+            onNone: () =>
+              Effect.fail(
+                new SessionTransferError({
+                  code: "not_implemented",
+                  message: "Session transfer coordinator is not configured.",
+                }),
+              ),
+            onSome: (coordinator) => coordinator.start(input),
+          }),
+        [WS_METHODS.sessionTransferCancel]: (input) =>
+          Option.match(sessionTransferCoordinatorOption, {
+            onNone: () =>
+              Effect.fail(
+                new SessionTransferError({
+                  code: "not_implemented",
+                  transferId: input.transferId,
+                  message: "Session transfer coordinator is not configured.",
+                }),
+              ),
+            onSome: (coordinator) => coordinator.cancel(input),
+          }),
+        [WS_METHODS.sessionTransferRetry]: (input) =>
+          Option.match(sessionTransferCoordinatorOption, {
+            onNone: () =>
+              Effect.fail(
+                new SessionTransferError({
+                  code: "not_implemented",
+                  transferId: input.transferId,
+                  message: "Session transfer coordinator is not configured.",
+                }),
+              ),
+            onSome: (coordinator) => coordinator.retry(input),
+          }),
+        [WS_METHODS.sessionTransferList]: (input) =>
+          Option.match(sessionTransferCoordinatorOption, {
+            onSome: (coordinator) => coordinator.list(input),
+            onNone: () =>
+              Option.match(sessionTransfersOption, {
+                onNone: () => Effect.succeed({ transfers: [] }),
+                onSome: (repo) =>
+                  (input.activeOnly
+                    ? repo.listActive(input.limit)
+                    : repo.listRecent(input.limit)
+                  ).pipe(
+                    Effect.map((transfers) => ({ transfers })),
+                    Effect.mapError(
+                      (error) =>
+                        new SessionTransferError({
+                          code: "internal",
+                          message: error.message,
+                          cause: error,
+                        }),
+                    ),
+                  ),
+              }),
+          }),
+        [WS_METHODS.subscribeSessionTransfers]: (_input) =>
+          Option.match(sessionTransferCoordinatorOption, {
+            onNone: () => Stream.empty,
+            onSome: (coordinator) => coordinator.subscribe,
+          }),
         [WS_METHODS.sessionTransferPrepareSource]: (input) =>
           Option.match(sessionTransferEndpointsOption, {
             onNone: () =>

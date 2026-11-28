@@ -104,6 +104,22 @@ const commands = {
     return [200, { ok: true, data: null }];
   },
   get_state: () => [200, { ok: true, data: state }],
+  machine_proxy_access: (args) => {
+    if (args.id === "bx_dev" || args.environmentId === "boat-m1") {
+      return [200, {
+        ok: true,
+        data: {
+          machineId: "bx_dev",
+          machineName: "m1",
+          environmentId: "boat-m1",
+          state: "idle",
+          localUrl: "http://127.0.0.1:47732",
+          bearerToken: "internal-proxy-secret",
+        },
+      }];
+    }
+    return [500, { ok: false, error: "no machine found" }];
+  },
   pair_machine: (_args, req) => [200, req.headers["x-sail-client-on-host"] === "0"
     ? { ok: true, pairingTarget: { environmentId: "boat-m1", url: "https://boat.example" } }
     : { ok: true, openUrl: "sail://pair?pairingUrl=http%3A%2F%2Flocalhost%3A47732%2Fpair%23token%3Dlocal" }],
@@ -861,6 +877,59 @@ describe("BoatSupervisor", () => {
         const second = yield* Queue.take(reports);
         assert.equal(second.event, "started");
         assert.notEqual(second.pid, first.pid, "no Boats call started this one");
+      }).pipe(Effect.provide(supervisor()));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("hasConfiguredBoats reads saved state passively without spawning sail-boatd", () =>
+    Effect.gen(function* () {
+      const { reports, saveBoatState, supervisor } = yield* setup;
+
+      const emptyResult = yield* Effect.gen(function* () {
+        const boats = yield* BoatSupervisor.BoatSupervisor;
+        return yield* boats.hasConfiguredBoats!;
+      }).pipe(Effect.provide(supervisor()));
+      assert.isFalse(emptyResult);
+      assert.isTrue(Option.isNone(yield* Queue.poll(reports)), "must not spawn sail-boatd");
+
+      yield* saveBoatState({ machines: [{ id: "bx_dev", name: "m1" }] });
+      const configuredResult = yield* Effect.gen(function* () {
+        const boats = yield* BoatSupervisor.BoatSupervisor;
+        return yield* boats.hasConfiguredBoats!;
+      }).pipe(Effect.provide(supervisor()));
+      assert.isTrue(configuredResult);
+      assert.isTrue(
+        Option.isNone(yield* Queue.poll(reports)),
+        "reading hasConfiguredBoats must stay passive while parked",
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("getMachineProxyAccess resolves by machineId or environmentId and surfaces errors", () =>
+    Effect.gen(function* () {
+      const { supervisor } = yield* setup;
+
+      yield* Effect.gen(function* () {
+        const boats = yield* BoatSupervisor.BoatSupervisor;
+        const byId = yield* boats.getMachineProxyAccess!({ machineId: "bx_dev" });
+        assert.deepEqual(byId, {
+          machineId: "bx_dev",
+          machineName: "m1",
+          environmentId: EnvironmentId.make("boat-m1"),
+          state: "idle",
+          localUrl: "http://127.0.0.1:47732",
+          bearerToken: "internal-proxy-secret",
+        });
+
+        const byEnv = yield* boats.getMachineProxyAccess!({
+          environmentId: EnvironmentId.make("boat-m1"),
+        });
+        assert.equal(byEnv.bearerToken, "internal-proxy-secret");
+
+        const missing = yield* boats.getMachineProxyAccess!({
+          environmentId: EnvironmentId.make("boat-missing"),
+        }).pipe(Effect.flip);
+        assert.match(missing.message, /no machine found/);
       }).pipe(Effect.provide(supervisor()));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
