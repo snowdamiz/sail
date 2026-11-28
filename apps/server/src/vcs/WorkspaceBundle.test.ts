@@ -1298,4 +1298,230 @@ describe("WorkspaceBundle", () => {
         }).pipe(Effect.provide(pausedBundleLayer));
       }).pipe(Effect.provide(makeTestLayer())),
   );
+
+  it.effect(
+    "never recursively deletes an unregistered directory or a worktree on a different branch when interrupted during add, and guards removeWorktree unregistered fallbacks",
+    () =>
+      Effect.gen(function* () {
+        const baseFs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseVcsProcess = yield* VcsProcess.VcsProcess;
+
+        const root = yield* baseFs.makeTempDirectoryScoped({
+          prefix: "t3-wb-unregistered-dir-guard-",
+        });
+        const srcRepo = path.join(root, "src");
+        const dstRepo = path.join(root, "dst");
+        const otherRepo = path.join(root, "other");
+        const bundlePath = path.join(root, "unreg-guard.bundle");
+
+        yield* baseFs.makeDirectory(srcRepo, { recursive: true });
+        yield* git(srcRepo, ["init", "-b", "main"]);
+        yield* baseFs.writeFileString(path.join(srcRepo, "file.txt"), "base\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "init"]);
+        yield* git(root, ["clone", srcRepo, dstRepo]);
+        yield* git(root, ["clone", srcRepo, otherRepo]);
+
+        yield* git(srcRepo, ["checkout", "-b", "feat/unreg-dir-guard"]);
+        yield* baseFs.writeFileString(path.join(srcRepo, "file.txt"), "feature\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "feature"]);
+
+        const baseBundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const exported = yield* baseBundleService.exportWorkspaceBundle({
+          transferId: "xfer-unreg-dir-guard",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+
+        // Probe 1 (Finding 2 exact probe): Pause add right after its final path check (inside
+        // WorkspaceBundle.addWorktree before git spawns), independently create a directory + file
+        // at worktreePath, then interrupt -> directory + file MUST survive untouched and ownership
+        // MUST be cleared!
+        const addPaused1 = yield* Deferred.make<void>();
+        let pauseAdd1 = true;
+        const pausedVcsLayer1 = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) => {
+            if (runInput.operation === "WorkspaceBundle.addWorktree" && pauseAdd1) {
+              pauseAdd1 = false;
+              return Deferred.succeed(addPaused1, undefined).pipe(Effect.andThen(Effect.never));
+            }
+            return baseVcsProcess.run(runInput);
+          },
+        });
+        const pausedBundleLayer1 = Layer.fresh(WorkspaceBundle.layer).pipe(
+          Layer.provide(pausedVcsLayer1),
+        );
+
+        let clearedCount1 = 0;
+        let allocatedPath1 = "";
+        yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          const fiber = yield* Effect.forkChild(
+            svc.importWorkspaceBundle({
+              transferId: "xfer-unreg-dir-guard",
+              repoCwd: dstRepo,
+              bundlePath,
+              sourceBranch: exported.branch,
+              targetLabel: "boat",
+              onWorktreeAllocated: (allocation) =>
+                Effect.sync(() => {
+                  allocatedPath1 = allocation.worktreePath;
+                }),
+              onWorktreeAllocationCleared: () =>
+                Effect.sync(() => {
+                  clearedCount1 += 1;
+                }),
+            }),
+          );
+          yield* Deferred.await(addPaused1);
+
+          // Independently create a non-worktree directory + user file at the allocated path.
+          yield* baseFs.makeDirectory(allocatedPath1, { recursive: true });
+          const userFilePath = path.join(allocatedPath1, "user-important.txt");
+          yield* baseFs.writeFileString(userFilePath, "do not delete me\n");
+
+          yield* Fiber.interrupt(fiber);
+
+          expect(clearedCount1).toBe(1);
+          expect(yield* baseFs.exists(allocatedPath1)).toBe(true);
+          expect(yield* baseFs.readFileString(userFilePath)).toBe("do not delete me\n");
+        }).pipe(Effect.provide(pausedBundleLayer1));
+
+        // Probe 2 (Finding 1 in cleanupIncompleteAdd): Pause add right after its final path check,
+        // independently register a Git worktree at allocatedWorktreePath on a DIFFERENT branch
+        // with an uncommitted file, then interrupt -> worktree, uncommitted file, and branch MUST
+        // ALL survive untouched while ownership is cleared!
+        const addPaused2 = yield* Deferred.make<void>();
+        let pauseAdd2 = true;
+        const pausedVcsLayer2 = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) => {
+            if (runInput.operation === "WorkspaceBundle.addWorktree" && pauseAdd2) {
+              pauseAdd2 = false;
+              return Deferred.succeed(addPaused2, undefined).pipe(Effect.andThen(Effect.never));
+            }
+            return baseVcsProcess.run(runInput);
+          },
+        });
+        const pausedBundleLayer2 = Layer.fresh(WorkspaceBundle.layer).pipe(
+          Layer.provide(pausedVcsLayer2),
+        );
+
+        let clearedCount2 = 0;
+        let allocatedPath2 = "";
+        yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          const fiber = yield* Effect.forkChild(
+            svc.importWorkspaceBundle({
+              transferId: "xfer-unreg-dir-guard",
+              repoCwd: dstRepo,
+              bundlePath,
+              sourceBranch: exported.branch,
+              targetLabel: "boat",
+              onWorktreeAllocated: (allocation) =>
+                Effect.sync(() => {
+                  allocatedPath2 = allocation.worktreePath;
+                }),
+              onWorktreeAllocationCleared: () =>
+                Effect.sync(() => {
+                  clearedCount2 += 1;
+                }),
+            }),
+          );
+          yield* Deferred.await(addPaused2);
+
+          // Independently register a worktree at allocatedPath2 on a DIFFERENT branch.
+          const otherBranch = "feat/independent-wt-branch";
+          yield* git(dstRepo, ["worktree", "add", "-b", otherBranch, allocatedPath2, "HEAD"]);
+          const dirtyFile = path.join(allocatedPath2, "wip.txt");
+          yield* baseFs.writeFileString(dirtyFile, "uncommitted work\n");
+
+          yield* Fiber.interrupt(fiber);
+
+          expect(clearedCount2).toBe(1);
+          expect(yield* baseFs.exists(allocatedPath2)).toBe(true);
+          expect(yield* baseFs.readFileString(dirtyFile)).toBe("uncommitted work\n");
+          expect((yield* git(dstRepo, ["branch", "--list", otherBranch])).trim()).not.toBe("");
+
+          // Probe 3: removeWorktree with expectedBranch mismatch MUST refuse to force-remove
+          // the worktree and leave its directory, file, and branch untouched!
+          const wrongBranchRemove = yield* Effect.result(
+            baseBundleService.removeWorktree({
+              repoCwd: dstRepo,
+              worktreePath: allocatedPath2,
+              branch: otherBranch,
+              expectedBranch: "feat/unreg-dir-guard",
+            }),
+          );
+          expect(Result.isFailure(wrongBranchRemove)).toBe(true);
+          if (Result.isFailure(wrongBranchRemove)) {
+            expect(wrongBranchRemove.failure.code).toBe("git_error");
+          }
+          expect(yield* baseFs.exists(allocatedPath2)).toBe(true);
+          expect(yield* baseFs.readFileString(dirtyFile)).toBe("uncommitted work\n");
+          expect((yield* git(dstRepo, ["branch", "--list", otherBranch])).trim()).not.toBe("");
+        }).pipe(Effect.provide(pausedBundleLayer2));
+
+        // Probe 4: removeWorktree on unregistered directories:
+        // (a) Plain directory without `.git` -> refuses with git_error, leaves untouched.
+        const plainDir = path.join(root, "plain-user-dir");
+        yield* baseFs.makeDirectory(plainDir, { recursive: true });
+        yield* baseFs.writeFileString(path.join(plainDir, "keep.txt"), "precious\n");
+        const plainFail = yield* Effect.result(
+          baseBundleService.removeWorktree({
+            repoCwd: dstRepo,
+            worktreePath: plainDir,
+          }),
+        );
+        expect(Result.isFailure(plainFail)).toBe(true);
+        expect(yield* baseFs.readFileString(path.join(plainDir, "keep.txt"))).toBe("precious\n");
+
+        // (b) Directory with `.git` gitfile pointing to a DIFFERENT repo's worktrees dir -> refuses!
+        const foreignDir = path.join(root, "foreign-wt-dir");
+        yield* baseFs.makeDirectory(foreignDir, { recursive: true });
+        yield* baseFs.writeFileString(
+          path.join(foreignDir, ".git"),
+          `gitdir: ${path.join(otherRepo, ".git", "worktrees", "foreign")}\n`,
+        );
+        yield* baseFs.writeFileString(path.join(foreignDir, "foreign.txt"), "other repo\n");
+        const foreignFail = yield* Effect.result(
+          baseBundleService.removeWorktree({
+            repoCwd: dstRepo,
+            worktreePath: foreignDir,
+          }),
+        );
+        expect(Result.isFailure(foreignFail)).toBe(true);
+        expect(yield* baseFs.readFileString(path.join(foreignDir, "foreign.txt"))).toBe(
+          "other repo\n",
+        );
+
+        // (c) Orphaned worktree directory whose `.git` gitfile points strictly inside
+        //     `<dstRepo gitCommonDir>/worktrees/` -> allowed when fallback is enabled (default),
+        //     refused when allowUnregisteredGitWorktreeFallback is false.
+        const orphanDir = path.join(root, "orphan-wt-dir");
+        yield* baseFs.makeDirectory(orphanDir, { recursive: true });
+        yield* baseFs.writeFileString(
+          path.join(orphanDir, ".git"),
+          `gitdir: ${path.join(dstRepo, ".git", "worktrees", "orphan-wt")}\n`,
+        );
+        yield* baseFs.writeFileString(path.join(orphanDir, "orphan.txt"), "stale\n");
+
+        const disallowedOrphan = yield* Effect.result(
+          baseBundleService.removeWorktree({
+            repoCwd: dstRepo,
+            worktreePath: orphanDir,
+            allowUnregisteredGitWorktreeFallback: false,
+          }),
+        );
+        expect(Result.isFailure(disallowedOrphan)).toBe(true);
+        expect(yield* baseFs.exists(orphanDir)).toBe(true);
+
+        yield* baseBundleService.removeWorktree({
+          repoCwd: dstRepo,
+          worktreePath: orphanDir,
+        });
+        expect(yield* baseFs.exists(orphanDir)).toBe(false);
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
 });

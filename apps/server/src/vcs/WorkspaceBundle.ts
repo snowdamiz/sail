@@ -146,12 +146,15 @@ export interface RemoveWorkspaceWorktreeInput {
   readonly repoCwd: string;
   readonly worktreePath?: string | null;
   readonly branch?: string | null;
+  readonly expectedBranch?: string | null;
+  readonly allowUnregisteredGitWorktreeFallback?: boolean;
 }
 
 export interface RegisteredWorkspaceWorktree {
   readonly path: string;
   readonly isMain: boolean;
   readonly branch: string | null;
+  readonly headSha: string | null;
   readonly locked: boolean;
   readonly lockReason: string | null;
 }
@@ -229,6 +232,7 @@ function parseWorktreeListPorcelainZ(stdout: string): ReadonlyArray<RegisteredWo
   const entries: Array<RegisteredWorkspaceWorktree> = [];
   let currentPath: string | null = null;
   let currentBranch: string | null = null;
+  let currentHeadSha: string | null = null;
   let currentLocked = false;
   let currentLockReason: string | null = null;
 
@@ -238,12 +242,14 @@ function parseWorktreeListPorcelainZ(stdout: string): ReadonlyArray<RegisteredWo
         path: currentPath,
         isMain: entries.length === 0,
         branch: currentBranch,
+        headSha: currentHeadSha,
         locked: currentLocked,
         lockReason: currentLockReason,
       });
     }
     currentPath = null;
     currentBranch = null;
+    currentHeadSha = null;
     currentLocked = false;
     currentLockReason = null;
   };
@@ -259,7 +265,9 @@ function parseWorktreeListPorcelainZ(stdout: string): ReadonlyArray<RegisteredWo
       continue;
     }
     if (currentPath !== null) {
-      if (rawField.startsWith("branch refs/heads/")) {
+      if (rawField.startsWith("HEAD ")) {
+        currentHeadSha = rawField.slice("HEAD ".length).trim() || null;
+      } else if (rawField.startsWith("branch refs/heads/")) {
         currentBranch = rawField.slice("branch refs/heads/".length);
       } else if (rawField === "locked") {
         currentLocked = true;
@@ -1022,6 +1030,44 @@ const make = Effect.gen(function* () {
     return null;
   });
 
+  const isOwnedUnregisteredGitWorktreeDir = Effect.fn(
+    "WorkspaceBundle.isOwnedUnregisteredGitWorktreeDir",
+  )(function* (repoCwd: string, worktreePath: string) {
+    const gitCommonDir = yield* resolveGitCommonDir(repoCwd);
+    if (gitCommonDir === null) {
+      return false;
+    }
+    const worktreesAdminDir = yield* normalizePathForComparison(
+      path.join(gitCommonDir, "worktrees"),
+    );
+    const gitFilePath = path.join(worktreePath, ".git");
+    const statResult = yield* Effect.result(fileSystem.stat(gitFilePath));
+    if (Result.isFailure(statResult) || statResult.success.type !== "File") {
+      return false;
+    }
+    const contentResult = yield* Effect.result(fileSystem.readFileString(gitFilePath));
+    if (Result.isFailure(contentResult)) {
+      return false;
+    }
+    const trimmed = contentResult.success.trim();
+    if (trimmed.includes("\n") || trimmed.includes("\r")) {
+      return false;
+    }
+    const match = /^gitdir:\s*(.+)$/.exec(trimmed);
+    if (match === null || match[1] === undefined || match[1].trim().length === 0) {
+      return false;
+    }
+    const rawGitDir = path.resolve(worktreePath, match[1].trim());
+    const normalizedGitDir = yield* normalizePathForComparison(rawGitDir);
+    const relativeToAdmin = path.relative(worktreesAdminDir, normalizedGitDir);
+    return (
+      relativeToAdmin.length > 0 &&
+      relativeToAdmin !== ".." &&
+      !relativeToAdmin.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relativeToAdmin)
+    );
+  });
+
   const removeWorktree: WorkspaceBundleShape["removeWorktree"] = Effect.fn(
     "WorkspaceBundle.removeWorktree",
   )(function* (input) {
@@ -1038,23 +1084,33 @@ const make = Effect.gen(function* () {
 
       if (Result.isFailure(beforeEntryResult)) {
         worktreeError = beforeEntryResult.failure;
-      } else if (beforeEntryResult.success?.isMain) {
-        worktreeError = new WorkspaceBundleError({
-          code: "git_error",
-          message: `Refusing to remove main worktree '${worktreePath}' in '${input.repoCwd}'.`,
-        });
-      } else if (beforeEntryResult.success?.locked) {
-        const lockReason = beforeEntryResult.success.lockReason;
-        worktreeError = new WorkspaceBundleError({
-          code: "git_error",
-          message:
-            lockReason !== null
-              ? `Cannot remove locked worktree '${worktreePath}': ${lockReason}`
-              : `Cannot remove locked worktree '${worktreePath}'. Unlock the worktree before retrying cleanup.`,
-        });
-      } else {
-        allowFilesystemFallback = true;
-        if (beforeEntryResult.success !== null) {
+      } else if (beforeEntryResult.success !== null) {
+        const registered = beforeEntryResult.success;
+        if (registered.isMain) {
+          worktreeError = new WorkspaceBundleError({
+            code: "git_error",
+            message: `Refusing to remove main worktree '${worktreePath}' in '${input.repoCwd}'.`,
+          });
+        } else if (
+          input.expectedBranch !== undefined &&
+          input.expectedBranch !== null &&
+          registered.branch !== input.expectedBranch
+        ) {
+          worktreeError = new WorkspaceBundleError({
+            code: "git_error",
+            message: `Refusing to remove worktree '${worktreePath}' in '${input.repoCwd}' because it is checked out on branch '${registered.branch ?? "(detached)"}' instead of expected '${input.expectedBranch}'.`,
+          });
+        } else if (registered.locked) {
+          const lockReason = registered.lockReason;
+          worktreeError = new WorkspaceBundleError({
+            code: "git_error",
+            message:
+              lockReason !== null
+                ? `Cannot remove locked worktree '${worktreePath}': ${lockReason}`
+                : `Cannot remove locked worktree '${worktreePath}'. Unlock the worktree before retrying cleanup.`,
+          });
+        } else {
+          allowFilesystemFallback = true;
           const gitRemoveResult = yield* Effect.result(
             runGit(
               "WorkspaceBundle.removeWorktree",
@@ -1092,6 +1148,50 @@ const make = Effect.gen(function* () {
                   lockReason !== null
                     ? `Cannot remove locked worktree '${worktreePath}': ${lockReason}`
                     : `Cannot remove locked worktree '${worktreePath}'. Unlock the worktree before retrying cleanup.`,
+              });
+            }
+          }
+        }
+      } else {
+        // Unregistered path: missing dir is a no-op; existing dir may ONLY be removed when
+        // unregistered fallback is allowed AND `.git` is a worktree gitfile pointing strictly
+        // inside `<gitCommonDir>/worktrees/`.
+        const pathExistsResult = yield* Effect.result(
+          fileSystem.exists(worktreePath).pipe(
+            Effect.catchIf(
+              (error) => error.reason._tag === "NotFound",
+              () => Effect.succeed(false),
+            ),
+            Effect.mapError(
+              (cause) =>
+                new WorkspaceBundleError({
+                  code: "io_error",
+                  message: `Failed to inspect worktree directory '${worktreePath}': ${cause.message}`,
+                  cause,
+                }),
+            ),
+          ),
+        );
+        if (Result.isFailure(pathExistsResult)) {
+          worktreeError = pathExistsResult.failure;
+        } else if (pathExistsResult.success) {
+          if (input.allowUnregisteredGitWorktreeFallback === false) {
+            worktreeError = new WorkspaceBundleError({
+              code: "git_error",
+              message: `Refusing to remove unregistered directory '${worktreePath}' in '${input.repoCwd}'.`,
+            });
+          } else {
+            const ownedCheckResult = yield* Effect.result(
+              isOwnedUnregisteredGitWorktreeDir(input.repoCwd, worktreePath),
+            );
+            if (Result.isFailure(ownedCheckResult)) {
+              worktreeError = ownedCheckResult.failure;
+            } else if (ownedCheckResult.success) {
+              allowFilesystemFallback = true;
+            } else {
+              worktreeError = new WorkspaceBundleError({
+                code: "git_error",
+                message: `Refusing to remove unregistered directory '${worktreePath}' in '${input.repoCwd}' because it is not a Git worktree belonging to this repository.`,
               });
             }
           }
@@ -1187,7 +1287,12 @@ const make = Effect.gen(function* () {
       }
     }
 
-    if (input.branch !== undefined && input.branch !== null && input.branch.length > 0) {
+    if (
+      worktreeError === null &&
+      input.branch !== undefined &&
+      input.branch !== null &&
+      input.branch.length > 0
+    ) {
       const branch = input.branch;
       const deleteBranchResult = yield* Effect.result(
         runGit(
@@ -1364,12 +1469,17 @@ const make = Effect.gen(function* () {
         },
       ) {
         // Still under the per-repo allocation lock: never leave ownership claiming a path or
-        // branch this transfer did not create, and clean up only partial artifacts we created.
+        // branch this transfer did not create, and clean up only partial artifacts positively
+        // verified as registered by this transfer's git worktree add.
         const clearOwnership =
           input.onWorktreeAllocationCleared !== undefined
             ? input.onWorktreeAllocationCleared(allocation)
             : Effect.void;
-        if (options.isExternalCollision || !options.gitWorktreeAddInvoked) {
+        if (
+          options.isExternalCollision ||
+          !options.gitWorktreeAddInvoked ||
+          options.worktreePathPreExisted
+        ) {
           yield* clearOwnership;
           return;
         }
@@ -1392,34 +1502,37 @@ const make = Effect.gen(function* () {
           return;
         }
         const registeredEntry = registeredEntryResult.success;
-        if (registeredEntry?.isMain) {
+        const expectedBranch = allocation.branch.length > 0 ? allocation.branch : null;
+        const matchesOwnedWorktree =
+          registeredEntry !== null &&
+          !registeredEntry.isMain &&
+          (expectedBranch !== null
+            ? registeredEntry.branch === expectedBranch
+            : registeredEntry.branch === null &&
+              headSha.length > 0 &&
+              registeredEntry.headSha === headSha);
+
+        // NEVER call recursive rm -rf on an unregistered directory and NEVER remove a worktree or
+        // branch checked out on a different branch. Only remove worktreePath (and createdBranch)
+        // when findRegisteredWorktree confirms worktreePath is registered as a non-main worktree
+        // matching this transfer's branch (or detached HEAD commit).
+        if (!matchesOwnedWorktree) {
           yield* clearOwnership;
           return;
         }
 
-        const pathExists = yield* fileSystem
-          .exists(allocation.worktreePath)
-          .pipe(Effect.orElseSucceed(() => false));
-        const shouldRemoveWorktree =
-          !options.worktreePathPreExisted && (registeredEntry !== null || pathExists);
-        // Only delete createdBranch if git worktree add actually registered worktreePath on
-        // refs/heads/<branch>. If someone independently created the branch, worktreePath is NOT
-        // registered on refs/heads/<branch> and the external branch must never be deleted.
         const shouldDeleteBranch =
           allocation.createdBranch &&
-          registeredEntry !== null &&
-          registeredEntry.branch === allocation.branch;
-
-        if (!shouldRemoveWorktree && !shouldDeleteBranch) {
-          yield* clearOwnership;
-          return;
-        }
+          expectedBranch !== null &&
+          registeredEntry.branch === expectedBranch;
 
         const cleanupPartialResult = yield* Effect.result(
           removeWorktree({
             repoCwd: input.repoCwd,
-            worktreePath: shouldRemoveWorktree ? allocation.worktreePath : null,
+            worktreePath: allocation.worktreePath,
             branch: shouldDeleteBranch ? allocation.branch : null,
+            expectedBranch,
+            allowUnregisteredGitWorktreeFallback: false,
           }),
         );
         if (Result.isSuccess(cleanupPartialResult)) {
@@ -1695,6 +1808,7 @@ const make = Effect.gen(function* () {
                     repoCwd: input.repoCwd,
                     worktreePath: createdWorktreePath,
                     branch: createdBranchName,
+                    expectedBranch: allocatedWorktree?.branch ?? createdBranchName,
                   }),
                 );
                 if (Result.isSuccess(cleanupResult)) {

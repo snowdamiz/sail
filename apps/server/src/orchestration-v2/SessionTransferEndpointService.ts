@@ -1142,9 +1142,26 @@ const make = Effect.gen(function* () {
     readonly failures: ReadonlyArray<SessionTransferError>;
   }
 
+  const syncStagedWorktreeAllocation = (
+    transferId: SessionTransferId,
+    nextAllocation: StagedWorktreeAllocation | null,
+  ) =>
+    Ref.update(stagedImports, (map) => {
+      const latest = map.get(transferId);
+      if (latest === undefined) return map;
+      if (latest.worktreeAllocation === nextAllocation) return map;
+      const next = new Map(map);
+      next.set(transferId, {
+        ...latest,
+        worktreeAllocation: nextAllocation,
+      });
+      return next;
+    });
+
   // Cleans up an uncommitted worktree/branch allocation strictly against its own repoRoot and
-  // gitCommonDir (never substituting staged.projectWorkspaceRoot), and strictly obeys the
-  // worktreeCreated invariant so a branch this transfer never created is never deleted.
+  // gitCommonDir (never substituting staged.projectWorkspaceRoot), strictly verifies repository
+  // identity (failing closed on lookup failure), strictly obeys the worktreeCreated and branch
+  // match invariants, and synchronously clears/updates in-memory stagedImports before returning.
   const cleanupUncommittedAllocation = Effect.fn(
     "SessionTransferEndpointService.cleanupUncommittedAllocation",
   )(function* (input: {
@@ -1161,19 +1178,122 @@ const make = Effect.gen(function* () {
         let cleanedWorktree = false;
         let removedOwnership = false;
         let worktreeOrBranchFailed = false;
+        let skipRepoDeletion = false;
         let nextWorktreePath = allocation.worktreePath;
         let nextBranch = allocation.branch;
         let nextCreatedBranch = allocation.createdBranch;
         let nextWorktreeCreated = allocation.worktreeCreated;
 
-        // Defense-in-depth: verify allocation.repoRoot still resolves to allocation.gitCommonDir
-        // before touching any worktree or branch inside it.
-        if (allocation.gitCommonDir !== null && allocation.gitCommonDir.length > 0) {
-          const expectedGitCommonDir = yield* normalizePathForComparison(allocation.gitCommonDir);
-          const resolvedGitCommonDir = yield* workspaceBundle
-            .resolveGitCommonDir(allocation.repoRoot)
-            .pipe(Effect.orElseSucceed(() => null));
-          if (resolvedGitCommonDir !== null && resolvedGitCommonDir !== expectedGitCommonDir) {
+        // Defense-in-depth (fail-closed): NEVER run worktree/branch deletion against
+        // allocation.repoRoot unless resolveGitCommonDir(allocation.repoRoot) succeeds with a
+        // non-null git common dir that matches allocation.gitCommonDir (when recorded).
+        const expectedGitCommonDir =
+          allocation.gitCommonDir !== null && allocation.gitCommonDir.length > 0
+            ? yield* normalizePathForComparison(allocation.gitCommonDir)
+            : null;
+        const resolvedGitCommonDirResult = yield* Effect.result(
+          workspaceBundle.resolveGitCommonDir(allocation.repoRoot),
+        );
+        const resolvedGitCommonDir = Result.isSuccess(resolvedGitCommonDirResult)
+          ? resolvedGitCommonDirResult.success
+          : null;
+
+        if (Result.isFailure(resolvedGitCommonDirResult) || resolvedGitCommonDir === null) {
+          const repoRootExistsResult = yield* Effect.result(
+            fileSystem.exists(allocation.repoRoot).pipe(
+              Effect.catchIf(
+                (error) => error.reason._tag === "NotFound",
+                () => Effect.succeed(false),
+              ),
+            ),
+          );
+          const repoRootGone =
+            Result.isSuccess(repoRootExistsResult) && !repoRootExistsResult.success;
+
+          if (!repoRootGone) {
+            const detail = Result.isFailure(resolvedGitCommonDirResult)
+              ? resolvedGitCommonDirResult.failure.message
+              : "git rev-parse --git-common-dir returned no repository";
+            const verifyError = new SessionTransferError({
+              code: "internal",
+              transferId,
+              message: `Failed to verify destination repository identity for '${allocation.repoRoot}' during ${contextLabel} for transfer '${transferId}': ${detail}`,
+              ...(Result.isFailure(resolvedGitCommonDirResult)
+                ? { cause: resolvedGitCommonDirResult.failure }
+                : {}),
+            });
+            return {
+              cleanedWorktree: false,
+              removedOwnership: false,
+              worktreeOrBranchFailed: true,
+              remainingAllocation: allocation,
+              failures: [verifyError],
+            } satisfies CleanupUncommittedAllocationResult;
+          }
+
+          // allocation.repoRoot does NOT exist on disk (ENOENT): NEVER run git delete commands
+          // against allocation.repoRoot. Only clear ownership if expectedGitCommonDir is also gone
+          // (or not recorded); if expectedGitCommonDir still exists, fail closed.
+          if (expectedGitCommonDir !== null) {
+            const commonDirExistsResult = yield* Effect.result(
+              fileSystem.exists(expectedGitCommonDir).pipe(
+                Effect.catchIf(
+                  (error) => error.reason._tag === "NotFound",
+                  () => Effect.succeed(false),
+                ),
+              ),
+            );
+            const commonDirGone =
+              Result.isSuccess(commonDirExistsResult) && !commonDirExistsResult.success;
+            if (!commonDirGone) {
+              const missingRootError = new SessionTransferError({
+                code: "internal",
+                transferId,
+                message: `Refusing to drop destination worktree ownership during ${contextLabel} for transfer '${transferId}' because '${allocation.repoRoot}' does not exist while git common dir '${expectedGitCommonDir}' still exists.`,
+              });
+              return {
+                cleanedWorktree: false,
+                removedOwnership: false,
+                worktreeOrBranchFailed: true,
+                remainingAllocation: allocation,
+                failures: [missingRootError],
+              } satisfies CleanupUncommittedAllocationResult;
+            }
+          }
+
+          yield* Effect.logWarning(
+            `Skipping git worktree/branch deletion during ${contextLabel} because destination repository '${allocation.repoRoot}' no longer exists on disk.`,
+            {
+              transferId,
+              repoRoot: allocation.repoRoot,
+              expectedGitCommonDir,
+            },
+          );
+          skipRepoDeletion = true;
+          nextWorktreePath = null;
+          nextBranch = null;
+          nextCreatedBranch = false;
+        } else if (expectedGitCommonDir !== null && resolvedGitCommonDir !== expectedGitCommonDir) {
+          yield* Effect.logWarning(
+            `Refusing to clean up destination worktree/branch during ${contextLabel} because '${allocation.repoRoot}' resolved to a different Git repository.`,
+            {
+              transferId,
+              repoRoot: allocation.repoRoot,
+              resolvedGitCommonDir,
+              expectedGitCommonDir,
+            },
+          );
+          const commonDirExistsResult = yield* Effect.result(
+            fileSystem.exists(expectedGitCommonDir).pipe(
+              Effect.catchIf(
+                (error) => error.reason._tag === "NotFound",
+                () => Effect.succeed(false),
+              ),
+            ),
+          );
+          const commonDirGone =
+            Result.isSuccess(commonDirExistsResult) && !commonDirExistsResult.success;
+          if (!commonDirGone) {
             const mismatchError = new SessionTransferError({
               code: "workspace_error",
               transferId,
@@ -1187,144 +1307,221 @@ const make = Effect.gen(function* () {
               failures: [mismatchError],
             } satisfies CleanupUncommittedAllocationResult;
           }
-        }
 
-        // Defense-in-depth: refuse to remove a worktree or branch if ANY non-deleted committed
-        // thread in SQLite references this worktreePath (propagating DB errors).
-        const owningCommittedThreadId =
-          allocation.worktreePath !== null
-            ? yield* findCommittedThreadOwningWorktree(allocation.worktreePath, transferId)
-            : null;
-
-        if (owningCommittedThreadId !== null) {
-          yield* Effect.logWarning(
-            `Refusing to remove destination worktree/branch during ${contextLabel} because worktree is owned by a committed thread.`,
-            {
-              transferId,
-              worktreePath: allocation.worktreePath,
-              branch: allocation.branch,
-              owningCommittedThreadId,
-            },
-          );
+          // Original gitCommonDir is gone and repoRoot now points to a different repository:
+          // never run any deletion against allocation.repoRoot; safely clear stale ownership.
+          skipRepoDeletion = true;
           nextWorktreePath = null;
           nextBranch = null;
           nextCreatedBranch = false;
-        } else {
-          let worktreeToRemove: string | null = null;
-          let branchToDelete: GitRefNameValue | null = null;
+        }
 
-          if (allocation.worktreeCreated) {
-            worktreeToRemove = allocation.worktreePath;
-            branchToDelete =
-              allocation.createdBranch && allocation.branch !== null ? allocation.branch : null;
-          } else if (allocation.worktreePath !== null) {
-            // worktreeCreated !== true (interrupted/crashed before git worktree add completed):
-            // check git worktree registration BEFORE removing anything. Only delete createdBranch
-            // if worktreePath is actually registered on refs/heads/<branch>.
-            const registeredResult = yield* Effect.result(
-              workspaceBundle
-                .findRegisteredWorktree(allocation.repoRoot, allocation.worktreePath)
-                .pipe(
-                  Effect.mapError(
-                    (cause) =>
+        if (!skipRepoDeletion) {
+          // Defense-in-depth: refuse to remove a worktree or branch if ANY non-deleted committed
+          // thread in SQLite references this worktreePath (propagating DB errors).
+          const owningCommittedThreadId =
+            allocation.worktreePath !== null
+              ? yield* findCommittedThreadOwningWorktree(allocation.worktreePath, transferId)
+              : null;
+
+          if (owningCommittedThreadId !== null) {
+            yield* Effect.logWarning(
+              `Refusing to remove destination worktree/branch during ${contextLabel} because worktree is owned by a committed thread.`,
+              {
+                transferId,
+                worktreePath: allocation.worktreePath,
+                branch: allocation.branch,
+                owningCommittedThreadId,
+              },
+            );
+            nextWorktreePath = null;
+            nextBranch = null;
+            nextCreatedBranch = false;
+          } else {
+            let worktreeToRemove: string | null = null;
+            let branchToDelete: GitRefNameValue | null = null;
+            const expectedBranch = allocation.branch;
+
+            if (allocation.worktreeCreated) {
+              if (allocation.worktreePath !== null) {
+                const registeredResult = yield* Effect.result(
+                  workspaceBundle
+                    .findRegisteredWorktree(allocation.repoRoot, allocation.worktreePath)
+                    .pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new SessionTransferError({
+                            code: "workspace_error",
+                            transferId,
+                            message: `Failed to inspect registered destination worktrees during ${contextLabel} for transfer '${transferId}': ${cause.message}`,
+                            cause,
+                          }),
+                      ),
+                    ),
+                );
+                if (Result.isFailure(registeredResult)) {
+                  worktreeOrBranchFailed = true;
+                  failures.push(registeredResult.failure);
+                } else {
+                  const registeredEntry = registeredResult.success;
+                  if (registeredEntry !== null && registeredEntry.isMain) {
+                    worktreeOrBranchFailed = true;
+                    failures.push(
                       new SessionTransferError({
                         code: "workspace_error",
                         transferId,
-                        message: `Failed to inspect registered destination worktrees during ${contextLabel} for transfer '${transferId}': ${cause.message}`,
-                        cause,
+                        message: `Refusing to remove main worktree '${allocation.worktreePath}' during ${contextLabel} for transfer '${transferId}'.`,
                       }),
+                    );
+                  } else if (
+                    registeredEntry !== null &&
+                    expectedBranch !== null &&
+                    registeredEntry.branch !== expectedBranch
+                  ) {
+                    worktreeOrBranchFailed = true;
+                    failures.push(
+                      new SessionTransferError({
+                        code: "workspace_error",
+                        transferId,
+                        message: `Refusing to remove destination worktree '${allocation.worktreePath}' during ${contextLabel} for transfer '${transferId}' because it is checked out on branch '${registeredEntry.branch ?? "(detached)"}' instead of expected '${expectedBranch}'.`,
+                      }),
+                    );
+                  } else {
+                    worktreeToRemove = allocation.worktreePath;
+                    branchToDelete =
+                      allocation.createdBranch && allocation.branch !== null
+                        ? allocation.branch
+                        : null;
+                  }
+                }
+              } else {
+                branchToDelete =
+                  allocation.createdBranch && allocation.branch !== null ? allocation.branch : null;
+              }
+            } else if (allocation.worktreePath !== null) {
+              // worktreeCreated !== true: require !isMain AND exact branch match in git worktree
+              // registration before removing EITHER the worktree OR the branch; otherwise treat
+              // both as not owned by this transfer and only clear this transfer's ownership record.
+              const registeredResult = yield* Effect.result(
+                workspaceBundle
+                  .findRegisteredWorktree(allocation.repoRoot, allocation.worktreePath)
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new SessionTransferError({
+                          code: "workspace_error",
+                          transferId,
+                          message: `Failed to inspect registered destination worktrees during ${contextLabel} for transfer '${transferId}': ${cause.message}`,
+                          cause,
+                        }),
+                    ),
                   ),
-                ),
-            );
-            if (Result.isFailure(registeredResult)) {
-              worktreeOrBranchFailed = true;
-              failures.push(registeredResult.failure);
-            } else {
-              const registeredEntry = registeredResult.success;
-              if (registeredEntry !== null && !registeredEntry.isMain) {
-                worktreeToRemove = allocation.worktreePath;
-                if (
-                  allocation.createdBranch &&
-                  allocation.branch !== null &&
-                  registeredEntry.branch === allocation.branch
-                ) {
-                  branchToDelete = allocation.branch;
-                  // Positively verified that this transfer bound createdBranch to worktreePath.
-                  nextWorktreeCreated = true;
+              );
+              if (Result.isFailure(registeredResult)) {
+                worktreeOrBranchFailed = true;
+                failures.push(registeredResult.failure);
+              } else {
+                const registeredEntry = registeredResult.success;
+                const matchesOwnedWorktree =
+                  registeredEntry !== null &&
+                  !registeredEntry.isMain &&
+                  expectedBranch !== null &&
+                  registeredEntry.branch === expectedBranch;
+                if (matchesOwnedWorktree) {
+                  worktreeToRemove = allocation.worktreePath;
+                  if (allocation.createdBranch && allocation.branch !== null) {
+                    branchToDelete = allocation.branch;
+                    // Positively verified that this transfer bound createdBranch to worktreePath.
+                    nextWorktreeCreated = true;
+                  } else {
+                    nextBranch = null;
+                    nextCreatedBranch = false;
+                  }
                 } else {
+                  if (registeredEntry !== null) {
+                    yield* Effect.logWarning(
+                      `Skipping removal of destination worktree/branch during ${contextLabel} because registered worktree does not match this uncreated transfer allocation.`,
+                      {
+                        transferId,
+                        worktreePath: allocation.worktreePath,
+                        expectedBranch,
+                        registeredBranch: registeredEntry.branch,
+                        registeredIsMain: registeredEntry.isMain,
+                      },
+                    );
+                  }
+                  // Neither worktreePath nor createdBranch was created/bound by this transfer.
+                  nextWorktreePath = null;
                   nextBranch = null;
                   nextCreatedBranch = false;
                 }
-              } else {
-                // Neither worktreePath nor createdBranch was created/bound by this transfer.
-                nextWorktreePath = null;
-                nextBranch = null;
-                nextCreatedBranch = false;
-              }
-            }
-          } else {
-            // worktreeCreated !== true and no worktreePath to verify: never touch branch.
-            nextBranch = null;
-            nextCreatedBranch = false;
-          }
-
-          if (!worktreeOrBranchFailed && worktreeToRemove !== null) {
-            const worktreeResult = yield* Effect.result(
-              workspaceBundle
-                .removeWorktree({
-                  repoCwd: allocation.repoRoot,
-                  worktreePath: worktreeToRemove,
-                })
-                .pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new SessionTransferError({
-                        code: "workspace_error",
-                        transferId,
-                        message: `Failed to remove destination worktree during ${contextLabel} for transfer '${transferId}': ${cause.message}`,
-                        cause,
-                      }),
-                  ),
-                ),
-            );
-            if (Result.isSuccess(worktreeResult)) {
-              cleanedWorktree = true;
-              nextWorktreePath = null;
-              if (branchToDelete === null) {
-                nextBranch = null;
               }
             } else {
-              worktreeOrBranchFailed = true;
-              failures.push(worktreeResult.failure);
-            }
-          }
-
-          if (!worktreeOrBranchFailed && branchToDelete !== null) {
-            const branchResult = yield* Effect.result(
-              workspaceBundle
-                .removeWorktree({
-                  repoCwd: allocation.repoRoot,
-                  branch: branchToDelete,
-                })
-                .pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new SessionTransferError({
-                        code: "workspace_error",
-                        transferId,
-                        message: `Failed to delete destination branch '${branchToDelete}' during ${contextLabel} for transfer '${transferId}': ${cause.message}`,
-                        cause,
-                      }),
-                  ),
-                ),
-            );
-            if (Result.isSuccess(branchResult)) {
-              cleanedWorktree = true;
+              // worktreeCreated !== true and no worktreePath to verify: never touch branch.
               nextBranch = null;
               nextCreatedBranch = false;
-            } else {
-              worktreeOrBranchFailed = true;
-              failures.push(branchResult.failure);
+            }
+
+            if (!worktreeOrBranchFailed && worktreeToRemove !== null) {
+              const worktreeResult = yield* Effect.result(
+                workspaceBundle
+                  .removeWorktree({
+                    repoCwd: allocation.repoRoot,
+                    worktreePath: worktreeToRemove,
+                    expectedBranch,
+                    allowUnregisteredGitWorktreeFallback: allocation.worktreeCreated,
+                  })
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new SessionTransferError({
+                          code: "workspace_error",
+                          transferId,
+                          message: `Failed to remove destination worktree during ${contextLabel} for transfer '${transferId}': ${cause.message}`,
+                          cause,
+                        }),
+                    ),
+                  ),
+              );
+              if (Result.isSuccess(worktreeResult)) {
+                cleanedWorktree = true;
+                nextWorktreePath = null;
+                if (branchToDelete === null) {
+                  nextBranch = null;
+                }
+              } else {
+                worktreeOrBranchFailed = true;
+                failures.push(worktreeResult.failure);
+              }
+            }
+
+            if (!worktreeOrBranchFailed && branchToDelete !== null) {
+              const branchResult = yield* Effect.result(
+                workspaceBundle
+                  .removeWorktree({
+                    repoCwd: allocation.repoRoot,
+                    branch: branchToDelete,
+                  })
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new SessionTransferError({
+                          code: "workspace_error",
+                          transferId,
+                          message: `Failed to delete destination branch '${branchToDelete}' during ${contextLabel} for transfer '${transferId}': ${cause.message}`,
+                          cause,
+                        }),
+                    ),
+                  ),
+              );
+              if (Result.isSuccess(branchResult)) {
+                cleanedWorktree = true;
+                nextBranch = null;
+                nextCreatedBranch = false;
+              } else {
+                worktreeOrBranchFailed = true;
+                failures.push(branchResult.failure);
+              }
             }
           }
         }
@@ -1375,6 +1572,11 @@ const make = Effect.gen(function* () {
                 worktreeCreated: nextWorktreeCreated,
                 importCompleted: nextWorktreePath === null ? false : allocation.importCompleted,
               };
+
+        // Synchronously update in-memory stagedImports immediately upon cleanup (both success and
+        // partial failure) so a stale in-memory allocation can NEVER outlive on-disk cleanup if a
+        // subsequent fallible operation (e.g. URL signing or attachment cleanup) fails or interrupts.
+        yield* syncStagedWorktreeAllocation(transferId, remainingAllocation);
 
         return {
           cleanedWorktree,
@@ -2422,18 +2624,6 @@ const make = Effect.gen(function* () {
                 contextLabel: "cross-repository restaging",
               });
               if (cleanupResult.failures.length > 0) {
-                if (existingStaged !== undefined) {
-                  yield* Ref.update(stagedImports, (map) => {
-                    const latest = map.get(input.transferId);
-                    if (latest === undefined) return map;
-                    const next = new Map(map);
-                    next.set(input.transferId, {
-                      ...latest,
-                      worktreeAllocation: cleanupResult.remainingAllocation,
-                    });
-                    return next;
-                  });
-                }
                 const [firstFailure, ...restFailures] = cleanupResult.failures;
                 for (const extraFailure of restFailures) {
                   yield* Effect.logWarning(
@@ -2864,16 +3054,6 @@ const make = Effect.gen(function* () {
                 persistedOwnership,
                 contextLabel: "pre-retry cleanup",
               });
-              yield* Ref.update(stagedImports, (map) => {
-                const prev = map.get(input.transferId);
-                if (prev === undefined) return map;
-                const next = new Map(map);
-                next.set(input.transferId, {
-                  ...prev,
-                  worktreeAllocation: cleanupResult.remainingAllocation,
-                });
-                return next;
-              });
               if (cleanupResult.failures.length > 0) {
                 const [firstFailure, ...restFailures] = cleanupResult.failures;
                 for (const extraFailure of restFailures) {
@@ -2886,6 +3066,7 @@ const make = Effect.gen(function* () {
               }
             } else if (persistedOwnership !== null) {
               yield* removeWorktreeOwnership(input.transferId);
+              yield* syncStagedWorktreeAllocation(input.transferId, null);
             }
             const importBundlePath = resolveImportBundlePath(
               serverConfig.stateDir,
@@ -3618,9 +3799,20 @@ const make = Effect.gen(function* () {
           ),
         );
 
-        // Thread is now durably committed: remove durable worktree ownership file immediately so a
-        // late abort can never treat this committed thread worktree as uncommitted staging state.
+        // Thread is now durably committed: remove durable worktree ownership file and mark staged
+        // state committed immediately before post-commit handoff so a late abort can never treat
+        // this committed thread worktree as uncommitted staging state.
         yield* removeWorktreeOwnershipBestEffort(input.transferId);
+        yield* Ref.update(stagedImports, (map) => {
+          const prev = map.get(input.transferId);
+          if (prev === undefined || prev.committed) return map;
+          const next = new Map(map);
+          next.set(input.transferId, {
+            ...prev,
+            committed: true,
+          });
+          return next;
+        });
 
         // 6. Auto-resume with a single continuation turn & release queued runs idempotently
         //    ONLY when source was running, had no pending runtime/secret requests, and autoResume is enabled.
@@ -4028,6 +4220,8 @@ const make = Effect.gen(function* () {
             const ownershipResult = yield* Effect.result(removeWorktreeOwnership(input.transferId));
             if (Result.isSuccess(ownershipResult)) {
               removedOwnership = ownershipResult.success;
+              remainingAllocation = null;
+              yield* syncStagedWorktreeAllocation(input.transferId, null);
             } else {
               cleanupFailures.push(ownershipResult.failure);
             }
