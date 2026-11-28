@@ -439,6 +439,15 @@ function piApprovalRequestKind(title: string): "command" | "file-change" {
 }
 
 /** Pi 1.4.0 rejects prompts with this when they race a compaction it already started. */
+const PI_USAGE_LIMIT_PATTERN =
+  /\b(?:429|too many requests|rate[ _-]?limit(?:ed|s|ing)?|usage[ _-]?limit(?:s|ed)?|quota(?:[ _-]?exceeded)?|resource[ _-]?exhausted|insufficient[ _-]?quota|throttl(?:ed|ing))\b/i;
+
+function piFailureClass(message: string | undefined): "usage_limit" | "provider_error" {
+  return message !== undefined && PI_USAGE_LIMIT_PATTERN.test(message)
+    ? "usage_limit"
+    : "provider_error";
+}
+
 const PI_COMPACTING_PROMPT_REJECTION = "Cannot submit a prompt while compaction is in progress";
 
 interface PiPromptSend {
@@ -2415,9 +2424,10 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               turn.reportedModel = `${reportedProvider}/${reportedModelId}`;
             }
             if (recordString(message, "stopReason") === "error" && turn.failure === null) {
+              const errorMessage = recordString(message, "errorMessage");
               turn.failure = makeProviderFailure({
-                message: recordString(message, "errorMessage") ?? "Pi reported a model error.",
-                class: "provider_error",
+                message: errorMessage ?? "Pi reported a model error.",
+                class: piFailureClass(errorMessage),
               });
             }
             return;
@@ -2512,9 +2522,10 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               Math.trunc(recordNumber(event, "maxAttempts") ?? attempt),
             );
             const retryDelayMs = Math.max(0, Math.trunc(recordNumber(event, "delayMs") ?? 0));
+            const retryErrorMessage = recordString(event, "errorMessage");
             const failure = makeProviderFailure({
-              message: recordString(event, "errorMessage") ?? "Pi provider request failed.",
-              class: "provider_error",
+              message: retryErrorMessage ?? "Pi provider request failed.",
+              class: piFailureClass(retryErrorMessage),
               retryable: true,
             });
             const current = turn.activeProviderRetry;
@@ -2552,9 +2563,10 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               turn.failure = null;
               return;
             }
+            const finalError = recordString(event, "finalError");
             const failure = makeProviderFailure({
-              message: recordString(event, "finalError") ?? "Pi auto-retry failed.",
-              class: "provider_error",
+              message: finalError ?? "Pi auto-retry failed.",
+              class: piFailureClass(finalError),
               retryable: false,
             });
             const attempt = Math.max(1, Math.trunc(recordNumber(event, "attempt") ?? 1));
@@ -2740,9 +2752,10 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                   ? turn
                   : null;
             if (failedTurn !== null) {
+              const promptError = recordString(event, "error");
               const failure = makeProviderFailure({
-                message: recordString(event, "error") ?? "Pi rejected the prompt.",
-                class: "provider_error",
+                message: promptError ?? "Pi rejected the prompt.",
+                class: piFailureClass(promptError),
               });
               if (failedTurn.adoptedWake && command === "prompt") {
                 failedTurn.rejectedPromptFailure = failure;

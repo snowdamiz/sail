@@ -5870,6 +5870,45 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           return true;
         });
 
+        const ACP_USAGE_LIMIT_PATTERN =
+          /\b(?:429|too many requests|rate[ _-]?limit(?:ed|s|ing)?|usage[ _-]?limit(?:s|ed)?|quota(?:[ _-]?exceeded)?|resource[ _-]?exhausted|insufficient[ _-]?quota|throttl(?:ed|ing))\b/i;
+
+        function isAcpUsageLimitError(
+          error:
+            | {
+                readonly code?: number | undefined;
+                readonly message?: string | undefined;
+                readonly errorMessage?: string | undefined;
+              }
+            | unknown,
+        ): boolean {
+          if (error == null) return false;
+          if (error instanceof Error) {
+            if (ACP_USAGE_LIMIT_PATTERN.test(error.message)) return true;
+          }
+          if (typeof error === "object") {
+            const candidate = error as {
+              readonly code?: unknown;
+              readonly message?: unknown;
+              readonly errorMessage?: unknown;
+            };
+            if (candidate.code === 429) return true;
+            if (
+              typeof candidate.errorMessage === "string" &&
+              ACP_USAGE_LIMIT_PATTERN.test(candidate.errorMessage)
+            ) {
+              return true;
+            }
+            if (
+              typeof candidate.message === "string" &&
+              ACP_USAGE_LIMIT_PATTERN.test(candidate.message)
+            ) {
+              return true;
+            }
+          }
+          return false;
+        }
+
         const idleErrorFailure = (error: EffectAcpSchema.PromptResponse["error"]) =>
           flavor.promptFailure?.(
             new EffectAcpErrors.AcpRequestError({
@@ -5881,7 +5920,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           makeProviderFailure({
             message: error?.message,
             code: error == null ? null : String(error.code),
-            class: "provider_error",
+            class: isAcpUsageLimitError(error) ? "usage_limit" : "provider_error",
           });
 
         const stopReasonFailure = (
@@ -9734,7 +9773,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     flavor.promptFailure?.(failure) ??
                       makeProviderFailure({
                         cause: failure,
-                        class: "provider_error",
+                        class: isAcpUsageLimitError(failure) ? "usage_limit" : "provider_error",
                       }),
                   ).pipe(
                     Effect.andThen(

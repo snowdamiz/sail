@@ -85,6 +85,7 @@ import {
   type ProviderSessionId,
   RunId,
   RuntimeMode,
+  type ServerProvider,
   ThreadLinkedPullRequest,
   ThreadId,
   TurnItemId,
@@ -94,7 +95,8 @@ import {
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
-import { modelSwitchSince } from "./modelSwitch.ts";
+import { formatFailoverNotice, modelSwitchSince } from "./modelSwitch.ts";
+import { resolveUsageLimitFailoverTarget } from "@t3tools/shared/usageFailover";
 import {
   contextBoundaryOrdinal,
   isScheduledFreshRun,
@@ -235,6 +237,7 @@ import {
 } from "./ThreadForkService.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
 const isMessageQuestionAnswer = Schema.is(
@@ -602,6 +605,7 @@ function wakeWorkStartedAt(
     readonly notification?: unknown;
     readonly delegatedCompletion?: unknown;
     readonly restartContinuationOfRunId?: RunId | undefined;
+    readonly usageLimitFailoverOfRunId?: RunId | undefined;
   },
   delivery: "immediate" | "automatic-queue" | "explicit-queue" = "immediate",
 ): Pick<OrchestrationV2Run, "workStartedAt"> {
@@ -609,6 +613,7 @@ function wakeWorkStartedAt(
     trigger.notification === undefined &&
     trigger.delegatedCompletion === undefined &&
     trigger.restartContinuationOfRunId === undefined &&
+    trigger.usageLimitFailoverOfRunId === undefined &&
     !(
       trigger.createdBy === "agent" &&
       trigger.creationSource === "mcp" &&
@@ -883,7 +888,11 @@ function threadCreateInitialMessage(
 function mayStartSubagentFollowup(
   command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
 ): boolean {
-  if (command.scheduledTaskId !== undefined || command.restartContinuationOfRunId !== undefined)
+  if (
+    command.scheduledTaskId !== undefined ||
+    command.restartContinuationOfRunId !== undefined ||
+    command.usageLimitFailoverOfRunId !== undefined
+  )
     return false;
   if (isCompactionCommandMessage({ role: "user", ...command })) return false;
   if (command.notification !== undefined)
@@ -1697,6 +1706,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const providerSessions = yield* ProviderSessionManagerV2;
   const providerSwitchService = yield* ProviderSwitchServiceV2;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const providerRegistryOption = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
+  const loadProvidersForFailover = Option.match(providerRegistryOption, {
+    onNone: () => Effect.succeed([] as ReadonlyArray<ServerProvider>),
+    onSome: (registry) =>
+      registry.getProviders.pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<ServerProvider>)),
+  });
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
@@ -3156,6 +3171,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             notification: queuedMessage.notification,
             delegatedCompletion: queuedMessage.delegatedCompletion,
             restartContinuationOfRunId: queuedRun.restartContinuationOfRunId,
+            usageLimitFailoverOfRunId: queuedRun.usageLimitFailoverOfRunId,
           },
           queueDelivery,
         ),
@@ -3202,6 +3218,34 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         updatedAt: now,
         ...(activeHandoff === null ? modelSwitchSince(projection, queuedRun.modelSelection) : {}),
       };
+      const failoverNoticeText =
+        queuedRun.failoverNotice === undefined
+          ? null
+          : formatFailoverNotice(queuedRun.failoverNotice, yield* loadProvidersForFailover);
+      const failoverNoticeTurnItem: OrchestrationV2TurnItem | null =
+        failoverNoticeText === null
+          ? null
+          : {
+              id: idAllocator.derive.runSignalTurnItem({
+                runId: queuedRun.id,
+                signal: "usage-limit-failover",
+              }),
+              threadId,
+              runId: queuedRun.id,
+              nodeId: rootNodeId,
+              providerThreadId: queuedProviderThread.id,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: ordinal * 100 - 2,
+              status: "completed",
+              title: "Usage limit failover",
+              message: failoverNoticeText,
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              type: "system_notice",
+            };
       const handoffTurnItem: OrchestrationV2TurnItem | null =
         activeHandoff === null
           ? null
@@ -3219,7 +3263,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               parentItemId: null,
               ordinal: ordinal * 100 - 1,
               status: "completed",
-              title: handoff === null ? "Imported context" : "Provider handoff",
+              title:
+                failoverNoticeText ?? (handoff === null ? "Imported context" : "Provider handoff"),
               startedAt: now,
               completedAt: now,
               updatedAt: now,
@@ -3375,6 +3420,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   queuedRun.providerInstanceId,
                   now,
                 ),
+              ]),
+          ...(failoverNoticeTurnItem === null
+            ? []
+            : [
+                {
+                  type: "turn-item.updated" as const,
+                  threadId,
+                  runId: queuedRun.id,
+                  nodeId: rootNodeId,
+                  providerInstanceId: queuedRun.providerInstanceId,
+                  occurredAt: now,
+                  payload: failoverNoticeTurnItem,
+                },
               ]),
           ...(handoffTurnItem === null
             ? []
@@ -7310,6 +7368,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               command.manualContinuationOfRunId,
               command.restartContinuationOfRunId,
               command.usageLimitContinuationOfRunId,
+              command.usageLimitFailoverOfRunId,
               command.steerFollowUpOfRunId,
               ...(command.dispatchMode.type === "steer_active" ||
               command.dispatchMode.type === "restart_active"
@@ -7432,6 +7491,38 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
 
+    if (command.usageLimitFailoverOfRunId !== undefined) {
+      const run = usageLimitBlockedRun(projection.runs, projection.turnItems, null);
+      const failure = latestRootProviderFailure(run, projection.turnItems);
+      const now = yield* DateTime.now;
+      if (
+        command.dispatchMode.type !== "start_immediately" ||
+        run?.id !== command.usageLimitFailoverOfRunId ||
+        failure?.class !== "usage_limit" ||
+        projection.thread.archivedAt !== null ||
+        projection.thread.deletedAt !== null ||
+        projection.thread.settledOverride === "settled" ||
+        projection.runtimeRequests.some((request) => request.status === "pending") ||
+        projection.runs.some(
+          (candidate) =>
+            candidate.usageLimitFailoverOfRunId === command.usageLimitFailoverOfRunId ||
+            isActiveRun(candidate) ||
+            candidate.status === "queued",
+        )
+      ) {
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: command.threadId,
+          occurredAt: now,
+          payload: projection.thread,
+        });
+        return;
+      }
+    }
+
     if (command.restartContinuationOfRunId !== undefined) {
       const source = projection.runs.find((run) => run.id === command.restartContinuationOfRunId);
       if (
@@ -7516,10 +7607,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
 
     // A run the thread queues for itself continues the task of the run that sent it.
+    const continuationSourceRunId =
+      command.restartContinuationOfRunId ?? command.usageLimitFailoverOfRunId;
     const continuedTaskId = projection.runs.find((run) =>
-      command.restartContinuationOfRunId === undefined
+      continuationSourceRunId === undefined
         ? command.senderThreadId === command.threadId && isActiveRun(run)
-        : run.id === command.restartContinuationOfRunId,
+        : run.id === continuationSourceRunId,
     )?.delegatedTaskId;
 
     if (projection.thread.settledOverride !== null) {
@@ -7717,6 +7810,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // A run that continues one cut short still owes that run's result.
     const continuedRunId =
       command.restartContinuationOfRunId ??
+      command.usageLimitFailoverOfRunId ??
       command.usageLimitContinuationOfRunId ??
       command.manualContinuationOfRunId;
     const outputSchema =
@@ -8327,6 +8421,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.usageLimitContinuationOfRunId === undefined
           ? {}
           : { usageLimitContinuationOfRunId: command.usageLimitContinuationOfRunId }),
+        ...(command.usageLimitFailoverOfRunId === undefined
+          ? {}
+          : { usageLimitFailoverOfRunId: command.usageLimitFailoverOfRunId }),
+        ...(command.failoverAttemptedInstanceIds === undefined
+          ? {}
+          : { failoverAttemptedInstanceIds: command.failoverAttemptedInstanceIds }),
+        ...(command.failoverNotice === undefined ? {} : { failoverNotice: command.failoverNotice }),
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
         ...(freshContext ? { freshContext: true } : {}),
         ...output,
@@ -8750,6 +8851,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.usageLimitContinuationOfRunId === undefined
           ? {}
           : { usageLimitContinuationOfRunId: command.usageLimitContinuationOfRunId }),
+        ...(command.usageLimitFailoverOfRunId === undefined
+          ? {}
+          : { usageLimitFailoverOfRunId: command.usageLimitFailoverOfRunId }),
+        ...(command.failoverAttemptedInstanceIds === undefined
+          ? {}
+          : { failoverAttemptedInstanceIds: command.failoverAttemptedInstanceIds }),
+        ...(command.failoverNotice === undefined ? {} : { failoverNotice: command.failoverNotice }),
         ...(dispatchMode.type === "defer_start" && dispatchMode.workspaceStrategy !== undefined
           ? { workspacePreparation: dispatchMode.workspaceStrategy }
           : {}),
@@ -9576,6 +9684,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...(command.usageLimitContinuationOfRunId === undefined
         ? {}
         : { usageLimitContinuationOfRunId: command.usageLimitContinuationOfRunId }),
+      ...(command.usageLimitFailoverOfRunId === undefined
+        ? {}
+        : { usageLimitFailoverOfRunId: command.usageLimitFailoverOfRunId }),
+      ...(command.failoverAttemptedInstanceIds === undefined
+        ? {}
+        : { failoverAttemptedInstanceIds: command.failoverAttemptedInstanceIds }),
+      ...(command.failoverNotice === undefined ? {} : { failoverNotice: command.failoverNotice }),
       ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
       ...wakeWorkStartedAt(projection, command),
       ...output,
@@ -9692,6 +9807,34 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ]),
       ).values(),
     );
+    const failoverNoticeText =
+      command.failoverNotice === undefined
+        ? null
+        : formatFailoverNotice(command.failoverNotice, yield* loadProvidersForFailover);
+    const failoverNoticeTurnItem: OrchestrationV2TurnItem | null =
+      failoverNoticeText === null
+        ? null
+        : {
+            id: idAllocator.derive.runSignalTurnItem({
+              runId,
+              signal: "usage-limit-failover",
+            }),
+            threadId: command.threadId,
+            runId,
+            nodeId: rootNodeId,
+            providerThreadId: providerThread.id,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: ordinal * 100 - 2,
+            status: "completed",
+            title: "Usage limit failover",
+            message: failoverNoticeText,
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "system_notice",
+          };
     const handoffTurnItem: OrchestrationV2TurnItem | null =
       activeHandoff === null
         ? null
@@ -9713,7 +9856,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               portableForkHandoff !== null
                 ? "Fork context"
                 : providerSwitchHandoff !== null
-                  ? "Provider handoff"
+                  ? (failoverNoticeText ?? "Provider handoff")
                   : "Merge-back context",
             startedAt: now,
             completedAt: now,
@@ -9961,6 +10104,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       occurredAt: now,
       payload: checkpointScope,
     });
+    if (failoverNoticeTurnItem !== null) {
+      yield* emitEvent({
+        type: "turn-item.updated",
+        threadId: command.threadId,
+        runId,
+        nodeId: rootNodeId,
+        providerInstanceId: modelSelection.instanceId,
+        occurredAt: now,
+        payload: failoverNoticeTurnItem,
+      });
+    }
     if (handoffTurnItem !== null) {
       yield* emitEvent({
         type: "turn-item.updated",
@@ -15099,6 +15253,56 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       awaitsRestartContinuation,
     ).pipe(Effect.map((pending) => pending.includes(true)));
 
+  const childAwaitsUsageLimitFailover = Effect.fn("OrchestratorV2.childAwaitsUsageLimitFailover")(
+    function* (
+      childThreadId: ThreadId,
+      runs: ReadonlyArray<OrchestrationV2Run>,
+      resultRun: OrchestrationV2Run,
+      settledContinuationOf?: RunId,
+    ) {
+      if (resultRun.status !== "failed") return false;
+      if (resultRun.id === settledContinuationOf) return false;
+      if (runs.some((run) => run.usageLimitFailoverOfRunId === resultRun.id)) return false;
+      const providers = yield* loadProvidersForFailover;
+      if (providers.length === 0) return false;
+      const settings = yield* serverSettings.getSettings.pipe(
+        Effect.orElseSucceed(() => undefined),
+      );
+      if (!settings?.autoFailoverOnUsageLimit) return false;
+      const child = yield* projectionStore
+        .getThreadRecords(childThreadId, ["turnItems", "runtimeRequests"])
+        .pipe(Effect.orElseSucceed(() => undefined));
+      if (child === undefined) return false;
+      if (
+        child.thread.archivedAt !== null ||
+        child.thread.deletedAt !== null ||
+        child.thread.settledOverride === "settled" ||
+        child.runtimeRequests.some((request) => request.status === "pending")
+      ) {
+        return false;
+      }
+      const blocked = usageLimitBlockedRun(runs, child.turnItems, null);
+      if (blocked?.id !== resultRun.id) return false;
+      const failure = latestRootProviderFailure(resultRun, child.turnItems);
+      if (failure?.class !== "usage_limit") return false;
+      const attemptedInstanceIds = new Set<ProviderInstanceId>([
+        ...(resultRun.failoverAttemptedInstanceIds ?? []),
+        resultRun.providerInstanceId,
+      ]);
+      const now = yield* DateTime.now;
+      const resolution = resolveUsageLimitFailoverTarget({
+        currentSelection: resultRun.modelSelection,
+        providers,
+        settings,
+        projectId: child.thread.projectId,
+        now: DateTime.toEpochMillis(now),
+        runtimeMode: child.thread.runtimeMode,
+        attemptedInstanceIds,
+      });
+      return resolution.kind !== "none";
+    },
+  );
+
   const planDelegatedCompletionDelivery = Effect.fn(
     "orchestrationV2.planDelegatedCompletionDelivery",
   )(function* (input: {
@@ -15468,11 +15672,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       )
         return;
       if (
-        yield* childAwaitsRestartContinuation(
+        (yield* childAwaitsRestartContinuation(
           taskRuns.length === 0 ? childControls.runs : taskRuns,
           childRun,
           options?.settledContinuationOf,
-        )
+        )) ||
+        (yield* childAwaitsUsageLimitFailover(
+          childThreadId,
+          childControls.runs,
+          childRun,
+          options?.settledContinuationOf,
+        ))
       ) {
         return;
       }
@@ -15773,11 +15983,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const status = delegatedTaskTerminalStatus(runOutcome(resultRun));
     if (status !== "interrupted" && status !== "cancelled" && !taskCancelled) return;
     if (
-      yield* childAwaitsRestartContinuation(
+      (yield* childAwaitsRestartContinuation(
         childControls.runs,
         resultRun,
         options?.settledContinuationOf,
-      )
+      )) ||
+      (yield* childAwaitsUsageLimitFailover(
+        childThreadId,
+        childControls.runs,
+        resultRun,
+        options?.settledContinuationOf,
+      ))
     )
       return;
     // Callers hold the parent lock; dismiss takes the child lock, as follow-up intake does.
@@ -15796,7 +16012,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     let run: OrchestrationV2Run | undefined = resultRun;
     while (run !== undefined && !resultRunIds.has(run.id)) {
       resultRunIds.add(run.id);
-      const previousRunId: RunId | undefined = run.restartContinuationOfRunId;
+      const previousRunId: RunId | undefined =
+        run.restartContinuationOfRunId ?? run.usageLimitFailoverOfRunId;
       run =
         previousRunId === undefined
           ? undefined
@@ -17302,12 +17519,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           delegatedTaskAwaitsWork(runs, child)
         )
           return true;
-        return yield* childAwaitsRestartContinuation(runs, run);
+        return (
+          (yield* childAwaitsRestartContinuation(runs, run)) ||
+          (yield* childAwaitsUsageLimitFailover(childThreadId, child.runs, run))
+        );
       }
       const progress = delegatedTaskProgress(child);
       if (progress.state !== "result_available") return true;
       if (progress.resultRun === undefined) return false;
-      return yield* childAwaitsRestartContinuation(child.runs, progress.resultRun);
+      return (
+        (yield* childAwaitsRestartContinuation(child.runs, progress.resultRun)) ||
+        (yield* childAwaitsUsageLimitFailover(childThreadId, child.runs, progress.resultRun))
+      );
     },
     (effect, childThreadId, _taskId?) =>
       effect.pipe(

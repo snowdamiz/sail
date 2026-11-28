@@ -75,6 +75,10 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { threadPullRequestUpdatedAtMs } from "@t3tools/shared/threadPullRequests";
 import {
+  exhaustedUsageWindow,
+  resolveUsageLimitFailoverTarget,
+} from "@t3tools/shared/usageFailover";
+import {
   normalizeThreadPullRequestKey,
   visibleThreadPullRequests,
 } from "../sourceControl/threadPullRequests.ts";
@@ -2994,13 +2998,45 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
-      const target = yield* resolveTargetRechecking({
+      let target = yield* resolveTargetRechecking({
         parent,
         target: input.target,
         providers,
         cwd: yield* parentWorkspaceCwd(parent),
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
       });
+      if (!isRetryOfAcceptedDelegation) {
+        const settings = yield* serverSettings.getSettings.pipe(
+          Effect.orElseSucceed(() => undefined),
+        );
+        const targetProvider = providers.find(
+          (provider) => provider.instanceId === target.modelSelection.instanceId,
+        );
+        const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+        if (
+          settings?.autoFailoverOnUsageLimit &&
+          targetProvider !== undefined &&
+          exhaustedUsageWindow(targetProvider, nowMs, target.modelSelection.model) !== undefined
+        ) {
+          const redirected = resolveUsageLimitFailoverTarget({
+            currentSelection: target.modelSelection,
+            providers,
+            settings,
+            projectId: parent.thread.projectId,
+            now: nowMs,
+            runtimeMode:
+              input.runtimeMode !== undefined && input.runtimeMode !== "inherit"
+                ? input.runtimeMode
+                : parent.thread.runtimeMode,
+          });
+          if (redirected.kind !== "none") {
+            target = {
+              modelSelection: redirected.target,
+              supportedRuntimeModes: redirected.toProvider.supportedRuntimeModes,
+            };
+          }
+        }
+      }
       const runtimeMode = yield* resolveRuntimeMode(
         parent.thread.runtimeMode,
         input.runtimeMode,
