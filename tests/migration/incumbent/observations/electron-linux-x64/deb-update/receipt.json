@@ -51,7 +51,8 @@
     "privilegeCommand": "sudo",
     "packageManager": "dpkg",
     "passwordlessSudoInFixture": true,
-    "dpkgUpgradeEntryVerified": true
+    "dpkgUpgradeEntryVerified": true,
+    "sudoGrant": "Passwordless root access through /bin/bash with unrestricted arguments inside the disposable container."
   },
   "feed": {
     "mode": "packaged test-feed override to a loopback mirror",
@@ -190,9 +191,10 @@
     },
     {
       "file": "update-confirm.png",
-      "sha256": "810d9d8a5d0095182680d2f5bb606b509b0fbb8fb6c392427da3aa16a2d3aa7f",
+      "sha256": "1c767eb75b61bda81dbbfe2a59078687062424a445c6739e8e01fd028b596228",
       "pixels": [1100, 780],
-      "scope": "X11 window"
+      "scope": "X11 window",
+      "capture": "Repeated the same update and waited for finite render animations and dialog opacity 1."
     },
     {
       "file": "update-reopened.png",

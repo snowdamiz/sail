@@ -55,7 +55,7 @@ The [AppImage update receipt](../observations/electron-linux-arm64/appimage-upda
 
 ## Published Debian package update
 
-Install the architecture's v0.1.17 Debian package in a disposable Debian 13.8 container. Include `/usr/share/doc/sail/*` in dpkg's path filters. Launch the installed desktop as an unprivileged fixture user under Xvfb with `--no-sandbox`. Give the fixture user passwordless sudo within the container for the install command. Verify the package with `dpkg --verify sail` as root.
+Install the architecture's v0.1.17 Debian package in a disposable Debian 13.8 container. Include `/usr/share/doc/sail/*` in dpkg's path filters. Launch the installed desktop as an unprivileged fixture user under Xvfb with `--no-sandbox`. This fixture grants the user passwordless root access through `sudo /bin/bash` inside the container, which runs with external networking disabled and the package inputs mounted read-only. Verify the package with `dpkg --verify sail` as root.
 
 Use the same loopback feed override and update controls as the AppImage test. Serve `latest-linux-arm64.yml` for arm64 or `latest-linux.yml` for x64, along with the matching v0.1.18 Debian package. Replace the Debian package's SHA-512 in the first manifest. Check the original package and backend after the failure, then restore the published manifest. After confirming the update, check the dpkg upgrade entry, the relaunched application, and the reopened Replay thread.
 
