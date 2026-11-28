@@ -3382,6 +3382,249 @@ describe("SessionTransferCoordinator", () => {
       }).pipe(Effect.scoped, Effect.provide(harness.layer));
     },
   );
+  it.effect(
+    "live cancel of local_to_boat fails with target_unavailable and keeps transfer non-terminal when destination abort fails",
+    () =>
+      Effect.gen(function* () {
+        // (a) Active live worker cancelled while streaming with unreachable destination ->
+        // cancel fails with target_unavailable, record stays non-terminal, and retry cancel cleans up once reachable.
+        const streamStartedA = Deferred.makeUnsafe<void>();
+        const streamHoldA = Deferred.makeUnsafe<void>();
+        let boatReachableA = false;
+        const retryCancelHarness = makeHarness({
+          onStreamHttpTransfer: () =>
+            Deferred.succeed(streamStartedA, undefined).pipe(
+              Effect.andThen(Deferred.await(streamHoldA)),
+              Effect.as({ bytesTransferred: 0, status: 200 }),
+            ),
+          onRemoteAbort: () =>
+            boatReachableA
+              ? Effect.succeed({ cleanedUp: true })
+              : Effect.fail(
+                  new SessionTransferError({
+                    code: "target_unavailable",
+                    message: "Boat destination unreachable during live cancel",
+                  }),
+                ),
+        });
+
+        yield* Effect.gen(function* () {
+          const repo = yield* SessionTransferRepository.SessionTransferRepository;
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+
+          const started = yield* coordinator.start({
+            transferId: SessionTransferId.make("tx-live-cancel-dest-abort-fails-retry"),
+            direction: "local_to_boat",
+            sourceEnvironmentId: LOCAL_ENV_ID,
+            sourceThreadId: LOCAL_THREAD_ID,
+            target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+          });
+
+          yield* Deferred.await(streamStartedA);
+
+          const cancelErr = yield* Effect.flip(
+            coordinator.cancel({ transferId: started.transferId }),
+          );
+          expect(cancelErr.code).toBe("target_unavailable");
+
+          const afterFailedCancel = yield* repo.getById(started.transferId);
+          expect(Option.isSome(afterFailedCancel)).toBe(true);
+          if (Option.isSome(afterFailedCancel)) {
+            expect(isTerminalSessionTransferPhase(afterFailedCancel.value.phase)).toBe(false);
+            expect(afterFailedCancel.value.phase).toBe("transferring_workspace");
+            expect(afterFailedCancel.value.completedAt).toBeNull();
+          }
+
+          const activeAfterFailedCancel = yield* repo.listActive();
+          expect(activeAfterFailedCancel.map((r) => r.transferId)).toContain(started.transferId);
+
+          const remoteAbortCallsBeforeRecovery = retryCancelHarness.calls.remoteAbort.length;
+          expect(remoteAbortCallsBeforeRecovery).toBeGreaterThanOrEqual(1);
+          expect(
+            retryCancelHarness.calls.remoteAbort.every((call) => call.role === "destination"),
+          ).toBe(true);
+          expect(retryCancelHarness.calls.localAbort.length).toBeGreaterThanOrEqual(1);
+          expect(retryCancelHarness.calls.localAbort.every((call) => call.role === "source")).toBe(
+            true,
+          );
+
+          // Destination recovers -> retrying cancel cleans up destination and marks cancelled.
+          boatReachableA = true;
+          const cancelled = yield* coordinator.cancel({ transferId: started.transferId });
+          expect(cancelled.phase).toBe("cancelled");
+          expect(cancelled.errorMessage).toBeNull();
+          expect(cancelled.completedAt).not.toBeNull();
+          expect(retryCancelHarness.calls.remoteAbort.length).toBe(
+            remoteAbortCallsBeforeRecovery + 1,
+          );
+          expect(retryCancelHarness.calls.remoteAbort[remoteAbortCallsBeforeRecovery]?.role).toBe(
+            "destination",
+          );
+
+          const activeAfterRecovery = yield* repo.listActive();
+          expect(activeAfterRecovery.map((r) => r.transferId)).not.toContain(started.transferId);
+        }).pipe(Effect.scoped, Effect.provide(retryCancelHarness.layer));
+
+        // (b) Same live cancel failure followed by server restart -> reconcileOnStartup picks up
+        // the non-terminal transfer once destination is reachable and cleans it up.
+        const streamStartedB = Deferred.makeUnsafe<void>();
+        const streamHoldB = Deferred.makeUnsafe<void>();
+        let boatReachableB = false;
+        const reconcileHarness = makeHarness({
+          onStreamHttpTransfer: () =>
+            Deferred.succeed(streamStartedB, undefined).pipe(
+              Effect.andThen(Deferred.await(streamHoldB)),
+              Effect.as({ bytesTransferred: 0, status: 200 }),
+            ),
+          onRemoteAbort: () =>
+            boatReachableB
+              ? Effect.succeed({ cleanedUp: true })
+              : Effect.fail(
+                  new SessionTransferError({
+                    code: "target_unavailable",
+                    message: "Boat destination unreachable during live cancel",
+                  }),
+                ),
+        });
+
+        yield* Effect.gen(function* () {
+          const repo = yield* SessionTransferRepository.SessionTransferRepository;
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+
+          const started = yield* coordinator.start({
+            transferId: SessionTransferId.make("tx-live-cancel-dest-abort-fails-reconcile"),
+            direction: "local_to_boat",
+            sourceEnvironmentId: LOCAL_ENV_ID,
+            sourceThreadId: LOCAL_THREAD_ID,
+            target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+          });
+
+          yield* Deferred.await(streamStartedB);
+
+          const cancelErr = yield* Effect.flip(
+            coordinator.cancel({ transferId: started.transferId }),
+          );
+          expect(cancelErr.code).toBe("target_unavailable");
+
+          const stillActive = yield* repo.getById(started.transferId);
+          expect(Option.isSome(stillActive) && stillActive.value.phase).toBe(
+            "transferring_workspace",
+          );
+          const remoteAbortCallsBeforeRecovery = reconcileHarness.calls.remoteAbort.length;
+
+          // Destination recovers -> reconcileOnStartup finishes remote cleanup and marks terminal.
+          boatReachableB = true;
+          yield* coordinator.reconcileOnStartup;
+
+          const reconciled = yield* repo.getById(started.transferId);
+          expect(Option.isSome(reconciled) && reconciled.value.phase).toBe("failed");
+          expect(reconcileHarness.calls.remoteAbort.length).toBe(
+            remoteAbortCallsBeforeRecovery + 1,
+          );
+          expect(reconcileHarness.calls.remoteAbort[remoteAbortCallsBeforeRecovery]?.role).toBe(
+            "destination",
+          );
+          const activeAfterReconcile = yield* repo.listActive();
+          expect(activeAfterReconcile.map((r) => r.transferId)).not.toContain(started.transferId);
+        }).pipe(Effect.scoped, Effect.provide(reconcileHarness.layer));
+      }),
+  );
+
+  it.effect(
+    "live pre-commit streaming failure keeps transfer non-terminal for reconcileOnStartup when destination abort fails",
+    () => {
+      let boatReachable = false;
+      const harness = makeHarness({
+        onStreamHttpTransfer: () =>
+          Effect.fail(
+            new SessionTransferError({
+              code: "target_unavailable",
+              message:
+                "Upload failed for /api/session-transfers/eyJvcCI6InVwbG9hZCJ9.liveSecretSig/bundle",
+            }),
+          ),
+        onRemoteAbort: () =>
+          boatReachable
+            ? Effect.succeed({ cleanedUp: true })
+            : Effect.fail(
+                new SessionTransferError({
+                  code: "target_unavailable",
+                  message: "Boat destination unreachable during pre-commit cleanup",
+                }),
+              ),
+      });
+
+      return Effect.gen(function* () {
+        const repo = yield* SessionTransferRepository.SessionTransferRepository;
+        const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+        const transferId = SessionTransferId.make("tx-live-stream-error-dest-abort-fails");
+
+        const subscribed = yield* Deferred.make<void>();
+        const pendingCleanupFiber = yield* Effect.forkScoped(
+          coordinator.subscribe.pipe(
+            Stream.tap((event) =>
+              event._tag === "snapshot" ? Deferred.succeed(subscribed, undefined) : Effect.void,
+            ),
+            Stream.filter(
+              (
+                event,
+              ): event is Extract<SessionTransferProgressEvent, { readonly _tag: "updated" }> =>
+                event._tag === "updated" && event.transfer.transferId === transferId,
+            ),
+            Stream.map((event) => event.transfer),
+            Stream.takeUntil((record) => record.errorMessage !== null),
+            Stream.runLast,
+          ),
+        );
+
+        yield* Deferred.await(subscribed);
+        yield* coordinator.start({
+          transferId,
+          direction: "local_to_boat",
+          sourceEnvironmentId: LOCAL_ENV_ID,
+          sourceThreadId: LOCAL_THREAD_ID,
+          target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+        });
+
+        const observedPending = yield* Fiber.join(pendingCleanupFiber);
+        expect(Option.isSome(observedPending)).toBe(true);
+        if (Option.isSome(observedPending)) {
+          expect(isTerminalSessionTransferPhase(observedPending.value.phase)).toBe(false);
+          expect(observedPending.value.phase).toBe("transferring_workspace");
+          expect(observedPending.value.completedAt).toBeNull();
+          expect(observedPending.value.errorMessage).not.toBeNull();
+          expect(observedPending.value.errorMessage).toContain("/api/session-transfers/[REDACTED]");
+          expect(observedPending.value.errorMessage).not.toContain("liveSecretSig");
+        }
+
+        const persisted = yield* repo.getById(transferId);
+        expect(Option.isSome(persisted)).toBe(true);
+        if (Option.isSome(persisted)) {
+          expect(isTerminalSessionTransferPhase(persisted.value.phase)).toBe(false);
+          expect(persisted.value.phase).toBe("transferring_workspace");
+          expect(persisted.value.completedAt).toBeNull();
+        }
+
+        const activeBeforeRecovery = yield* repo.listActive();
+        expect(activeBeforeRecovery.map((r) => r.transferId)).toContain(transferId);
+        expect(harness.calls.remoteAbort).toHaveLength(1);
+        expect(harness.calls.remoteAbort[0]?.role).toBe("destination");
+        expect(harness.calls.localAbort).toHaveLength(1);
+        expect(harness.calls.localAbort[0]?.role).toBe("source");
+
+        // Destination recovers -> reconcileOnStartup aborts remote staging and marks terminal failed.
+        boatReachable = true;
+        yield* coordinator.reconcileOnStartup;
+
+        const reconciled = yield* repo.getById(transferId);
+        expect(Option.isSome(reconciled) && reconciled.value.phase).toBe("failed");
+        expect(harness.calls.remoteAbort).toHaveLength(2);
+        expect(harness.calls.remoteAbort[1]?.role).toBe("destination");
+        const activeAfterRecovery = yield* repo.listActive();
+        expect(activeAfterRecovery.map((r) => r.transferId)).not.toContain(transferId);
+      }).pipe(Effect.scoped, Effect.provide(harness.layer));
+    },
+  );
 });
 describe("makeLiveBoatRemoteClient", () => {
   const mockTicketFetch: typeof fetch = async (input) => {

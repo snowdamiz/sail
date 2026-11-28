@@ -3750,40 +3750,117 @@ const make = Effect.gen(function* () {
           : Effect.void;
 
       const cleanupBeforeCommit = Effect.fn("SessionTransferCoordinator.cleanupBeforeCommit")(
-        function* (reason: string, options?: { readonly skipDestination?: boolean }) {
-          if (commitConfirmed || entry.committed) return;
+        function* (
+          reason: string,
+          options?: { readonly skipDestination?: boolean },
+        ): Effect.fn.Return<{
+          readonly allAborted: boolean;
+          readonly destinationFailed: boolean;
+          readonly sourceFailed: boolean;
+        }> {
+          if (commitConfirmed || entry.committed) {
+            return { allAborted: true, destinationFailed: false, sourceFailed: false };
+          }
+          let destinationFailed = false;
           if (stageAttempted && !options?.skipDestination) {
-            const abortInput: SessionTransferAbortInput = {
+            const destAbortOutcome = yield* abortDestinationSide({
               transferId,
-              role: "destination",
-              ...(stagedDestinationThreadId !== null
-                ? { threadId: stagedDestinationThreadId }
-                : {}),
+              direction,
+              destinationEnvironmentId:
+                direction === "local_to_boat"
+                  ? (boatAccess?.environmentId ?? params.targetEnvironmentId ?? null)
+                  : (localEnvDescriptor?.environmentId ?? null),
+              destinationMachineId:
+                direction === "local_to_boat"
+                  ? (boatAccess?.machineId ?? params.targetMachineId ?? null)
+                  : null,
+              destinationThreadId: stagedDestinationThreadId,
+              boatEndpoint,
               reason,
-            };
-            yield* (
-              direction === "local_to_boat" && boatEndpoint !== null
-                ? remoteClient.abort(boatEndpoint, abortInput)
-                : direction === "boat_to_local"
-                  ? localEndpoints.abort(abortInput)
-                  : Effect.void
-            ).pipe(Effect.ignore);
+            });
+            if (destAbortOutcome === "failed") {
+              destinationFailed = true;
+            }
           }
+          let sourceFailed = false;
           if (prepareAttempted) {
-            const abortInput: SessionTransferAbortInput = {
+            const sourceAbortOutcome = yield* abortSourceSide({
               transferId,
-              role: "source",
-              threadId: params.sourceThreadId,
+              direction,
+              sourceEnvironmentId: params.sourceEnvironmentId,
+              sourceMachineId:
+                direction === "boat_to_local" ? (boatAccess?.machineId ?? null) : null,
+              sourceThreadId: params.sourceThreadId,
+              boatEndpoint,
               reason,
-            };
-            yield* (
-              direction === "local_to_boat"
-                ? localEndpoints.abort(abortInput)
-                : boatEndpoint !== null
-                  ? remoteClient.abort(boatEndpoint, abortInput)
-                  : Effect.void
-            ).pipe(Effect.ignore);
+            });
+            if (sourceAbortOutcome === "failed") {
+              sourceFailed = true;
+            }
           }
+          return {
+            allAborted: !destinationFailed && !sourceFailed,
+            destinationFailed,
+            sourceFailed,
+          };
+        },
+      );
+
+      const recordPendingCleanup = Effect.fn("SessionTransferCoordinator.recordPendingCleanup")(
+        function* (input: {
+          readonly cancelled: boolean;
+          readonly errorMessage: string;
+          readonly destinationFailed: boolean;
+          readonly sourceFailed: boolean;
+        }) {
+          const failedSides = [
+            ...(input.destinationFailed ? ["destination"] : []),
+            ...(input.sourceFailed ? ["source"] : []),
+          ].join(" and ");
+          const safeErrorMessage = redactSignedUrlsInMessage(input.errorMessage);
+          yield* Effect.logWarning(
+            "Pre-commit abort incomplete; keeping transfer non-terminal for retry",
+            {
+              transferId,
+              cancelled: input.cancelled,
+              failedSides,
+              error: safeErrorMessage,
+            },
+          );
+          const currentOption = yield* repository
+            .getById(transferId)
+            .pipe(Effect.orElseSucceed(() => Option.none<SessionTransferRecord>()));
+          if (
+            Option.isNone(currentOption) ||
+            isTerminalSessionTransferPhase(currentOption.value.phase)
+          ) {
+            return;
+          }
+          const current = currentOption.value;
+          yield* transition(transferId, current.phase, {
+            expectedPhases: [current.phase],
+            phaseDetail: input.cancelled
+              ? `Cancellation awaiting ${failedSides} cleanup...`
+              : `Transfer failed; awaiting ${failedSides} cleanup...`,
+            errorMessage: safeErrorMessage,
+            warnings: [...warnings],
+            ...(direction === "local_to_boat" && boatAccess !== null
+              ? {
+                  ...(current.destinationEnvironmentId === null
+                    ? { destinationEnvironmentId: boatAccess.environmentId }
+                    : {}),
+                  ...(current.destinationMachineId === null
+                    ? { destinationMachineId: toNonEmptyTrimmed(boatAccess.machineId) }
+                    : {}),
+                }
+              : {}),
+            ...(stagedDestinationProjectId !== null && current.destinationProjectId === null
+              ? { destinationProjectId: stagedDestinationProjectId }
+              : {}),
+            ...(stagedDestinationThreadId !== null && current.destinationThreadId === null
+              ? { destinationThreadId: stagedDestinationThreadId }
+              : {}),
+          }).pipe(Effect.ignore);
         },
       );
 
@@ -4315,9 +4392,24 @@ const make = Effect.gen(function* () {
                 destinationAlreadyAborted = true;
               }
 
-              yield* cleanupBeforeCommit(abortReason, {
+              const cleanupOutcome = yield* cleanupBeforeCommit(abortReason, {
                 skipDestination: destinationAlreadyAborted,
               });
+              if (!cleanupOutcome.allAborted) {
+                const failedSides = [
+                  ...(cleanupOutcome.destinationFailed ? ["destination"] : []),
+                  ...(cleanupOutcome.sourceFailed ? ["source"] : []),
+                ].join(" and ");
+                yield* recordPendingCleanup({
+                  cancelled,
+                  errorMessage: cancelled
+                    ? `Failed to abort ${failedSides} during cancellation; transfer remains non-terminal for cleanup retry.`
+                    : safeMessage,
+                  destinationFailed: cleanupOutcome.destinationFailed,
+                  sourceFailed: cleanupOutcome.sourceFailed,
+                });
+                return;
+              }
               const completedAt = yield* nowIso();
               yield* transition(transferId, cancelled ? "cancelled" : "failed", {
                 phaseDetail: null,
@@ -4339,9 +4431,22 @@ const make = Effect.gen(function* () {
               }
               destinationAlreadyAborted = true;
             }
-            yield* cleanupBeforeCommit("Transfer cancelled", {
+            const cleanupOutcome = yield* cleanupBeforeCommit("Transfer cancelled", {
               skipDestination: destinationAlreadyAborted,
             });
+            if (!cleanupOutcome.allAborted) {
+              const failedSides = [
+                ...(cleanupOutcome.destinationFailed ? ["destination"] : []),
+                ...(cleanupOutcome.sourceFailed ? ["source"] : []),
+              ].join(" and ");
+              yield* recordPendingCleanup({
+                cancelled: true,
+                errorMessage: `Failed to abort ${failedSides} during cancellation; transfer remains non-terminal for cleanup retry.`,
+                destinationFailed: cleanupOutcome.destinationFailed,
+                sourceFailed: cleanupOutcome.sourceFailed,
+              });
+              return;
+            }
             const completedAt = yield* nowIso();
             yield* transition(transferId, "cancelled", {
               phaseDetail: null,
