@@ -16,6 +16,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type * as HttpServerRequest from "effect/http/HttpServerRequest";
@@ -284,6 +285,9 @@ export const storeAttachmentUpload = Effect.fn("AttachmentUpload.store")(
   }),
 );
 
+const isNotFoundPlatformError = (error: PlatformError.PlatformError): boolean =>
+  error.reason._tag === "NotFound";
+
 export const deletePendingAttachment = Effect.fn("AttachmentUpload.deletePending")(
   function* (attachmentId: string) {
     if (parseThreadSegmentFromAttachmentId(attachmentId) !== PENDING_ATTACHMENT_THREAD_SEGMENT) {
@@ -302,6 +306,43 @@ export const deletePendingAttachment = Effect.fn("AttachmentUpload.deletePending
     const fileSystem = yield* FileSystem.FileSystem;
     yield* fileSystem.remove(attachmentPath, { force: true }).pipe(Effect.orElseSucceed(() => {}));
     yield* fileSystem.remove(`${attachmentPath}.txt`, { force: true }).pipe(Effect.ignore);
+  },
+  withAdmission("root"),
+  Effect.catchTags({
+    ServerMaintenanceBusy: (cause) =>
+      new PersistChatAttachmentsError({ message: cause.message, cause }),
+  }),
+);
+
+export const deletePendingAttachmentStrict = Effect.fn("AttachmentUpload.deletePendingStrict")(
+  function* (attachmentId: string) {
+    if (parseThreadSegmentFromAttachmentId(attachmentId) !== PENDING_ATTACHMENT_THREAD_SEGMENT) {
+      return;
+    }
+
+    const config = yield* ServerConfig.ServerConfig;
+    const attachmentPath = resolveAttachmentPathById({
+      attachmentsDir: config.attachmentsDir,
+      attachmentId,
+    });
+    if (!attachmentPath) {
+      return;
+    }
+
+    const fileSystem = yield* FileSystem.FileSystem;
+    const removeIgnoringNotFound = (targetPath: string) =>
+      fileSystem
+        .remove(targetPath, { force: true })
+        .pipe(Effect.catchIf(isNotFoundPlatformError, () => Effect.void));
+
+    const primaryResult = yield* Effect.result(removeIgnoringNotFound(attachmentPath));
+    const sidecarResult = yield* Effect.result(removeIgnoringNotFound(`${attachmentPath}.txt`));
+    if (Result.isFailure(primaryResult)) {
+      return yield* primaryResult.failure;
+    }
+    if (Result.isFailure(sidecarResult)) {
+      return yield* sidecarResult.failure;
+    }
   },
   withAdmission("root"),
   Effect.catchTags({

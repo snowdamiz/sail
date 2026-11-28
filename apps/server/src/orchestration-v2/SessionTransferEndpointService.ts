@@ -75,7 +75,10 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as AssetSigner from "../assets/AssetSigner.ts";
-import { deletePendingAttachment, issueAttachmentUploadUrl } from "../assets/AttachmentUpload.ts";
+import {
+  deletePendingAttachmentStrict,
+  issueAttachmentUploadUrl,
+} from "../assets/AttachmentUpload.ts";
 import {
   cleanupTransferStagingDir,
   issueSessionTransferAttachmentDownloadUrl,
@@ -2922,33 +2925,81 @@ const make = Effect.gen(function* () {
           return { cleanedUp: false } satisfies SessionTransferAbortResult;
         }
 
-        const cleanupFailures: Array<Cause.Cause<SessionTransferError>> = [];
+        const cleanupFailures: Array<SessionTransferError> = [];
 
-        const stagingExit = yield* Effect.exit(cleanupSourceStagingDir(input.transferId));
-        const deletedStaging = Exit.isSuccess(stagingExit) ? stagingExit.value : false;
-        if (Exit.isFailure(stagingExit)) {
-          cleanupFailures.push(stagingExit.cause);
+        const stagingResult = yield* Effect.result(cleanupSourceStagingDir(input.transferId));
+        const deletedStaging = Result.isSuccess(stagingResult) ? stagingResult.success : false;
+        if (Result.isFailure(stagingResult)) {
+          cleanupFailures.push(stagingResult.failure);
         }
 
         let cleanedWorktree = false;
+        let nextWorktreePath = staged?.worktreePath ?? null;
+        let nextBranch = staged?.branch ?? null;
+        let nextCreatedBranch = staged?.createdBranch ?? false;
+
         if (staged?.worktreePath !== null && staged?.worktreePath !== undefined) {
-          const worktreeExit = yield* Effect.exit(
-            workspaceBundle.removeWorktree({
-              repoCwd: staged.projectWorkspaceRoot,
-              worktreePath: staged.worktreePath,
-              ...(staged.createdBranch && staged.branch !== null ? { branch: staged.branch } : {}),
-            }),
+          const worktreeResult = yield* Effect.result(
+            workspaceBundle
+              .removeWorktree({
+                repoCwd: staged.projectWorkspaceRoot,
+                worktreePath: staged.worktreePath,
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new SessionTransferError({
+                      code: "workspace_error",
+                      transferId: input.transferId,
+                      message: `Failed to remove destination worktree for transfer '${input.transferId}': ${cause.message}`,
+                      cause,
+                    }),
+                ),
+              ),
           );
-          if (Exit.isSuccess(worktreeExit)) {
+          if (Result.isSuccess(worktreeResult)) {
             cleanedWorktree = true;
+            nextWorktreePath = null;
+            if (!staged.createdBranch) {
+              nextBranch = null;
+            }
           } else {
-            cleanupFailures.push(worktreeExit.cause);
+            cleanupFailures.push(worktreeResult.failure);
           }
         }
 
+        if (staged !== undefined && staged.createdBranch && staged.branch !== null) {
+          const branchResult = yield* Effect.result(
+            workspaceBundle
+              .removeWorktree({
+                repoCwd: staged.projectWorkspaceRoot,
+                branch: staged.branch,
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new SessionTransferError({
+                      code: "workspace_error",
+                      transferId: input.transferId,
+                      message: `Failed to delete destination branch '${staged.branch}' for transfer '${input.transferId}': ${cause.message}`,
+                      cause,
+                    }),
+                ),
+              ),
+          );
+          if (Result.isSuccess(branchResult)) {
+            cleanedWorktree = true;
+            nextBranch = null;
+            nextCreatedBranch = false;
+          } else {
+            cleanupFailures.push(branchResult.failure);
+          }
+        }
+
+        const remainingAttachmentUploads: Array<SessionTransferAttachmentUploadTarget> = [];
         for (const upload of staged?.attachmentUploads ?? []) {
-          const attachmentExit = yield* Effect.exit(
-            runWithAssetContext(deletePendingAttachment(upload.destinationAttachmentId)).pipe(
+          const attachmentResult = yield* Effect.result(
+            runWithAssetContext(deletePendingAttachmentStrict(upload.destinationAttachmentId)).pipe(
               Effect.mapError(
                 (cause) =>
                   new SessionTransferError({
@@ -2960,9 +3011,37 @@ const make = Effect.gen(function* () {
               ),
             ),
           );
-          if (Exit.isFailure(attachmentExit)) {
-            cleanupFailures.push(attachmentExit.cause);
+          if (Result.isFailure(attachmentResult)) {
+            remainingAttachmentUploads.push(upload);
+            cleanupFailures.push(attachmentResult.failure);
           }
+        }
+
+        if (cleanupFailures.length > 0) {
+          if (staged !== undefined) {
+            yield* Ref.update(stagedImports, (current) => {
+              const latest = current.get(input.transferId);
+              if (latest === undefined) return current;
+              const next = new Map(current);
+              next.set(input.transferId, {
+                ...latest,
+                worktreePath: nextWorktreePath,
+                branch: nextBranch,
+                createdBranch: nextCreatedBranch,
+                attachmentUploads: remainingAttachmentUploads,
+              });
+              return next;
+            });
+          }
+
+          const [firstFailure, ...restFailures] = cleanupFailures;
+          for (const extraFailure of restFailures) {
+            yield* Effect.logWarning(
+              "Additional destination cleanup failure during session transfer abort.",
+              { transferId: input.transferId, cause: extraFailure },
+            );
+          }
+          return yield* firstFailure!;
         }
 
         const removedStaged = yield* Ref.modify(stagedImports, (current) => {
@@ -2971,17 +3050,6 @@ const make = Effect.gen(function* () {
           next.delete(input.transferId);
           return [true, next] as const;
         });
-
-        if (cleanupFailures.length > 0) {
-          const [firstFailure, ...restFailures] = cleanupFailures;
-          for (const extraCause of restFailures) {
-            yield* Effect.logWarning(
-              "Additional destination cleanup failure during session transfer abort.",
-              { transferId: input.transferId, cause: Cause.pretty(extraCause) },
-            );
-          }
-          return yield* Effect.failCause(firstFailure!);
-        }
 
         return {
           cleanedUp: cleanedWorktree || removedStaged || deletedStaging,

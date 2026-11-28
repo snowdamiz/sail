@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
 import { describe } from "vite-plus/test";
 
@@ -691,6 +692,148 @@ describe("WorkspaceBundle", () => {
         });
         expect(imported.headSha).toBe(c2Sha);
         expect(yield* fs.readFileString(path.join(imported.worktreePath, "file.txt"))).toBe("c2\n");
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "propagates worktree removal and branch deletion errors instead of silently succeeding, and recovers cleanly on retry",
+    () =>
+      Effect.gen(function* () {
+        const baseFs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseVcsProcess = yield* VcsProcess.VcsProcess;
+
+        const root = yield* baseFs.makeTempDirectoryScoped({ prefix: "t3-wb-remove-err-" });
+        const srcRepo = path.join(root, "src");
+        const dstRepo = path.join(root, "dst");
+        const bundlePath = path.join(root, "remove-err.bundle");
+
+        yield* baseFs.makeDirectory(srcRepo, { recursive: true });
+        yield* git(srcRepo, ["init", "-b", "main"]);
+        yield* baseFs.writeFileString(path.join(srcRepo, "file.txt"), "base\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "init"]);
+        yield* git(root, ["clone", srcRepo, dstRepo]);
+
+        yield* git(srcRepo, ["checkout", "-b", "feat/remove-err"]);
+        yield* baseFs.writeFileString(path.join(srcRepo, "file.txt"), "feature\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "feature"]);
+
+        const baseBundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const exported = yield* baseBundleService.exportWorkspaceBundle({
+          transferId: "xfer-remove-err",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+        const imported = yield* baseBundleService.importWorkspaceBundle({
+          transferId: "xfer-remove-err",
+          repoCwd: dstRepo,
+          bundlePath,
+          sourceBranch: exported.branch,
+          targetLabel: "boat",
+        });
+
+        expect(imported.branch).toBe("feat/remove-err");
+        expect(imported.createdBranch).toBe(true);
+        expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
+
+        let blockWorktreeRemoval = true;
+        const wrappedFsLayer = Layer.succeed(FileSystem.FileSystem, {
+          ...baseFs,
+          remove: (targetPath, removeOptions) =>
+            blockWorktreeRemoval && targetPath === imported.worktreePath
+              ? Effect.fail(
+                  PlatformError.systemError({
+                    _tag: "PermissionDenied",
+                    module: "FileSystem",
+                    method: "remove",
+                    pathOrDescriptor: targetPath,
+                  }),
+                )
+              : baseFs.remove(targetPath, removeOptions),
+        });
+        const wrappedVcsLayer = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) =>
+            blockWorktreeRemoval && runInput.operation === "WorkspaceBundle.removeWorktree"
+              ? Effect.succeed({
+                  exitCode: 128 as VcsProcess.VcsProcessOutput["exitCode"],
+                  stdout: "",
+                  stderr: "error: failed to delete worktree: Permission denied",
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                })
+              : baseVcsProcess.run(runInput),
+        });
+        const faultBundleLayer = Layer.fresh(WorkspaceBundle.layer).pipe(
+          Layer.provide(Layer.merge(wrappedFsLayer, wrappedVcsLayer)),
+        );
+
+        // 1. Worktree directory removal failure (PermissionDenied) must propagate as WorkspaceBundleError.
+        const worktreeFail = yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          return yield* Effect.result(
+            svc.removeWorktree({
+              repoCwd: dstRepo,
+              worktreePath: imported.worktreePath,
+            }),
+          );
+        }).pipe(Effect.provide(faultBundleLayer));
+        expect(Result.isFailure(worktreeFail)).toBe(true);
+        if (Result.isFailure(worktreeFail)) {
+          expect(worktreeFail.failure.code).toBe("io_error");
+        }
+        expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
+
+        // 2. Unblock worktree removal, but lock the created branch ref so git branch -D fails while
+        //    the branch still exists. removeWorktree must remove the worktree and report branch failure.
+        blockWorktreeRemoval = false;
+        const branchLockPath = path.join(
+          dstRepo,
+          ".git",
+          "refs",
+          "heads",
+          "feat",
+          "remove-err.lock",
+        );
+        yield* baseFs.writeFileString(branchLockPath, "locked\n");
+        try {
+          const branchFail = yield* Effect.gen(function* () {
+            const svc = yield* WorkspaceBundle.WorkspaceBundle;
+            return yield* Effect.result(
+              svc.removeWorktree({
+                repoCwd: dstRepo,
+                worktreePath: imported.worktreePath,
+                branch: imported.branch,
+              }),
+            );
+          }).pipe(Effect.provide(faultBundleLayer));
+          expect(Result.isFailure(branchFail)).toBe(true);
+          if (Result.isFailure(branchFail)) {
+            expect(branchFail.failure.code).toBe("git_error");
+          }
+          expect(yield* baseFs.exists(imported.worktreePath)).toBe(false);
+          expect((yield* git(dstRepo, ["branch", "--list", "feat/remove-err"])).trim()).not.toBe(
+            "",
+          );
+        } finally {
+          yield* baseFs.remove(branchLockPath, { force: true }).pipe(Effect.ignore);
+        }
+
+        // 3. Retry once the branch lock is cleared: treats missing worktree as already gone and deletes branch.
+        yield* baseBundleService.removeWorktree({
+          repoCwd: dstRepo,
+          worktreePath: imported.worktreePath,
+          branch: imported.branch,
+        });
+        expect((yield* git(dstRepo, ["branch", "--list", "feat/remove-err"])).trim()).toBe("");
+
+        // 4. Subsequent call when both worktree and branch are already gone succeeds idempotently.
+        yield* baseBundleService.removeWorktree({
+          repoCwd: dstRepo,
+          worktreePath: imported.worktreePath,
+          branch: imported.branch,
+        });
       }).pipe(Effect.provide(makeTestLayer())),
   );
 });

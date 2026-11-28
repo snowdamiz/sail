@@ -8,6 +8,7 @@ import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -110,7 +111,7 @@ export interface ImportWorkspaceBundleResult {
 
 export interface RemoveWorkspaceWorktreeInput {
   readonly repoCwd: string;
-  readonly worktreePath: string;
+  readonly worktreePath?: string | null;
   readonly branch?: string | null;
 }
 
@@ -121,7 +122,9 @@ export interface WorkspaceBundleShape {
   readonly importWorkspaceBundle: (
     input: ImportWorkspaceBundleInput,
   ) => Effect.Effect<ImportWorkspaceBundleResult, WorkspaceBundleError>;
-  readonly removeWorktree: (input: RemoveWorkspaceWorktreeInput) => Effect.Effect<void>;
+  readonly removeWorktree: (
+    input: RemoveWorkspaceWorktreeInput,
+  ) => Effect.Effect<void, WorkspaceBundleError>;
 }
 
 export class WorkspaceBundle extends Context.Service<WorkspaceBundle, WorkspaceBundleShape>()(
@@ -851,25 +854,168 @@ const make = Effect.gen(function* () {
   const removeWorktree: WorkspaceBundleShape["removeWorktree"] = Effect.fn(
     "WorkspaceBundle.removeWorktree",
   )(function* (input) {
-    yield* runGit(
-      "WorkspaceBundle.removeWorktree",
-      input.repoCwd,
-      ["worktree", "remove", "--force", input.worktreePath],
-      { allowNonZeroExit: true },
-    ).pipe(Effect.ignore);
-    yield* runGit("WorkspaceBundle.pruneWorktrees", input.repoCwd, ["worktree", "prune"], {
-      allowNonZeroExit: true,
-    }).pipe(Effect.ignore);
-    yield* fileSystem
-      .remove(input.worktreePath, { recursive: true, force: true })
-      .pipe(Effect.ignore);
-    if (input.branch) {
-      yield* runGit(
-        "WorkspaceBundle.deleteUnusedBranch",
-        input.repoCwd,
-        ["branch", "-D", input.branch],
-        { allowNonZeroExit: true },
-      ).pipe(Effect.ignore);
+    let worktreeError: WorkspaceBundleError | null = null;
+    let branchError: WorkspaceBundleError | null = null;
+
+    if (input.worktreePath !== undefined && input.worktreePath !== null) {
+      const worktreePath = input.worktreePath;
+      const gitRemoveResult = yield* Effect.result(
+        runGit(
+          "WorkspaceBundle.removeWorktree",
+          input.repoCwd,
+          ["worktree", "remove", "--force", worktreePath],
+          { allowNonZeroExit: true },
+        ),
+      );
+      let gitRemoveDetail: string | null = null;
+      if (Result.isFailure(gitRemoveResult)) {
+        gitRemoveDetail = gitRemoveResult.failure.message;
+      } else if (gitRemoveResult.success.exitCode !== 0) {
+        const stderr = gitRemoveResult.success.stderr.trim();
+        const stdout = gitRemoveResult.success.stdout.trim();
+        gitRemoveDetail =
+          stderr.length > 0
+            ? stderr
+            : stdout.length > 0
+              ? stdout
+              : `exit code ${gitRemoveResult.success.exitCode}`;
+      }
+
+      const fsRemoveResult = yield* Effect.result(
+        fileSystem.remove(worktreePath, { recursive: true }).pipe(
+          Effect.catchIf(
+            (error) => error.reason._tag === "NotFound",
+            () => Effect.void,
+          ),
+          Effect.mapError(
+            (cause) =>
+              new WorkspaceBundleError({
+                code: "io_error",
+                message: `Failed to remove worktree directory '${worktreePath}': ${cause.message}`,
+                cause,
+              }),
+          ),
+        ),
+      );
+      if (Result.isFailure(fsRemoveResult)) {
+        worktreeError = fsRemoveResult.failure;
+      } else {
+        const stillExistsResult = yield* Effect.result(
+          fileSystem.exists(worktreePath).pipe(
+            Effect.catchIf(
+              (error) => error.reason._tag === "NotFound",
+              () => Effect.succeed(false),
+            ),
+            Effect.mapError(
+              (cause) =>
+                new WorkspaceBundleError({
+                  code: "io_error",
+                  message: `Failed to verify removal of worktree directory '${worktreePath}': ${cause.message}`,
+                  cause,
+                }),
+            ),
+          ),
+        );
+        if (Result.isFailure(stillExistsResult)) {
+          worktreeError = stillExistsResult.failure;
+        } else if (stillExistsResult.success) {
+          worktreeError = new WorkspaceBundleError({
+            code: "io_error",
+            message:
+              gitRemoveDetail !== null
+                ? `Worktree directory '${worktreePath}' still exists after removal (${gitRemoveDetail}).`
+                : `Worktree directory '${worktreePath}' still exists after removal.`,
+          });
+        }
+      }
+
+      const pruneResult = yield* Effect.result(
+        runGit("WorkspaceBundle.pruneWorktrees", input.repoCwd, ["worktree", "prune"], {
+          allowNonZeroExit: true,
+        }),
+      );
+      if (worktreeError === null) {
+        if (Result.isFailure(pruneResult)) {
+          worktreeError = pruneResult.failure;
+        } else if (pruneResult.success.exitCode !== 0) {
+          const detail =
+            pruneResult.success.stderr.trim() ||
+            pruneResult.success.stdout.trim() ||
+            `exit code ${pruneResult.success.exitCode}`;
+          worktreeError = new WorkspaceBundleError({
+            code: "git_error",
+            message: `Failed to prune worktrees in '${input.repoCwd}': ${detail}`,
+          });
+        }
+      }
+    }
+
+    if (input.branch !== undefined && input.branch !== null && input.branch.length > 0) {
+      const branch = input.branch;
+      const deleteBranchResult = yield* Effect.result(
+        runGit(
+          "WorkspaceBundle.deleteUnusedBranch",
+          input.repoCwd,
+          ["branch", "-D", "--", branch],
+          { allowNonZeroExit: true },
+        ),
+      );
+      let deleteBranchDetail: string | null = null;
+      if (Result.isFailure(deleteBranchResult)) {
+        deleteBranchDetail = deleteBranchResult.failure.message;
+      } else if (deleteBranchResult.success.exitCode !== 0) {
+        const stderr = deleteBranchResult.success.stderr.trim();
+        const stdout = deleteBranchResult.success.stdout.trim();
+        deleteBranchDetail =
+          stderr.length > 0
+            ? stderr
+            : stdout.length > 0
+              ? stdout
+              : `exit code ${deleteBranchResult.success.exitCode}`;
+      }
+
+      const verifyBranchResult = yield* Effect.result(
+        runGit(
+          "WorkspaceBundle.verifyBranchDeleted",
+          input.repoCwd,
+          ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+          { allowNonZeroExit: true },
+        ),
+      );
+      if (Result.isFailure(verifyBranchResult)) {
+        branchError = verifyBranchResult.failure;
+      } else if (verifyBranchResult.success.exitCode === 0) {
+        branchError = new WorkspaceBundleError({
+          code: "git_error",
+          message:
+            deleteBranchDetail !== null
+              ? `Failed to delete branch '${branch}' in '${input.repoCwd}': ${deleteBranchDetail}`
+              : `Branch '${branch}' still exists in '${input.repoCwd}' after deletion.`,
+        });
+      } else if (verifyBranchResult.success.exitCode !== 1) {
+        const verifyDetail =
+          verifyBranchResult.success.stderr.trim() ||
+          verifyBranchResult.success.stdout.trim() ||
+          `exit code ${verifyBranchResult.success.exitCode}`;
+        branchError = new WorkspaceBundleError({
+          code: "git_error",
+          message: `Failed to verify deletion of branch '${branch}' in '${input.repoCwd}': ${verifyDetail}`,
+        });
+      }
+    }
+
+    if (worktreeError !== null && branchError !== null) {
+      return yield* new WorkspaceBundleError({
+        code: worktreeError.code,
+        message: `${worktreeError.message}; ${branchError.message}`,
+        cause: worktreeError,
+      });
+    }
+    if (worktreeError !== null) {
+      return yield* worktreeError;
+    }
+    if (branchError !== null) {
+      return yield* branchError;
     }
   });
 
@@ -1096,7 +1242,17 @@ const make = Effect.gen(function* () {
               repoCwd: input.repoCwd,
               worktreePath: createdWorktreePath,
               branch: createdBranchName,
-            });
+            }).pipe(
+              Effect.tapError((cause) =>
+                Effect.logWarning("Failed to clean up partial workspace bundle import worktree.", {
+                  repoCwd: input.repoCwd,
+                  worktreePath: createdWorktreePath,
+                  branch: createdBranchName,
+                  cause,
+                }),
+              ),
+              Effect.ignore,
+            );
           }
         }),
       ),

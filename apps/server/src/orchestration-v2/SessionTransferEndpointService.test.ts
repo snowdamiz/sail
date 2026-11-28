@@ -171,6 +171,10 @@ interface EndpointTestHooks {
     readonly next: Effect.Effect<void, PlatformError.PlatformError>;
   }) => Effect.Effect<void, PlatformError.PlatformError>;
   readonly onProjectGetById?: <A, E>(next: Effect.Effect<A, E>) => Effect.Effect<A, E>;
+  readonly onVcsRun?: (ctx: {
+    readonly input: VcsProcess.VcsProcessInput;
+    readonly next: ReturnType<VcsProcess.VcsProcess["Service"]["run"]>;
+  }) => ReturnType<VcsProcess.VcsProcess["Service"]["run"]>;
 }
 
 function makeEndpointTestLayer(options: {
@@ -266,7 +270,24 @@ function makeEndpointTestLayer(options: {
   const secretLayer = ServerSecretStore.layer.pipe(Layer.provideMerge(configLayer));
   const signerLayer = AssetSigner.layer.pipe(Layer.provideMerge(secretLayer));
   const documentTextLayer = DocumentText.layer.pipe(Layer.provideMerge(configLayer));
-  const vcsProcessLayer = VcsProcess.layer.pipe(Layer.provideMerge(configLayer));
+  const rawVcsProcessLayer = VcsProcess.layer.pipe(Layer.provideMerge(configLayer));
+  const vcsProcessLayer =
+    options.hooks?.onVcsRun !== undefined
+      ? Layer.effect(
+          VcsProcess.VcsProcess,
+          Effect.gen(function* () {
+            const inner = yield* VcsProcess.VcsProcess;
+            const hook = options.hooks!.onVcsRun!;
+            return VcsProcess.VcsProcess.of({
+              run: (runInput) =>
+                hook({
+                  input: runInput,
+                  next: inner.run(runInput),
+                }),
+            });
+          }),
+        ).pipe(Layer.provideMerge(rawVcsProcessLayer))
+      : rawVcsProcessLayer;
   const rawWorkspaceBundleLayer = WorkspaceBundle.layer.pipe(Layer.provideMerge(vcsProcessLayer));
   const workspaceBundleLayer = Layer.effect(
     WorkspaceBundle.WorkspaceBundle,
@@ -5057,6 +5078,444 @@ describe("SessionTransferEndpointService", () => {
             });
             expect(retryAbort.cleanedUp).toBe(true);
             expect(NodeFS.existsSync(stagingDir)).toBe(false);
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "propagates pending attachment PermissionDenied during destination abort, retains only the failed attachment for retry, and returns cleanedUp: true on recovery",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-dst-abort-att-eacces-"),
+        );
+        const srcRepo = NodePath.join(tmpRoot, "src");
+        const dstRepo = NodePath.join(tmpRoot, "dst");
+        initGitRepo(srcRepo);
+        git(tmpRoot, ["clone", srcRepo, dstRepo]);
+        git(srcRepo, ["checkout", "-b", "feat/dst-abort-att-eacces"]);
+        NodeFS.writeFileSync(NodePath.join(srcRepo, "feature.txt"), "feature change\n");
+        git(srcRepo, ["add", "feature.txt"]);
+        git(srcRepo, ["commit", "-m", "feature commit"]);
+
+        const srcProjectId = ProjectId.make("proj-dst-abort-att-src");
+        const dstProjectId = ProjectId.make("proj-dst-abort-att-dst");
+        const modelSelection: ModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+        const recorder: MockRecorder = {
+          dispatches: [],
+          forceStops: [],
+          detachedSessions: [],
+          sentMessages: [],
+        };
+
+        let failNextCommitEventWrite = false;
+        let blockedAttachmentPath = "";
+        let failBlockedAttachment = false;
+        const retryRemoveCalls: Array<string> = [];
+        let recordRemoveCalls = false;
+
+        const layer = makeEndpointTestLayer({
+          environmentId: "env-dst-abort-att-eacces",
+          environmentLabel: "Destination Abort Attachment EACCES Env",
+          projects: [
+            { id: srcProjectId, title: "Src", workspaceRoot: srcRepo },
+            { id: dstProjectId, title: "Dst", workspaceRoot: dstRepo },
+          ],
+          providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+          recorder,
+          hooks: {
+            onEventSinkWrite: (events) => {
+              if (failNextCommitEventWrite && events.some((e) => e.type === "thread.created")) {
+                failNextCommitEventWrite = false;
+                return Effect.fail(new TestHookError({ message: "fail commit after worktree" }));
+              }
+              return Effect.void;
+            },
+            onFileSystemRemove: ({ targetPath, next }) =>
+              Effect.gen(function* () {
+                if (recordRemoveCalls) {
+                  retryRemoveCalls.push(targetPath);
+                }
+                if (
+                  failBlockedAttachment &&
+                  blockedAttachmentPath.length > 0 &&
+                  targetPath === blockedAttachmentPath
+                ) {
+                  return yield* PlatformError.systemError({
+                    _tag: "PermissionDenied",
+                    module: "FileSystem",
+                    method: "remove",
+                    pathOrDescriptor: targetPath,
+                  });
+                }
+                return yield* next;
+              }),
+          },
+        });
+
+        try {
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const srcThreadId = ThreadId.make("thread-dst-abort-att-eacces");
+            const transferId = SessionTransferId.make("xfer-dst-abort-att-eacces");
+            const srcAttachmentId1 = ChatAttachmentId.make(createAttachmentId(srcThreadId)!);
+            const srcAttachmentId2 = ChatAttachmentId.make(createAttachmentId(srcThreadId)!);
+            const attachmentBytes = new Uint8Array([
+              0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+            ]);
+            NodeFS.mkdirSync(config.attachmentsDir, { recursive: true });
+            NodeFS.writeFileSync(
+              NodePath.join(config.attachmentsDir, `${srcAttachmentId1}.png`),
+              attachmentBytes,
+            );
+            NodeFS.writeFileSync(
+              NodePath.join(config.attachmentsDir, `${srcAttachmentId2}.png`),
+              attachmentBytes,
+            );
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: "feat/dst-abort-att-eacces",
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+                presentAttachmentId: srcAttachmentId1,
+                assistantOnlyAttachmentId: srcAttachmentId2,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: srcThreadId,
+              direction: "local_to_boat",
+            });
+            const initialStaged = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            expect(initialStaged.attachmentUploads).toHaveLength(2);
+
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferId, path)!,
+              resolveImportBundlePath(config.stateDir, transferId, path)!,
+            );
+
+            failNextCommitEventWrite = true;
+            const commitRes = yield* Effect.result(
+              svc.commitImport({
+                transferId,
+                destinationProjectId: initialStaged.destinationProjectId,
+                destinationThreadId: initialStaged.destinationThreadId,
+                manifest: prep.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitRes)).toBe(true);
+
+            const stagedWithWorktree = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            expect(stagedWithWorktree.attachmentUploads).toHaveLength(2);
+            const pendingDestId1 = stagedWithWorktree.attachmentUploads[0]!.destinationAttachmentId;
+            const pendingDestId2 = stagedWithWorktree.attachmentUploads[1]!.destinationAttachmentId;
+            const pendingPath1 = NodePath.join(config.attachmentsDir, `${pendingDestId1}.png`);
+            const pendingPath2 = NodePath.join(config.attachmentsDir, `${pendingDestId2}.png`);
+            NodeFS.writeFileSync(pendingPath1, attachmentBytes);
+            NodeFS.writeFileSync(pendingPath2, attachmentBytes);
+
+            const worktreePath = stagedWithWorktree.destinationWorktreePath!;
+            const stagingDir = resolveTransferStagingDir(config.stateDir, transferId, path)!;
+            expect(NodeFS.existsSync(worktreePath)).toBe(true);
+            expect(NodeFS.existsSync(stagingDir)).toBe(true);
+            expect(NodeFS.existsSync(pendingPath1)).toBe(true);
+            expect(NodeFS.existsSync(pendingPath2)).toBe(true);
+
+            // Inject PermissionDenied on the second pending attachment only.
+            blockedAttachmentPath = pendingPath2;
+            failBlockedAttachment = true;
+
+            const abortRes = yield* Effect.result(
+              svc.abort({
+                transferId,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(abortRes)).toBe(true);
+            if (Result.isFailure(abortRes)) {
+              expect(abortRes.failure.code).toBe("internal");
+            }
+
+            // Independent cleanup steps (staging dir, worktree, branch, and first pending attachment)
+            // all completed, while the blocked second pending attachment remains on disk.
+            expect(NodeFS.existsSync(stagingDir)).toBe(false);
+            expect(NodeFS.existsSync(worktreePath)).toBe(false);
+            expect(git(dstRepo, ["branch", "--list", "feat/dst-abort-att-eacces"]).trim()).toBe("");
+            expect(NodeFS.existsSync(pendingPath1)).toBe(false);
+            expect(NodeFS.existsSync(pendingPath2)).toBe(true);
+
+            // Once permissions recover, retrying abort deletes the remaining pending attachment
+            // (without retrying already-cleaned items) and succeeds with cleanedUp: true.
+            failBlockedAttachment = false;
+            recordRemoveCalls = true;
+            const retryAbort = yield* svc.abort({
+              transferId,
+              role: "destination",
+            });
+            expect(retryAbort.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(pendingPath2)).toBe(false);
+            expect(retryRemoveCalls).toContain(pendingPath2);
+            expect(retryRemoveCalls).not.toContain(pendingPath1);
+
+            // Staged state is now cleared, so another abort returns cleanedUp: false.
+            const finalAbort = yield* svc.abort({
+              transferId,
+              role: "destination",
+            });
+            expect(finalAbort.cleanedUp).toBe(false);
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "propagates destination worktree and created-branch removal failures during abort, retains uncleaned items, and recovers cleanly on retry",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-dst-abort-wt-fail-"),
+        );
+        const srcRepo = NodePath.join(tmpRoot, "src");
+        const dstRepo = NodePath.join(tmpRoot, "dst");
+        initGitRepo(srcRepo);
+        git(tmpRoot, ["clone", srcRepo, dstRepo]);
+        git(srcRepo, ["checkout", "-b", "feat/dst-abort-wt-fail"]);
+        NodeFS.writeFileSync(NodePath.join(srcRepo, "feature.txt"), "feature change\n");
+        git(srcRepo, ["add", "feature.txt"]);
+        git(srcRepo, ["commit", "-m", "feature commit"]);
+
+        const srcProjectId = ProjectId.make("proj-dst-abort-wt-src");
+        const dstProjectId = ProjectId.make("proj-dst-abort-wt-dst");
+        const modelSelection: ModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+        const recorder: MockRecorder = {
+          dispatches: [],
+          forceStops: [],
+          detachedSessions: [],
+          sentMessages: [],
+        };
+
+        let failNextCommitEventWrite = false;
+        let blockedWorktreePath = "";
+        let blockWorktreeRemoval = false;
+
+        const layer = makeEndpointTestLayer({
+          environmentId: "env-dst-abort-wt-fail",
+          environmentLabel: "Destination Abort Worktree Failure Env",
+          projects: [
+            { id: srcProjectId, title: "Src", workspaceRoot: srcRepo },
+            { id: dstProjectId, title: "Dst", workspaceRoot: dstRepo },
+          ],
+          providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+          recorder,
+          hooks: {
+            onEventSinkWrite: (events) => {
+              if (failNextCommitEventWrite && events.some((e) => e.type === "thread.created")) {
+                failNextCommitEventWrite = false;
+                return Effect.fail(new TestHookError({ message: "fail commit after worktree" }));
+              }
+              return Effect.void;
+            },
+            onVcsRun: ({ input: vcsInput, next }) =>
+              blockWorktreeRemoval && vcsInput.operation === "WorkspaceBundle.removeWorktree"
+                ? Effect.succeed({
+                    exitCode: 128 as VcsProcess.VcsProcessOutput["exitCode"],
+                    stdout: "",
+                    stderr: "error: failed to remove worktree: Permission denied",
+                    stdoutTruncated: false,
+                    stderrTruncated: false,
+                  })
+                : next,
+            onFileSystemRemove: ({ targetPath, next }) =>
+              blockWorktreeRemoval &&
+              blockedWorktreePath.length > 0 &&
+              targetPath === blockedWorktreePath
+                ? Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "PermissionDenied",
+                      module: "FileSystem",
+                      method: "remove",
+                      pathOrDescriptor: targetPath,
+                    }),
+                  )
+                : next,
+          },
+        });
+
+        try {
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const srcThreadId = ThreadId.make("thread-dst-abort-wt-fail");
+            const transferId = SessionTransferId.make("xfer-dst-abort-wt-fail");
+            const srcAttachmentId = ChatAttachmentId.make(createAttachmentId(srcThreadId)!);
+            const attachmentBytes = new Uint8Array([
+              0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+            ]);
+            NodeFS.mkdirSync(config.attachmentsDir, { recursive: true });
+            NodeFS.writeFileSync(
+              NodePath.join(config.attachmentsDir, `${srcAttachmentId}.png`),
+              attachmentBytes,
+            );
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: "feat/dst-abort-wt-fail",
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+                presentAttachmentId: srcAttachmentId,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: srcThreadId,
+              direction: "local_to_boat",
+            });
+            const initialStaged = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferId, path)!,
+              resolveImportBundlePath(config.stateDir, transferId, path)!,
+            );
+
+            failNextCommitEventWrite = true;
+            const commitRes = yield* Effect.result(
+              svc.commitImport({
+                transferId,
+                destinationProjectId: initialStaged.destinationProjectId,
+                destinationThreadId: initialStaged.destinationThreadId,
+                manifest: prep.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitRes)).toBe(true);
+
+            const stagedWithWorktree = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            const pendingDestId = stagedWithWorktree.attachmentUploads[0]!.destinationAttachmentId;
+            const pendingAttachmentPath = NodePath.join(
+              config.attachmentsDir,
+              `${pendingDestId}.png`,
+            );
+            NodeFS.writeFileSync(pendingAttachmentPath, attachmentBytes);
+
+            const worktreePath = stagedWithWorktree.destinationWorktreePath!;
+            const stagingDir = resolveTransferStagingDir(config.stateDir, transferId, path)!;
+            expect(NodeFS.existsSync(worktreePath)).toBe(true);
+            expect(NodeFS.existsSync(stagingDir)).toBe(true);
+            expect(NodeFS.existsSync(pendingAttachmentPath)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", "feat/dst-abort-wt-fail"]).trim()).not.toBe(
+              "",
+            );
+
+            // Attempt 1: block worktree removal -> abort fails, independent staging + attachment
+            // cleanup still run, and both worktree + created branch remain tracked in staged state.
+            blockedWorktreePath = worktreePath;
+            blockWorktreeRemoval = true;
+            const abort1 = yield* Effect.result(
+              svc.abort({
+                transferId,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(abort1)).toBe(true);
+            if (Result.isFailure(abort1)) {
+              expect(abort1.failure.code).toBe("workspace_error");
+            }
+            expect(NodeFS.existsSync(stagingDir)).toBe(false);
+            expect(NodeFS.existsSync(pendingAttachmentPath)).toBe(false);
+            expect(NodeFS.existsSync(worktreePath)).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", "feat/dst-abort-wt-fail"]).trim()).not.toBe(
+              "",
+            );
+
+            // Attempt 2: unblock worktree removal, but lock the created branch ref so worktree
+            // removal succeeds while branch deletion fails -> abort fails and retains createdBranch.
+            blockWorktreeRemoval = false;
+            const branchLockPath = NodePath.join(
+              dstRepo,
+              ".git",
+              "refs",
+              "heads",
+              "feat",
+              "dst-abort-wt-fail.lock",
+            );
+            NodeFS.writeFileSync(branchLockPath, "locked\n");
+            try {
+              const abort2 = yield* Effect.result(
+                svc.abort({
+                  transferId,
+                  role: "destination",
+                }),
+              );
+              expect(Result.isFailure(abort2)).toBe(true);
+              if (Result.isFailure(abort2)) {
+                expect(abort2.failure.code).toBe("workspace_error");
+              }
+              expect(NodeFS.existsSync(worktreePath)).toBe(false);
+              expect(git(dstRepo, ["branch", "--list", "feat/dst-abort-wt-fail"]).trim()).not.toBe(
+                "",
+              );
+            } finally {
+              NodeFS.rmSync(branchLockPath, { force: true });
+            }
+
+            // Attempt 3: once branch deletion is unblocked, retry finishes deleting the leftover
+            // branch, clears staged state, and returns cleanedUp: true.
+            const abort3 = yield* svc.abort({
+              transferId,
+              role: "destination",
+            });
+            expect(abort3.cleanedUp).toBe(true);
+            expect(git(dstRepo, ["branch", "--list", "feat/dst-abort-wt-fail"]).trim()).toBe("");
+
+            // Attempt 4: subsequent abort is a clean no-op.
+            const abort4 = yield* svc.abort({
+              transferId,
+              role: "destination",
+            });
+            expect(abort4.cleanedUp).toBe(false);
           }).pipe(Effect.provide(layer));
         } finally {
           NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
