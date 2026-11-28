@@ -158,8 +158,7 @@ fn rejects_an_unrelated_published_installer() {
     fixture.rejects("installer digest disagrees with capture receipt");
 }
 
-#[test]
-fn rejects_a_rehashed_reference_with_an_installer_for_another_target() {
+fn reference_with_linux_archive(platform: &str, origin: &str, connection_mode: &str) -> Fixture {
     let mut fixture = Fixture::new();
     let directory = fixture.directory.path();
     let inventory: Value =
@@ -176,10 +175,15 @@ fn rejects_a_rehashed_reference_with_an_installer_for_another_target() {
         .unwrap()
         .strip_prefix("sha256:")
         .unwrap();
+    fixture.catalog["platformSets"]["app"] = json!([platform]);
+    let surface = fixture.catalog["platforms"][platform]["surface"].clone();
     let observation = &mut fixture.catalog["observations"][0];
+    observation["platformId"] = json!(platform);
     let mut receipt_digests = Vec::new();
     for run in observation["runs"].as_array_mut().unwrap() {
         run["environment"]["installerAssetDigest"] = json!(digest);
+        run["environment"]["origin"] = json!(origin);
+        run["environment"]["connectionMode"] = json!(connection_mode);
         let artifact = run["artifacts"]
             .as_array_mut()
             .unwrap()
@@ -189,6 +193,9 @@ fn rejects_a_rehashed_reference_with_an_installer_for_another_target() {
         let path = directory.join(artifact["path"].as_str().unwrap());
         let mut capture: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         capture["packageSha256"] = json!(digest);
+        capture["coverage"]["platformId"] = json!(platform);
+        capture["profile"]["origin"] = json!(origin);
+        capture["profile"]["surface"] = surface.clone();
         let bytes = serde_json::to_vec(&capture).unwrap();
         fs::write(path, &bytes).unwrap();
         let receipt_digest = json!(format!("{:x}", Sha256::digest(bytes)));
@@ -208,7 +215,62 @@ fn rejects_a_rehashed_reference_with_an_installer_for_another_target() {
     let bytes = serde_json::to_vec(&comparison).unwrap();
     fs::write(path, &bytes).unwrap();
     artifact["sha256"] = json!(format!("{:x}", Sha256::digest(bytes)));
+    fixture
+}
+
+#[test]
+fn rejects_a_rehashed_reference_with_an_installer_for_another_target() {
+    let fixture = reference_with_linux_archive(
+        "served-chromium-macos",
+        "server-served loopback",
+        "loopback",
+    );
     fixture.rejects("outside target macos-arm64");
+}
+
+#[test]
+fn rejects_connection_edits_that_disagree_with_the_capture_origin() {
+    for mode in [Value::Null, json!("remote")] {
+        let mut fixture = reference_with_linux_archive(
+            "served-chromium-macos",
+            "server-served loopback",
+            "loopback",
+        );
+        for run in fixture.catalog["observations"][0]["runs"]
+            .as_array_mut()
+            .unwrap()
+        {
+            run["environment"]["connectionMode"] = mode.clone();
+        }
+        fixture.rejects("loopback origin requires loopback connection mode");
+    }
+    let mut fixture = reference_with_linux_archive(
+        "served-chromium-macos",
+        "server-served loopback",
+        "loopback",
+    );
+    for run in fixture.catalog["observations"][0]["runs"]
+        .as_array_mut()
+        .unwrap()
+    {
+        run["environment"]["connectionMode"] = json!("remote");
+        run["environment"]["origin"] = json!("remote Linux server");
+    }
+    fixture.rejects("run origin disagrees with capture receipt");
+}
+
+#[test]
+fn allows_a_hosted_mac_browser_to_use_a_linux_backend_package() {
+    let fixture =
+        reference_with_linux_archive("hosted-chromium-macos", "hosted HTTPS fixture", "remote");
+    let report = fixture.run();
+    assert!(
+        report.status.success(),
+        "{}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let body: Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(body["verifiedVisualReferenceObservations"], 1);
 }
 
 #[test]

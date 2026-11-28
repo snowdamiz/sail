@@ -159,6 +159,17 @@ fn load_capture(
         "installer digest disagrees with capture receipt: {}",
         receipt.path.display()
     );
+    let origin = run
+        .environment
+        .origin
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .context("missing run origin")?;
+    ensure!(
+        capture.profile["origin"].as_str() == Some(origin),
+        "run origin disagrees with capture receipt: {}",
+        receipt.path.display()
+    );
     ensure!(
         !capture.trace.is_empty()
             && capture

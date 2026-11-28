@@ -267,10 +267,18 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
                     run.source_sha == *incumbent && run.server_source_sha == *incumbent,
                     "release reference uses a different source: {label}"
                 );
+                let loopback_origin =
+                    run.environment.origin.as_deref() == Some("server-served loopback");
+                let loopback_connection =
+                    run.environment.connection_mode.as_deref() == Some("loopback");
+                ensure!(
+                    !loopback_origin || loopback_connection,
+                    "loopback origin requires loopback connection mode: {label}"
+                );
                 let target_id = if !pass && run.environment.installer_asset_digest.is_none() {
                     None
-                } else if platform.surface == "server-served-web"
-                    && run.environment.connection_mode.as_deref() == Some("loopback")
+                } else if loopback_origin
+                    || (platform.surface == "server-served-web" && loopback_connection)
                 {
                     let os = platform
                         .os
