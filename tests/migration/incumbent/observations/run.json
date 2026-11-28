@@ -196,7 +196,7 @@
   "chatLatencyReference": {
     "result": "observed",
     "receipt": "served-chromium-macos/chat-latency/receipt.json",
-    "scope": "Published v0.1.17 in the macOS Chromium Browser panel with a controlled mid-turn WebSocket cut. Twelve measured turns produced one complete replay each. The reconnect timing includes the client's automatic retry delay."
+    "scope": "Published v0.1.17 in the macOS Chromium Browser panel with a controlled mid-turn WebSocket cut. All twelve measured turns preserved the exact table and three ordered rendered messages. Reconnect timing includes the client's automatic retry delay."
   },
   "negativeControls": {
     "result": "pass",
