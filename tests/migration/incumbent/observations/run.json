@@ -92,5 +92,9 @@
     "tag": "v0.1.18",
     "receipt": "release-revisions/v0.1.18.json"
   },
-  "browserAvailability": "browser-availability.json"
+  "browserAvailability": "browser-availability.json",
+  "browserPanel": {
+    "result": "pass",
+    "receipt": "served-chromium-macos/browser-panel/receipt.json"
+  }
 }
