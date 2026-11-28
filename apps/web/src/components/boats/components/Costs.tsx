@@ -28,7 +28,14 @@ export function Costs({ costs }: { readonly costs: UiState["costs"] }) {
             </span>
           </div>
           <Tooltip>
-            <TooltipTrigger render={<div className="flex flex-col gap-0.5 px-4 py-3" />}>
+            <TooltipTrigger
+              render={
+                <div
+                  tabIndex={0}
+                  className="flex flex-col gap-0.5 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                />
+              }
+            >
               <span className="text-xs text-muted-foreground">{gt("Starts today")}</span>
               <span
                 className={cn(

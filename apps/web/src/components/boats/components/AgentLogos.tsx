@@ -1,3 +1,4 @@
+import { useLocale } from "gt-react";
 import { Fragment, type ComponentType } from "react";
 
 import { cn } from "~/lib/utils";
@@ -35,8 +36,6 @@ const LOGOS: Record<string, ComponentType> = {
   Codex: CodexLogo,
 };
 
-const LIST_FORMATTER = new Intl.ListFormat(undefined, { style: "long", type: "conjunction" });
-
 export function AgentName({
   name,
   className,
@@ -53,14 +52,18 @@ export function AgentName({
   );
 }
 
-function formatNameParts(names: readonly string[]) {
+function formatNameParts(names: readonly string[], locale: string) {
+  const formatter = new Intl.ListFormat(locale || undefined, {
+    style: "long",
+    type: "conjunction",
+  });
   const items: Array<{
     readonly key: string;
     readonly type: "element" | "literal";
     readonly value: string;
   }> = [];
   let literalCount = 0;
-  for (const part of LIST_FORMATTER.formatToParts(names)) {
+  for (const part of formatter.formatToParts(names)) {
     if (part.type === "element") {
       items.push({ key: `agent:${part.value}`, type: "element", value: part.value });
     } else {
@@ -72,7 +75,8 @@ function formatNameParts(names: readonly string[]) {
 }
 
 export function AgentNames({ names }: { readonly names: readonly string[] }) {
-  const parts = formatNameParts(names);
+  const locale = useLocale();
+  const parts = formatNameParts(names, locale);
   return (
     <>
       {parts.map((part) =>

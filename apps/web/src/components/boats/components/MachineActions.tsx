@@ -1,7 +1,8 @@
 import { useGT } from "gt-react";
 import { AlertTriangleIcon, ExternalLinkIcon, MoreHorizontalIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
+import { useDeadlinePassed } from "~/hooks/useDeadline";
 import { Alert, AlertAction, AlertDescription } from "../../ui/alert";
 import { Button, type ButtonSize } from "../../ui/button";
 import {
@@ -106,6 +107,7 @@ interface MachinePresentation {
   readonly detailsPrimary: ActionControl;
   readonly menuItems: readonly MenuControl[];
   readonly canAddProject: boolean;
+  readonly canResize: boolean;
   readonly needsProject: boolean;
   readonly power: PowerControls | null;
   readonly signInAgentControl: (agent: string) => OrdinaryControl;
@@ -170,6 +172,8 @@ export function deriveMachineControls(input: {
   const canAddProject =
     supportsLocalProjects && !gone && !!machine.id && !busy && access.can("add_project");
 
+  const canResize = !gone && !!machine.id && !busy && access.can("resize_machine");
+
   const menuItems: MenuControl[] = [];
   for (const item of menuActions(machine, sizes, paired)) {
     if (item === rawRowPrimary) continue;
@@ -225,6 +229,7 @@ export function deriveMachineControls(input: {
     detailsPrimary: toActionControl(rawDetailsPrimary),
     menuItems,
     canAddProject,
+    canResize,
     needsProject: supportsLocalProjects && canOpen && needsProject(machine, paired),
     power,
     signInAgentControl,
@@ -253,21 +258,21 @@ interface DeleteConfirmation {
 
 function useDeleteConfirmation(targetKey: string, disabled = false): DeleteConfirmation {
   const [state, setState] = useState<ArmState>({ kind: "idle" });
+  const expired = useDeadlinePassed(
+    !disabled && state.kind === "armed" && state.targetKey === targetKey ? state.expiresAt : null,
+  );
+
+  if (state.kind === "armed" && (disabled || state.targetKey !== targetKey || expired)) {
+    setState({ kind: "idle" });
+  }
 
   const disarm = () => {
     setState((current) => (current.kind === "idle" ? current : { kind: "idle" }));
   };
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- schedules timeout to disarm delete confirmation
-  useEffect(() => {
-    if (disabled || state.kind !== "armed" || state.targetKey !== targetKey) return;
-    const remaining = Math.max(0, state.expiresAt - Date.now());
-    const timer = window.setTimeout(() => setState({ kind: "idle" }), remaining);
-    return () => window.clearTimeout(timer);
-  }, [disabled, state, targetKey]);
-
   const isArmed = (deletion: DeleteIntent) =>
     !disabled &&
+    !expired &&
     state.kind === "armed" &&
     state.targetKey === targetKey &&
     state.actionKind === deletion.kind;
@@ -278,6 +283,7 @@ function useDeleteConfirmation(targetKey: string, disabled = false): DeleteConfi
       return false;
     }
     if (
+      !expired &&
       state.kind === "armed" &&
       state.targetKey === targetKey &&
       state.actionKind === deletion.kind &&

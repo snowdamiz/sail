@@ -1,4 +1,4 @@
-import { useGT, useMessages } from "gt-react";
+import { useGT, useLocale, useMessages } from "gt-react";
 import { CheckIcon, ChevronDownIcon, ClockIcon, ServerIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
@@ -60,6 +60,7 @@ export function MachineDetails({
   readonly onError: (text: string) => void;
 }) {
   const gt = useGT();
+  const locale = useLocale();
   const messages = useMessages();
   const details = useMachineDetails(machine.id, version, onError);
   const status = MACHINE_STATUS[machine.state];
@@ -143,7 +144,7 @@ export function MachineDetails({
           <>
             <span>{gt("Sail {version}", { version: details.t3Version })}</span>
             <span aria-hidden="true">·</span>
-            <span>{gt("created {date}", { date: shortDate(details.createdAt) })}</span>
+            <span>{gt("created {date}", { date: shortDate(details.createdAt, locale) })}</span>
             <span aria-hidden="true">·</span>
             <span className="select-all">{machine.id}</span>
           </>
@@ -526,9 +527,21 @@ function MachineDangerSection({
   const gt = useGT();
   const messages = useMessages();
   const [expanded, setExpanded] = useState(false);
+  const [selectedSize, setSelectedSize] = useState(machine.size);
+  const [syncedMachineSize, setSyncedMachineSize] = useState(machine.size);
+
+  if (syncedMachineSize !== machine.size) {
+    setSyncedMachineSize(machine.size);
+    setSelectedSize(machine.size);
+  }
+
   const open = expanded || controls.deleteRefusal !== null;
   const gone = machine.state === "missing";
   const key = machineKey(machine);
+  const pendingResize = controls.pending?.action.cmd === "resize_machine" ? controls.pending : null;
+  const selectedChoice =
+    controls.resizeChoices.find((choice) => choice.size.id === selectedSize) ?? null;
+  const hasPendingSizeChange = selectedSize !== machine.size;
 
   return (
     <SettingsGroup divided={false} className="bg-card">
@@ -554,27 +567,54 @@ function MachineDangerSection({
         <CollapsiblePanel>
           <div className="space-y-4 border-t border-border/50 px-4 py-4 sm:px-5">
             {gone ? null : (
-              <div className="space-y-2">
+              <div className="space-y-2.5">
                 <div className="text-xs font-medium text-muted-foreground">{gt("Size")}</div>
                 <MachineSizePicker
                   sizes={controls.resizeChoices.map((choice) => choice.size)}
-                  value={machine.size}
+                  value={selectedSize}
                   ariaLabel={gt("Size")}
-                  isOptionDisabled={(choice) => {
-                    const match = controls.resizeChoices.find(
-                      (candidate) => candidate.size.id === choice.id,
-                    );
-                    return match ? !match.current && match.control.disabled : true;
-                  }}
-                  onChange={(sizeId) => {
-                    const match = controls.resizeChoices.find(
-                      (candidate) => candidate.size.id === sizeId,
-                    );
-                    if (match && !match.current && !match.control.disabled) {
-                      controls.request({ kind: "run", action: match.control.action });
-                    }
-                  }}
+                  isOptionDisabled={() => !controls.canResize}
+                  onChange={setSelectedSize}
                 />
+                {hasPendingSizeChange || pendingResize !== null ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      size="xs"
+                      variant="default"
+                      disabled={
+                        pendingResize !== null ||
+                        !controls.canResize ||
+                        selectedChoice === null ||
+                        selectedChoice.control.disabled
+                      }
+                      aria-busy={pendingResize !== null}
+                      onClick={() => {
+                        if (selectedChoice && !selectedChoice.control.disabled) {
+                          controls.request({ kind: "run", action: selectedChoice.control.action });
+                        }
+                      }}
+                    >
+                      {pendingResize !== null ? (
+                        <>
+                          <Spinner aria-hidden="true" />
+                          {pendingResize.label}
+                        </>
+                      ) : (
+                        gt("Resize to {size}", { size: selectedSize })
+                      )}
+                    </Button>
+                    {hasPendingSizeChange ? (
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        disabled={pendingResize !== null}
+                        onClick={() => setSelectedSize(machine.size)}
+                      >
+                        {gt("Cancel")}
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
                 <p className="text-xs text-muted-foreground">{messages(resizeHint(machine))}</p>
               </div>
             )}

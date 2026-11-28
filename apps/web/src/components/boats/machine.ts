@@ -269,8 +269,8 @@ export const hasRepo = (machine: MachineView, repoKey: string) =>
 export const needsProject = (machine: MachineView, paired: boolean) =>
   paired && !machine.projects.length && !["creating", "missing", "error"].includes(machine.state);
 
-export const shortDate = (unixSecs: number) =>
-  new Date(unixSecs * 1000).toLocaleDateString("en-US", {
+export const shortDate = (unixSecs: number, locale?: string) =>
+  new Date(unixSecs * 1000).toLocaleDateString(locale || undefined, {
     month: "short",
     day: "numeric",
     year: "numeric",

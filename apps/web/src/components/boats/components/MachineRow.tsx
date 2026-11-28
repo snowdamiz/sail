@@ -82,12 +82,14 @@ export function MachineRow({
                 </span>
               ) : null}
             </div>
-            <Tooltip>
-              <TooltipTrigger render={<p className="truncate text-xs text-muted-foreground" />}>
-                {detail}
-              </TooltipTrigger>
-              <TooltipPopup>{detail}</TooltipPopup>
-            </Tooltip>
+            {detail ? (
+              <Tooltip>
+                <TooltipTrigger render={<p className="truncate text-xs text-muted-foreground" />}>
+                  {detail}
+                </TooltipTrigger>
+                <TooltipPopup>{detail}</TooltipPopup>
+              </Tooltip>
+            ) : null}
           </div>
         </div>
 

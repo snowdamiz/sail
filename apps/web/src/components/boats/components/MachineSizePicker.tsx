@@ -15,7 +15,7 @@ export function MachineSizePicker({
   readonly sizes: readonly Size[];
   readonly value: string;
   readonly onChange: (sizeId: string) => void;
-  readonly ariaLabel: string;
+  readonly ariaLabel?: string;
   readonly name?: string;
   readonly isOptionDisabled?: (size: Size) => boolean;
 }) {
@@ -24,7 +24,7 @@ export function MachineSizePicker({
 
   return (
     <div
-      role="radiogroup"
+      role={ariaLabel ? "radiogroup" : undefined}
       aria-label={ariaLabel}
       className="grid grid-cols-1 gap-2.5 sm:grid-cols-3"
     >
@@ -39,7 +39,10 @@ export function MachineSizePicker({
               disabled ? "cursor-not-allowed opacity-55" : "cursor-pointer",
               selected
                 ? "border-ring bg-accent/60 text-foreground"
-                : "border-border/70 bg-background/60 text-foreground hover:bg-accent/30",
+                : cn(
+                    "border-border/70 bg-background/60 text-foreground",
+                    !disabled && "hover:bg-accent/30",
+                  ),
             )}
           >
             <input

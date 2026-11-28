@@ -31,56 +31,58 @@ function LocalProjectsSection({
 
   return (
     <SettingsGroup divided={false} className="bg-card">
-      <fieldset className="space-y-3 p-4 sm:p-5">
-        <legend className="text-sm font-medium text-foreground">{gt("Projects")}</legend>
-        <p className="text-xs text-muted-foreground">
-          {gt("Optional · cloned from git once it's up, .env files included")}
-        </p>
-        <div
-          role="group"
-          aria-label={gt("Projects to add")}
-          className="max-h-56 space-y-0.5 overflow-y-auto rounded-lg border border-border/60 bg-background/50 p-1"
-        >
-          <ProjectList
-            projects={projects}
-            shown={projects.list ?? []}
-            query=""
-            option={(project) => {
-              const on = picked.includes(project.id);
-              const sameRepo =
-                !on &&
-                (projects.list ?? []).some(
-                  (other) => other.repoKey === project.repoKey && picked.includes(other.id),
-                );
-              const flip = () => {
-                if (!sameRepo) onToggle(project.id);
-              };
-              return {
-                role: "checkbox",
-                tabIndex: 0,
-                "aria-checked": on,
-                "aria-disabled": sameRepo,
-                className: cn(
-                  "flex items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                  sameRepo
-                    ? "cursor-not-allowed opacity-55"
-                    : on
-                      ? "cursor-pointer bg-accent/60"
-                      : "cursor-pointer hover:bg-accent/40",
-                ),
-                onClick: flip,
-                onKeyDown: (event: KeyboardEvent) => {
-                  if (event.key === " " || event.key === "Enter") {
-                    event.preventDefault();
-                    flip();
-                  }
-                },
-                leading: <CheckboxMark checked={on} />,
-              };
-            }}
-          />
-        </div>
-      </fieldset>
+      <div className="p-4 sm:p-5">
+        <fieldset className="space-y-3">
+          <legend className="text-sm font-medium text-foreground">{gt("Projects")}</legend>
+          <p className="text-xs text-muted-foreground">
+            {gt("Optional · cloned from git once it's up, .env files included")}
+          </p>
+          <div
+            role="group"
+            aria-label={gt("Projects to add")}
+            className="max-h-56 space-y-0.5 overflow-y-auto rounded-lg border border-border/60 bg-background/50 p-1"
+          >
+            <ProjectList
+              projects={projects}
+              shown={projects.list ?? []}
+              query=""
+              option={(project) => {
+                const on = picked.includes(project.id);
+                const sameRepo =
+                  !on &&
+                  (projects.list ?? []).some(
+                    (other) => other.repoKey === project.repoKey && picked.includes(other.id),
+                  );
+                const flip = () => {
+                  if (!sameRepo) onToggle(project.id);
+                };
+                return {
+                  role: "checkbox",
+                  tabIndex: 0,
+                  "aria-checked": on,
+                  "aria-disabled": sameRepo,
+                  className: cn(
+                    "flex items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                    sameRepo
+                      ? "cursor-not-allowed opacity-55"
+                      : on
+                        ? "cursor-pointer bg-accent/60"
+                        : "cursor-pointer hover:bg-accent/40",
+                  ),
+                  onClick: flip,
+                  onKeyDown: (event: KeyboardEvent) => {
+                    if (event.key === " " || event.key === "Enter") {
+                      event.preventDefault();
+                      flip();
+                    }
+                  },
+                  leading: <CheckboxMark checked={on} />,
+                };
+              }}
+            />
+          </div>
+        </fieldset>
+      </div>
     </SettingsGroup>
   );
 }
@@ -164,19 +166,15 @@ export function NewMachine({
       </SettingsGroup>
 
       <SettingsGroup divided={false} className="bg-card">
-        <fieldset className="space-y-3 p-4 sm:p-5">
-          <legend className="text-sm font-medium text-foreground">{gt("Size")}</legend>
-          <MachineSizePicker
-            sizes={state.sizes}
-            value={size}
-            onChange={setSize}
-            name="size"
-            ariaLabel={gt("Size")}
-          />
-          <p className="text-xs text-muted-foreground">
-            {gt("Billed only while awake · sleeps 3 min after agents finish · resize anytime")}
-          </p>
-        </fieldset>
+        <div className="p-4 sm:p-5">
+          <fieldset className="space-y-3">
+            <legend className="text-sm font-medium text-foreground">{gt("Size")}</legend>
+            <MachineSizePicker sizes={state.sizes} value={size} onChange={setSize} name="size" />
+            <p className="text-xs text-muted-foreground">
+              {gt("Billed only while awake · sleeps 3 min after agents finish · resize anytime")}
+            </p>
+          </fieldset>
+        </div>
       </SettingsGroup>
 
       {supportsLocalProjects ? <LocalProjectsSection picked={picked} onToggle={toggle} /> : null}
