@@ -483,7 +483,6 @@ import {
   SecretRequestAnswerInput,
   SecretRequestError,
 } from "./secretRequest.ts";
-import { AgentFeedbackAnswerInput, AgentFeedbackRequestError } from "./agentFeedback.ts";
 import {
   ProjectCloneActionInput,
   ProjectCloneActionResult,
@@ -693,7 +692,6 @@ export const WS_METHODS = {
   secretsSaveProjectCredential: "secrets.saveProjectCredential",
   secretsExportPortableProviders: "secrets.exportPortableProviders",
   secretsImportPortableProviders: "secrets.importPortableProviders",
-  agentFeedbackAnswerRequest: "agentFeedback.answerRequest",
   guestShareCreate: "guestShare.create",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
@@ -2547,11 +2545,6 @@ const WsProviderAuthImportBundleRpc = Rpc.make(WS_METHODS.providerAuthImportBund
   error: Schema.Union([ProviderAuthSyncError, EnvironmentAuthorizationError]),
 });
 
-const WsAgentFeedbackAnswerRequestRpc = Rpc.make(WS_METHODS.agentFeedbackAnswerRequest, {
-  payload: AgentFeedbackAnswerInput,
-  error: Schema.Union([AgentFeedbackRequestError, EnvironmentAuthorizationError]),
-});
-
 const WsScheduledTasksListWebhookDeliveriesRpc = Rpc.make(
   WS_METHODS.scheduledTasksListWebhookDeliveries,
   {
@@ -2696,7 +2689,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsSecretsImportPortableProvidersRpc,
   WsProviderAuthExportBundleRpc,
   WsProviderAuthImportBundleRpc,
-  WsAgentFeedbackAnswerRequestRpc,
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,
   WsServerReportClientActivityRpc,

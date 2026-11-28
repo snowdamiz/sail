@@ -31,7 +31,6 @@ import {
   type RelayManagedEndpointRuntimeConfig,
   RelayOkResponse,
 } from "@t3tools/contracts/relay";
-import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 import {
   decodeRelayJwt,
   normalizeRelayIssuer,
@@ -897,7 +896,6 @@ const make = Effect.gen(function* () {
       Effect.flatMap(HttpClientResponse.schemaBodyJson(input.schema)),
       Effect.timeout(input.timeout ?? "10 seconds"),
       Effect.mapError(relayRequestError),
-      withRelayClientTracing,
     );
 
   const reconcileDesiredCloudLinkWith = Effect.fn("environment.cloud.reconcileDesiredLinkWith")(
@@ -1310,7 +1308,6 @@ const make = Effect.gen(function* () {
       Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
       Effect.flatMap(filterRelayResponse),
       Effect.flatMap(HttpClientResponse.schemaBodyJson(RelayOkResponse)),
-      withRelayClientTracing,
     );
     // ok:false means concurrent provisioning owns the tunnel; preserve its config.
     if (!response.ok) {

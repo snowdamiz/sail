@@ -1213,12 +1213,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       const serverConfig = yield* ServerConfig.ServerConfig;
       const fileSystem = yield* FileSystem.FileSystem;
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
-      const raw = '{"agentFeedback":{"mode":"auto"},"providers":1}';
+      const raw = '{"promptSuggestionsEnabled":true,"providers":1}';
       yield* fileSystem.writeFileString(serverConfig.settingsPath, raw);
 
       const settings = yield* serverSettings.getSettings;
 
-      assert.equal(settings.agentFeedback.mode, "off");
+      assert.isFalse(settings.promptSuggestionsEnabled);
       assert.isFalse(settings.continueThreadsAfterServerUpdate);
       assert.equal(yield* fileSystem.readFileString(serverConfig.settingsPath), raw);
     }).pipe(Effect.provide(layerServerSettings())),

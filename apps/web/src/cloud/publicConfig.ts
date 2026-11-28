@@ -20,11 +20,6 @@ export interface CloudPublicConfig {
   readonly clerkPublishableKey: string | null;
   readonly clerkJwtTemplate: string | null;
   readonly relayUrl: string | null;
-  readonly relayTracing: {
-    readonly tracesUrl: string | null;
-    readonly tracesDataset: string | null;
-    readonly tracesToken: string | null;
-  };
 }
 
 export function trimNonEmpty(value: string | undefined): string | null {
@@ -40,24 +35,7 @@ export function resolveCloudPublicConfig(): CloudPublicConfig {
     relayUrl: normalizeSecureRelayUrl(
       (import.meta.env.VITE_T3CODE_RELAY_URL as string | undefined) ?? "",
     ),
-    relayTracing: {
-      tracesUrl: null,
-      tracesDataset: null,
-      tracesToken: null,
-    },
   };
-}
-
-export function setServerRelayTelemetry(_allowed: boolean | null): void {
-  // Sail disables T3 Connect relay telemetry unconditionally.
-}
-
-export function relayTelemetryEnabled(): boolean | null {
-  return false;
-}
-
-export function resolveRelayTracingConfig() {
-  return null;
 }
 
 export function hasCloudPublicConfig(): boolean {

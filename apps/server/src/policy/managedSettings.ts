@@ -36,6 +36,9 @@ const UNMANAGEABLE_KEYS: ReadonlySet<string> = new Set([
  */
 const ENVIRONMENT_OVERRIDDEN_KEYS: ReadonlySet<string> = new Set(["observability"]);
 
+/** Retired setting keys ignored cleanly so legacy enterprise policies keep validating. */
+const RETIRED_SETTING_KEYS: ReadonlySet<string> = new Set(["agentFeedback"]);
+
 /** Legacy settings the server derives from another on every write; manage that one instead. */
 const DERIVED_FROM: ReadonlyMap<string, string> = new Map([
   ["compactIdleThreads", "idleCompaction"],
@@ -290,6 +293,9 @@ export function makeManagedSettings(
     const [head] = segments;
     if (head === undefined || segments.some((segment) => segment.length === 0)) {
       return { _tag: "Invalid", reason: `"${path}" is not a settings path` };
+    }
+    if (RETIRED_SETTING_KEYS.has(head)) {
+      continue;
     }
     if (!(head in ServerSettings.fields) || UNMANAGEABLE_KEYS.has(head)) {
       return { _tag: "Invalid", reason: `"${path}" is not a setting this version can manage` };
