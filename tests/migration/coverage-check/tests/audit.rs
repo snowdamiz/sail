@@ -176,6 +176,33 @@ fn rejects_comparison_evidence_from_a_different_capture_pair() {
 }
 
 #[test]
+fn rejects_a_rehashed_comparison_with_contradictory_provenance() {
+    for (field, value) in [
+        ("fixtureId", "wrong-fixture"),
+        ("baselineSha", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        ("candidateSha", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+    ] {
+        let mut fixture = Fixture::new();
+        let comparison = fixture.catalog["observations"][0]["comparisonArtifacts"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|artifact| artifact["kind"] == "action-and-state")
+            .unwrap();
+        let file = fixture
+            .directory
+            .path()
+            .join(comparison["path"].as_str().unwrap());
+        let mut receipt: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        receipt[field] = json!(value);
+        let bytes = serde_json::to_vec(&receipt).unwrap();
+        fs::write(file, &bytes).unwrap();
+        comparison["sha256"] = json!(format!("{:x}", Sha256::digest(bytes)));
+        fixture.rejects("comparison provenance disagrees with the capture receipts");
+    }
+}
+
+#[test]
 fn rejects_a_changed_artifact() {
     let fixture = Fixture::new();
     let image = fixture.catalog["observations"][0]["runs"][0]["artifacts"][0]["path"]

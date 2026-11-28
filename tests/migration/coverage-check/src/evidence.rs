@@ -258,6 +258,13 @@ pub fn verify_reference_pair(evidence: &Evidence, observation: &Observation) -> 
     let comparison_path = evidence.resolve(&comparison.path)?;
     let result: Comparison = read_json(&comparison_path)?;
     ensure!(
+        result.fixture_id == first_capture.fixture_id
+            && result.baseline_sha == first_capture.source_sha
+            && result.candidate_sha == repeat_capture.source_sha,
+        "comparison provenance disagrees with the capture receipts: {}",
+        comparison.path.display()
+    );
+    ensure!(
         result.artifact_sha256.baseline_receipt
             == one_artifact(&first.artifacts, "capture-receipt")?.sha256
             && result.artifact_sha256.candidate_receipt
@@ -277,6 +284,9 @@ pub fn verify_reference_pair(evidence: &Evidence, observation: &Observation) -> 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Comparison {
+    fixture_id: String,
+    baseline_sha: String,
+    candidate_sha: String,
     artifact_sha256: ComparisonDigests,
     changed_steps: Vec<usize>,
     pixels: PixelResult,
