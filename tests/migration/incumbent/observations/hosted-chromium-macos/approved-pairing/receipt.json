@@ -11,7 +11,7 @@
     "lockfileSha256": "bcc697813df7b521ba97c0327a901ebacd4813e0a22214a95479bf542bdcb515",
     "assetCount": 2240,
     "assetManifestSha256": "64829d9a336ec6e0c033ad374b6b34de3fc440dc6ea9359157fa9b628d9de7cd",
-    "assetArchiveSha256": "3eaa88f930107ea7f00c1f83c78bb7560ccd3e0051f250de717656874ceef56a",
+    "assetArchiveSha256": "5d05893bc939f89645ade0ccdd426d1fe9475ed4931d42d088193871d0060688",
     "index": {
       "path": "index.html",
       "size": 23490,
@@ -52,11 +52,13 @@
       "heading": "Add this backend?",
       "displayedBackend": "https://sail-backend.test:44652",
       "backendRequests": 0,
-      "sessions": 0
+      "sessions": 0,
+      "backendRequestStarts": 0,
+      "requestStartCutoff": "Immediately after the confirmation screenshot and before Add backend"
     },
     "approved": {
       "route": {
-        "path": "/draft/caa2f7b8-6ca6-40fb-b8a5-c0ccfb9142a6",
+        "path": "/draft/afe0e205-88b5-4c6c-95da-d7ea79608ee1",
         "heading": "New thread"
       },
       "fragmentCleared": true,
@@ -70,7 +72,8 @@
       "title": "Compatibility replay",
       "secure": true,
       "reply": true,
-      "sendEnabled": false
+      "sendEnabled": false,
+      "permissionNotice": "Permissions have changed for Compatibility host"
     },
     "reloaded": {
       "path": "/63169d5d-e73a-4f1a-a103-05a8122cb114/mcp%3A74c0efcc-e0e1-4eac-90ef-852df2131c55",
@@ -80,6 +83,76 @@
       "sendEnabled": false,
       "originalSessionRetained": true
     },
+    "backendRequestStarts": [
+      {
+        "path": "/.well-known/t3/environment",
+        "method": "GET"
+      },
+      {
+        "path": "/oauth/token",
+        "method": "POST"
+      },
+      {
+        "path": "/.well-known/t3/environment",
+        "method": "GET"
+      },
+      {
+        "path": "/api/auth/websocket-ticket/rpc",
+        "method": "POST"
+      },
+      {
+        "path": "/api/orchestration/shell",
+        "method": "GET"
+      },
+      {
+        "path": "/ws",
+        "method": "WebSocket"
+      },
+      {
+        "path": "/api/auth/session",
+        "method": "GET"
+      },
+      {
+        "path": "/.well-known/t3/environment",
+        "method": "GET"
+      },
+      {
+        "path": "/api/auth/websocket-ticket/rpc",
+        "method": "POST"
+      },
+      {
+        "path": "/api/orchestration/shell",
+        "method": "GET"
+      },
+      {
+        "path": "/ws",
+        "method": "WebSocket"
+      },
+      {
+        "path": "/api/auth/session",
+        "method": "GET"
+      },
+      {
+        "path": "/.well-known/t3/environment",
+        "method": "GET"
+      },
+      {
+        "path": "/api/auth/websocket-ticket/rpc",
+        "method": "POST"
+      },
+      {
+        "path": "/api/orchestration/shell",
+        "method": "GET"
+      },
+      {
+        "path": "/ws",
+        "method": "WebSocket"
+      },
+      {
+        "path": "/api/auth/session",
+        "method": "GET"
+      }
+    ],
     "usedLinkRejected": {
       "status": 401,
       "matchingSessions": 1
@@ -159,21 +232,21 @@
       "hasCookie": false
     },
     {
-      "path": "/ws",
-      "method": "GET",
-      "status": 101,
-      "origin": "https://sail-hosted.test:44651",
-      "accessScheme": null,
-      "hasProof": false,
-      "hasCookie": false
-    },
-    {
       "path": "/api/orchestration/shell",
       "method": "GET",
       "status": 200,
       "origin": "https://sail-hosted.test:44651",
       "accessScheme": "DPoP",
       "hasProof": true,
+      "hasCookie": false
+    },
+    {
+      "path": "/ws",
+      "method": "GET",
+      "status": 101,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": null,
+      "hasProof": false,
       "hasCookie": false
     },
     {
@@ -264,6 +337,15 @@
       "origin": "https://sail-hosted.test:44651",
       "accessScheme": "DPoP",
       "hasProof": true,
+      "hasCookie": false
+    },
+    {
+      "path": "/ws",
+      "method": "GET",
+      "status": 101,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": null,
+      "hasProof": false,
       "hasCookie": false
     }
   ],

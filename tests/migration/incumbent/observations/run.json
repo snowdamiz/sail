@@ -199,7 +199,12 @@
   "hostedHttpsPairing": {
     "result": "observed",
     "receipt": "hosted-chromium-macos/approved-pairing/receipt.json",
-    "scope": "Local HTTPS hosted build from the published source tag, paired to the installed macOS arm64 v0.1.17 backend in Chromium. The approved link issued one read-only DPoP session, opened the same saved thread after reload, and returned HTTP 401 when reused."
+    "scope": "Local HTTPS hosted build from the published source tag, paired to the installed macOS arm64 v0.1.17 backend in Chromium. The browser observed zero backend request starts through the confirmation capture. The approved link issued one read-only DPoP session, opened the same saved thread after reload, and returned HTTP 401 when reused."
+  },
+  "bundledDesktopActivation": {
+    "result": "observed",
+    "receipt": "electron-macos-arm64/local-activation/comparison.json",
+    "scope": "One launch per macOS arm64 package with an independent copy of the seed and no active sessions. Each startup link opened the same saved thread through a fresh desktop bearer session on the bundled backend. The launch traces match and the whole-window pixel comparison fails."
   },
   "approval": {
     "result": "pass",

@@ -106,9 +106,18 @@ The [reading position receipt](observations/served-chromium-macos/reading-positi
 
 Build the web client at the release tag with `VITE_HOSTED_APP_CHANNEL=latest` and `VITE_HOSTED_APP_URL` set to the hosted fixture's HTTPS origin. Serve the static assets with an index fallback for application routes. Expose the isolated installed backend on a second HTTPS origin with HTTP and WebSocket forwarding. Keep the backend's CORS responses and forward the public host and scheme.
 
-Mint a one-time link with `pair --scope orchestration:read`. Open the hosted `/pair` route with the backend origin as `host` and the pairing token in the fragment. Verify **Add this backend?** names the backend and waits for approval. Click **Add backend**, open the seeded thread at its hosted URL, then reload it. Check that the same DPoP session remains active and a fresh browser context cannot redeem the used link.
+Mint a one-time link with `pair --scope orchestration:read`. Observe request starts and WebSocket connections to the backend before opening the hosted `/pair` route. Pass the backend origin as `host` and the pairing token in the fragment. Verify **Add this backend?** names the backend. Capture the dialog and confirm that the browser has started zero backend requests before clicking **Add backend**. Open the seeded thread and reload it. Check that the same DPoP session remains active and a fresh browser context cannot redeem the used link.
 
 The [hosted pairing receipt](observations/hosted-chromium-macos/approved-pairing/receipt.json) records the two loopback HTTPS fixture origins, the confirmation and thread screenshots, and the sanitized exchange through WSS. The official hosted deployment identity remains open.
+
+## Capture the bundled desktop connection and thread link
+
+1. Back up a seeded Replay database with zero active sessions. Copy the backup, `environment-id`, and Replay `settings.json` into `state/userdata` in a new scratch home per launch.
+2. Use the isolated launch environment from the seed procedure. Set `T3CODE_PORT` to a free loopback port and pass `sail://threads/<environment-id>/<encoded-thread-id>` as an argument to the installed executable. Set the window to 1100 × 780 points on a 2× display in dark mode.
+3. Use `lsof -nP -iTCP:<port> -sTCP:LISTEN` and `ps` to check that the listener is a child of the app. Read the environment descriptor and check protocol 2 and the `desktop-managed` update capability. Use the packaged CLI to list sessions in the scratch home and check for the new desktop bearer session.
+4. Verify **Compatibility replay** opens with its saved reply and the composer focused. Capture the whole window with [the macOS capture tool](../capture-macos.swift). Check that the copied database retains the original run and messages.
+
+The [desktop activation comparison](observations/electron-macos-arm64/local-activation/comparison.json) records one launch per build. The launch traces match. The screenshots differ by 3,485 pixels, including the candidate's Poteto control and the shifted Showcase control.
 
 ## Capture chat loading and reconnect
 
