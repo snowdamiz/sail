@@ -53,5 +53,13 @@
       }
     }
   ],
-  "screenshotSha256": "9bb16ba84e1ec54ed0facd0455bb4869b0893f1e2a833ff2e51a8499a71bbfd7"
+  "screenshotSha256": "9bb16ba84e1ec54ed0facd0455bb4869b0893f1e2a833ff2e51a8499a71bbfd7",
+  "packageSha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+  "coverage": {
+    "caseId": "chat-turn",
+    "platformId": "electron-macos-arm64",
+    "state": "settled",
+    "entrypoint": "chat",
+    "configurationId": "electron-44.10.1-macos-en-dark-1100x780-2x-hover"
+  }
 }

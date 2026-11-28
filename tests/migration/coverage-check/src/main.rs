@@ -270,17 +270,7 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
                 .iter()
                 .any(|kind| kind == "screenshot")
             {
-                for kind in ["pixel-diff", "action-and-state"] {
-                    ensure!(
-                        observation
-                            .comparison_artifacts
-                            .iter()
-                            .any(|artifact| artifact.kind == kind),
-                        "missing {kind} comparison artifact: {label}"
-                    );
-                }
-                verify_reference_pair(&evidence, &observation.runs)
-                    .with_context(|| label.clone())?;
+                verify_reference_pair(&evidence, observation).with_context(|| label.clone())?;
             }
             passing_references += 1;
         }

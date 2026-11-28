@@ -44,5 +44,13 @@
       }
     }
   ],
-  "screenshotSha256": "9763f6cc9a19a8a94bfd5c81b70f501450b698cf96792441584dc5777f20dee8"
+  "screenshotSha256": "9763f6cc9a19a8a94bfd5c81b70f501450b698cf96792441584dc5777f20dee8",
+  "packageSha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+  "coverage": {
+    "caseId": "chat-turn",
+    "platformId": "served-chromium-macos",
+    "state": "settled",
+    "entrypoint": "chat",
+    "configurationId": "chromium-154-macos-en-light-640x600-2x"
+  }
 }

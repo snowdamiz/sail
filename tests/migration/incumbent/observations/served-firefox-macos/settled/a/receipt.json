@@ -73,5 +73,12 @@
     }
   ],
   "screenshotSha256": "4fda33aeea82f9924e37fa8fbe41c24930556c741cfb0bc09296257de838a167",
-  "packageSha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372"
+  "packageSha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+  "coverage": {
+    "caseId": "chat-turn",
+    "platformId": "served-firefox-macos",
+    "state": "settled",
+    "entrypoint": "chat",
+    "configurationId": "firefox-161.0-macos-arm64-en-light-640x600-2x-headless-non-overlay"
+  }
 }

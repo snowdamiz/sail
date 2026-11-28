@@ -1,0 +1,20 @@
+{
+  "fixtureId": "chat-turn",
+  "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "changedSteps": [],
+  "pixels": {
+    "baseline": "tests/migration/incumbent/observations/electron-macos-arm64/settled-hover/a/capture.png",
+    "candidate": "tests/migration/incumbent/observations/electron-macos-arm64/settled-hover/b/capture.png",
+    "diff": "tests/migration/incumbent/observations/electron-macos-arm64/settled-hover/repeat-diff.png",
+    "baselineSize": [2200, 1560],
+    "candidateSize": [2200, 1560],
+    "differentPixels": 0,
+    "bounds": null
+  },
+  "artifactSha256": {
+    "baselineReceipt": "b83742d81c5ddde8a9bf1595917b896cbabb88643967fd42e824a06cccda9a95",
+    "candidateReceipt": "b83742d81c5ddde8a9bf1595917b896cbabb88643967fd42e824a06cccda9a95",
+    "diff": "d3b10c7216bebee659527f9ffa8a0c763befab957d00bad4b8c7897e06aed653"
+  }
+}

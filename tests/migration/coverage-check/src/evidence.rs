@@ -8,7 +8,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use crate::catalog::{Artifact, Run};
+use crate::catalog::{Artifact, Cell, Observation, Run};
 
 pub fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
@@ -95,8 +95,18 @@ struct Capture {
     fixture_id: String,
     source_sha: String,
     screenshot_sha256: String,
+    package_sha256: Option<String>,
+    coverage: CaptureCoverage,
     profile: serde_json::Value,
     trace: Vec<TraceStep>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureCoverage {
+    #[serde(flatten)]
+    cell: Cell,
+    configuration_id: String,
 }
 
 #[derive(Deserialize, PartialEq)]
@@ -106,25 +116,22 @@ struct TraceStep {
     observed: BTreeMap<String, serde_json::Value>,
 }
 
-fn one_artifact<'a>(run: &'a Run, kind: &str) -> Result<&'a Artifact> {
-    let mut artifacts = run
-        .artifacts
-        .iter()
-        .filter(|artifact| artifact.kind == kind);
+fn one_artifact<'a>(artifacts: &'a [Artifact], kind: &str) -> Result<&'a Artifact> {
+    let mut artifacts = artifacts.iter().filter(|artifact| artifact.kind == kind);
     let first = artifacts
         .next()
         .with_context(|| format!("missing {kind} artifact"))?;
-    ensure!(
-        artifacts.next().is_none(),
-        "expected one {kind} artifact for {}",
-        run.role
-    );
+    ensure!(artifacts.next().is_none(), "expected one {kind} artifact");
     Ok(first)
 }
 
-fn load_capture(evidence: &Evidence, run: &Run) -> Result<(Capture, PathBuf, PathBuf)> {
-    let image = one_artifact(run, "screenshot")?;
-    let receipt = one_artifact(run, "capture-receipt")?;
+fn load_capture(
+    evidence: &Evidence,
+    observation: &Observation,
+    run: &Run,
+) -> Result<(Capture, PathBuf, PathBuf)> {
+    let image = one_artifact(&run.artifacts, "screenshot")?;
+    let receipt = one_artifact(&run.artifacts, "capture-receipt")?;
     let receipt_path = evidence.resolve(&receipt.path)?;
     let capture: Capture = read_json(&receipt_path)?;
     ensure!(
@@ -138,6 +145,17 @@ fn load_capture(evidence: &Evidence, run: &Run) -> Result<(Capture, PathBuf, Pat
     ensure!(
         capture.screenshot_sha256 == image.sha256,
         "capture receipt names a different screenshot: {}",
+        receipt.path.display()
+    );
+    ensure!(
+        capture.coverage.cell == observation.cell
+            && capture.coverage.configuration_id == observation.configuration_id,
+        "capture receipt belongs to a different coverage cell or configuration: {}",
+        receipt.path.display()
+    );
+    ensure!(
+        capture.package_sha256 == run.environment.installer_asset_digest,
+        "installer digest disagrees with capture receipt: {}",
         receipt.path.display()
     );
     ensure!(
@@ -195,8 +213,8 @@ fn load_capture(evidence: &Evidence, run: &Run) -> Result<(Capture, PathBuf, Pat
     Ok((capture, evidence.resolve(&image.path)?, receipt_path))
 }
 
-pub fn verify_reference_pair(evidence: &Evidence, runs: &[Run]) -> Result<()> {
-    let [first, repeat] = runs else {
+pub fn verify_reference_pair(evidence: &Evidence, observation: &Observation) -> Result<()> {
+    let [first, repeat] = observation.runs.as_slice() else {
         anyhow::bail!("expected two incumbent runs");
     };
     ensure!(
@@ -209,8 +227,9 @@ pub fn verify_reference_pair(evidence: &Evidence, runs: &[Run]) -> Result<()> {
             && first.server_implementation == repeat.server_implementation,
         "incumbent runs disagree on their environment, fixture or server implementation"
     );
-    let (first_capture, first_image, first_receipt) = load_capture(evidence, first)?;
-    let (repeat_capture, repeat_image, repeat_receipt) = load_capture(evidence, repeat)?;
+    let (first_capture, first_image, first_receipt) = load_capture(evidence, observation, first)?;
+    let (repeat_capture, repeat_image, repeat_receipt) =
+        load_capture(evidence, observation, repeat)?;
     ensure!(
         first_image != repeat_image && first_receipt != repeat_receipt,
         "incumbent repeat reuses the first run's capture paths"
@@ -227,5 +246,45 @@ pub fn verify_reference_pair(evidence: &Evidence, runs: &[Run]) -> Result<()> {
         first_capture.trace == repeat_capture.trace,
         "incumbent runs have different action traces"
     );
+    let comparison = one_artifact(&observation.comparison_artifacts, "action-and-state")?;
+    let diff = one_artifact(&observation.comparison_artifacts, "pixel-diff")?;
+    let comparison_path = evidence.resolve(&comparison.path)?;
+    let result: Comparison = read_json(&comparison_path)?;
+    ensure!(
+        result.artifact_sha256.baseline_receipt
+            == one_artifact(&first.artifacts, "capture-receipt")?.sha256
+            && result.artifact_sha256.candidate_receipt
+                == one_artifact(&repeat.artifacts, "capture-receipt")?.sha256
+            && result.artifact_sha256.diff == diff.sha256,
+        "comparison receipt belongs to a different capture pair or diff: {}",
+        comparison.path.display()
+    );
+    ensure!(
+        result.pixels.different_pixels == 0 && result.changed_steps.is_empty(),
+        "passing reference has a recorded difference: {}",
+        comparison.path.display()
+    );
     Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Comparison {
+    artifact_sha256: ComparisonDigests,
+    changed_steps: Vec<usize>,
+    pixels: PixelResult,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ComparisonDigests {
+    baseline_receipt: String,
+    candidate_receipt: String,
+    diff: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PixelResult {
+    different_pixels: u64,
 }

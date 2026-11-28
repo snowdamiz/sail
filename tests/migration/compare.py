@@ -129,6 +129,11 @@ def compare(args):
         "candidateSha": candidate["sourceSha"],
         "changedSteps": changed_steps,
         "pixels": pixel_result,
+        "artifactSha256": {
+            "baselineReceipt": screenshot_hash(args.baseline / "receipt.json"),
+            "candidateReceipt": screenshot_hash(args.candidate / "receipt.json"),
+            "diff": screenshot_hash(args.diff),
+        },
     }))
     return int(bool(pixels.returncode or changed_steps))
 

@@ -119,6 +119,63 @@ fn rejects_an_observation_outside_the_declared_matrix() {
 }
 
 #[test]
+fn rejects_relabeling_a_capture_as_a_different_platform_or_state() {
+    let mut fixture = Fixture::new();
+    fixture.catalog["platformSets"]["app"] =
+        json!(["served-chromium-macos", "served-safari-macos"]);
+    fixture.catalog["observations"][0]["platformId"] = json!("served-safari-macos");
+    fixture.rejects("different coverage cell or configuration");
+
+    fixture.catalog["observations"][0]["platformId"] = json!("served-chromium-macos");
+    fixture.catalog["observations"][0]["state"] = json!("draft");
+    fixture.rejects("different coverage cell or configuration");
+}
+
+#[test]
+fn rejects_an_unrelated_published_installer() {
+    let mut fixture = Fixture::new();
+    let inventory: Value = serde_json::from_slice(
+        &fs::read(fixture.directory.path().join("release-inventory.json")).unwrap(),
+    )
+    .unwrap();
+    let linux = inventory["githubRelease"]["assets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|asset| asset["name"] == "t3-0.1.17-linux-arm64.tar.gz")
+        .expect("published Linux ARM64 archive");
+    let digest = linux["digest"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("sha256:")
+        .unwrap();
+    for run in fixture.catalog["observations"][0]["runs"]
+        .as_array_mut()
+        .unwrap()
+    {
+        run["environment"]["installerAssetDigest"] = json!(digest);
+    }
+    fixture.rejects("installer digest disagrees with capture receipt");
+}
+
+#[test]
+fn rejects_comparison_evidence_from_a_different_capture_pair() {
+    let mut fixture = Fixture::new();
+    let foreign = fixture.repo.join("tests/migration/incumbent/observations/served-firefox-macos/settled/reference-pair-comparison.json");
+    let bytes = fs::read(foreign).unwrap();
+    fs::write(fixture.directory.path().join("other-pair.json"), &bytes).unwrap();
+    let comparison = fixture.catalog["observations"][0]["comparisonArtifacts"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|artifact| artifact["kind"] == "action-and-state")
+        .unwrap();
+    comparison["path"] = json!("other-pair.json");
+    comparison["sha256"] = json!(format!("{:x}", Sha256::digest(bytes)));
+    fixture.rejects("comparison receipt belongs to a different capture pair or diff");
+}
+
+#[test]
 fn rejects_a_changed_artifact() {
     let fixture = Fixture::new();
     let image = fixture.catalog["observations"][0]["runs"][0]["artifacts"][0]["path"]
