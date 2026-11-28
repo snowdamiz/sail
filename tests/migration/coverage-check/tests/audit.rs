@@ -138,13 +138,13 @@ fn rejects_an_unrelated_published_installer() {
         &fs::read(fixture.directory.path().join("release-inventory.json")).unwrap(),
     )
     .unwrap();
-    let linux = inventory["githubRelease"]["assets"]
+    let dmg = inventory["githubRelease"]["assets"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|asset| asset["name"] == "t3-0.1.17-linux-arm64.tar.gz")
-        .expect("published Linux ARM64 archive");
-    let digest = linux["digest"]
+        .find(|asset| asset["name"] == "Sail-0.1.17-arm64.dmg")
+        .expect("published macOS arm64 DMG");
+    let digest = dmg["digest"]
         .as_str()
         .unwrap()
         .strip_prefix("sha256:")
@@ -156,6 +156,78 @@ fn rejects_an_unrelated_published_installer() {
         run["environment"]["installerAssetDigest"] = json!(digest);
     }
     fixture.rejects("installer digest disagrees with capture receipt");
+}
+
+#[test]
+fn rejects_a_rehashed_reference_with_an_installer_for_another_target() {
+    let mut fixture = Fixture::new();
+    let directory = fixture.directory.path();
+    let inventory: Value =
+        serde_json::from_slice(&fs::read(directory.join("release-inventory.json")).unwrap())
+            .unwrap();
+    let asset = inventory["githubRelease"]["assets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|asset| asset["name"] == "t3-0.1.17-linux-arm64.tar.gz")
+        .unwrap();
+    let digest = asset["digest"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("sha256:")
+        .unwrap();
+    let observation = &mut fixture.catalog["observations"][0];
+    let mut receipt_digests = Vec::new();
+    for run in observation["runs"].as_array_mut().unwrap() {
+        run["environment"]["installerAssetDigest"] = json!(digest);
+        let artifact = run["artifacts"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|artifact| artifact["kind"] == "capture-receipt")
+            .unwrap();
+        let path = directory.join(artifact["path"].as_str().unwrap());
+        let mut capture: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        capture["packageSha256"] = json!(digest);
+        let bytes = serde_json::to_vec(&capture).unwrap();
+        fs::write(path, &bytes).unwrap();
+        let receipt_digest = json!(format!("{:x}", Sha256::digest(bytes)));
+        receipt_digests.push(receipt_digest.clone());
+        artifact["sha256"] = receipt_digest;
+    }
+    let artifact = observation["comparisonArtifacts"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|artifact| artifact["kind"] == "action-and-state")
+        .unwrap();
+    let path = directory.join(artifact["path"].as_str().unwrap());
+    let mut comparison: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    comparison["artifactSha256"]["baselineReceipt"] = receipt_digests[0].clone();
+    comparison["artifactSha256"]["candidateReceipt"] = receipt_digests[1].clone();
+    let bytes = serde_json::to_vec(&comparison).unwrap();
+    fs::write(path, &bytes).unwrap();
+    artifact["sha256"] = json!(format!("{:x}", Sha256::digest(bytes)));
+    fixture.rejects("outside target macos-arm64");
+}
+
+#[test]
+fn allows_a_blocked_browser_reference_without_an_installed_package() {
+    let mut fixture = Fixture::new();
+    let observation = &mut fixture.catalog["observations"][0];
+    observation["result"] = json!("blocked");
+    for run in observation["runs"].as_array_mut().unwrap() {
+        run["environment"]["installerAssetDigest"] = Value::Null;
+        run["environment"]["arch"] = Value::Null;
+    }
+    let report = fixture.run();
+    assert!(
+        report.status.success(),
+        "{}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let body: Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(body["verifiedVisualReferenceObservations"], 0);
 }
 
 #[test]

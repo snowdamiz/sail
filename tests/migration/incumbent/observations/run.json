@@ -83,6 +83,13 @@
       "changedSteps": [],
       "scope": "settled replay in the recorded Chromium profile"
     },
+    "chromiumLinuxSettledRepeat": {
+      "result": "pass",
+      "comparison": "served-chromium-linux/settled/reference-pair-comparison.json",
+      "differentPixels": 0,
+      "changedSteps": [],
+      "scope": "Two published v0.1.17 Linux arm64 CLI installs on Debian 12.15. The packaged Browser panel used Chrome for Testing 158.0.8127.88 in separate profiles and opened the saved Replay thread at 640 by 600 CSS pixels and scale 2 with Showcase available."
+    },
     "electronSettledHover": {
       "result": "pass",
       "observations": "electron-macos-arm64/settled-hover/capture-timings.json",

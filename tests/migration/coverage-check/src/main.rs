@@ -86,7 +86,7 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
     );
     let source = git(repo, &["ls-tree", "-r", "-z", "--name-only", incumbent])?;
     let source_paths: BTreeSet<_> = source.split_terminator('\0').collect();
-    let known_assets: BTreeSet<_> = inventory
+    let known_assets: BTreeMap<_, _> = inventory
         .github_release
         .assets
         .iter()
@@ -94,11 +94,12 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
             asset
                 .digest
                 .strip_prefix("sha256:")
+                .map(|digest| (digest, asset.name.as_str()))
                 .context("expected an inventory SHA-256")
         })
         .collect::<Result<_>>()?;
     ensure!(
-        known_assets.iter().all(|digest| is_hex(digest, 64)),
+        known_assets.keys().all(|digest| is_hex(digest, 64)),
         "invalid inventory SHA-256"
     );
 
@@ -244,6 +245,7 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
 
         let pass = observation.result == "pass";
         let release_reference = observation.stage == "p01-release-reference";
+        let platform = &catalog.platforms[&cell.platform_id];
         ensure!(
             !pass || !observation.runs.is_empty(),
             "passing observation has no runs: {label}"
@@ -265,14 +267,54 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
                     run.source_sha == *incumbent && run.server_source_sha == *incumbent,
                     "release reference uses a different source: {label}"
                 );
-                if let Some(digest) = &run.environment.installer_asset_digest {
+                let target_id = if !pass && run.environment.installer_asset_digest.is_none() {
+                    None
+                } else if platform.surface == "server-served-web"
+                    && run.environment.connection_mode.as_deref() == Some("loopback")
+                {
+                    let os = platform
+                        .os
+                        .as_deref()
+                        .context("missing browser platform OS")?;
+                    let arch = run
+                        .environment
+                        .arch
+                        .as_deref()
+                        .context("missing loopback server architecture")?;
+                    Some(format!("{os}-{arch}"))
+                } else {
+                    platform.inventory_target.clone()
+                };
+                let asset = run
+                    .environment
+                    .installer_asset_digest
+                    .as_deref()
+                    .map(|digest| {
+                        known_assets
+                            .get(digest)
+                            .copied()
+                            .with_context(|| format!("unpublished installer digest: {label}"))
+                    })
+                    .transpose()?;
+                if let Some(target_id) = target_id {
+                    let asset = asset.with_context(|| {
+                        format!("missing installer digest for {target_id}: {label}")
+                    })?;
+                    let target = inventory
+                        .installer_targets
+                        .iter()
+                        .find(|target| target.id == target_id)
+                        .with_context(|| {
+                            format!("unknown installer target {target_id}: {label}")
+                        })?;
                     ensure!(
-                        known_assets.contains(digest.as_str()),
-                        "unpublished installer digest: {label}"
+                        target.cli_archive.as_deref() == Some(asset)
+                            || target.desktop_assets.iter().any(|name| name == asset),
+                        "installer asset {asset} is outside target {target_id}: {label}"
                     );
                 }
             }
-            if let Some(arch) = &catalog.platforms[&cell.platform_id].arch {
+            if let Some(arch) = &platform.arch {
                 ensure!(
                     run.environment.arch.as_ref() == Some(arch),
                     "run architecture disagrees with platform: {label}"

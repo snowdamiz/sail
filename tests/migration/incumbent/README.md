@@ -33,6 +33,31 @@ Capture timing includes Browser panel calls and rendering waits. In this run, wa
 
 The [packaged migration-head comparison](observations/served-chromium-macos/migration-head-4807bdae) uses Chromium headless shell 156.0.8078.4 in three isolated Playwright profiles. Both v0.1.17 copies matched. The web client built at `4807bdae` differed by 3,478 pixels in the composer and exposed the Poteto control. Its capture p95 was 572 ms against 1,137 and 1,696 ms for the incumbent copies, within the budget for this fixture.
 
+### Linux
+
+Build the fixture image for Linux arm64. Use the pinned CLI archive, the [Chrome for Testing archive](https://storage.googleapis.com/chrome-for-testing-public/158.0.8127.88/linux-arm64/chrome-headless-shell-linux-arm64.zip), and a standalone SQLite backup of the completed Replay seed. Set `$seed_thread_id` to the saved thread ID. Provide absolute paths to the archives and backup.
+
+```sh
+fixture="$PWD/tests/migration/incumbent"
+mkdir "$scratch/runs"
+printf '%s\n' "$seed_thread_id" > "$scratch/thread-id"
+git archive -o "$scratch/replay.tar" v0.1.17 \
+  apps/server/scripts/dev-replay-agent.ts apps/server/scripts/dev-replay \
+  apps/server/src/orchestration-v2/testkit/fixtures
+docker build --platform linux/arm64 -t sail-migration-chromium "$fixture/linux-chromium"
+for copy in a b; do
+  docker run --rm --init --network none --platform linux/arm64 --user "$(id -u):$(id -g)" \
+    -v "$fixture:/fixture:ro" -v "$scratch/runs:/runs" -v "$seed_database:/seed.sqlite:ro" \
+    -v "$scratch/replay.tar:/replay-source.tar:ro" -v "$chrome_archive:/chrome.zip:ro" \
+    -v "$scratch/thread-id:/thread-id:ro" -v "$published_archive:/release.tar.gz:ro" \
+    sail-migration-chromium bash /fixture/linux-chromium/capture.sh "/runs/$copy"
+done
+```
+
+Each server gets its own installed package, home, paired Chrome profile, and capture. The probe calls the released server's Browser panel tools through a fixture ACP session. It checks the launch binary on Linux arm64, pairs through the served page, and requires an available Showcase model, the exact settled table, and **Attach files** focus. Use each run's `capture.png`, `receipt.json`, and `state.json` with the [capture comparator](../README.md#compare-two-captures).
+
+Both Debian 12.15 arm64 captures matched pixel for pixel and had identical action traces at 640 × 600 CSS pixels and 2× scale. Chrome reports `Linux x86_64` through `navigator.platform`. The probe identifies the running browser from its AArch64 executable. Candidate parity and paired timing remain open for this profile. [Linux Chromium reference](observations/served-chromium-linux/settled)
+
 ## Capture the settled Firefox replay
 
 ### Linux

@@ -1,0 +1,20 @@
+{
+  "fixtureId": "chat-turn",
+  "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "changedSteps": [],
+  "pixels": {
+    "baseline": "tests/migration/incumbent/observations/served-chromium-linux/settled/a/capture.png",
+    "candidate": "tests/migration/incumbent/observations/served-chromium-linux/settled/b/capture.png",
+    "diff": "tests/migration/incumbent/observations/served-chromium-linux/settled/repeat-diff.png",
+    "baselineSize": [1280, 1200],
+    "candidateSize": [1280, 1200],
+    "differentPixels": 0,
+    "bounds": null
+  },
+  "artifactSha256": {
+    "baselineReceipt": "73897ea4ea162ec710a2225986f5c4c92f2e759a607c616e786fd1a64f88003b",
+    "candidateReceipt": "f0a50a3c4c8640fefb48ec8b7e02076c304cdda9597e19804a3170ad1fc9609e",
+    "diff": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+  }
+}

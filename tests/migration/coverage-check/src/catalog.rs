@@ -18,8 +18,12 @@ pub struct Catalog {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Platform {
+    pub surface: String,
+    pub os: Option<String>,
     pub arch: Option<String>,
+    pub inventory_target: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -111,6 +115,7 @@ pub struct Inventory {
     pub incumbent_source_sha: String,
     pub migration_base_sha: String,
     pub github_release: Release,
+    pub installer_targets: Vec<InstallerTarget>,
 }
 
 #[derive(Deserialize)]
@@ -121,5 +126,14 @@ pub struct Release {
 
 #[derive(Deserialize)]
 pub struct Asset {
+    pub name: String,
     pub digest: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallerTarget {
+    pub id: String,
+    pub desktop_assets: Vec<String>,
+    pub cli_archive: Option<String>,
 }
