@@ -224,7 +224,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: sail-bundle-server-dist
-          path: ${{ runner.temp }}/sail-bundle-server-dist
+          path: .sail-bundle-server-dist
       - name: Download desktop dist bundle
         uses: actions/download-artifact@v4
         with:
@@ -235,7 +235,8 @@ jobs:
           set -euo pipefail
           rm -rf apps/server/dist
           mkdir -p apps/server/dist
-          tar -C apps/server/dist -xzf "${{ runner.temp }}/sail-bundle-server-dist/sail-bundle-server-dist.tar.gz"
+          tar -C apps/server/dist -xzf .sail-bundle-server-dist/sail-bundle-server-dist.tar.gz
+          rm -rf .sail-bundle-server-dist
           test -f apps/server/dist/client/index.html
           test -f apps/server/dist/builtin-skills/pstack/.claude-plugin/plugin.json
           test -f apps/server/dist/builtin-skills/pstack/LICENSE
@@ -340,13 +341,14 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: sail-bundle-server-dist
-          path: ${{ runner.temp }}/sail-bundle-server-dist
+          path: .sail-bundle-server-dist
       - name: Extract server dist bundle
         run: |
           set -euo pipefail
           rm -rf apps/server/dist
           mkdir -p apps/server/dist
-          tar -C apps/server/dist -xzf "${{ runner.temp }}/sail-bundle-server-dist/sail-bundle-server-dist.tar.gz"
+          tar -C apps/server/dist -xzf .sail-bundle-server-dist/sail-bundle-server-dist.tar.gz
+          rm -rf .sail-bundle-server-dist
           test -f apps/server/dist/builtin-skills/pstack/.claude-plugin/plugin.json
           test -f apps/server/dist/builtin-skills/pstack/LICENSE
           test -x apps/server/dist/builtin-skills/pstack/skills/statechart/scripts/statechart
