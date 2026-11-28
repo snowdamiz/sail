@@ -12,6 +12,7 @@ import * as FileSystem from "effect/FileSystem";
 import { HttpRouter } from "effect/http";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -29,7 +30,9 @@ import {
   resolveTransferStagingDir,
   SESSION_TRANSFER_STALE_TTL_MS,
   SESSION_TRANSFER_TOKEN_TTL_MS,
+  storeSessionTransferBundleUpload,
   sweepStaleSessionTransferStaging,
+  uniqueTransferSegment,
   validateSessionTransferBundleToken,
 } from "./SessionTransferToken.ts";
 
@@ -104,6 +107,8 @@ describe("SessionTransferToken", () => {
           const downloadUrl = yield* issueSessionTransferBundleUrl({
             transferId,
             operation: "download",
+            expectedSizeBytes: payload.byteLength,
+            expectedSha256: payloadSha256,
           });
 
           const downloadRes = yield* Effect.promise(() =>
@@ -209,6 +214,276 @@ describe("SessionTransferToken", () => {
         } finally {
           yield* Effect.promise(() => dispose());
         }
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "assigns collision-free staging directories to transferIds differing only in punctuation",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const path = yield* Path.Path;
+
+        const segSlash = uniqueTransferSegment("xfer/a");
+        const segColon = uniqueTransferSegment("xfer:a");
+        expect(segSlash).not.toBeNull();
+        expect(segColon).not.toBeNull();
+        expect(segSlash).not.toBe(segColon);
+
+        const dirSlash = resolveTransferStagingDir(config.stateDir, "xfer/a", path);
+        const dirColon = resolveTransferStagingDir(config.stateDir, "xfer:a", path);
+        expect(dirSlash).not.toBeNull();
+        expect(dirColon).not.toBeNull();
+        expect(dirSlash).not.toBe(dirColon);
+
+        expect(resolveExportBundlePath(config.stateDir, "xfer/a", path)).not.toBe(
+          resolveExportBundlePath(config.stateDir, "xfer:a", path),
+        );
+        expect(resolveImportBundlePath(config.stateDir, "xfer/a", path)).not.toBe(
+          resolveImportBundlePath(config.stateDir, "xfer:a", path),
+        );
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "rejects HTTP bundle download when staged file digest, size, or maxBytes mismatches signed claims",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const routeContext = yield* Effect.context<
+          | ServerConfig.ServerConfig
+          | FileSystem.FileSystem
+          | Path.Path
+          | AssetSigner.AssetSigner
+          | SecureRandom.SecureRandom
+        >();
+
+        const routesLayer = layerSessionTransferBundleDownloadRoute.pipe(
+          Layer.provideMerge(Layer.succeedContext(routeContext)),
+        );
+        const { handler, dispose } = HttpRouter.toWebHandler(routesLayer, { disableLogger: true });
+
+        try {
+          const transferId = "xfer-download-verify";
+          const original = new TextEncoder().encode("original-bundle-bytes-12345");
+          const originalSha = NodeCrypto.createHash("sha256").update(original).digest("hex");
+
+          const exportPath = resolveExportBundlePath(config.stateDir, transferId, path)!;
+          yield* fs.makeDirectory(path.dirname(exportPath), { recursive: true });
+          yield* fs.writeFile(exportPath, original);
+
+          const signedWithDigestAndSize = yield* issueSessionTransferBundleUrl({
+            transferId,
+            operation: "download",
+            expectedSizeBytes: original.byteLength,
+            expectedSha256: originalSha,
+          });
+
+          // Same-length tampered payload triggers SHA-256 mismatch (409).
+          const sameLengthTampered = new TextEncoder().encode("tampered-bundle-bytes-12345");
+          expect(sameLengthTampered.byteLength).toBe(original.byteLength);
+          yield* fs.writeFile(exportPath, sameLengthTampered);
+
+          const shaMismatchRes = yield* Effect.promise(() =>
+            handler(
+              new Request(`http://127.0.0.1${signedWithDigestAndSize.relativeUrl}`, {
+                method: "GET",
+              }),
+            ),
+          );
+          expect(shaMismatchRes.status).toBe(409);
+
+          // Different-length file triggers expectedSizeBytes mismatch (409).
+          yield* fs.writeFile(exportPath, new TextEncoder().encode("shorter"));
+          const sizeMismatchRes = yield* Effect.promise(() =>
+            handler(
+              new Request(`http://127.0.0.1${signedWithDigestAndSize.relativeUrl}`, {
+                method: "GET",
+              }),
+            ),
+          );
+          expect(sizeMismatchRes.status).toBe(409);
+
+          // File exceeding signed maxBytes triggers 409.
+          const tightCapUrl = yield* issueSessionTransferBundleUrl({
+            transferId,
+            operation: "download",
+            maxBytes: 4,
+          });
+          const overMaxRes = yield* Effect.promise(() =>
+            handler(new Request(`http://127.0.0.1${tightCapUrl.relativeUrl}`, { method: "GET" })),
+          );
+          expect(overMaxRes.status).toBe(409);
+        } finally {
+          yield* Effect.promise(() => dispose());
+        }
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "enforces exact Content-Length on upload and cleans up temp .part files on mismatch",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const routeContext = yield* Effect.context<
+          | ServerConfig.ServerConfig
+          | FileSystem.FileSystem
+          | Path.Path
+          | AssetSigner.AssetSigner
+          | SecureRandom.SecureRandom
+        >();
+
+        const routesLayer = layerSessionTransferBundleUploadRoute.pipe(
+          Layer.provideMerge(Layer.succeedContext(routeContext)),
+        );
+        const { handler, dispose } = HttpRouter.toWebHandler(routesLayer, { disableLogger: true });
+
+        try {
+          const transferId = "xfer-content-length";
+          const payload = new TextEncoder().encode("exact-length-payload");
+          const uploadUrl = yield* issueSessionTransferBundleUrl({
+            transferId,
+            operation: "upload",
+          });
+          const claims = (yield* validateSessionTransferBundleToken(uploadUrl.token, "upload"))!;
+          const importPath = resolveImportBundlePath(config.stateDir, transferId, path)!;
+          const stagingDir = resolveTransferStagingDir(config.stateDir, transferId, path)!;
+
+          // Non-numeric Content-Length header via HTTP route is rejected with 400.
+          const badHeaderRes = yield* Effect.promise(() =>
+            handler(
+              new Request(`http://127.0.0.1${uploadUrl.relativeUrl}`, {
+                method: "POST",
+                headers: { "content-length": "12abc" },
+                body: payload,
+              }),
+            ),
+          );
+          expect(badHeaderRes.status).toBe(400);
+          expect(yield* fs.exists(importPath)).toBe(false);
+
+          // Truncated stream (fewer bytes than declared Content-Length) returns 400 and cleans .part.
+          const truncatedResult = yield* storeSessionTransferBundleUpload(
+            claims,
+            Stream.make(payload.slice(0, 5)),
+            { expectedContentLength: payload.byteLength },
+          );
+          expect(truncatedResult.ok).toBe(false);
+          if (!truncatedResult.ok) {
+            expect(truncatedResult.status).toBe(400);
+          }
+          expect(yield* fs.exists(importPath)).toBe(false);
+          const entriesAfterTruncated = yield* fs.readDirectory(stagingDir);
+          expect(entriesAfterTruncated.some((name) => name.endsWith(".part"))).toBe(false);
+
+          // Over-long stream (more bytes than declared Content-Length) returns 400 and cleans .part.
+          const overlongResult = yield* storeSessionTransferBundleUpload(
+            claims,
+            Stream.make(payload, new TextEncoder().encode("extra")),
+            { expectedContentLength: payload.byteLength },
+          );
+          expect(overlongResult.ok).toBe(false);
+          if (!overlongResult.ok) {
+            expect(overlongResult.status).toBe(400);
+          }
+          expect(yield* fs.exists(importPath)).toBe(false);
+          const entriesAfterOverlong = yield* fs.readDirectory(stagingDir);
+          expect(entriesAfterOverlong.some((name) => name.endsWith(".part"))).toBe(false);
+
+          // Exact Content-Length succeeds via HTTP route.
+          const exactRes = yield* Effect.promise(() =>
+            handler(
+              new Request(`http://127.0.0.1${uploadUrl.relativeUrl}`, {
+                method: "POST",
+                headers: { "content-length": String(payload.byteLength) },
+                body: payload,
+              }),
+            ),
+          );
+          expect(exactRes.status).toBe(204);
+          expect(new Uint8Array(yield* fs.readFile(importPath))).toEqual(payload);
+        } finally {
+          yield* Effect.promise(() => dispose());
+        }
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "publishes competing concurrent uploads atomically without clobbering or leaving .part files",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+
+        // 1. Concurrent identical uploads both succeed atomically.
+        const sameTransferId = "xfer-race-same";
+        const samePayload = new TextEncoder().encode("identical-concurrent-bundle-bytes");
+        const sameUrl = yield* issueSessionTransferBundleUrl({
+          transferId: sameTransferId,
+          operation: "upload",
+        });
+        const sameClaims = (yield* validateSessionTransferBundleToken(sameUrl.token, "upload"))!;
+
+        const sameResults = yield* Effect.all(
+          [
+            storeSessionTransferBundleUpload(sameClaims, Stream.make(samePayload), {
+              expectedContentLength: samePayload.byteLength,
+            }),
+            storeSessionTransferBundleUpload(sameClaims, Stream.make(samePayload), {
+              expectedContentLength: samePayload.byteLength,
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(sameResults.every((r) => r.ok)).toBe(true);
+        const sameImportPath = resolveImportBundlePath(config.stateDir, sameTransferId, path)!;
+        expect(new Uint8Array(yield* fs.readFile(sameImportPath))).toEqual(samePayload);
+        const sameEntries = yield* fs.readDirectory(
+          resolveTransferStagingDir(config.stateDir, sameTransferId, path)!,
+        );
+        expect(sameEntries.some((name) => name.endsWith(".part"))).toBe(false);
+
+        // 2. Concurrent conflicting uploads: exactly one publishes and the other gets 409 without clobbering.
+        const diffTransferId = "xfer-race-conflict";
+        const payloadA = new TextEncoder().encode("competing-bundle-payload-AAAA");
+        const payloadB = new TextEncoder().encode("competing-bundle-payload-BBBB");
+        const diffUrl = yield* issueSessionTransferBundleUrl({
+          transferId: diffTransferId,
+          operation: "upload",
+        });
+        const diffClaims = (yield* validateSessionTransferBundleToken(diffUrl.token, "upload"))!;
+
+        const diffResults = yield* Effect.all(
+          [
+            storeSessionTransferBundleUpload(diffClaims, Stream.make(payloadA), {
+              expectedContentLength: payloadA.byteLength,
+            }),
+            storeSessionTransferBundleUpload(diffClaims, Stream.make(payloadB), {
+              expectedContentLength: payloadB.byteLength,
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        const successes = diffResults.filter((r) => r.ok);
+        const conflicts = diffResults.filter((r) => !r.ok && r.status === 409);
+        expect(successes).toHaveLength(1);
+        expect(conflicts).toHaveLength(1);
+
+        const diffImportPath = resolveImportBundlePath(config.stateDir, diffTransferId, path)!;
+        const winningBytes = new Uint8Array(yield* fs.readFile(diffImportPath));
+        const matchesA = Buffer.from(winningBytes).equals(Buffer.from(payloadA));
+        const matchesB = Buffer.from(winningBytes).equals(Buffer.from(payloadB));
+        expect(matchesA || matchesB).toBe(true);
+
+        const diffEntries = yield* fs.readDirectory(
+          resolveTransferStagingDir(config.stateDir, diffTransferId, path)!,
+        );
+        expect(diffEntries.some((name) => name.endsWith(".part"))).toBe(false);
       }).pipe(Effect.provide(makeTestLayer())),
   );
 

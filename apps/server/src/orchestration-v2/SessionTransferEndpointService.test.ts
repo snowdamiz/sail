@@ -36,18 +36,26 @@ import {
   TrimmedNonEmptyString,
   TurnItemId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
+import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as AssetSigner from "../assets/AssetSigner.ts";
 import {
   resolveExportBundlePath,
   resolveImportBundlePath,
   resolveTransferStagingDir,
+  SESSION_TRANSFER_TOKEN_TTL_MS,
+  validateSessionTransferBundleToken,
 } from "../assets/SessionTransferToken.ts";
 import { createAttachmentId, resolveAttachmentPathById } from "../attachmentStore.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -86,6 +94,16 @@ function initGitRepo(dir: string): void {
   git(dir, ["commit", "-m", "initial commit"]);
 }
 
+function decodeSignedAssetExpiresAt(relativeUrl: string): number {
+  const segments = relativeUrl.split("/");
+  // /api/assets/<encoded>.<sig>/<filename>
+  const token = segments[3] ?? "";
+  const encodedPayload = token.split(".")[0] ?? "";
+  const json = Buffer.from(encodedPayload, "base64url").toString("utf8");
+  const parsed = JSON.parse(json) as { readonly expiresAt?: number };
+  return parsed.expiresAt ?? 0;
+}
+
 interface MockRecorder {
   readonly dispatches: Array<Record<string, unknown>>;
   readonly forceStops: Array<ThreadId>;
@@ -96,6 +114,50 @@ interface MockRecorder {
     readonly mode: string | undefined;
     readonly attachmentIds: ReadonlyArray<ChatAttachmentId>;
   }>;
+  importBundleCount?: number;
+}
+
+class TestHookError extends Schema.TaggedError<TestHookError>()("TestHookError", {
+  message: Schema.String,
+}) {}
+
+interface EndpointTestHooks {
+  readonly onThreadStop?: (ctx: {
+    readonly threadId: ThreadId;
+    readonly eventSink: EventSink.EventSinkV2["Service"];
+    readonly projectionStore: ProjectionStore.ProjectionStoreV2["Service"];
+    readonly defaultStop: Effect.Effect<void, TestHookError>;
+  }) => Effect.Effect<void, TestHookError>;
+  readonly onForceStop?: (ctx: {
+    readonly threadId: ThreadId;
+    readonly eventSink: EventSink.EventSinkV2["Service"];
+    readonly projectionStore: ProjectionStore.ProjectionStoreV2["Service"];
+  }) => Effect.Effect<{ readonly sequence: number }, TestHookError>;
+  readonly onSendToThread?: (ctx: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+    readonly text: string;
+    readonly mode: string | undefined;
+    readonly attachments: ReadonlyArray<{ readonly id: ChatAttachmentId }>;
+    readonly defaultSend: Effect.Effect<{ readonly sequence: number; readonly runId: RunId }>;
+  }) => Effect.Effect<{ readonly sequence: number; readonly runId: RunId }, TestHookError>;
+  readonly onEventSinkWrite?: (
+    events: ReadonlyArray<OrchestrationV2DomainEvent>,
+  ) => Effect.Effect<void, TestHookError>;
+  readonly onGetThreadRecords?: (ctx: {
+    readonly threadId: ThreadId;
+    readonly fields: ReadonlyArray<string>;
+    readonly next: Effect.Effect<
+      unknown,
+      ProjectionStore.ProjectionStoreV2Error | ProjectionStore.ProjectionStoreThreadNotFoundError
+    >;
+  }) => Effect.Effect<
+    unknown,
+    | ProjectionStore.ProjectionStoreV2Error
+    | ProjectionStore.ProjectionStoreThreadNotFoundError
+    | TestHookError
+  >;
+  readonly onImportWorkspaceBundle?: <A, E>(next: Effect.Effect<A, E>) => Effect.Effect<A, E>;
 }
 
 function makeEndpointTestLayer(options: {
@@ -112,6 +174,7 @@ function makeEndpointTestLayer(options: {
     readonly enabled?: boolean;
   }>;
   readonly recorder: MockRecorder;
+  readonly hooks?: EndpointTestHooks;
 }) {
   const baseLayer = Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer);
   const configLayer = ServerConfig.layerTest(process.cwd(), {
@@ -120,14 +183,76 @@ function makeEndpointTestLayer(options: {
 
   const sqliteLayer = SqlitePersistence.layerMemory.pipe(Layer.provideMerge(configLayer));
   const eventStoreLayer = EventStore.layer.pipe(Layer.provideMerge(sqliteLayer));
-  const projectionStoreLayer = ProjectionStore.layer.pipe(Layer.provideMerge(eventStoreLayer));
-  const eventSinkLayer = EventSink.layer.pipe(Layer.provideMerge(projectionStoreLayer));
+  const rawProjectionStoreLayer = ProjectionStore.layer.pipe(Layer.provideMerge(eventStoreLayer));
+  const projectionStoreLayer =
+    options.hooks?.onGetThreadRecords !== undefined
+      ? Layer.effect(
+          ProjectionStore.ProjectionStoreV2,
+          Effect.gen(function* () {
+            const inner = yield* ProjectionStore.ProjectionStoreV2;
+            const hook = options.hooks!.onGetThreadRecords!;
+            return {
+              ...inner,
+              getThreadRecords: (threadId, fields, filter) =>
+                hook({
+                  threadId,
+                  fields,
+                  next: inner.getThreadRecords(threadId, fields, filter),
+                }) as never,
+            } satisfies ProjectionStore.ProjectionStoreV2["Service"];
+          }),
+        ).pipe(Layer.provideMerge(rawProjectionStoreLayer))
+      : rawProjectionStoreLayer;
+
+  const rawEventSinkLayer = EventSink.layer.pipe(Layer.provideMerge(projectionStoreLayer));
+  const eventSinkLayer =
+    options.hooks?.onEventSinkWrite !== undefined
+      ? Layer.effect(
+          EventSink.EventSinkV2,
+          Effect.gen(function* () {
+            const inner = yield* EventSink.EventSinkV2;
+            const hook = options.hooks!.onEventSinkWrite!;
+            return {
+              ...inner,
+              write: (writeInput) =>
+                Effect.gen(function* () {
+                  yield* hook(writeInput.events).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new EventSink.EventSinkWriteError({
+                          eventCount: writeInput.events.length,
+                          cause,
+                        }),
+                    ),
+                  );
+                  return yield* inner.write(writeInput);
+                }),
+            } satisfies EventSink.EventSinkV2["Service"];
+          }),
+        ).pipe(Layer.provideMerge(rawEventSinkLayer))
+      : rawEventSinkLayer;
 
   const secretLayer = ServerSecretStore.layer.pipe(Layer.provideMerge(configLayer));
   const signerLayer = AssetSigner.layer.pipe(Layer.provideMerge(secretLayer));
   const documentTextLayer = DocumentText.layer.pipe(Layer.provideMerge(configLayer));
   const vcsProcessLayer = VcsProcess.layer.pipe(Layer.provideMerge(configLayer));
-  const workspaceBundleLayer = WorkspaceBundle.layer.pipe(Layer.provideMerge(vcsProcessLayer));
+  const rawWorkspaceBundleLayer = WorkspaceBundle.layer.pipe(Layer.provideMerge(vcsProcessLayer));
+  const workspaceBundleLayer = Layer.effect(
+    WorkspaceBundle.WorkspaceBundle,
+    Effect.gen(function* () {
+      const inner = yield* WorkspaceBundle.WorkspaceBundle;
+      return WorkspaceBundle.WorkspaceBundle.of({
+        ...inner,
+        importWorkspaceBundle: (importInput) => {
+          options.recorder.importBundleCount = (options.recorder.importBundleCount ?? 0) + 1;
+          const next = inner.importWorkspaceBundle(importInput);
+          return options.hooks?.onImportWorkspaceBundle !== undefined
+            ? options.hooks.onImportWorkspaceBundle(next)
+            : next;
+        },
+      });
+    }),
+  ).pipe(Layer.provideMerge(rawWorkspaceBundleLayer));
 
   const envIdentityLayer = Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
     getEnvironmentId: Effect.succeed(EnvironmentId.make(options.environmentId)),
@@ -193,7 +318,8 @@ function makeEndpointTestLayer(options: {
       }),
   });
 
-  // Wire dispatch so thread.stop marks running runs interrupted and thread.archive sets archivedAt.
+  // Wire dispatch so thread.stop marks running runs interrupted, thread.archive sets archivedAt,
+  // and sendToThread persists the continuation message/run into SQLite just like real Orchestrator.
   const threadManagementLayer = Layer.effect(
     ThreadManagementService.ThreadManagementService,
     Effect.gen(function* () {
@@ -206,31 +332,46 @@ function makeEndpointTestLayer(options: {
             const now = yield* DateTime.now;
             if (command.type === "thread.stop") {
               const threadId = command.threadId as ThreadId;
-              const records = yield* projectionStore.getThreadRecords(threadId, ["runs"]);
-              const events: OrchestrationV2DomainEvent[] = [];
-              for (const run of records.runs) {
-                if (
-                  run.status === "running" ||
-                  run.status === "starting" ||
-                  run.status === "preparing" ||
-                  run.status === "waiting"
-                ) {
-                  events.push({
-                    id: EventId.make(`stop-run:${run.id}:${DateTime.toEpochMillis(now)}`),
-                    type: "run.updated",
-                    threadId,
-                    runId: run.id,
-                    occurredAt: now,
-                    payload: {
-                      ...run,
-                      status: "interrupted",
-                      completedAt: now,
-                    },
-                  });
+              const defaultStop = Effect.gen(function* () {
+                const records = yield* projectionStore.getThreadRecords(threadId, ["runs"]);
+                const events: OrchestrationV2DomainEvent[] = [];
+                for (const run of records.runs) {
+                  if (
+                    run.status === "running" ||
+                    run.status === "starting" ||
+                    run.status === "preparing" ||
+                    run.status === "waiting"
+                  ) {
+                    events.push({
+                      id: EventId.make(`stop-run:${run.id}:${DateTime.toEpochMillis(now)}`),
+                      type: "run.updated",
+                      threadId,
+                      runId: run.id,
+                      occurredAt: now,
+                      payload: {
+                        ...run,
+                        status: "interrupted",
+                        completedAt: now,
+                      },
+                    });
+                  }
                 }
-              }
-              if (events.length > 0) {
-                yield* eventSink.write({ events });
+                if (events.length > 0) {
+                  yield* eventSink.write({ events });
+                }
+              });
+
+              if (options.hooks?.onThreadStop !== undefined) {
+                yield* options.hooks.onThreadStop({
+                  threadId,
+                  eventSink,
+                  projectionStore,
+                  defaultStop: defaultStop.pipe(
+                    Effect.mapError((cause) => new TestHookError({ message: String(cause) })),
+                  ),
+                });
+              } else {
+                yield* defaultStop;
               }
             } else if (command.type === "thread.archive") {
               const threadId = command.threadId as ThreadId;
@@ -254,28 +395,112 @@ function makeEndpointTestLayer(options: {
             return { sequence: 1 };
           }),
         forceStopThread: (input: { readonly threadId: ThreadId }) =>
-          Effect.sync(() => {
+          Effect.gen(function* () {
             options.recorder.forceStops.push(input.threadId);
+            if (options.hooks?.onForceStop !== undefined) {
+              return yield* options.hooks.onForceStop({
+                threadId: input.threadId,
+                eventSink,
+                projectionStore,
+              });
+            }
             return { sequence: 1 };
           }),
         sendToThread: (input: {
           readonly threadId: ThreadId;
+          readonly messageId: MessageId;
           readonly text: string;
           readonly mode?: string;
+          readonly modelSelection?: ModelSelection;
           readonly attachments: ReadonlyArray<{ readonly id: ChatAttachmentId }>;
-        }) =>
-          Effect.sync(() => {
+        }) => {
+          const defaultSend = Effect.gen(function* () {
             options.recorder.sentMessages.push({
               threadId: input.threadId,
               text: input.text,
               mode: input.mode,
               attachmentIds: input.attachments.map((a) => a.id),
             });
+            const now = yield* DateTime.now;
+            const runId = RunId.make(`sent-run:${options.recorder.sentMessages.length}`);
+            const records = yield* projectionStore
+              .getThreadRecords(input.threadId, ["runs"])
+              .pipe(Effect.orElseSucceed(() => null));
+            if (records !== null) {
+              const ordinal = records.runs.reduce((max, run) => Math.max(max, run.ordinal), 0) + 1;
+              const selection = input.modelSelection ?? records.thread.modelSelection;
+              yield* eventSink
+                .write({
+                  events: [
+                    {
+                      id: EventId.make(`sent-msg:${input.messageId}`),
+                      type: "message.updated",
+                      threadId: input.threadId,
+                      runId,
+                      occurredAt: now,
+                      payload: {
+                        createdBy: "system",
+                        creationSource: "server",
+                        id: input.messageId,
+                        threadId: input.threadId,
+                        runId,
+                        nodeId: null,
+                        role: "user",
+                        text: input.text,
+                        attachments: [],
+                        streaming: false,
+                        createdAt: now,
+                        updatedAt: now,
+                      },
+                    },
+                    {
+                      id: EventId.make(`sent-run:${runId}`),
+                      type: "run.created",
+                      threadId: input.threadId,
+                      runId,
+                      providerInstanceId: selection.instanceId,
+                      occurredAt: now,
+                      payload: {
+                        id: runId,
+                        threadId: input.threadId,
+                        ordinal,
+                        providerInstanceId: selection.instanceId,
+                        modelSelection: selection,
+                        providerThreadId: null,
+                        userMessageId: input.messageId,
+                        rootNodeId: null,
+                        activeAttemptId: null,
+                        status: "running",
+                        queuePosition: null,
+                        requestedAt: now,
+                        startedAt: now,
+                        completedAt: null,
+                        checkpointId: null,
+                        contextHandoffId: null,
+                      },
+                    },
+                  ],
+                })
+                .pipe(Effect.ignore);
+            }
             return {
               sequence: 1,
-              runId: RunId.make(`sent-run:${options.recorder.sentMessages.length}`),
+              runId,
             };
-          }),
+          });
+
+          if (options.hooks?.onSendToThread !== undefined) {
+            return options.hooks.onSendToThread({
+              threadId: input.threadId,
+              messageId: input.messageId,
+              text: input.text,
+              mode: input.mode,
+              attachments: input.attachments,
+              defaultSend,
+            });
+          }
+          return defaultSend;
+        },
       } as unknown as ThreadManagementService.ThreadManagementService["Service"];
     }),
   ).pipe(Layer.provideMerge(eventSinkLayer));
@@ -293,7 +518,7 @@ function makeEndpointTestLayer(options: {
     threadManagementLayer,
   );
 
-  return SessionTransferEndpointService.layer.pipe(Layer.provideMerge(depsLayer));
+  return Layer.fresh(SessionTransferEndpointService.layer.pipe(Layer.provideMerge(depsLayer)));
 }
 
 function seedThreadEvents(input: {
@@ -304,8 +529,11 @@ function seedThreadEvents(input: {
   readonly modelSelection: ModelSelection;
   readonly running: boolean;
   readonly pendingRuntimeRequest?: boolean;
+  readonly pendingSecretRequest?: boolean;
   readonly presentAttachmentId?: ChatAttachmentId;
   readonly missingAttachmentId?: ChatAttachmentId;
+  readonly assistantOnlyAttachmentId?: ChatAttachmentId;
+  readonly questionAnswerOnlyAttachmentId?: ChatAttachmentId;
   readonly queuedText?: string;
   readonly queuedAttachmentId?: ChatAttachmentId;
 }): ReadonlyArray<OrchestrationV2DomainEvent> {
@@ -317,6 +545,8 @@ function seedThreadEvents(input: {
   const msg1Id = MessageId.make(`msg-1:${input.threadId}`);
   const msg2Id = MessageId.make(`msg-2:${input.threadId}`);
   const qMsgId = MessageId.make(`qmsg:${input.threadId}`);
+  const planId = PlanId.make(`plan:${input.threadId}`);
+  const userItemId = TurnItemId.make(`ti-user:${input.threadId}`);
 
   const thread: OrchestrationV2AppThread = {
     createdBy: "user",
@@ -405,7 +635,7 @@ function seedThreadEvents(input: {
   const userItem: OrchestrationV2TurnItem = {
     createdBy: "user",
     creationSource: "web",
-    id: TurnItemId.make(`ti-user:${input.threadId}`),
+    id: userItemId,
     threadId: input.threadId,
     runId: run1Id,
     nodeId: null,
@@ -426,14 +656,69 @@ function seedThreadEvents(input: {
     attachments,
   };
 
+  const assistantItem: OrchestrationV2TurnItem = {
+    id: TurnItemId.make(`ti-asst:${input.threadId}`),
+    threadId: input.threadId,
+    runId: run1Id,
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: userItemId,
+    ordinal: 2,
+    status: "completed",
+    title: null,
+    startedAt: updatedAt,
+    completedAt: updatedAt,
+    updatedAt,
+    type: "assistant_message",
+    messageId: msg2Id,
+    text: assistantMsg.text,
+    streaming: false,
+    ...(input.assistantOnlyAttachmentId !== undefined
+      ? {
+          attachments: [
+            {
+              type: "image" as const,
+              id: input.assistantOnlyAttachmentId,
+              name: "assistant-output.png",
+              mimeType: "image/png",
+              sizeBytes: 12,
+            },
+          ],
+        }
+      : {}),
+  };
+
   const plan: OrchestrationV2PlanArtifact = {
-    id: PlanId.make(`plan:${input.threadId}`),
+    id: planId,
     threadId: input.threadId,
     runId: run1Id,
     nodeId: NodeId.make(`plan-node:${input.threadId}`),
     kind: "proposed_plan",
     markdown: "- Step 1: Bundle\n- Step 2: Endpoints",
     status: "active",
+  };
+
+  const planItem: OrchestrationV2TurnItem = {
+    id: TurnItemId.make(`ti-plan:${input.threadId}`),
+    threadId: input.threadId,
+    runId: run1Id,
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: 3,
+    status: "completed",
+    title: "Plan",
+    startedAt: updatedAt,
+    completedAt: updatedAt,
+    updatedAt,
+    type: "proposed_plan",
+    planId,
+    markdown: plan.markdown,
+    streaming: false,
   };
 
   const run1: OrchestrationV2Run = {
@@ -542,6 +827,22 @@ function seedThreadEvents(input: {
       payload: userItem,
     },
     {
+      id: EventId.make(`seed:${input.threadId}:ti2`),
+      type: "turn-item.updated",
+      threadId: input.threadId,
+      runId: run1Id,
+      occurredAt: updatedAt,
+      payload: assistantItem,
+    },
+    {
+      id: EventId.make(`seed:${input.threadId}:ti3`),
+      type: "turn-item.updated",
+      threadId: input.threadId,
+      runId: run1Id,
+      occurredAt: updatedAt,
+      payload: planItem,
+    },
+    {
       id: EventId.make(`seed:${input.threadId}:plan`),
       type: "plan.updated",
       threadId: input.threadId,
@@ -550,6 +851,58 @@ function seedThreadEvents(input: {
       payload: plan,
     },
   ];
+
+  if (input.questionAnswerOnlyAttachmentId !== undefined) {
+    const qaItem: OrchestrationV2TurnItem = {
+      id: TurnItemId.make(`ti-uir:${input.threadId}`),
+      threadId: input.threadId,
+      runId: run1Id,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 4,
+      status: "completed",
+      title: "Question",
+      startedAt: updatedAt,
+      completedAt: updatedAt,
+      updatedAt,
+      type: "user_input_request",
+      requestId: RuntimeRequestId.make(`rreq-qa:${input.threadId}`),
+      questions: [
+        {
+          id: "q-screenshot",
+          header: "Screenshot",
+          question: "Attach screenshot?",
+          options: [{ label: "Yes", description: "Attached" }],
+        },
+      ],
+      questionAnswer: {
+        requestId: TrimmedNonEmptyString.make(`rreq-qa:${input.threadId}`),
+        answers: { "q-screenshot": "Yes" },
+        attachmentsByQuestionId: {
+          "q-screenshot": [
+            {
+              type: "image",
+              id: input.questionAnswerOnlyAttachmentId,
+              name: "question-answer.png",
+              mimeType: "image/png",
+              sizeBytes: 12,
+            },
+          ],
+        },
+      },
+    };
+    events.push({
+      id: EventId.make(`seed:${input.threadId}:ti-qa`),
+      type: "turn-item.updated",
+      threadId: input.threadId,
+      runId: run1Id,
+      occurredAt: updatedAt,
+      payload: qaItem,
+    });
+  }
 
   if (input.pendingRuntimeRequest) {
     const req: OrchestrationV2RuntimeRequest = {
@@ -574,6 +927,37 @@ function seedThreadEvents(input: {
       runId: run1Id,
       occurredAt: updatedAt,
       payload: req,
+    });
+  }
+
+  if (input.pendingSecretRequest) {
+    const secretItem: OrchestrationV2TurnItem = {
+      id: TurnItemId.make(`ti-secret:${input.threadId}`),
+      threadId: input.threadId,
+      runId: run1Id,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 5,
+      status: "running",
+      title: "Secret request",
+      startedAt: updatedAt,
+      completedAt: null,
+      updatedAt,
+      type: "secret_request",
+      label: TrimmedNonEmptyString.make("OPENAI_API_KEY"),
+      reason: "Needed to run integration check",
+      secretStatus: "pending",
+    };
+    events.push({
+      id: EventId.make(`seed:${input.threadId}:secret`),
+      type: "turn-item.updated",
+      threadId: input.threadId,
+      runId: run1Id,
+      occurredAt: updatedAt,
+      payload: secretItem,
     });
   }
 
@@ -646,7 +1030,7 @@ function seedThreadEvents(input: {
 
 describe("SessionTransferEndpointService", () => {
   it.effect(
-    "completes full roundtrip: pauses running source, transfers git+attachments, commits with idempotent replay, auto-resumes, and finalizes source",
+    "completes full roundtrip: pauses running source, transfers git+attachments, commits with idempotent replay, auto-resumes, releases persisted queued runs, and finalizes source",
     () =>
       Effect.gen(function* () {
         const tmpRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-xfer-e2e-"));
@@ -856,7 +1240,9 @@ describe("SessionTransferEndpointService", () => {
             expect(destProj.contextHandoffs[0]?.summaryText).toContain("Session Transfer Context");
 
             // Verify attachment ID rewriting in imported message & turn item, and stub preserved for missing.
-            const importedUserMsg = destProj.messages.find((m) => m.role === "user");
+            const importedUserMsg = destProj.messages.find(
+              (m) => m.role === "user" && m.text.includes("lossless transfer bundle"),
+            );
             const rewrittenPresent = importedUserMsg?.attachments.find(
               (a) => a.name === "diagram.png",
             );
@@ -873,17 +1259,28 @@ describe("SessionTransferEndpointService", () => {
             ).not.toBeNull();
             expect(preservedMissing?.id).toBe(missingAttachmentId);
 
-            // Verify auto-resume sent exactly one continuation turn + one re-enqueued held prompt with rewritten attachment ID.
-            expect(destRecorder.sentMessages).toHaveLength(2);
+            // Verify auto-resume sent exactly one continuation turn, and the held queued prompt
+            // was persisted atomically in the event batch and released (queueHeld: false) with rewritten attachment ID.
+            expect(destRecorder.sentMessages).toHaveLength(1);
             expect(destRecorder.sentMessages[0]?.mode).toBe("auto");
             expect(destRecorder.sentMessages[0]?.text).toContain(
               "Session transferred from Local MacBook",
             );
-            expect(destRecorder.sentMessages[1]?.mode).toBe("queue");
-            expect(destRecorder.sentMessages[1]?.text).toBe("Follow-up queued prompt after resume");
-            expect(destRecorder.sentMessages[1]?.attachmentIds).toEqual([rewrittenPresent!.id]);
+            const persistedQueuedRun = destProj.runs.find((r) => r.status === "queued");
+            expect(persistedQueuedRun).toBeDefined();
+            expect(persistedQueuedRun?.queueHeld).toBe(false);
+            expect(persistedQueuedRun?.rootNodeId).not.toBeNull();
+            expect(persistedQueuedRun?.activeAttemptId).not.toBeNull();
+            expect(persistedQueuedRun?.providerThreadId).not.toBeNull();
+            const persistedQueuedMsg = destProj.messages.find(
+              (m) => m.id === persistedQueuedRun?.userMessageId,
+            );
+            expect(persistedQueuedMsg?.text).toBe("Follow-up queued prompt after resume");
+            expect(persistedQueuedMsg?.attachments.map((a) => a.id)).toEqual([
+              rewrittenPresent!.id,
+            ]);
 
-            // Idempotent commitImport replay returns exact same result without duplicating turns.
+            // Idempotent commitImport replay returns exact same result without duplicating turns or runs.
             const replayed = yield* svc.commitImport({
               transferId,
               destinationProjectId: staged.destinationProjectId,
@@ -892,7 +1289,7 @@ describe("SessionTransferEndpointService", () => {
               autoResume: true,
             });
             expect(replayed).toEqual(committed);
-            expect(destRecorder.sentMessages).toHaveLength(2);
+            expect(destRecorder.sentMessages).toHaveLength(1);
 
             // Destination abort AFTER commit does NOT delete committed worktree.
             const postCommitAbort = yield* svc.abort({
@@ -961,7 +1358,7 @@ describe("SessionTransferEndpointService", () => {
   );
 
   it.effect(
-    "pauses destination without auto-resuming when source had pending runtime request and preserves held queued runs",
+    "pauses destination without auto-resuming for pending runtime request, open secret_request in turnItems, or request arriving during settlement",
     () =>
       Effect.gen(function* () {
         const tmpRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-xfer-pending-"));
@@ -971,37 +1368,40 @@ describe("SessionTransferEndpointService", () => {
         git(tmpRoot, ["clone", sourceRepo, destRepo]);
 
         const projectId = ProjectId.make("proj-pending");
-        const sourceThreadId = ThreadId.make("thread-pending");
-        const transferId = SessionTransferId.make("xfer-pending-001");
+        const destProjectId = ProjectId.make("proj-dest");
         const modelSelection: ModelSelection = {
           instanceId: ProviderInstanceId.make("codex"),
           model: "gpt-5.4",
         };
-        const recorder: MockRecorder = {
-          dispatches: [],
-          forceStops: [],
-          detachedSessions: [],
-          sentMessages: [],
-        };
-
-        const layer = makeEndpointTestLayer({
-          environmentId: "env-shared",
-          environmentLabel: "Shared Env",
-          projects: [
-            { id: projectId, title: "Repo", workspaceRoot: sourceRepo },
-            { id: ProjectId.make("proj-dest"), title: "DestRepo", workspaceRoot: destRepo },
-          ],
-          providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
-          recorder,
-        });
 
         try {
+          // Case A: Pending runtime request + held queued run stays paused.
+          const recorderA: MockRecorder = {
+            dispatches: [],
+            forceStops: [],
+            detachedSessions: [],
+            sentMessages: [],
+          };
+          const layerA = makeEndpointTestLayer({
+            environmentId: "env-pending-a",
+            environmentLabel: "Shared Env A",
+            projects: [
+              { id: projectId, title: "Repo", workspaceRoot: sourceRepo },
+              { id: destProjectId, title: "DestRepo", workspaceRoot: destRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: recorderA,
+          });
+
           yield* Effect.gen(function* () {
             const config = yield* ServerConfig.ServerConfig;
             const path = yield* Path.Path;
             const eventSink = yield* EventSink.EventSinkV2;
             const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
             const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const sourceThreadId = ThreadId.make("thread-pending-rreq");
+            const transferId = SessionTransferId.make("xfer-pending-rreq");
 
             yield* eventSink.write({
               events: seedThreadEvents({
@@ -1030,24 +1430,22 @@ describe("SessionTransferEndpointService", () => {
             const staged = yield* svc.stageImport({
               transferId,
               manifest: prepared.manifest,
-              targetProjectId: ProjectId.make("proj-dest"),
+              targetProjectId: destProjectId,
             });
-
-            // Copy export.bundle -> import.bundle.
-            const exportPath = resolveExportBundlePath(config.stateDir, transferId, path)!;
-            const importPath = resolveImportBundlePath(config.stateDir, transferId, path)!;
-            NodeFS.copyFileSync(exportPath, importPath);
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferId, path)!,
+              resolveImportBundlePath(config.stateDir, transferId, path)!,
+            );
 
             const committed = yield* svc.commitImport({
               transferId,
               destinationProjectId: staged.destinationProjectId,
               destinationThreadId: staged.destinationThreadId,
               manifest: prepared.manifest,
-              autoResume: true, // Must still stay paused because of pending runtime request!
+              autoResume: true,
             });
-
             expect(committed.resumed).toBe(false);
-            expect(recorder.sentMessages).toHaveLength(0);
+            expect(recorderA.sentMessages).toHaveLength(0);
 
             const destProj = yield* projectionStore.getThreadProjection(
               committed.destinationThreadId,
@@ -1058,6 +1456,1324 @@ describe("SessionTransferEndpointService", () => {
             expect(destProj.runs).toHaveLength(1);
             expect(destProj.runs[0]?.status).toBe("queued");
             expect(destProj.runs[0]?.queueHeld).toBe(true);
+          }).pipe(Effect.provide(layerA));
+
+          // Case B: Open secret_request item in turnItems (no entry in runtimeRequests) blocks auto-resume.
+          const recorderB: MockRecorder = {
+            dispatches: [],
+            forceStops: [],
+            detachedSessions: [],
+            sentMessages: [],
+          };
+          const layerB = makeEndpointTestLayer({
+            environmentId: "env-pending-b",
+            environmentLabel: "Shared Env B",
+            projects: [
+              { id: projectId, title: "Repo", workspaceRoot: sourceRepo },
+              { id: destProjectId, title: "DestRepo", workspaceRoot: destRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: recorderB,
+          });
+
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const sourceThreadId = ThreadId.make("thread-pending-secret");
+            const transferId = SessionTransferId.make("xfer-pending-secret");
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId,
+                threadId: sourceThreadId,
+                branch: "main",
+                worktreePath: sourceRepo,
+                modelSelection,
+                running: true,
+                pendingSecretRequest: true,
+              }),
+            });
+
+            const prepared = yield* svc.prepareSource({
+              transferId,
+              threadId: sourceThreadId,
+              direction: "local_to_boat",
+            });
+            expect(prepared.manifest.sourceState.hadPendingRuntimeRequest).toBe(true);
+            expect(prepared.manifest.sourceState.pendingRuntimeRequests).toHaveLength(1);
+            expect(prepared.manifest.sourceState.pendingRuntimeRequests[0]?.summary).toContain(
+              "OPENAI_API_KEY",
+            );
+            expect(prepared.manifest.sourceState.pendingRuntimeRequests[0]?.userOnly).toBe(true);
+
+            const staged = yield* svc.stageImport({
+              transferId,
+              manifest: prepared.manifest,
+              targetProjectId: destProjectId,
+            });
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferId, path)!,
+              resolveImportBundlePath(config.stateDir, transferId, path)!,
+            );
+
+            const committed = yield* svc.commitImport({
+              transferId,
+              destinationProjectId: staged.destinationProjectId,
+              destinationThreadId: staged.destinationThreadId,
+              manifest: prepared.manifest,
+              autoResume: true,
+            });
+            expect(committed.resumed).toBe(false);
+            expect(recorderB.sentMessages).toHaveLength(0);
+          }).pipe(Effect.provide(layerB));
+
+          // Case C: Runtime request arrives DURING settlement (and is cancelled as not_resumable by thread.stop).
+          const recorderC: MockRecorder = {
+            dispatches: [],
+            forceStops: [],
+            detachedSessions: [],
+            sentMessages: [],
+          };
+          const layerC = makeEndpointTestLayer({
+            environmentId: "env-pending-c",
+            environmentLabel: "Shared Env C",
+            projects: [
+              { id: projectId, title: "Repo", workspaceRoot: sourceRepo },
+              { id: destProjectId, title: "DestRepo", workspaceRoot: destRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: recorderC,
+            hooks: {
+              onThreadStop: ({ threadId, eventSink, defaultStop }) =>
+                Effect.gen(function* () {
+                  yield* defaultStop;
+                  const now = yield* DateTime.now;
+                  // Inject a late-arriving approval request that was cancelled by the stop.
+                  yield* eventSink
+                    .write({
+                      events: [
+                        {
+                          id: EventId.make(`late-rreq:${threadId}`),
+                          type: "runtime-request.updated",
+                          threadId,
+                          runId: RunId.make(`run-1:${threadId}`),
+                          occurredAt: now,
+                          payload: {
+                            id: RuntimeRequestId.make(`rreq-late:${threadId}`),
+                            nodeId: NodeId.make(`node-late:${threadId}`),
+                            providerTurnId: null,
+                            nativeRequestRef: null,
+                            kind: "command",
+                            status: "cancelled",
+                            responseCapability: {
+                              type: "not_resumable",
+                              reason: "The run was interrupted.",
+                            },
+                            createdAt: now,
+                            resolvedAt: now,
+                            feedback: "Late approval during settlement",
+                          },
+                        },
+                      ],
+                    })
+                    .pipe(
+                      Effect.mapError((cause) => new TestHookError({ message: String(cause) })),
+                    );
+                }),
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const sourceThreadId = ThreadId.make("thread-late-rreq");
+            const transferId = SessionTransferId.make("xfer-late-rreq");
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId,
+                threadId: sourceThreadId,
+                branch: "main",
+                worktreePath: sourceRepo,
+                modelSelection,
+                running: true,
+              }),
+            });
+
+            const prepared = yield* svc.prepareSource({
+              transferId,
+              threadId: sourceThreadId,
+              direction: "local_to_boat",
+            });
+            expect(prepared.manifest.sourceState.hadPendingRuntimeRequest).toBe(true);
+            expect(prepared.manifest.sourceState.pendingRuntimeRequests).toHaveLength(1);
+            expect(prepared.manifest.sourceState.pendingRuntimeRequests[0]?.summary).toContain(
+              "Late approval during settlement",
+            );
+
+            const staged = yield* svc.stageImport({
+              transferId,
+              manifest: prepared.manifest,
+              targetProjectId: destProjectId,
+            });
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferId, path)!,
+              resolveImportBundlePath(config.stateDir, transferId, path)!,
+            );
+
+            const committed = yield* svc.commitImport({
+              transferId,
+              destinationProjectId: staged.destinationProjectId,
+              destinationThreadId: staged.destinationThreadId,
+              manifest: prepared.manifest,
+              autoResume: true,
+            });
+            expect(committed.resumed).toBe(false);
+            expect(recorderC.sentMessages).toHaveLength(0);
+          }).pipe(Effect.provide(layerC));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "preserves archived thread history on A -> B -> A roundtrip via deterministic ID remapping and rejects occupied destinationThreadId",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-xfer-aba-"));
+        const repoA = NodePath.join(tmpRoot, "repo-a");
+        const repoB = NodePath.join(tmpRoot, "repo-b");
+        initGitRepo(repoA);
+        git(tmpRoot, ["clone", repoA, repoB]);
+
+        const projectA = ProjectId.make("proj-a");
+        const projectB = ProjectId.make("proj-b");
+        const modelSelection: ModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+        const recorderA: MockRecorder = {
+          dispatches: [],
+          forceStops: [],
+          detachedSessions: [],
+          sentMessages: [],
+        };
+        const recorderB: MockRecorder = {
+          dispatches: [],
+          forceStops: [],
+          detachedSessions: [],
+          sentMessages: [],
+        };
+
+        const layerA = makeEndpointTestLayer({
+          environmentId: "env-a",
+          environmentLabel: "Machine A",
+          projects: [{ id: projectA, title: "Repo A", workspaceRoot: repoA }],
+          providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+          recorder: recorderA,
+        });
+        const layerB = makeEndpointTestLayer({
+          environmentId: "env-b",
+          environmentLabel: "Machine B",
+          projects: [{ id: projectB, title: "Repo B", workspaceRoot: repoB }],
+          providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+          recorder: recorderB,
+        });
+
+        try {
+          const threadA1 = ThreadId.make("thread-a1");
+          const xferAB = SessionTransferId.make("xfer-a-to-b");
+          const xferBA = SessionTransferId.make("xfer-b-to-a");
+
+          // Prepare + finalize A -> B on A, then import on B -> prepare B -> A on B,
+          // then import B -> A BACK ON THE SAME MACHINE A SQLITE STORE!
+          // We run both A steps inside the SAME layerA scope so SQLite is shared across A -> B -> A.
+          yield* Effect.gen(function* () {
+            const configA = yield* ServerConfig.ServerConfig;
+            const pathA = yield* Path.Path;
+            const eventSinkA = yield* EventSink.EventSinkV2;
+            const projectionStoreA = yield* ProjectionStore.ProjectionStoreV2;
+            const svcA = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            yield* eventSinkA.write({
+              events: seedThreadEvents({
+                projectId: projectA,
+                threadId: threadA1,
+                branch: "main",
+                worktreePath: repoA,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            const originalA1 = yield* projectionStoreA.getThreadProjection(threadA1);
+            const origMsgIds = originalA1.messages.map((m) => m.id);
+            const origItemIds = originalA1.turnItems.map((t) => t.id);
+            const origPlanIds = originalA1.plans.map((p) => p.id);
+
+            // Step 1: Prepare A -> B on A.
+            const prepAB = yield* svcA.prepareSource({
+              transferId: xferAB,
+              threadId: threadA1,
+              direction: "local_to_boat",
+            });
+            const bundleAB = NodeFS.readFileSync(
+              resolveExportBundlePath(configA.stateDir, xferAB, pathA)!,
+            );
+
+            // Step 2: Import on B, then prepare B -> A on B.
+            const { committedB, prepBA, bundleBA } = yield* Effect.gen(function* () {
+              const configB = yield* ServerConfig.ServerConfig;
+              const pathB = yield* Path.Path;
+              const svcB = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+              const stagedB = yield* svcB.stageImport({
+                transferId: xferAB,
+                manifest: prepAB.manifest,
+                targetProjectId: projectB,
+              });
+              const importPathB = resolveImportBundlePath(configB.stateDir, xferAB, pathB)!;
+              NodeFS.mkdirSync(NodePath.dirname(importPathB), { recursive: true });
+              NodeFS.writeFileSync(importPathB, bundleAB);
+
+              const committed = yield* svcB.commitImport({
+                transferId: xferAB,
+                destinationProjectId: stagedB.destinationProjectId,
+                destinationThreadId: stagedB.destinationThreadId,
+                manifest: prepAB.manifest,
+                autoResume: false,
+              });
+
+              const prepBack = yield* svcB.prepareSource({
+                transferId: xferBA,
+                threadId: committed.destinationThreadId,
+                direction: "boat_to_local",
+              });
+              const bundleBack = NodeFS.readFileSync(
+                resolveExportBundlePath(configB.stateDir, xferBA, pathB)!,
+              );
+              return { committedB: committed, prepBA: prepBack, bundleBA: bundleBack };
+            }).pipe(Effect.provide(layerB));
+
+            // Finalize & archive A1 on A.
+            yield* svcA.finalizeSource({
+              transferId: xferAB,
+              threadId: threadA1,
+              destination: {
+                transferId: xferAB,
+                environmentId: EnvironmentId.make("env-b"),
+                environmentName: TrimmedNonEmptyString.make("Machine B"),
+                machineId: null,
+                projectId: committedB.destinationProjectId,
+                threadId: committedB.destinationThreadId,
+                transferredAt: IsoDateTime.make("2026-08-01T10:15:00.000Z"),
+              },
+            });
+
+            // Step 3: Conflict check — attempting to commitImport targeting occupied threadA1 MUST fail!
+            const conflictResult = yield* Effect.result(
+              svcA.commitImport({
+                transferId: xferBA,
+                destinationProjectId: projectA,
+                destinationThreadId: threadA1, // Occupied by original thread (no matching transferOrigin)
+                manifest: prepBA.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(conflictResult)).toBe(true);
+            if (Result.isFailure(conflictResult)) {
+              expect(conflictResult.failure.code).toBe("invalid_phase");
+            }
+
+            // Step 4: Stage & commit B -> A onto fresh destinationThreadId on SAME SQLite DB!
+            const stagedA2 = yield* svcA.stageImport({
+              transferId: xferBA,
+              manifest: prepBA.manifest,
+              targetProjectId: projectA,
+            });
+            const importPathA2 = resolveImportBundlePath(configA.stateDir, xferBA, pathA)!;
+            NodeFS.mkdirSync(NodePath.dirname(importPathA2), { recursive: true });
+            NodeFS.writeFileSync(importPathA2, bundleBA);
+
+            const committedA2 = yield* svcA.commitImport({
+              transferId: xferBA,
+              destinationProjectId: stagedA2.destinationProjectId,
+              destinationThreadId: stagedA2.destinationThreadId,
+              manifest: prepBA.manifest,
+              autoResume: false,
+            });
+
+            // Verify archived thread A1 STILL owns ALL its original messages, turnItems, and plans!
+            const archivedA1 = yield* projectionStoreA.getThreadProjection(threadA1);
+            expect(archivedA1.thread.archivedAt).not.toBeNull();
+            expect(archivedA1.messages.map((m) => m.id)).toEqual(origMsgIds);
+            expect(archivedA1.turnItems.map((t) => t.id)).toEqual(origItemIds);
+            expect(archivedA1.plans.map((p) => p.id)).toEqual(origPlanIds);
+
+            // Verify returned thread A2 has its own remapped IDs with consistent internal cross-references!
+            const returnedA2 = yield* projectionStoreA.getThreadProjection(
+              committedA2.destinationThreadId,
+            );
+            expect(returnedA2.messages).toHaveLength(origMsgIds.length);
+            expect(returnedA2.turnItems).toHaveLength(origItemIds.length);
+            expect(returnedA2.plans).toHaveLength(origPlanIds.length);
+
+            for (const msg of returnedA2.messages) {
+              expect(origMsgIds).not.toContain(msg.id);
+              expect(msg.threadId).toBe(committedA2.destinationThreadId);
+            }
+            const a2MsgIds = new Set(returnedA2.messages.map((m) => m.id));
+            const a2ItemIds = new Set(returnedA2.turnItems.map((t) => t.id));
+            const a2PlanIds = new Set(returnedA2.plans.map((p) => p.id));
+
+            for (const item of returnedA2.turnItems) {
+              expect(origItemIds).not.toContain(item.id);
+              if (item.parentItemId !== null) {
+                expect(a2ItemIds.has(item.parentItemId)).toBe(true);
+              }
+              if (item.type === "user_message" || item.type === "assistant_message") {
+                expect(a2MsgIds.has(item.messageId)).toBe(true);
+              }
+              if (item.type === "proposed_plan" || item.type === "todo_list") {
+                expect(a2PlanIds.has(item.planId)).toBe(true);
+              }
+            }
+          }).pipe(Effect.provide(layerA));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "destination abort after reusing a pre-existing branch removes the created worktree without deleting the pre-existing branch",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-xfer-branch-safe-"));
+        const sourceRepo = NodePath.join(tmpRoot, "source");
+        const destRepo = NodePath.join(tmpRoot, "dest");
+        initGitRepo(sourceRepo);
+        git(sourceRepo, ["checkout", "-b", "feat/preexisting"]);
+        NodeFS.writeFileSync(NodePath.join(sourceRepo, "shared.txt"), "shared\n");
+        git(sourceRepo, ["add", "shared.txt"]);
+        git(sourceRepo, ["commit", "-m", "shared feature commit"]);
+
+        git(tmpRoot, ["clone", sourceRepo, destRepo]);
+        // On destination, check out main so feat/preexisting exists as an IDLE local branch at the same SHA.
+        git(destRepo, ["checkout", "-b", "main", "origin/main"]);
+        const preexistingSha = git(destRepo, ["rev-parse", "refs/heads/feat/preexisting"]);
+
+        const projectId = ProjectId.make("proj-branch-safe");
+        const destProjectId = ProjectId.make("proj-branch-safe-dest");
+        const sourceThreadId = ThreadId.make("thread-branch-safe");
+        const transferId = SessionTransferId.make("xfer-branch-safe");
+        const modelSelection: ModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+        const recorder: MockRecorder = {
+          dispatches: [],
+          forceStops: [],
+          detachedSessions: [],
+          sentMessages: [],
+        };
+
+        let failDestinationCommit = false;
+        const layer = makeEndpointTestLayer({
+          environmentId: "env-branch-safe",
+          environmentLabel: "Branch Safe Env",
+          projects: [
+            { id: projectId, title: "Source", workspaceRoot: sourceRepo },
+            { id: destProjectId, title: "Dest", workspaceRoot: destRepo },
+          ],
+          providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+          recorder,
+          hooks: {
+            onEventSinkWrite: () =>
+              failDestinationCommit
+                ? Effect.fail(
+                    new TestHookError({
+                      message: "Simulated DB write failure after worktree creation",
+                    }),
+                  )
+                : Effect.void,
+          },
+        });
+
+        try {
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId,
+                threadId: sourceThreadId,
+                branch: "feat/preexisting",
+                worktreePath: sourceRepo,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: sourceThreadId,
+              direction: "local_to_boat",
+            });
+            const staged = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: destProjectId,
+            });
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferId, path)!,
+              resolveImportBundlePath(config.stateDir, transferId, path)!,
+            );
+
+            // Fail eventSink.write AFTER WorkspaceBundle.importWorkspaceBundle creates the worktree
+            // reusing the pre-existing feat/preexisting branch.
+            failDestinationCommit = true;
+            const failedCommit = yield* Effect.result(
+              svc.commitImport({
+                transferId,
+                destinationProjectId: staged.destinationProjectId,
+                destinationThreadId: staged.destinationThreadId,
+                manifest: prep.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(failedCommit)).toBe(true);
+            failDestinationCommit = false;
+
+            // Confirm worktree was created before failure.
+            const wtListBeforeAbort = git(destRepo, ["worktree", "list", "--porcelain"]);
+            expect(wtListBeforeAbort).toContain("branch refs/heads/feat/preexisting");
+
+            // Abort destination -> MUST remove created worktree AND keep feat/preexisting intact!
+            const aborted = yield* svc.abort({
+              transferId,
+              role: "destination",
+            });
+            expect(aborted.cleanedUp).toBe(true);
+
+            const wtListAfterAbort = git(destRepo, ["worktree", "list", "--porcelain"]);
+            expect(wtListAfterAbort).not.toContain("branch refs/heads/feat/preexisting");
+            expect(git(destRepo, ["rev-parse", "refs/heads/feat/preexisting"])).toBe(
+              preexistingSha,
+            );
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "serializes concurrent commitImport calls, reuses worktree on retry after event-write failure, and recovers continuation+queue release on durable replay",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-xfer-commit-"));
+        const sourceRepo = NodePath.join(tmpRoot, "source");
+        const destRepo = NodePath.join(tmpRoot, "dest");
+        initGitRepo(sourceRepo);
+        git(tmpRoot, ["clone", sourceRepo, destRepo]);
+
+        const projectId = ProjectId.make("proj-commit");
+        const destProjectId = ProjectId.make("proj-commit-dest");
+        const modelSelection: ModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+
+        try {
+          // 5a: Concurrent commitImport calls for same transferId allocate only 1 worktree and 1 thread.
+          const recorderA: MockRecorder = {
+            dispatches: [],
+            forceStops: [],
+            detachedSessions: [],
+            sentMessages: [],
+          };
+          const importEntered = yield* Deferred.make<void>();
+          const releaseImport = yield* Deferred.make<void>();
+          let firstImport = true;
+
+          const layerA = makeEndpointTestLayer({
+            environmentId: "env-conc",
+            environmentLabel: "Conc Env",
+            projects: [
+              { id: projectId, title: "Src", workspaceRoot: sourceRepo },
+              { id: destProjectId, title: "Dst", workspaceRoot: destRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: recorderA,
+            hooks: {
+              onImportWorkspaceBundle: (next) =>
+                Effect.gen(function* () {
+                  if (firstImport) {
+                    firstImport = false;
+                    yield* Deferred.succeed(importEntered, undefined);
+                    yield* Deferred.await(releaseImport);
+                  }
+                  return yield* next;
+                }),
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const srcThread = ThreadId.make("thread-conc");
+            const xferId = SessionTransferId.make("xfer-conc");
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId,
+                threadId: srcThread,
+                branch: "main",
+                worktreePath: sourceRepo,
+                modelSelection,
+                running: true,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId: xferId,
+              threadId: srcThread,
+              direction: "local_to_boat",
+            });
+            const staged = yield* svc.stageImport({
+              transferId: xferId,
+              manifest: prep.manifest,
+              targetProjectId: destProjectId,
+            });
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, xferId, path)!,
+              resolveImportBundlePath(config.stateDir, xferId, path)!,
+            );
+
+            const commitInput = {
+              transferId: xferId,
+              destinationProjectId: staged.destinationProjectId,
+              destinationThreadId: staged.destinationThreadId,
+              manifest: prep.manifest,
+              autoResume: true,
+            };
+
+            const fiber1 = yield* Effect.forkChild(svc.commitImport(commitInput));
+            yield* Deferred.await(importEntered);
+            const fiber2 = yield* Effect.forkChild(svc.commitImport(commitInput));
+            yield* Deferred.succeed(releaseImport, undefined);
+
+            const [res1, res2] = yield* Effect.all([Fiber.join(fiber1), Fiber.join(fiber2)]);
+            expect(res1).toEqual(res2);
+            expect(recorderA.importBundleCount).toBe(1);
+            expect(recorderA.sentMessages).toHaveLength(1);
+          }).pipe(Effect.provide(layerA));
+
+          // 5b: Retry after simulated event-write failure reuses the already-created worktree.
+          const recorderB: MockRecorder = {
+            dispatches: [],
+            forceStops: [],
+            detachedSessions: [],
+            sentMessages: [],
+          };
+          let failNextCommitWrite = false;
+          const layerB = makeEndpointTestLayer({
+            environmentId: "env-retry-wt",
+            environmentLabel: "Retry WT Env",
+            projects: [
+              { id: projectId, title: "Src", workspaceRoot: sourceRepo },
+              { id: destProjectId, title: "Dst", workspaceRoot: destRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: recorderB,
+            hooks: {
+              onEventSinkWrite: () => {
+                if (failNextCommitWrite) {
+                  failNextCommitWrite = false;
+                  return Effect.fail(
+                    new TestHookError({ message: "Simulated transient SQLite failure" }),
+                  );
+                }
+                return Effect.void;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const srcThread = ThreadId.make("thread-retry-wt");
+            const xferId = SessionTransferId.make("xfer-retry-wt");
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId,
+                threadId: srcThread,
+                branch: "main",
+                worktreePath: sourceRepo,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId: xferId,
+              threadId: srcThread,
+              direction: "local_to_boat",
+            });
+            const staged = yield* svc.stageImport({
+              transferId: xferId,
+              manifest: prep.manifest,
+              targetProjectId: destProjectId,
+            });
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, xferId, path)!,
+              resolveImportBundlePath(config.stateDir, xferId, path)!,
+            );
+
+            failNextCommitWrite = true;
+            const firstAttempt = yield* Effect.result(
+              svc.commitImport({
+                transferId: xferId,
+                destinationProjectId: staged.destinationProjectId,
+                destinationThreadId: staged.destinationThreadId,
+                manifest: prep.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(firstAttempt)).toBe(true);
+            expect(recorderB.importBundleCount).toBe(1);
+
+            // Second attempt reuses the existing worktree without calling importWorkspaceBundle again.
+            const secondAttempt = yield* svc.commitImport({
+              transferId: xferId,
+              destinationProjectId: staged.destinationProjectId,
+              destinationThreadId: staged.destinationThreadId,
+              manifest: prep.manifest,
+              autoResume: false,
+            });
+            expect(secondAttempt.destinationWorktreePath).not.toBeNull();
+            expect(recorderB.importBundleCount).toBe(1);
+          }).pipe(Effect.provide(layerB));
+
+          // 5c: Replay after simulated crash between event write and continuation/queue release
+          // completes continuation and releases queueHeld: false without duplicating events or worktrees.
+          const recorderC: MockRecorder = {
+            dispatches: [],
+            forceStops: [],
+            detachedSessions: [],
+            sentMessages: [],
+          };
+          let failNextSend = false;
+          const layerC = makeEndpointTestLayer({
+            environmentId: "env-crash-replay",
+            environmentLabel: "Crash Replay Env",
+            projects: [
+              { id: projectId, title: "Src", workspaceRoot: sourceRepo },
+              { id: destProjectId, title: "Dst", workspaceRoot: destRepo },
+            ],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: recorderC,
+            hooks: {
+              onSendToThread: ({ defaultSend }) => {
+                if (failNextSend) {
+                  failNextSend = false;
+                  return Effect.fail(
+                    new TestHookError({ message: "Simulated crash before continuation" }),
+                  );
+                }
+                return defaultSend;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const srcThread = ThreadId.make("thread-crash-replay");
+            const xferId = SessionTransferId.make("xfer-crash-replay");
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId,
+                threadId: srcThread,
+                branch: "main",
+                worktreePath: sourceRepo,
+                modelSelection,
+                running: true,
+                queuedText: "Queued prompt surviving crash before continuation",
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId: xferId,
+              threadId: srcThread,
+              direction: "local_to_boat",
+            });
+            const staged = yield* svc.stageImport({
+              transferId: xferId,
+              manifest: prep.manifest,
+              targetProjectId: destProjectId,
+            });
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, xferId, path)!,
+              resolveImportBundlePath(config.stateDir, xferId, path)!,
+            );
+
+            // Attempt 1: event write succeeds (persisting thread + held queued run), then continuation fails.
+            failNextSend = true;
+            const firstCommit = yield* svc.commitImport({
+              transferId: xferId,
+              destinationProjectId: staged.destinationProjectId,
+              destinationThreadId: staged.destinationThreadId,
+              manifest: prep.manifest,
+              autoResume: true,
+            });
+            expect(firstCommit.resumed).toBe(false);
+            expect(recorderC.sentMessages).toHaveLength(0);
+            expect(recorderC.importBundleCount).toBe(1);
+
+            const projMid = yield* projectionStore.getThreadProjection(
+              firstCommit.destinationThreadId,
+            );
+            expect(projMid.runs).toHaveLength(1);
+            expect(projMid.runs[0]?.status).toBe("queued");
+            expect(projMid.runs[0]?.queueHeld).toBe(true);
+
+            // Attempt 2 (replay): completes continuation AND releases the held queued run without duplicating worktree or runs!
+            const replayCommit = yield* svc.commitImport({
+              transferId: xferId,
+              destinationProjectId: staged.destinationProjectId,
+              destinationThreadId: staged.destinationThreadId,
+              manifest: prep.manifest,
+              autoResume: true,
+            });
+            expect(replayCommit.resumed).toBe(true);
+            expect(recorderC.sentMessages).toHaveLength(1);
+            expect(recorderC.importBundleCount).toBe(1);
+
+            const projAfter = yield* projectionStore.getThreadProjection(
+              firstCommit.destinationThreadId,
+            );
+            const queuedRunsAfter = projAfter.runs.filter((r) => r.status === "queued");
+            expect(queuedRunsAfter).toHaveLength(1);
+            expect(queuedRunsAfter[0]?.queueHeld).toBe(false);
+
+            // Attempt 3 (further replay): completely idempotent, no second continuation turn!
+            const thirdCommit = yield* svc.commitImport({
+              transferId: xferId,
+              destinationProjectId: staged.destinationProjectId,
+              destinationThreadId: staged.destinationThreadId,
+              manifest: prep.manifest,
+              autoResume: true,
+            });
+            expect(thirdCommit.resumed).toBe(true);
+            expect(recorderC.sentMessages).toHaveLength(1);
+            expect(recorderC.importBundleCount).toBe(1);
+          }).pipe(Effect.provide(layerC));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "refuses to export live source on settlement read error or failed/ineffective forceStop, and protects concurrent prepareSource with same transferId",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-xfer-src-guard-"));
+        const repoDir = NodePath.join(tmpRoot, "repo");
+        initGitRepo(repoDir);
+
+        const projectId = ProjectId.make("proj-src-guard");
+        const modelSelection: ModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+
+        try {
+          // 6a: Projection-read error during settlement propagates (NOT treated as settled).
+          let failSettlementRead = false;
+          const layerReadErr = makeEndpointTestLayer({
+            environmentId: "env-read-err",
+            environmentLabel: "ReadErr Env",
+            projects: [{ id: projectId, title: "Repo", workspaceRoot: repoDir }],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onThreadStop: () => {
+                // Trigger projection read error when awaitThreadSettled checks isThreadSettled.
+                failSettlementRead = true;
+                return Effect.void;
+              },
+              onGetThreadRecords: ({ fields, next }) => {
+                if (failSettlementRead && fields.includes("providerTurns")) {
+                  return Effect.fail(
+                    new TestHookError({ message: "SQLite read error during settlement" }),
+                  );
+                }
+                return next;
+              },
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const threadId = ThreadId.make("thread-read-err");
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId,
+                threadId,
+                branch: "main",
+                worktreePath: repoDir,
+                modelSelection,
+                running: true,
+              }),
+            });
+
+            const res = yield* Effect.result(
+              svc.prepareSource({
+                transferId: SessionTransferId.make("xfer-read-err"),
+                threadId,
+                direction: "local_to_boat",
+              }),
+            );
+            expect(Result.isFailure(res)).toBe(true);
+            if (Result.isFailure(res)) {
+              expect(res.failure.code).toBe("internal");
+              expect(res.failure.message).toContain("settlement");
+            }
+          }).pipe(Effect.provide(layerReadErr));
+
+          // 6b: forceStopThread failure AND still-running thread after forceStop both reject export.
+          const recorderForceFail: MockRecorder = {
+            dispatches: [],
+            forceStops: [],
+            detachedSessions: [],
+            sentMessages: [],
+          };
+          let forceStopMode: "fail" | "noop" = "fail";
+          const layerForceFail = makeEndpointTestLayer({
+            environmentId: "env-force-fail",
+            environmentLabel: "ForceFail Env",
+            projects: [{ id: projectId, title: "Repo", workspaceRoot: repoDir }],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: recorderForceFail,
+            hooks: {
+              // Do not mark run interrupted on thread.stop so awaitThreadSettled times out.
+              onThreadStop: () => Effect.void,
+              onForceStop: () =>
+                forceStopMode === "fail"
+                  ? Effect.fail(new TestHookError({ message: "forceStopThread RPC failed" }))
+                  : Effect.succeed({ sequence: 1 }),
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+            const threadId = ThreadId.make("thread-force-fail");
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId,
+                threadId,
+                branch: "main",
+                worktreePath: repoDir,
+                modelSelection,
+                running: true,
+              }),
+            });
+
+            // Subcase 1: forceStopThread itself fails.
+            forceStopMode = "fail";
+            const fiberFail = yield* Effect.forkChild(
+              Effect.result(
+                svc.prepareSource({
+                  transferId: SessionTransferId.make("xfer-force-fail-1"),
+                  threadId,
+                  direction: "local_to_boat",
+                }),
+              ),
+            );
+            yield* TestClock.adjust(Duration.seconds(16));
+            const resFail = yield* Fiber.join(fiberFail);
+            expect(Result.isFailure(resFail)).toBe(true);
+            if (Result.isFailure(resFail)) {
+              expect(resFail.failure.code).toBe("internal");
+              expect(resFail.failure.message).toContain("force-stop");
+            }
+            expect(recorderForceFail.forceStops).toHaveLength(1);
+
+            // Subcase 2: forceStopThread returns OK, but thread is STILL running on reload -> MUST fail!
+            forceStopMode = "noop";
+            const fiberStillLive = yield* Effect.forkChild(
+              Effect.result(
+                svc.prepareSource({
+                  transferId: SessionTransferId.make("xfer-force-fail-2"),
+                  threadId,
+                  direction: "local_to_boat",
+                }),
+              ),
+            );
+            yield* TestClock.adjust(Duration.seconds(16));
+            const resStillLive = yield* Fiber.join(fiberStillLive);
+            expect(Result.isFailure(resStillLive)).toBe(true);
+            if (Result.isFailure(resStillLive)) {
+              expect(resStillLive.failure.code).toBe("internal");
+              expect(resStillLive.failure.message).toContain("still running");
+            }
+          }).pipe(Effect.provide(layerForceFail));
+
+          // 6c: Concurrent prepareSource with SAME transferId while preparing rejects attempt 2
+          // without releasing attempt 1's lock or deleting its staging directory.
+          const stopEntered = yield* Deferred.make<void>();
+          const releaseStop = yield* Deferred.make<void>();
+          const layerConcPrep = makeEndpointTestLayer({
+            environmentId: "env-conc-prep",
+            environmentLabel: "ConcPrep Env",
+            projects: [{ id: projectId, title: "Repo", workspaceRoot: repoDir }],
+            providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+            recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+            hooks: {
+              onThreadStop: ({ defaultStop }) =>
+                Effect.gen(function* () {
+                  yield* Deferred.succeed(stopEntered, undefined);
+                  yield* Deferred.await(releaseStop);
+                  yield* defaultStop;
+                }),
+            },
+          });
+
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const threadId = ThreadId.make("thread-conc-prep");
+            const sameTransferId = SessionTransferId.make("xfer-conc-prep-same");
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId,
+                threadId,
+                branch: "main",
+                worktreePath: repoDir,
+                modelSelection,
+                running: true,
+              }),
+            });
+
+            // Pre-create staging marker to verify attempt 2's rejection does NOT wipe staging.
+            const stagingDir = resolveTransferStagingDir(config.stateDir, sameTransferId, path)!;
+            NodeFS.mkdirSync(stagingDir, { recursive: true });
+            const markerFile = NodePath.join(stagingDir, "keep.marker");
+            NodeFS.writeFileSync(markerFile, "owned-by-attempt-1");
+
+            const fiber1 = yield* Effect.forkChild(
+              svc.prepareSource({
+                transferId: sameTransferId,
+                threadId,
+                direction: "local_to_boat",
+              }),
+            );
+            yield* Deferred.await(stopEntered);
+
+            // Attempt 2 with the SAME transferId during "preparing" must fail with already_in_flight.
+            const attempt2 = yield* Effect.result(
+              svc.prepareSource({
+                transferId: sameTransferId,
+                threadId,
+                direction: "local_to_boat",
+              }),
+            );
+            expect(Result.isFailure(attempt2)).toBe(true);
+            if (Result.isFailure(attempt2)) {
+              expect(attempt2.failure.code).toBe("already_in_flight");
+            }
+            // Attempt 1's staging directory and lock must still be intact!
+            expect(NodeFS.existsSync(markerFile)).toBe(true);
+
+            // Different transferId must ALSO still be blocked (attempt 1 still holds lock).
+            const attemptOther = yield* Effect.result(
+              svc.prepareSource({
+                transferId: SessionTransferId.make("xfer-other-while-prep"),
+                threadId,
+                direction: "local_to_boat",
+              }),
+            );
+            expect(Result.isFailure(attemptOther)).toBe(true);
+            if (Result.isFailure(attemptOther)) {
+              expect(attemptOther.failure.code).toBe("already_in_flight");
+            }
+
+            // Release attempt 1 -> succeeds cleanly.
+            yield* Deferred.succeed(releaseStop, undefined);
+            const result1 = yield* Fiber.join(fiber1);
+            expect(result1.manifest.sourceThreadId).toBe(threadId);
+          }).pipe(Effect.provide(layerConcPrep));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "exports, transfers, and rewrites attachments present only in assistant_message and user_input_request.questionAnswer.attachmentsByQuestionId",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-xfer-att-all-"));
+        const sourceRepo = NodePath.join(tmpRoot, "source");
+        const destRepo = NodePath.join(tmpRoot, "dest");
+        initGitRepo(sourceRepo);
+        git(tmpRoot, ["clone", sourceRepo, destRepo]);
+
+        const projectId = ProjectId.make("proj-att-all");
+        const destProjectId = ProjectId.make("proj-att-all-dest");
+        const sourceThreadId = ThreadId.make("thread-att-all");
+        const transferId = SessionTransferId.make("xfer-att-all");
+        const modelSelection: ModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+        const layer = makeEndpointTestLayer({
+          environmentId: "env-att-all",
+          environmentLabel: "Att All Env",
+          projects: [
+            { id: projectId, title: "Src", workspaceRoot: sourceRepo },
+            { id: destProjectId, title: "Dst", workspaceRoot: destRepo },
+          ],
+          providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+          recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+        });
+
+        try {
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const assistantAttId = ChatAttachmentId.make(createAttachmentId(sourceThreadId)!);
+            const questionAttId = ChatAttachmentId.make(createAttachmentId(sourceThreadId)!);
+            const pngBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 9, 8, 7, 6]);
+            NodeFS.mkdirSync(config.attachmentsDir, { recursive: true });
+            NodeFS.writeFileSync(
+              NodePath.join(config.attachmentsDir, `${assistantAttId}.png`),
+              pngBytes,
+            );
+            NodeFS.writeFileSync(
+              NodePath.join(config.attachmentsDir, `${questionAttId}.png`),
+              pngBytes,
+            );
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId,
+                threadId: sourceThreadId,
+                branch: "main",
+                worktreePath: sourceRepo,
+                modelSelection,
+                running: false,
+                assistantOnlyAttachmentId: assistantAttId,
+                questionAnswerOnlyAttachmentId: questionAttId,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: sourceThreadId,
+              direction: "local_to_boat",
+            });
+            const exportedIds = new Set(prep.manifest.attachments.map((a) => a.attachmentId));
+            expect(exportedIds.has(assistantAttId)).toBe(true);
+            expect(exportedIds.has(questionAttId)).toBe(true);
+            for (const ref of prep.manifest.attachments) {
+              expect(ref.downloadRelativeUrl).toMatch(/^\/api\/assets\//);
+            }
+
+            const staged = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: destProjectId,
+            });
+            expect(staged.attachmentUploads).toHaveLength(2);
+            const attachmentIdMap: Record<string, ChatAttachmentId> = {};
+            for (const upload of staged.attachmentUploads) {
+              NodeFS.writeFileSync(
+                NodePath.join(config.attachmentsDir, `${upload.destinationAttachmentId}.png`),
+                pngBytes,
+              );
+              attachmentIdMap[upload.sourceAttachmentId] = upload.destinationAttachmentId;
+            }
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferId, path)!,
+              resolveImportBundlePath(config.stateDir, transferId, path)!,
+            );
+
+            const committed = yield* svc.commitImport({
+              transferId,
+              destinationProjectId: staged.destinationProjectId,
+              destinationThreadId: staged.destinationThreadId,
+              manifest: prep.manifest,
+              autoResume: false,
+              attachmentIdMap,
+            });
+
+            const destProj = yield* projectionStore.getThreadProjection(
+              committed.destinationThreadId,
+            );
+            const asstItem = destProj.turnItems.find((i) => i.type === "assistant_message");
+            expect(asstItem?.type).toBe("assistant_message");
+            if (asstItem?.type === "assistant_message") {
+              expect(asstItem.attachments).toHaveLength(1);
+              expect(asstItem.attachments![0]!.id).not.toBe(assistantAttId);
+              expect(
+                resolveAttachmentPathById({
+                  attachmentsDir: config.attachmentsDir,
+                  attachmentId: asstItem.attachments![0]!.id,
+                }),
+              ).not.toBeNull();
+            }
+
+            const uirItem = destProj.turnItems.find((i) => i.type === "user_input_request");
+            expect(uirItem?.type).toBe("user_input_request");
+            if (uirItem?.type === "user_input_request") {
+              const qaAtts = uirItem.questionAnswer?.attachmentsByQuestionId["q-screenshot"] ?? [];
+              expect(qaAtts).toHaveLength(1);
+              expect(qaAtts[0]!.id).not.toBe(questionAttId);
+              expect(
+                resolveAttachmentPathById({
+                  attachmentsDir: config.attachmentsDir,
+                  attachmentId: qaAtts[0]!.id,
+                }),
+              ).not.toBeNull();
+            }
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "refreshes all attachment download URLs and bundle URL on cached prepareSource retry and assigns collision-free destinationThreadIds",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-xfer-refresh-"));
+        const repoDir = NodePath.join(tmpRoot, "repo");
+        initGitRepo(repoDir);
+
+        const projectId = ProjectId.make("proj-refresh");
+        const sourceThreadId = ThreadId.make("thread-refresh");
+        const transferId = SessionTransferId.make("xfer-refresh-urls");
+        const modelSelection: ModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+        const layer = makeEndpointTestLayer({
+          environmentId: "env-refresh",
+          environmentLabel: "Refresh Env",
+          projects: [{ id: projectId, title: "Repo", workspaceRoot: repoDir }],
+          providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+          recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
+        });
+
+        try {
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const attId = ChatAttachmentId.make(createAttachmentId(sourceThreadId)!);
+            NodeFS.mkdirSync(config.attachmentsDir, { recursive: true });
+            NodeFS.writeFileSync(
+              NodePath.join(config.attachmentsDir, `${attId}.png`),
+              new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]),
+            );
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId,
+                threadId: sourceThreadId,
+                branch: "main",
+                worktreePath: repoDir,
+                modelSelection,
+                running: false,
+                presentAttachmentId: attId,
+              }),
+            });
+
+            const first = yield* svc.prepareSource({
+              transferId,
+              threadId: sourceThreadId,
+              direction: "local_to_boat",
+            });
+            const firstBundleUrl = first.bundleDownloadRelativeUrl!;
+            const firstAttUrl = first.manifest.attachments[0]!.downloadRelativeUrl!;
+            const firstAttExpiresAt = decodeSignedAssetExpiresAt(firstAttUrl);
+
+            // Advance clock past the 15-minute token TTL.
+            yield* TestClock.adjust(Duration.millis(SESSION_TRANSFER_TOKEN_TTL_MS + 60_000));
+            const nowAfterAdvance = yield* Clock.currentTimeMillis;
+
+            // Old bundle token is now expired.
+            const firstBundleToken = firstBundleUrl.split("/")[3]!;
+            expect(
+              yield* validateSessionTransferBundleToken(firstBundleToken, "download"),
+            ).toBeNull();
+            expect(firstAttExpiresAt).toBeLessThan(nowAfterAdvance);
+
+            // Retry prepareSource -> both bundle URL AND every attachment URL are freshly signed!
+            const retried = yield* svc.prepareSource({
+              transferId,
+              threadId: sourceThreadId,
+              direction: "local_to_boat",
+            });
+            const retriedBundleUrl = retried.bundleDownloadRelativeUrl!;
+            const retriedAttUrl = retried.manifest.attachments[0]!.downloadRelativeUrl!;
+            expect(retriedBundleUrl).not.toBe(firstBundleUrl);
+            expect(retriedAttUrl).not.toBe(firstAttUrl);
+
+            const retriedBundleToken = retriedBundleUrl.split("/")[3]!;
+            const validBundleClaims = yield* validateSessionTransferBundleToken(
+              retriedBundleToken,
+              "download",
+            );
+            expect(validBundleClaims).not.toBeNull();
+            expect(decodeSignedAssetExpiresAt(retriedAttUrl)).toBeGreaterThan(nowAfterAdvance);
+
+            // Punctuation-distinct transferIds must yield distinct deterministic destinationThreadIds!
+            const stagedSlash = yield* svc.stageImport({
+              transferId: SessionTransferId.make("xfer/punct"),
+              manifest: first.manifest,
+              targetProjectId: projectId,
+            });
+            const stagedColon = yield* svc.stageImport({
+              transferId: SessionTransferId.make("xfer:punct"),
+              manifest: first.manifest,
+              targetProjectId: projectId,
+            });
+            expect(stagedSlash.destinationThreadId).not.toBe(stagedColon.destinationThreadId);
           }).pipe(Effect.provide(layer));
         } finally {
           NodeFS.rmSync(tmpRoot, { recursive: true, force: true });

@@ -23,6 +23,12 @@ const LFS_POINTER_MAX_INSPECT_BYTES = 1024;
 const STATUS_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const BUNDLE_TIMEOUT_MS = 120_000;
 
+const READ_ONLY_GIT_FLAGS: ReadonlyArray<string> = [
+  "--no-optional-locks",
+  "-c",
+  "core.fsmonitor=false",
+];
+
 const TRANSFER_COMMIT_ENV: Readonly<Record<string, string>> = {
   GIT_AUTHOR_NAME: "T3 Session Transfer",
   GIT_AUTHOR_EMAIL: "transfer@t3.local",
@@ -95,6 +101,7 @@ export interface ImportWorkspaceBundleInput {
 
 export interface ImportWorkspaceBundleResult {
   readonly branch: string;
+  readonly createdBranch: boolean;
   readonly worktreePath: string;
   readonly headSha: string;
   readonly branchRenamedFrom: string | null;
@@ -127,7 +134,9 @@ function sanitizeTransferId(transferId: string): string {
 }
 
 function transferRefPrefix(transferId: string): string {
-  return `refs/t3-transfer/${sanitizeTransferId(transferId)}`;
+  const hashSuffix = NodeCrypto.createHash("sha256").update(transferId).digest("hex").slice(0, 12);
+  const base = sanitizeTransferId(transferId).slice(0, 48);
+  return `refs/t3-transfer/${base}-${hashSuffix}`;
 }
 
 function shortTransferId(transferId: string): string {
@@ -314,6 +323,20 @@ const make = Effect.gen(function* () {
       );
   });
 
+  // Always pass --no-optional-locks and disable fsmonitor for read-only source git commands
+  // so export never refreshes or rewrites the repository's real .git/index stat cache.
+  const runReadOnlyGit = (
+    operation: string,
+    cwd: string,
+    args: ReadonlyArray<string>,
+    options?: {
+      readonly env?: NodeJS.ProcessEnv;
+      readonly allowNonZeroExit?: boolean;
+      readonly timeoutMs?: number;
+      readonly maxOutputBytes?: number;
+    },
+  ) => runGit(operation, cwd, [...READ_ONLY_GIT_FLAGS, ...args], options);
+
   const deleteRefsBestEffort = (cwd: string, refs: ReadonlyArray<string>) =>
     Effect.forEach(
       refs,
@@ -384,7 +407,7 @@ const make = Effect.gen(function* () {
         .pipe(Effect.orElseSucceed(() => false));
       if (!hasGitmodules) return null;
 
-      const status = yield* runGit("WorkspaceBundle.submoduleStatus", repoTopLevel, [
+      const status = yield* runReadOnlyGit("WorkspaceBundle.submoduleStatus", repoTopLevel, [
         "submodule",
         "status",
       ]).pipe(Effect.orElseSucceed(() => null));
@@ -410,7 +433,7 @@ const make = Effect.gen(function* () {
   )(function* (input) {
     const maxBundleBytes = input.maxBundleBytes ?? DEFAULT_MAX_WORKSPACE_BUNDLE_BYTES;
 
-    const insideWorkTree = yield* runGit(
+    const insideWorkTree = yield* runReadOnlyGit(
       "WorkspaceBundle.isInsideWorkTree",
       input.cwd,
       ["rev-parse", "--is-inside-work-tree"],
@@ -423,7 +446,7 @@ const make = Effect.gen(function* () {
       });
     }
 
-    const revInfo = yield* runGit("WorkspaceBundle.revParseDirs", input.cwd, [
+    const revInfo = yield* runReadOnlyGit("WorkspaceBundle.revParseDirs", input.cwd, [
       "rev-parse",
       "--show-toplevel",
       "--git-dir",
@@ -443,7 +466,7 @@ const make = Effect.gen(function* () {
     const gitDir = path.resolve(input.cwd, rawGitDir);
     const gitCommonDir = path.resolve(input.cwd, rawGitCommonDir);
 
-    const headCheck = yield* runGit(
+    const headCheck = yield* runReadOnlyGit(
       "WorkspaceBundle.resolveHead",
       repoTopLevel,
       ["rev-parse", "--verify", "HEAD^{commit}"],
@@ -456,12 +479,12 @@ const make = Effect.gen(function* () {
       });
     }
     const headSha = headCheck.stdout.trim();
-    const headTree = (yield* runGit("WorkspaceBundle.resolveHeadTree", repoTopLevel, [
+    const headTree = (yield* runReadOnlyGit("WorkspaceBundle.resolveHeadTree", repoTopLevel, [
       "rev-parse",
       "HEAD^{tree}",
     ])).stdout.trim();
 
-    const branchCheck = yield* runGit(
+    const branchCheck = yield* runReadOnlyGit(
       "WorkspaceBundle.resolveBranch",
       repoTopLevel,
       ["symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -474,7 +497,7 @@ const make = Effect.gen(function* () {
     const isDetachedHead = branch === null;
 
     // Enumerate dirty & untracked files to pre-check size ceiling before staging or bundling.
-    const statusResult = yield* runGit(
+    const statusResult = yield* runReadOnlyGit(
       "WorkspaceBundle.statusPorcelain",
       repoTopLevel,
       ["status", "--porcelain=v1", "-z", "-uall"],
@@ -574,12 +597,17 @@ const make = Effect.gen(function* () {
           ),
         );
       } else {
-        yield* runGit("WorkspaceBundle.readTreeScratch", repoTopLevel, ["read-tree", headSha], {
-          env: { GIT_INDEX_FILE: scratchIndex1 },
-        });
+        yield* runReadOnlyGit(
+          "WorkspaceBundle.readTreeScratch",
+          repoTopLevel,
+          ["read-tree", headSha],
+          {
+            env: { GIT_INDEX_FILE: scratchIndex1 },
+          },
+        );
       }
 
-      const indexTree = (yield* runGit(
+      const indexTree = (yield* runReadOnlyGit(
         "WorkspaceBundle.writeIndexTree",
         repoTopLevel,
         ["write-tree"],
@@ -590,7 +618,7 @@ const make = Effect.gen(function* () {
       const hasStagedChanges = indexTree !== headTree;
       let indexCommit: string | null = null;
       if (hasStagedChanges) {
-        indexCommit = (yield* runGit(
+        indexCommit = (yield* runReadOnlyGit(
           "WorkspaceBundle.commitIndexTree",
           repoTopLevel,
           ["commit-tree", indexTree, "-p", headSha, "-m", "t3-transfer:index"],
@@ -605,22 +633,23 @@ const make = Effect.gen(function* () {
       }
 
       // Layer 3: working tree + untracked non-ignored files using a second scratch index.
+      // Populate via read-tree from indexTree (NOT copyFile) so stat-cache fields are zeroed:
+      // copying the index would give scratchIndex2 a newer mtime than working-tree files,
+      // defeating Git racy-git detection for same-second, same-size unstaged edits.
       const scratchIndex2 = path.join(scratchDir, "index-worktree");
-      yield* fileSystem.copyFile(scratchIndex1, scratchIndex2).pipe(
-        Effect.mapError(
-          (cause) =>
-            new WorkspaceBundleError({
-              code: "io_error",
-              message: "Failed to copy scratch index for worktree snapshot.",
-              cause,
-            }),
-        ),
+      yield* runReadOnlyGit(
+        "WorkspaceBundle.readTreeWorktreeScratch",
+        repoTopLevel,
+        ["read-tree", indexTree],
+        {
+          env: { GIT_INDEX_FILE: scratchIndex2 },
+        },
       );
-      yield* runGit("WorkspaceBundle.stageWorktree", repoTopLevel, ["add", "-A"], {
+      yield* runReadOnlyGit("WorkspaceBundle.stageWorktree", repoTopLevel, ["add", "-A"], {
         env: { GIT_INDEX_FILE: scratchIndex2 },
         timeoutMs: BUNDLE_TIMEOUT_MS,
       });
-      const worktreeTree = (yield* runGit(
+      const worktreeTree = (yield* runReadOnlyGit(
         "WorkspaceBundle.writeWorktreeTree",
         repoTopLevel,
         ["write-tree"],
@@ -631,7 +660,7 @@ const make = Effect.gen(function* () {
       const hasWorktreeDiff = worktreeTree !== indexTree;
       if (hasWorktreeDiff) {
         const worktreeParent = indexCommit ?? headSha;
-        const worktreeCommit = (yield* runGit(
+        const worktreeCommit = (yield* runReadOnlyGit(
           "WorkspaceBundle.commitWorktreeTree",
           repoTopLevel,
           ["commit-tree", worktreeTree, "-p", worktreeParent, "-m", "t3-transfer:worktree"],
@@ -645,48 +674,37 @@ const make = Effect.gen(function* () {
         createdRefs.push(worktreeRef);
       }
 
-      // Discover common remote refs to compute an incremental bundle when available.
+      // Only exclude refs explicitly supplied by the caller in sharedRemoteRefs, filtered to
+      // strict ancestors of HEAD (never HEAD itself or non-ancestors) so refs/t3-transfer/.../head
+      // is always bundled and stale destination remotes never fail when sharedRemoteRefs is omitted.
       const excludeRefs: string[] = [];
-      if (input.sharedRemoteRefs !== undefined) {
+      let baseRef: string | null = null;
+      if (input.sharedRemoteRefs !== undefined && input.sharedRemoteRefs.length > 0) {
         for (const candidate of input.sharedRemoteRefs) {
-          const check = yield* runGit(
+          const check = yield* runReadOnlyGit(
             "WorkspaceBundle.verifySharedRef",
             repoTopLevel,
             ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`],
             { allowNonZeroExit: true },
           );
-          if (check.exitCode === 0) {
-            excludeRefs.push(candidate);
+          if (check.exitCode !== 0) continue;
+          const candidateSha = check.stdout.trim();
+          if (candidateSha.length === 0 || candidateSha === headSha) {
+            continue;
           }
-        }
-      } else {
-        const remotes = yield* runGit(
-          "WorkspaceBundle.listRemoteRefs",
-          repoTopLevel,
-          ["for-each-ref", "--format=%(refname)", "refs/remotes"],
-          { allowNonZeroExit: true },
-        );
-        if (remotes.exitCode === 0) {
-          for (const line of remotes.stdout.split(/\r?\n/)) {
-            const ref = line.trim();
-            if (ref && !ref.endsWith("/HEAD")) {
-              excludeRefs.push(ref);
-            }
+          const isAncestor = yield* runReadOnlyGit(
+            "WorkspaceBundle.checkBaseRef",
+            repoTopLevel,
+            ["merge-base", "--is-ancestor", candidateSha, headSha],
+            { allowNonZeroExit: true },
+          );
+          if (isAncestor.exitCode !== 0) {
+            continue;
           }
-        }
-      }
-
-      let baseRef: string | null = null;
-      for (const ref of excludeRefs) {
-        const isAncestor = yield* runGit(
-          "WorkspaceBundle.checkBaseRef",
-          repoTopLevel,
-          ["merge-base", "--is-ancestor", ref, headSha],
-          { allowNonZeroExit: true },
-        );
-        if (isAncestor.exitCode === 0) {
-          baseRef = ref;
-          break;
+          excludeRefs.push(candidate);
+          if (baseRef === null) {
+            baseRef = candidate;
+          }
         }
       }
 
@@ -705,7 +723,7 @@ const make = Effect.gen(function* () {
       let incremental = false;
 
       if (excludeRefs.length > 0) {
-        const countResult = yield* runGit(
+        const countResult = yield* runReadOnlyGit(
           "WorkspaceBundle.countIncrementalCommits",
           repoTopLevel,
           ["rev-list", "--count", ...positiveRefs, "--not", ...excludeRefs],
@@ -715,7 +733,7 @@ const make = Effect.gen(function* () {
           countResult.exitCode === 0 ? Number.parseInt(countResult.stdout.trim(), 10) : 0;
 
         if (Number.isFinite(incrementalCount) && incrementalCount > 0) {
-          const incBundle = yield* runGit(
+          const incBundle = yield* runReadOnlyGit(
             "WorkspaceBundle.createIncrementalBundle",
             repoTopLevel,
             ["bundle", "create", input.outputPath, ...positiveRefs, "--not", ...excludeRefs],
@@ -724,30 +742,11 @@ const make = Effect.gen(function* () {
           if (incBundle.exitCode === 0) {
             incremental = true;
           }
-        } else if (!hasStagedChanges && !hasWorktreeDiff) {
-          const parentLine = yield* runGit(
-            "WorkspaceBundle.headParents",
-            repoTopLevel,
-            ["rev-list", "--parents", "-n", "1", headSha],
-            { allowNonZeroExit: true },
-          );
-          const parents = parentLine.stdout.trim().split(/\s+/).slice(1);
-          if (parents.length > 0) {
-            const minimalIncBundle = yield* runGit(
-              "WorkspaceBundle.createMinimalIncrementalBundle",
-              repoTopLevel,
-              ["bundle", "create", input.outputPath, headRef, "--not", ...parents],
-              { allowNonZeroExit: true, timeoutMs: BUNDLE_TIMEOUT_MS },
-            );
-            if (minimalIncBundle.exitCode === 0) {
-              incremental = true;
-            }
-          }
         }
       }
 
       if (!incremental) {
-        yield* runGit(
+        yield* runReadOnlyGit(
           "WorkspaceBundle.createFullBundle",
           repoTopLevel,
           ["bundle", "create", input.outputPath, ...positiveRefs],
@@ -1075,6 +1074,7 @@ const make = Effect.gen(function* () {
       committed = true;
       return {
         branch: branchAllocation.branch,
+        createdBranch: !branchAllocation.useExistingBranch,
         worktreePath,
         headSha,
         branchRenamedFrom: branchAllocation.branchRenamedFrom,

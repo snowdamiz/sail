@@ -1,4 +1,7 @@
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+// @effect-diagnostics nodeBuiltinImport:off -- utimesSync and createHash verify .git/index byte-for-byte immutability after mtime changes.
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -22,7 +25,7 @@ const GIT_TEST_ENV: Readonly<Record<string, string>> = {
 };
 
 const makeTestLayer = () => {
-  const basePlatform = Layer.mergeAll(NodeServices.layer, NodeCrypto.layer);
+  const basePlatform = Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer);
   const serverConfig = ServerConfig.layerTest(process.cwd(), {
     prefix: "t3-workspace-bundle-test-",
   }).pipe(Layer.provide(basePlatform));
@@ -146,6 +149,7 @@ describe("WorkspaceBundle", () => {
         });
 
         expect(imported.branch).toBe("feat/lossless-state");
+        expect(imported.createdBranch).toBe(true);
         expect(imported.branchRenamedFrom).toBeNull();
         expect(imported.headSha).toBe(srcHeadSha);
         expect(imported.warnings).toEqual([]);
@@ -173,7 +177,7 @@ describe("WorkspaceBundle", () => {
   );
 
   it.effect(
-    "produces incremental bundles against shared remote refs, including clean HEAD == origin/main",
+    "handles full bundles when sharedRemoteRefs is omitted (stale destination remote), dirty checkout at pushed HEAD, and strict-ancestor incremental bundles",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -184,50 +188,59 @@ describe("WorkspaceBundle", () => {
         const bareRemote = path.join(root, "remote.git");
         const srcRepo = path.join(root, "src");
         const dstRepo = path.join(root, "dst");
+        const staleDstRepo = path.join(root, "stale-dst");
 
         yield* fs.makeDirectory(bareRemote, { recursive: true });
         yield* git(bareRemote, ["init", "--bare", "-b", "main"]);
 
-        // Populate remote with 2 commits so HEAD has a parent.
+        // Populate remote with 1 initial commit and clone staleDstRepo BEFORE newer commits arrive.
         const seedRepo = path.join(root, "seed");
         yield* fs.makeDirectory(seedRepo, { recursive: true });
         yield* git(seedRepo, ["init", "-b", "main"]);
         yield* fs.writeFileString(path.join(seedRepo, "base.txt"), "v1\n");
         yield* git(seedRepo, ["add", "-A"]);
         yield* git(seedRepo, ["commit", "-m", "c1"]);
+        yield* git(seedRepo, ["remote", "add", "origin", bareRemote]);
+        yield* git(seedRepo, ["push", "-u", "origin", "main"]);
+
+        // staleDstRepo only has c1 (its origin/main is behind srcRepo's origin/main).
+        yield* git(root, ["clone", bareRemote, staleDstRepo]);
+
+        // Advance remote with c2 and clone srcRepo & dstRepo from updated remote.
         yield* fs.writeFileString(path.join(seedRepo, "base.txt"), "v2\n");
         yield* git(seedRepo, ["add", "-A"]);
         yield* git(seedRepo, ["commit", "-m", "c2"]);
-        yield* git(seedRepo, ["remote", "add", "origin", bareRemote]);
-        yield* git(seedRepo, ["push", "-u", "origin", "main"]);
+        yield* git(seedRepo, ["push", "origin", "main"]);
 
         yield* git(root, ["clone", bareRemote, srcRepo]);
         yield* git(root, ["clone", bareRemote, dstRepo]);
 
-        // Case 1: Clean HEAD == origin/main (must NOT fail with empty bundle error).
-        const cleanBundle = path.join(root, "clean.bundle");
-        const cleanExport = yield* bundleService.exportWorkspaceBundle({
-          transferId: "xfer-clean-inc",
+        // Case (b): Omitting sharedRemoteRefs exports a FULL bundle so stale destination remotes import cleanly.
+        const staleBundle = path.join(root, "stale-full.bundle");
+        const staleExport = yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-stale-dst",
           cwd: srcRepo,
-          outputPath: cleanBundle,
+          outputPath: staleBundle,
         });
-        expect(cleanExport.incremental).toBe(true);
-        expect(cleanExport.baseRef).toBe("refs/remotes/origin/main");
+        expect(staleExport.incremental).toBe(false);
+        expect(staleExport.baseRef).toBeNull();
 
-        // Destination already has `main` checked out, so import renames to `main-boat`.
-        const cleanImport = yield* bundleService.importWorkspaceBundle({
-          transferId: "xfer-clean-inc",
-          repoCwd: dstRepo,
-          bundlePath: cleanBundle,
-          sourceBranch: cleanExport.branch,
+        const staleImport = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-stale-dst",
+          repoCwd: staleDstRepo,
+          bundlePath: staleBundle,
+          sourceBranch: staleExport.branch,
           targetLabel: "boat",
         });
-        expect(cleanImport.branch).toBe("main-boat");
-        expect(cleanImport.branchRenamedFrom).toBe("main");
-        expect(cleanImport.warnings.length).toBe(1);
-        expect(cleanImport.headSha).toBe(cleanExport.headSha);
+        expect(staleImport.branch).toBe("main-boat");
+        expect(staleImport.createdBranch).toBe(true);
+        expect(staleImport.branchRenamedFrom).toBe("main");
+        expect(staleImport.headSha).toBe(staleExport.headSha);
+        expect(yield* fs.readFileString(path.join(staleImport.worktreePath, "base.txt"))).toBe(
+          "v2\n",
+        );
 
-        // Case 2: Second transfer from `main` collides with `main-boat` too -> falls back to `main-transfer-<shortId>`.
+        // Collision fallback: second transfer from `main` collides with `main-boat` -> `main-transfer-<shortId>`.
         const secondBundle = path.join(root, "clean-2.bundle");
         yield* bundleService.exportWorkspaceBundle({
           transferId: "xfer-abcd1234",
@@ -236,15 +249,60 @@ describe("WorkspaceBundle", () => {
         });
         const secondImport = yield* bundleService.importWorkspaceBundle({
           transferId: "xfer-abcd1234",
-          repoCwd: dstRepo,
+          repoCwd: staleDstRepo,
           bundlePath: secondBundle,
           sourceBranch: "main",
           targetLabel: "boat",
         });
         expect(secondImport.branch).toBe("main-transfer-xferabcd");
+        expect(secondImport.createdBranch).toBe(true);
         expect(secondImport.branchRenamedFrom).toBe("main");
 
-        // Case 3: Unpushed commit ahead of origin/main with dirty edit.
+        // Case (a): Dirty checkout at pushed HEAD (HEAD == origin/main) WITH sharedRemoteRefs: ["refs/remotes/origin/main"].
+        // Filtering out HEAD from excludeRefs ensures refs/t3-transfer/<id>/head is STILL bundled and imports cleanly.
+        yield* fs.writeFileString(path.join(srcRepo, "base.txt"), "v2-staged\n");
+        yield* git(srcRepo, ["add", "base.txt"]);
+        yield* fs.writeFileString(path.join(srcRepo, "base.txt"), "v2-unstaged\n");
+        yield* fs.writeFileString(path.join(srcRepo, "untracked-at-head.txt"), "hello-dirty\n");
+
+        const dirtyAtHeadBundle = path.join(root, "dirty-at-head.bundle");
+        const dirtyAtHeadExport = yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-dirty-pushed-head",
+          cwd: srcRepo,
+          outputPath: dirtyAtHeadBundle,
+          sharedRemoteRefs: ["refs/remotes/origin/main"],
+        });
+        expect(dirtyAtHeadExport.incremental).toBe(false);
+        expect(dirtyAtHeadExport.baseRef).toBeNull();
+        expect(dirtyAtHeadExport.hasStagedChanges).toBe(true);
+        expect(dirtyAtHeadExport.hasUnstagedChanges).toBe(true);
+        expect(dirtyAtHeadExport.hasUntrackedFiles).toBe(true);
+
+        const dirtyAtHeadImport = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-dirty-pushed-head",
+          repoCwd: dstRepo,
+          bundlePath: dirtyAtHeadBundle,
+          sourceBranch: dirtyAtHeadExport.branch,
+          targetLabel: "boat",
+        });
+        expect(dirtyAtHeadImport.headSha).toBe(dirtyAtHeadExport.headSha);
+        expect((yield* git(dirtyAtHeadImport.worktreePath, ["show", ":base.txt"])).trim()).toBe(
+          "v2-staged",
+        );
+        expect(
+          yield* fs.readFileString(path.join(dirtyAtHeadImport.worktreePath, "base.txt")),
+        ).toBe("v2-unstaged\n");
+        expect(
+          yield* fs.readFileString(
+            path.join(dirtyAtHeadImport.worktreePath, "untracked-at-head.txt"),
+          ),
+        ).toBe("hello-dirty\n");
+
+        // Clean working tree before Case (c).
+        yield* git(srcRepo, ["reset", "--hard", "HEAD"]);
+        yield* fs.remove(path.join(srcRepo, "untracked-at-head.txt"));
+
+        // Case (c): Valid incremental bundle where sharedRemoteRefs contains a strict ancestor present on destination.
         yield* git(srcRepo, ["checkout", "-b", "feat/ahead"]);
         yield* fs.writeFileString(path.join(srcRepo, "ahead.txt"), "ahead\n");
         yield* git(srcRepo, ["add", "-A"]);
@@ -256,7 +314,7 @@ describe("WorkspaceBundle", () => {
           transferId: "xfer-ahead-inc",
           cwd: srcRepo,
           outputPath: aheadBundle,
-          sharedRemoteRefs: ["refs/remotes/origin/main"],
+          sharedRemoteRefs: ["refs/remotes/origin/main", "HEAD"],
         });
         expect(aheadExport.incremental).toBe(true);
         expect(aheadExport.baseRef).toBe("refs/remotes/origin/main");
@@ -269,9 +327,107 @@ describe("WorkspaceBundle", () => {
           targetLabel: "boat",
         });
         expect(aheadImport.branch).toBe("feat/ahead");
+        expect(aheadImport.createdBranch).toBe(true);
         expect(yield* fs.readFileString(path.join(aheadImport.worktreePath, "ahead.txt"))).toBe(
           "ahead dirty\n",
         );
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "reports createdBranch: false when reusing an idle pre-existing branch at the same SHA",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-wb-reuse-branch-" });
+        const srcRepo = path.join(root, "src");
+        const dstRepo = path.join(root, "dst");
+        const bundlePath = path.join(root, "reuse.bundle");
+
+        yield* fs.makeDirectory(srcRepo, { recursive: true });
+        yield* git(srcRepo, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(srcRepo, "file.txt"), "v1\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "init"]);
+        yield* git(srcRepo, ["checkout", "-b", "feat/existing"]);
+        yield* fs.writeFileString(path.join(srcRepo, "file.txt"), "v2\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "feat"]);
+
+        // Clone to destination and switch destination back to main so feat/existing exists locally but is idle.
+        yield* git(root, ["clone", srcRepo, dstRepo]);
+        yield* git(dstRepo, ["checkout", "-b", "main", "origin/main"]);
+
+        const exported = yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-reuse-branch",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+        const imported = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-reuse-branch",
+          repoCwd: dstRepo,
+          bundlePath,
+          sourceBranch: exported.branch,
+          targetLabel: "boat",
+        });
+
+        expect(imported.branch).toBe("feat/existing");
+        expect(imported.createdBranch).toBe(false);
+
+        // Removing the worktree without passing branch preserves the pre-existing branch.
+        yield* bundleService.removeWorktree({
+          repoCwd: dstRepo,
+          worktreePath: imported.worktreePath,
+        });
+        const branchRef = (yield* git(dstRepo, [
+          "rev-parse",
+          "--verify",
+          "refs/heads/feat/existing",
+        ])).trim();
+        expect(branchRef).toBe(exported.headSha);
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "does not modify .git/index bytes even when a tracked file mtime changes without content edits",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-wb-index-immutable-" });
+        const repo = path.join(root, "repo");
+        const bundlePath = path.join(root, "index-check.bundle");
+
+        yield* fs.makeDirectory(repo, { recursive: true });
+        yield* git(repo, ["init", "-b", "main"]);
+        const trackedFile = path.join(repo, "tracked.txt");
+        yield* fs.writeFileString(trackedFile, "immutable content\n");
+        yield* git(repo, ["add", "-A"]);
+        yield* git(repo, ["commit", "-m", "initial"]);
+
+        // Bump tracked file mtime without changing contents (would normally trigger git status stat-cache refresh).
+        const futureSec = Math.floor(NodeFS.statSync(trackedFile).mtimeMs / 1000) + 120;
+        NodeFS.utimesSync(trackedFile, futureSec, futureSec);
+
+        const indexPath = path.join(repo, ".git", "index");
+        const indexBefore = NodeFS.readFileSync(indexPath);
+        const shaBefore = NodeCrypto.createHash("sha256").update(indexBefore).digest("hex");
+
+        yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-index-immutable",
+          cwd: repo,
+          outputPath: bundlePath,
+        });
+
+        const indexAfter = NodeFS.readFileSync(indexPath);
+        const shaAfter = NodeCrypto.createHash("sha256").update(indexAfter).digest("hex");
+        expect(shaAfter).toBe(shaBefore);
+        expect(indexAfter.equals(indexBefore)).toBe(true);
       }).pipe(Effect.provide(makeTestLayer())),
   );
 
@@ -330,6 +486,7 @@ describe("WorkspaceBundle", () => {
         });
 
         expect(imported.branch).toBe("local-transfer-xferdet9");
+        expect(imported.createdBranch).toBe(true);
         expect(imported.warnings[0]).toContain("detached HEAD");
         // Hook saw clean HEAD before dirty layers were applied.
         expect(appContentDuringHook).toBe("clean-head\n");

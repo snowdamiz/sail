@@ -662,8 +662,8 @@ export const layerSessionTransferBundleDownloadRoute = HttpRouter.add(
     }
 
     const bundle = yield* resolveExportBundleForDownload(claims);
-    if (!bundle) {
-      return HttpServerResponse.text("Not Found", { status: 404 });
+    if (!bundle.ok) {
+      return HttpServerResponse.text(bundle.detail, { status: bundle.status });
     }
 
     const fileSystem = yield* FileSystem.FileSystem;
@@ -700,10 +700,15 @@ export const layerSessionTransferBundleUploadRoute = HttpRouter.add(
     }
 
     const maxBytes = Math.min(claims.maxBytes, SESSION_TRANSFER_MAX_BUNDLE_BYTES);
+    let expectedContentLength: number | undefined;
     const contentLengthHeader = request.headers["content-length"];
     if (contentLengthHeader !== undefined) {
-      const parsedLength = Number(contentLengthHeader);
-      if (!Number.isInteger(parsedLength) || parsedLength < 0) {
+      const trimmedLength = contentLengthHeader.trim();
+      if (!/^\d+$/.test(trimmedLength)) {
+        return HttpServerResponse.text("Invalid Content-Length header.", { status: 400 });
+      }
+      const parsedLength = Number(trimmedLength);
+      if (!Number.isSafeInteger(parsedLength) || parsedLength < 0) {
         return HttpServerResponse.text("Invalid Content-Length header.", { status: 400 });
       }
       if (parsedLength > maxBytes) {
@@ -712,6 +717,7 @@ export const layerSessionTransferBundleUploadRoute = HttpRouter.add(
           { status: 413 },
         );
       }
+      expectedContentLength = parsedLength;
     }
 
     // Keep the request stream in the route scope until the response is sent.
@@ -719,6 +725,7 @@ export const layerSessionTransferBundleUploadRoute = HttpRouter.add(
     const stored = yield* storeSessionTransferBundleUpload(
       claims,
       Stream.fromPull(Effect.succeed(bodyPull)),
+      expectedContentLength !== undefined ? { expectedContentLength } : undefined,
     );
     return stored.ok
       ? HttpServerResponse.empty({ status: 204 })

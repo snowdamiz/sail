@@ -1,6 +1,5 @@
-// @effect-diagnostics nodeBuiltinImport:off -- streaming sha256 verification and exclusive copy are filesystem boundaries missing from Effect's API.
+// @effect-diagnostics nodeBuiltinImport:off -- streaming sha256 verification and unique transfer-id hashing are not covered by Effect's sync API.
 import * as NodeCrypto from "node:crypto";
-import * as NodeFSP from "node:fs/promises";
 import { IsoDateTime } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -9,7 +8,6 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type * as HttpServerRequest from "effect/http/HttpServerRequest";
@@ -37,6 +35,7 @@ const SessionTransferBundleTokenClaims = Schema.Struct({
   operation: SessionTransferBundleOperation,
   transferId: Schema.String,
   maxBytes: Schema.Number,
+  expectedSizeBytes: Schema.optional(Schema.Number),
   expectedSha256: Schema.optional(Schema.String),
   expiresAt: Schema.Number,
 });
@@ -78,7 +77,11 @@ function decodeClaims(encodedPayload: string): SessionTransferBundleTokenClaims 
   }
 }
 
-export function sanitizeTransferSegment(transferId: string): string | null {
+function shortTransferHash(transferId: string): string {
+  return NodeCrypto.createHash("sha256").update(transferId).digest("hex").slice(0, 12);
+}
+
+function sanitizeTransferSegment(transferId: string): string | null {
   const trimmed = transferId.trim();
   if (trimmed.length === 0) return null;
   const sanitized = trimmed.replace(/[^a-zA-Z0-9._-]/g, "-");
@@ -86,6 +89,18 @@ export function sanitizeTransferSegment(transferId: string): string | null {
     return null;
   }
   return sanitized;
+}
+
+/**
+ * Produces a filesystem- and identifier-safe segment incorporating a short SHA-256 hash
+ * of the raw `transferId` so distinct IDs differing only in punctuation (e.g. `a/b` vs `a:b`)
+ * never collide on staging paths, event IDs, or deterministic destination thread IDs.
+ */
+export function uniqueTransferSegment(transferId: string): string | null {
+  const sanitized = sanitizeTransferSegment(transferId);
+  if (sanitized === null) return null;
+  const prefix = sanitized.slice(0, 48);
+  return `${prefix}-${shortTransferHash(transferId)}`;
 }
 
 function sessionTransfersRootDir(stateDir: string, path: Path.Path): string {
@@ -97,7 +112,7 @@ export function resolveTransferStagingDir(
   transferId: string,
   path: Path.Path,
 ): string | null {
-  const segment = sanitizeTransferSegment(transferId);
+  const segment = uniqueTransferSegment(transferId);
   if (segment === null) return null;
   const root = path.resolve(sessionTransfersRootDir(stateDir, path));
   const target = path.resolve(root, segment);
@@ -220,6 +235,7 @@ interface IssueSessionTransferBundleUrlInput {
   readonly transferId: string;
   readonly operation: SessionTransferBundleOperation;
   readonly maxBytes?: number;
+  readonly expectedSizeBytes?: number;
   readonly expectedSha256?: string;
   readonly ttlMs?: number;
 }
@@ -266,6 +282,9 @@ export const issueSessionTransferBundleUrl = Effect.fn("SessionTransferToken.iss
         operation: input.operation,
         transferId: input.transferId,
         maxBytes,
+        ...(input.expectedSizeBytes !== undefined
+          ? { expectedSizeBytes: input.expectedSizeBytes }
+          : {}),
         ...(input.expectedSha256 !== undefined ? { expectedSha256: input.expectedSha256 } : {}),
         expiresAt: expiresAtMs,
       }),
@@ -357,26 +376,6 @@ export const validateSessionTransferBundleToken = Effect.fn("SessionTransferToke
   },
 );
 
-export const resolveExportBundleForDownload = Effect.fn(
-  "SessionTransferToken.resolveExportBundleForDownload",
-)(function* (claims: SessionTransferBundleTokenClaims) {
-  const config = yield* ServerConfig.ServerConfig;
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const bundlePath = resolveExportBundlePath(config.stateDir, claims.transferId, path);
-  if (bundlePath === null) return null;
-  const stat = yield* fileSystem.stat(bundlePath).pipe(Effect.orElseSucceed(() => null));
-  if (stat?.type !== "File") return null;
-  return {
-    filePath: bundlePath,
-    sizeBytes: Number(stat.size),
-  };
-});
-
-type StoreSessionTransferBundleResult =
-  | { readonly ok: true; readonly sizeBytes: number; readonly sha256: string }
-  | { readonly ok: false; readonly status: number; readonly detail: string };
-
 const sha256File = (fileSystem: FileSystem.FileSystem, filePath: string) =>
   fileSystem.stream(filePath).pipe(
     Stream.runFold(
@@ -386,12 +385,114 @@ const sha256File = (fileSystem: FileSystem.FileSystem, filePath: string) =>
     Effect.map((hash) => hash.digest("hex")),
   );
 
+type ResolveExportBundleDownloadResult =
+  | { readonly ok: true; readonly filePath: string; readonly sizeBytes: number }
+  | { readonly ok: false; readonly status: 404 | 409 | 500; readonly detail: string };
+
+export const resolveExportBundleForDownload = Effect.fn(
+  "SessionTransferToken.resolveExportBundleForDownload",
+)(function* (claims: SessionTransferBundleTokenClaims) {
+  const config = yield* ServerConfig.ServerConfig;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const bundlePath = resolveExportBundlePath(config.stateDir, claims.transferId, path);
+  if (bundlePath === null) {
+    return {
+      ok: false,
+      status: 404,
+      detail: "Not Found",
+    } satisfies ResolveExportBundleDownloadResult;
+  }
+  const stat = yield* fileSystem.stat(bundlePath).pipe(Effect.orElseSucceed(() => null));
+  if (stat?.type !== "File") {
+    return {
+      ok: false,
+      status: 404,
+      detail: "Not Found",
+    } satisfies ResolveExportBundleDownloadResult;
+  }
+  const sizeBytes = Number(stat.size);
+  const maxBytes = Math.min(claims.maxBytes, SESSION_TRANSFER_MAX_BUNDLE_BYTES);
+  if (sizeBytes > maxBytes) {
+    return {
+      ok: false,
+      status: 409,
+      detail: `Exported bundle size (${sizeBytes} bytes) exceeds signed token limit (${maxBytes} bytes).`,
+    } satisfies ResolveExportBundleDownloadResult;
+  }
+  if (claims.expectedSizeBytes !== undefined && sizeBytes !== claims.expectedSizeBytes) {
+    return {
+      ok: false,
+      status: 409,
+      detail: `Exported bundle size (${sizeBytes} bytes) does not match signed size (${claims.expectedSizeBytes} bytes).`,
+    } satisfies ResolveExportBundleDownloadResult;
+  }
+  if (claims.expectedSha256 !== undefined) {
+    const actualSha256 = yield* sha256File(fileSystem, bundlePath).pipe(
+      Effect.orElseSucceed(() => null),
+    );
+    if (actualSha256 === null) {
+      return {
+        ok: false,
+        status: 500,
+        detail: "Failed to verify exported session transfer bundle checksum.",
+      } satisfies ResolveExportBundleDownloadResult;
+    }
+    if (actualSha256 !== claims.expectedSha256.toLowerCase()) {
+      return {
+        ok: false,
+        status: 409,
+        detail: "Exported session transfer bundle SHA-256 checksum does not match signed claims.",
+      } satisfies ResolveExportBundleDownloadResult;
+    }
+  }
+  return {
+    ok: true,
+    filePath: bundlePath,
+    sizeBytes,
+  } satisfies ResolveExportBundleDownloadResult;
+});
+
+type StoreSessionTransferBundleResult =
+  | { readonly ok: true; readonly sizeBytes: number; readonly sha256: string }
+  | { readonly ok: false; readonly status: number; readonly detail: string };
+
+interface StoreSessionTransferBundleUploadOptions {
+  readonly expectedContentLength?: number;
+}
+
 export const storeSessionTransferBundleUpload = Effect.fn("SessionTransferToken.storeUpload")(
   function* (
     claims: SessionTransferBundleTokenClaims,
     body: Uint8Array | HttpServerRequest.HttpServerRequest["stream"],
+    options?: StoreSessionTransferBundleUploadOptions,
   ) {
     const maxBytes = Math.min(claims.maxBytes, SESSION_TRANSFER_MAX_BUNDLE_BYTES);
+    const expectedContentLength = options?.expectedContentLength;
+    if (expectedContentLength !== undefined) {
+      if (!Number.isSafeInteger(expectedContentLength) || expectedContentLength < 0) {
+        return {
+          ok: false,
+          status: 400,
+          detail: "Invalid Content-Length header.",
+        } satisfies StoreSessionTransferBundleResult;
+      }
+      if (expectedContentLength > maxBytes) {
+        return {
+          ok: false,
+          status: 413,
+          detail: `Bundle size ${expectedContentLength} bytes exceeds the ${maxBytes}-byte limit.`,
+        } satisfies StoreSessionTransferBundleResult;
+      }
+      if (expectedContentLength === 0) {
+        return {
+          ok: false,
+          status: 400,
+          detail: "Bundle upload body cannot be empty.",
+        } satisfies StoreSessionTransferBundleResult;
+      }
+    }
+
     if (body instanceof Uint8Array && body.byteLength > maxBytes) {
       return {
         ok: false,
@@ -419,6 +520,7 @@ export const storeSessionTransferBundleUpload = Effect.fn("SessionTransferToken.
 
     let receivedBytes = 0;
     let exceededLimit = false;
+    let exceededDeclaredLength = false;
     const hasher = NodeCrypto.createHash("sha256");
     const bodyStream = body instanceof Uint8Array ? Stream.make(body) : body;
 
@@ -433,6 +535,10 @@ export const storeSessionTransferBundleUpload = Effect.fn("SessionTransferToken.
               exceededLimit = true;
               return false;
             }
+            if (expectedContentLength !== undefined && receivedBytes > expectedContentLength) {
+              exceededDeclaredLength = true;
+              return false;
+            }
             hasher.update(chunk);
             return true;
           }),
@@ -445,6 +551,17 @@ export const storeSessionTransferBundleUpload = Effect.fn("SessionTransferToken.
           ok: false,
           status: 413,
           detail: `Bundle upload exceeds the ${maxBytes}-byte limit.`,
+        } satisfies StoreSessionTransferBundleResult;
+      }
+
+      if (
+        exceededDeclaredLength ||
+        (expectedContentLength !== undefined && receivedBytes !== expectedContentLength)
+      ) {
+        return {
+          ok: false,
+          status: 400,
+          detail: `Bundle upload body length does not match declared Content-Length (${expectedContentLength} bytes).`,
         } satisfies StoreSessionTransferBundleResult;
       }
 
@@ -468,33 +585,14 @@ export const storeSessionTransferBundleUpload = Effect.fn("SessionTransferToken.
         } satisfies StoreSessionTransferBundleResult;
       }
 
-      // Atomically publish .part -> import.bundle via hardlink (falling back to exclusive copy / rename).
+      // Strictly atomic publish via hardlink in the same directory: never exposes a partially
+      // copied file and never clobbers a competing published bundle.
       const published = yield* fileSystem.link(partPath, finalPath).pipe(
         Effect.as(true),
-        Effect.catch((error) => {
-          if (error.reason._tag === "AlreadyExists") return Effect.succeed(false);
-          return Effect.tryPromise({
-            try: () => NodeFSP.copyFile(partPath, finalPath, NodeFSP.constants.COPYFILE_EXCL),
-            catch: (cause) =>
-              PlatformError.systemError({
-                _tag:
-                  cause instanceof Error && "code" in cause && cause.code === "EEXIST"
-                    ? "AlreadyExists"
-                    : "Unknown",
-                module: "FileSystem",
-                method: "copyFile",
-                pathOrDescriptor: finalPath,
-                cause,
-              }),
-          }).pipe(
-            Effect.as(true),
-            Effect.catchIf(
-              (err) => err.reason._tag === "AlreadyExists",
-              () => Effect.succeed(false),
-            ),
-            Effect.catch(() => fileSystem.rename(partPath, finalPath).pipe(Effect.as(true))),
-          );
-        }),
+        Effect.catchIf(
+          (error) => error.reason._tag === "AlreadyExists",
+          () => Effect.succeed(false),
+        ),
       );
 
       if (!published) {
