@@ -16,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
+import "~/index.css";
 import { page, userEvent } from "vite-plus/test/browser";
 
 import { act, render } from "../../../test/render";
@@ -56,6 +57,9 @@ vi.mock(import("../../state/boats"), async (original) => ({
               ? (reply as (input: BoatInvokeInput) => unknown)(input)
               : reply;
           if (resolved instanceof Error) return Effect.fail(resolved);
+          if (resolved instanceof Promise) {
+            return Effect.promise(() => resolved);
+          }
           return Effect.succeed(resolved ?? { data: null });
         })) as never,
     } as never,
@@ -787,7 +791,7 @@ it("arms delete confirmation in MachineDetails and handles refusal with Keep and
   );
 });
 
-it("renders without legacy scope or canvas across theme toggles and styles info notices as info", async () => {
+it("applies computed light, dark, and custom theme tokens without legacy scope or canvas", async () => {
   setup({
     state: uiState({
       machines: [machine({ name: "dory", environmentId: DORY_ENVIRONMENT })],
@@ -797,13 +801,48 @@ it("renders without legacy scope or canvas across theme toggles and styles info 
   state.replies.latest_thread = { data: null };
   await using screen = await mount();
 
+  const root = document.documentElement;
+  const workspace = document.querySelector("[data-testid='sail-boats-workspace']");
+  const card = document.querySelector("[data-slot='settings-group']");
+  expect(workspace).not.toBeNull();
+  expect(card).not.toBeNull();
+
   try {
     expect(document.querySelector(".sail-boats-scope")).toBeNull();
     expect(document.querySelector("canvas")).toBeNull();
 
-    document.documentElement.classList.add("dark");
+    const lightWorkspaceBg = getComputedStyle(workspace!).backgroundColor;
+    const lightWorkspaceFg = getComputedStyle(workspace!).color;
+    const lightCardBg = getComputedStyle(card!).backgroundColor;
+    expect(lightWorkspaceBg).not.toBe("rgb(0, 0, 0)");
+    expect(lightWorkspaceBg).not.toBe("rgba(0, 0, 0, 0)");
+    expect(lightCardBg).toBe("rgb(255, 255, 255)");
+    expect(lightWorkspaceFg).not.toBe(lightWorkspaceBg);
+
+    root.classList.add("dark");
     expect(document.querySelector(".sail-boats-scope")).toBeNull();
     expect(document.querySelector("canvas")).toBeNull();
+
+    const darkWorkspaceBg = getComputedStyle(workspace!).backgroundColor;
+    const darkWorkspaceFg = getComputedStyle(workspace!).color;
+    const darkCardBg = getComputedStyle(card!).backgroundColor;
+    expect(darkWorkspaceBg).toBe("rgb(0, 0, 0)");
+    expect(darkCardBg).not.toBe("rgb(0, 0, 0)");
+    expect(darkCardBg).not.toBe("rgba(0, 0, 0, 0)");
+    expect(darkWorkspaceFg).not.toBe(lightWorkspaceFg);
+
+    root.setAttribute("data-theme-id", "custom-boats-test");
+    root.style.setProperty("--app-theme-canvas", "rgb(18, 24, 38)");
+    root.style.setProperty("--app-theme-surface", "rgb(32, 42, 64)");
+    root.style.setProperty("--app-theme-text", "rgb(240, 244, 248)");
+
+    expect(getComputedStyle(workspace!).backgroundColor).toBe("rgb(18, 24, 38)");
+    expect(getComputedStyle(card!).backgroundColor).toBe("rgb(32, 42, 64)");
+    const customLightFg = getComputedStyle(workspace!).color;
+    expect(customLightFg).not.toBe(darkWorkspaceFg);
+    expect(customLightFg).not.toBe(lightWorkspaceFg);
+    root.style.setProperty("--app-theme-text", "rgb(12, 20, 32)");
+    expect(getComputedStyle(workspace!).color).not.toBe(customLightFg);
 
     await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
     await userEvent.click(screen.getByRole("button", { name: "Open last thread in Sail" }));
@@ -812,8 +851,355 @@ it("renders without legacy scope or canvas across theme toggles and styles info 
     const alert = notice.element().closest("[role='alert']");
     expect(alert?.getAttribute("data-variant")).toBe("info");
   } finally {
-    document.documentElement.classList.remove("dark");
+    root.classList.remove("dark");
+    root.removeAttribute("data-theme-id");
+    root.style.removeProperty("--app-theme-canvas");
+    root.style.removeProperty("--app-theme-surface");
+    root.style.removeProperty("--app-theme-text");
   }
+});
+
+it("does not resurrect a failed Auto sleep toggle when a subsequent unrelated action runs", async () => {
+  setup({
+    state: uiState({
+      machines: [machine({ id: "m-1", name: "dory", state: "idle", keepAwakeForever: false })],
+    }),
+  });
+  state.replies.keep_awake = new Error("Failed to toggle auto sleep");
+  const sleepDeferred = Promise.withResolvers<{ data: null }>();
+  state.replies.sleep_machine = () => sleepDeferred.promise;
+
+  await using screen = await mount();
+  await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+
+  const autoSleep = screen.getByRole("switch", { name: "Auto sleep" });
+  await expect.element(autoSleep).toHaveAttribute("aria-checked", "true");
+
+  await userEvent.click(autoSleep);
+  await expect.element(screen.getByText(/Failed to toggle auto sleep/)).toBeVisible();
+  await expect.element(autoSleep).toHaveAttribute("aria-checked", "true");
+
+  await userEvent.click(screen.getByRole("button", { name: "Sleep now" }));
+  await expect.element(screen.getByRole("button", { name: "Sleeping…" })).toBeVisible();
+  await expect.element(autoSleep).toHaveAttribute("aria-checked", "true");
+
+  sleepDeferred.resolve({ data: null });
+  await expect.element(screen.getByText("Sleeping…")).not.toBeInTheDocument();
+  await expect.element(autoSleep).toHaveAttribute("aria-checked", "true");
+});
+
+it("still navigates back on Escape when a closed keepMounted dialog exists in the DOM", async () => {
+  setup({
+    state: uiState({
+      machines: [machine({ id: "m-1", name: "dory", state: "idle" })],
+    }),
+  });
+  await using screen = await mount();
+
+  const closedSheet = document.createElement("div");
+  closedSheet.setAttribute("role", "dialog");
+  closedSheet.setAttribute("data-slot", "sheet-popup");
+  document.body.append(closedSheet);
+
+  try {
+    await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+    await expect.element(screen.getByRole("heading", { name: "dory" })).toBeVisible();
+
+    closedSheet.setAttribute("data-open", "");
+    await userEvent.keyboard("{Escape}");
+    await expect.element(screen.getByRole("heading", { name: "dory" })).toBeVisible();
+
+    closedSheet.removeAttribute("data-open");
+    await userEvent.keyboard("{Escape}");
+    await expect.element(screen.getByRole("button", { name: "Details for dory" })).toBeVisible();
+  } finally {
+    closedSheet.remove();
+  }
+});
+
+it("ignores an in-flight setup_action reply after switching servers", async () => {
+  setup({
+    state: uiState({ setup: "signInBoat" }),
+    servers: [
+      {
+        environmentId: FLY_ENVIRONMENT,
+        label: "Fly",
+        state: uiState({ machines: [machine({ id: "m-fly", name: "yawl", state: "idle" })] }),
+      },
+    ],
+  });
+  const signInDeferred = Promise.withResolvers<unknown>();
+  state.replies.setup_action = () => signInDeferred.promise;
+
+  await using screen = await mount();
+  await userEvent.click(screen.getByRole("button", { name: "Sign in to Boat" }));
+
+  const select = screen.getByRole("combobox", { name: "Boats server" });
+  await userEvent.click(select);
+  await userEvent.click(page.getByRole("option", { name: "Fly" }));
+  await expect.element(screen.getByRole("button", { name: "Details for yawl" })).toBeVisible();
+
+  signInDeferred.resolve({
+    data: null,
+    signIn: {
+      attemptId: "stale-attempt",
+      onHost: true,
+      prompt: { kind: "device", url: "https://auth.example.com/stale", code: "STALE-1" },
+    },
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(state.openExternal).not.toHaveBeenCalled();
+  await expect.element(screen.getByText("STALE-1")).not.toBeInTheDocument();
+  await expect.element(screen.getByRole("button", { name: "Details for yawl" })).toBeVisible();
+});
+
+it("drops a chained open_machine flow after switching servers while wake_machine is in flight", async () => {
+  setup({
+    onHost: false,
+    state: uiState({
+      machines: [
+        machine({
+          id: "m-local",
+          name: "dory",
+          state: "asleep",
+          detail: "Asleep",
+          paired: true,
+          environmentId: DORY_ENVIRONMENT,
+        }),
+      ],
+    }),
+    machineEnvironment: DORY_ENVIRONMENT,
+    servers: [
+      {
+        environmentId: FLY_ENVIRONMENT,
+        label: "Fly",
+        state: uiState({ machines: [machine({ id: "m-fly", name: "yawl", state: "idle" })] }),
+      },
+    ],
+  });
+  const wakeDeferred = Promise.withResolvers<{ data: null }>();
+  state.replies.wake_machine = () => wakeDeferred.promise;
+
+  await using screen = await mount();
+  await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+  await userEvent.click(screen.getByRole("button", { name: "Open last thread in Sail" }));
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({
+      command: "wake_machine",
+      args: { id: "m-local" },
+    }),
+  );
+
+  const select = screen.getByRole("combobox", { name: "Boats server" });
+  await userEvent.click(select);
+  await userEvent.click(page.getByRole("option", { name: "Fly" }));
+  await expect.element(screen.getByRole("button", { name: "Details for yawl" })).toBeVisible();
+
+  wakeDeferred.resolve({ data: null });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(state.invoked.map((item) => item.command)).not.toContain("latest_thread");
+  expect(state.invoked.map((item) => item.command)).not.toContain("open_machine");
+  await expect.element(screen.getByRole("button", { name: "Details for yawl" })).toBeVisible();
+});
+
+it("marks only the signing-in agent as busy when multiple agents are signed out", async () => {
+  setup({
+    state: uiState({
+      machines: [
+        machine({
+          id: "m-1",
+          name: "dory",
+          state: "idle",
+          signedOut: ["Claude Code", "Codex"],
+        }),
+      ],
+    }),
+  });
+  state.replies.get_machine_details = {
+    data: {
+      id: "m-1",
+      costToday: 0.12,
+      costMonth: 1.5,
+      awakeSecsToday: 300,
+      t3Version: "1.0.0",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      agents: [
+        { name: "Claude Code", signedIn: false },
+        { name: "Codex", signedIn: false },
+      ],
+      connect: false,
+    },
+  };
+  const signInDeferred = Promise.withResolvers<{ data: null }>();
+  state.replies.sign_in_agent = () => signInDeferred.promise;
+
+  await using screen = await mount();
+  await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+
+  const signInButtons = screen.getByRole("button", { name: "Sign in" });
+  await expect.element(signInButtons.nth(0)).toBeVisible();
+  await expect.element(signInButtons.nth(1)).toBeVisible();
+
+  await userEvent.click(signInButtons.nth(0));
+  const agentsHeading = screen.getByRole("heading", { name: "Agents" }).element();
+  const agentsSection = agentsHeading.closest("section");
+  expect(agentsSection).not.toBeNull();
+  const agentButtons = Array.from(agentsSection!.querySelectorAll("button"));
+  expect(agentButtons).toHaveLength(2);
+  expect(agentButtons[0]?.textContent).toContain("Signing in…");
+  expect(agentButtons[0]?.getAttribute("aria-busy")).toBe("true");
+  expect(agentButtons[1]?.textContent).toBe("Sign in");
+  expect(agentButtons[1]?.getAttribute("aria-busy")).toBe("false");
+  expect(agentButtons[1]?.disabled).toBe(true);
+
+  signInDeferred.resolve({ data: null });
+  await vi.waitFor(() => {
+    const buttons = Array.from(agentsSection!.querySelectorAll("button"));
+    expect(buttons.every((button) => button.textContent === "Sign in")).toBe(true);
+  });
+});
+
+it("offers Remove without an overflow menu for missing machines and discards on MachineDetails", async () => {
+  setup({
+    state: uiState({
+      machines: [machine({ id: "m-gone", name: "ghost", state: "missing", detail: "Missing" })],
+    }),
+  });
+  await using screen = await mount();
+
+  await expect.element(screen.getByRole("button", { name: "Remove" })).toBeVisible();
+  await expect
+    .element(screen.getByRole("button", { name: "More for ghost" }))
+    .not.toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole("button", { name: "Details for ghost" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Machine/ }));
+  await userEvent.click(screen.getByRole("button", { name: "Remove machine…" }));
+  await userEvent.click(screen.getByRole("button", { name: "Click again to remove" }));
+
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({
+      command: "delete_machine",
+      args: { id: "m-gone", discard: true },
+    }),
+  );
+});
+
+it("filters projects in ProjectPicker and closes the popover on Escape before navigating back", async () => {
+  setup({
+    state: uiState({
+      machines: [machine({ id: "m-1", name: "dory", state: "idle" })],
+    }),
+  });
+  state.replies.local_projects = {
+    data: [
+      {
+        id: "p-1",
+        title: "Alpha Repo",
+        path: "/Users/me/alpha",
+        repoKey: "org/alpha",
+        icon: null,
+      },
+      {
+        id: "p-2",
+        title: "Beta Repo",
+        path: "/Users/me/beta",
+        repoKey: "org/beta",
+        icon: null,
+      },
+    ],
+  };
+
+  await using screen = await mount();
+  await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));
+  await userEvent.click(screen.getByRole("button", { name: "Add a project…" }));
+
+  const filterInput = page.getByRole("combobox", { name: "Filter projects" });
+  await expect.element(filterInput).toBeVisible();
+  await expect.element(page.getByRole("option", { name: /Alpha Repo/ })).toBeVisible();
+  await expect.element(page.getByRole("option", { name: /Beta Repo/ })).toBeVisible();
+
+  await userEvent.fill(filterInput, "Beta");
+  await expect.element(page.getByRole("option", { name: /Beta Repo/ })).toBeVisible();
+  await expect.element(page.getByRole("option", { name: /Alpha Repo/ })).not.toBeInTheDocument();
+
+  await userEvent.keyboard("{Escape}");
+  await expect.element(filterInput).not.toBeInTheDocument();
+  await expect.element(screen.getByRole("heading", { name: "dory" })).toBeVisible();
+
+  await userEvent.click(screen.getByRole("button", { name: "Add a project…" }));
+  await userEvent.click(page.getByRole("option", { name: /Beta Repo/ }));
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({
+      command: "add_project",
+      args: { id: "m-1", projectId: "p-2" },
+    }),
+  );
+  await vi.waitFor(() => expect(document.querySelector("[data-slot='popover-popup']")).toBeNull());
+
+  await userEvent.keyboard("{Escape}");
+  await expect.element(screen.getByRole("button", { name: "Details for dory" })).toBeVisible();
+});
+
+it("keeps MachineMenu open on first delete click and deletes on the second click", async () => {
+  setup({
+    state: uiState({
+      machines: [machine({ id: "m-1", name: "dory", state: "idle" })],
+    }),
+  });
+  await using screen = await mount();
+
+  await userEvent.click(screen.getByRole("button", { name: "More for dory" }));
+  const firstDelete = page.getByRole("menuitem", { name: "Delete machine…" });
+  await expect.element(firstDelete).toBeVisible();
+  await userEvent.click(firstDelete);
+
+  expect(state.invoked.map((item) => item.command)).not.toContain("delete_machine");
+  const confirmDelete = page.getByRole("menuitem", { name: "Click again to delete forever" });
+  await expect.element(confirmDelete).toBeVisible();
+
+  await userEvent.click(confirmDelete);
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({
+      command: "delete_machine",
+      args: { id: "m-1", discard: false },
+    }),
+  );
+});
+
+it("toggles start-at-login and adds an MCP client from SettingsView", async () => {
+  setup({
+    state: uiState({
+      settings: { startAtLogin: false },
+      mcp: { claudeCode: false, codex: true },
+    }),
+  });
+  await using screen = await mount();
+
+  await userEvent.click(screen.getByRole("button", { name: "Boat settings" }));
+  const startAtLogin = screen.getByRole("switch", { name: "Start background boats at login" });
+  await expect.element(startAtLogin).toHaveAttribute("aria-checked", "false");
+  await userEvent.click(startAtLogin);
+
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({
+      command: "update_settings",
+      args: { settings: { startAtLogin: true } },
+    }),
+  );
+
+  await expect.element(screen.getByText("Added")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Add to Claude Code" }));
+  await vi.waitFor(() =>
+    expect(state.invoked).toContainEqual({
+      command: "add_mcp",
+      args: { client: "claudeCode" },
+    }),
+  );
 });
 
 it("renders the SignInPanel paste-code input as a styled Sail Input and submits the code", async () => {
