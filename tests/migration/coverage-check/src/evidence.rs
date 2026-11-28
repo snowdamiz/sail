@@ -290,7 +290,7 @@ fn load_capture(
     if observation.cell.platform_id == "served-chromium-linux"
         && matches!(
             observation.cell.case_id.as_str(),
-            "chat-view-states" | "disconnect-recover" | "browser-preview"
+            "chat-view-states" | "disconnect-recover" | "browser-preview" | "approval"
         )
     {
         chromium_chat::verify(evidence, observation, run, &capture, &image_path)?;

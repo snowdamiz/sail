@@ -9,6 +9,7 @@ case "${2:-}" in
   --chat-states) touch "$root/chat-states" ;;
   --reconnect) touch "$root/reconnect" ;;
   --browser-preview) touch "$root/browser-preview" ;;
+  --approval) touch "$root/approval" ;;
   "") ;;
   *) exit 2 ;;
 esac
@@ -51,6 +52,7 @@ test "$("$chrome" --version)" = "Google Chrome for Testing 158.0.8127.88"
 python3 - "$root" <<'PY'
 import json
 from pathlib import Path
+import shutil
 import sqlite3
 import sys
 
@@ -58,6 +60,13 @@ root = Path(sys.argv[1])
 with sqlite3.connect("file:/seed.sqlite?immutable=1", uri=True) as source:
     with sqlite3.connect(root / "state/userdata/statev2.sqlite") as target:
         source.backup(target)
+    if (root / "approval").is_file():
+        workspace, = source.execute(
+            "SELECT workspace_root FROM projection_projects WHERE title='Compatibility demo'"
+        ).fetchone()
+        workspace = Path(workspace)
+        assert Path("/tmp") in workspace.parents and workspace.name == "project"
+        shutil.copytree(root / "project", workspace)
 settings = {"providerInstances": {
     "devReplay": {
         "displayName": "Replay (dev)",
@@ -118,6 +127,10 @@ elif [ -f "$root/browser-preview" ]; then
     test -s "$root/$state/capture.png"
   done
   python3 "$fixture/linux-chromium/browser_preview.py" "$root"
+elif [ -f "$root/approval" ]; then
+  for state in requested approved denied; do
+    test -s "$root/$state/capture.png"
+  done
 else
   test -s "$root/receipt.json"
   test -s "$root/capture.png"

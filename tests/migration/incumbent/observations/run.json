@@ -519,5 +519,26 @@
       }
     },
     "scope": "Two isolated published v0.1.17 Browser panel runs on Debian 12.15 arm64. Both maximized the actual product panel, changed the inner page title through the canvas without changing the tab or address, and released control. The packaged provider returned the exact evaluation result as its completed reply. Candidate comparisons and timing remain open."
+  },
+  "linuxChromiumApproval": {
+    "directory": "served-chromium-linux/approval",
+    "comparisons": {
+      "requested": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "approved": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "denied": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      }
+    },
+    "scope": "Two isolated published v0.1.17 Browser panel runs on Debian 12.15 arm64. Both chose Supervised on two fresh Replay threads and captured the requested, approved, and declined views. A separately paired read-only cookie saw disabled controls and received a typed scope denial on the same pending request. The operate cookie approved or declined through the real UI and both server runs finished. Candidate comparisons and timing remain open."
   }
 }

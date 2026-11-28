@@ -166,7 +166,7 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
                 Some("process")
             }
             "chat-display" | "chat-link" | "palette-link" | "chat-view-states"
-            | "disconnect-recover" | "browser-preview" => Some("interaction"),
+            | "disconnect-recover" | "browser-preview" | "approval" => Some("interaction"),
             _ => None,
         };
         if let Some(profile) = required_profile {

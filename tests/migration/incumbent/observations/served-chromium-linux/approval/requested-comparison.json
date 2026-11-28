@@ -1,0 +1,20 @@
+{
+  "fixtureId": "approval",
+  "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "changedSteps": [],
+  "pixels": {
+    "baseline": "tests/migration/incumbent/observations/served-chromium-linux/approval/a/requested/capture.png",
+    "candidate": "tests/migration/incumbent/observations/served-chromium-linux/approval/b/requested/capture.png",
+    "diff": "tests/migration/incumbent/observations/served-chromium-linux/approval/requested-diff.png",
+    "baselineSize": [1280, 1200],
+    "candidateSize": [1280, 1200],
+    "differentPixels": 0,
+    "bounds": null
+  },
+  "artifactSha256": {
+    "baselineReceipt": "48488cfab3c30c69ed5b327f6a31af37d61da8ffaf4b26477f984c37cfece973",
+    "candidateReceipt": "29de47b77032c25ea1d6c37cd25f442c8a9971529c7481a1131caa68891b5615",
+    "diff": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+  }
+}

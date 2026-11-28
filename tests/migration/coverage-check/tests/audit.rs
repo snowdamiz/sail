@@ -511,6 +511,30 @@ fn rejects_a_rehashed_browser_trace_with_a_different_tool_result() {
 }
 
 #[test]
+fn verifies_the_published_linux_chromium_approval_views() {
+    for state in ["requested", "approved", "denied"] {
+        let fixture = Fixture::visual("approval", state, "served-chromium-linux");
+        let output = fixture.run();
+        assert!(
+            output.status.success(),
+            "{state}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["verifiedVisualReferenceObservations"], 1);
+    }
+}
+
+#[test]
+fn rejects_a_rehashed_approval_trace_that_changes_the_pending_request() {
+    let mut fixture = Fixture::visual("approval", "requested", "served-chromium-linux");
+    fixture.edit_process_json(0, "capture-receipt", |capture| {
+        capture["trace"][1]["observed"]["requestUnchanged"] = json!(false);
+    });
+    fixture.rejects("approval trace disagrees with the observed denyReadOnlyResponse result");
+}
+
+#[test]
 fn uses_generic_visual_checks_for_non_linux_display_references() {
     let mut fixture = Fixture::visual("chat-turn", "settled", "electron-macos-arm64");
     fixture.catalog["cases"][0]["id"] = json!("chat-display");

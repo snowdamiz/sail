@@ -210,6 +210,12 @@ The seed script adds a second Replay thread through the packaged CLI. Its isolat
 
 The Rust verifier binds each capture to the observed route and raw state digest in the [Linux capture witness ledger](runtime/linux-capture-witnesses.json). The same ledger pins the display captures to their observed pixels and independent runs.
 
+## Capture Replay approval and denied access
+
+Append `--approval` to the [Linux Chromium capture command](#linux) and start the two isolated runs together so the displayed reply time can match. The container restores the copied seed's project directory before running Replay. The probe creates two fresh threads, selects **Supervised**, and captures the prompt and both operator decisions. It waits for the visible work timer before the prompt capture and before declining. It samples the pending tool's animated highlight at the first frame, then resumes the animation.
+
+The probe pairs a second browser origin with only `orchestration:read`. It verifies the pending controls are disabled, sends the approval command over that same cookie session, and checks the typed scope denial and unchanged request before the operator responds. [Linux Chromium approval](observations/served-chromium-linux/approval)
+
 ## Capture chat loading and reconnect
 
 Append `--chat-states` to the [Linux Chromium capture command](#linux) for two new output directories. Each run pairs at its own gate, waits for the empty draft to resolve the fixture's `main` branch, and captures the loading view while the gate holds its thread subscription. The probe clears focus before each screenshot and checks the saved reply and exact table after release. After capturing the unavailable-thread view, it clicks **Open Environments** and verifies the Settings route. Each run writes three full-viewport PNGs and one state receipt. [Linux Chromium chat states](observations/served-chromium-linux/chat-states)

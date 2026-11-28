@@ -6,7 +6,7 @@
   "pixels": {
     "baseline": "tests/migration/incumbent/observations/served-chromium-linux/browser-panel/a/tool-result/capture.png",
     "candidate": "tests/migration/incumbent/observations/served-chromium-linux/browser-panel/b/tool-result/capture.png",
-    "diff": "/tmp/sail-p01-linux-browser-r58.xhOPAU/tool-result-diff.png",
+    "diff": "tests/migration/incumbent/observations/served-chromium-linux/browser-panel/tool-result-diff.png",
     "baselineSize": [1280, 1200],
     "candidateSize": [1280, 1200],
     "differentPixels": 0,

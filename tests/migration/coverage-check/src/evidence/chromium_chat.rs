@@ -17,6 +17,7 @@ pub(super) fn verify(
     let name = observation.cell.state.as_str();
     let case = observation.cell.case_id.as_str();
     let records = &state[match case {
+        "approval" => "approvalStates",
         "browser-preview" => "previewStates",
         "disconnect-recover" => "reconnectStates",
         "chat-view-states" => "chatStates",
@@ -49,6 +50,7 @@ pub(super) fn verify(
         );
     }
     match case {
+        "approval" => verify_approval(&state, records, name, capture)?,
         "browser-preview" => verify_browser_preview(&state, &record["observed"], name, capture)?,
         "disconnect-recover" => {
             ensure!(
@@ -304,6 +306,100 @@ fn verify_browser_preview(
         ensure!(
             step.action == action && serde_json::to_value(&step.observed)? == expected,
             "Browser panel trace disagrees with the observed {action} result"
+        );
+    }
+    Ok(())
+}
+
+fn verify_approval(state: &Value, records: &Value, name: &str, capture: &Capture) -> Result<()> {
+    let buttons = |disabled: bool| {
+        json!([
+            {"name": "Decline", "disabled": disabled},
+            {"name": "Approve", "disabled": disabled},
+            {"name": "More approval options", "disabled": disabled},
+        ])
+    };
+    let operator = json!({
+        "authenticated": true, "method": "browser-session-cookie",
+        "scopes": ["access:read", "access:write", "orchestration:operate", "orchestration:read",
+                   "relay:read", "relay:write", "terminal:operate"],
+    });
+    let read_only = json!({
+        "session": {"authenticated": true, "method": "browser-session-cookie", "scopes": ["orchestration:read"]},
+        "controls": buttons(true),
+        "denial": {
+            "_tag": "EnvironmentAuthorizationError",
+            "message": "The authenticated token is missing required scope: orchestration:operate.",
+            "requiredScope": "orchestration:operate",
+            "requiredPermission": "orchestration:operate",
+        },
+        "requestUnchanged": true,
+    });
+    ensure!(
+        state["operator"] == operator && state["readOnly"] == read_only,
+        "approval evidence did not distinguish operate and read-only sessions"
+    );
+    let pending = json!({"status": "pending", "runStatus": "running", "mode": "approval-required", "decision": null});
+    let resolved = |decision| {
+        json!({
+            "status": "resolved", "runStatus": "completed", "mode": "approval-required", "decision": decision,
+        })
+    };
+    let approved = resolved("accept");
+    let denied = resolved("decline");
+    ensure!(
+        state["server"]
+            == json!({"requested": pending, "approved": approved,
+                                  "declineRequested": pending, "denied": denied}),
+        "approval evidence did not preserve the pending request and both server decisions"
+    );
+    for (view, is_pending, has_reply) in [
+        ("requested", true, false),
+        ("approved", false, true),
+        ("denied", false, false),
+    ] {
+        let expected = json!({
+            "pending": is_pending,
+            "detail": is_pending.then_some("Changed files"),
+            "controls": if is_pending { buttons(false) } else { json!([]) },
+            "replayReply": has_reply, "permission": "Permissions: Supervised", "focusedElement": "BODY",
+        });
+        ensure!(
+            records[view]["observed"] == expected,
+            "incorrect approval view {view}"
+        );
+    }
+    let steps = [
+        (
+            "requestReplayApproval",
+            json!({"operator": operator, "server": pending,
+                                         "panel": records["requested"]["observed"]}),
+        ),
+        ("denyReadOnlyResponse", read_only),
+        (
+            "approveReplayRequest",
+            json!({"server": approved, "panel": records["approved"]["observed"]}),
+        ),
+        ("requestSecondApproval", pending),
+        (
+            "declineReplayRequest",
+            json!({"server": denied, "panel": records["denied"]["observed"]}),
+        ),
+    ];
+    let count = match name {
+        "requested" => 2,
+        "approved" => 3,
+        "denied" => 5,
+        _ => anyhow::bail!("unknown Linux Chromium approval state {name}"),
+    };
+    ensure!(
+        capture.trace.len() == count,
+        "wrong approval action trace length"
+    );
+    for ((action, expected), step) in steps.into_iter().zip(&capture.trace) {
+        ensure!(
+            step.action == action && serde_json::to_value(&step.observed)? == expected,
+            "approval trace disagrees with the observed {action} result"
         );
     }
     Ok(())

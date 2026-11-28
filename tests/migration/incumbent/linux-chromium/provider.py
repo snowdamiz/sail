@@ -127,8 +127,11 @@ def preview_session():
             bridge.stdout.close()
 
 
-def pair(call, tab, origin=ORIGIN, base=ROOT / "state"):
-    output = command([ROOT / "runtime/t3", "pair", "--base-dir", base])
+def pair(call, tab, origin=ORIGIN, base=ROOT / "state", *, scope=None):
+    argv = [ROOT / "runtime/t3", "pair", "--base-dir", base]
+    if scope is not None:
+        argv.extend(["--scope", scope])
+    output = command(argv)
     link = urlsplit(re.search(r"^Pairing URL: (.+)$", output, re.MULTILINE)[1])
     assert link.path == "/pair" and link.fragment.startswith("token=")
     call("preview_navigate", **tab, url=f"{origin}/pair#{link.fragment}")
@@ -374,6 +377,12 @@ def capture():
 
         with preview_session() as call:
             return capture_browser_preview(ROOT, source, call, prepare)
+    if (ROOT / "approval").is_file():
+        from approval import capture_approval
+
+        with preview_session() as call:
+            capture_approval(ROOT, source, call, prepare, pair)
+        return
     probe = Path("/fixture/settled-replay-browser.js").read_text().strip()
     if "captureRounds" in source:
         with preview_session() as call:
