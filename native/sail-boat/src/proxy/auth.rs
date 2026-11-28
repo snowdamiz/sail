@@ -17,6 +17,13 @@ pub fn random_token() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
+}
+
 /// What a ticket opens, as T3 Code names it when it asks for one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -107,5 +114,12 @@ mod tests {
         assert!(!auth.check_ticket(&media, TicketUse::Rpc));
         assert!(auth.check_ticket(&media, TicketUse::Media));
         assert!(auth.check_ticket(&media, TicketUse::Media), "a stream makes many requests");
+    }
+
+    #[test]
+    fn constant_time_eq_compares_bytes_accurately() {
+        assert!(constant_time_eq(b"secret-token", b"secret-token"));
+        assert!(!constant_time_eq(b"secret-token", b"secret-tokeN"));
+        assert!(!constant_time_eq(b"secret", b"secret-token"));
     }
 }

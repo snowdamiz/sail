@@ -488,6 +488,25 @@ impl Daemon {
                 let args: Args = parse_args(name, &body)?;
                 Reply::data(self.app()?.details(&args.id).map_err(err)?)
             }
+            "machine_proxy_access" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Args {
+                    #[serde(default)]
+                    id: Option<String>,
+                    #[serde(default, alias = "machine_id")]
+                    machine_id: Option<String>,
+                    #[serde(default, alias = "environment_id")]
+                    environment_id: Option<String>,
+                }
+                let args: Args = parse_args(name, &body)?;
+                let id = args.id.as_deref().or(args.machine_id.as_deref());
+                Reply::data(
+                    self.app()?
+                        .machine_proxy_access(id, args.environment_id.as_deref())
+                        .map_err(err)?,
+                )
+            }
             "sign_in_agent" | "turn_on_connect" => {
                 #[derive(Deserialize)]
                 struct Args {
@@ -1809,5 +1828,202 @@ esac
         assert!(reply.sign_in.is_none());
         assert!(!daemon.state().setup_busy);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn machine_proxy_access_resolves_by_id_or_environment_without_polluting_client_tokens() {
+        let (app, port, dir) = daemon_with_machine().await;
+        let machine = app.machine("dev").unwrap();
+        let local_port = machine.record().local_port;
+
+        let by_id = command(port, "machine_proxy_access", json!({ "id": "bx_dev" })).await;
+        assert_eq!(by_id["ok"], true);
+        let data = &by_id["data"];
+        assert_eq!(data["machineId"], "bx_dev");
+        assert_eq!(data["machineName"], "dev");
+        assert_eq!(data["environmentId"], "env-dev");
+        assert_eq!(data["localUrl"], format!("http://127.0.0.1:{local_port}"));
+        let token = data["bearerToken"].as_str().expect("bearerToken string");
+        assert!(!token.is_empty());
+
+        let by_env = command(port, "machine_proxy_access", json!({ "environmentId": "env-dev" })).await;
+        assert_eq!(by_env["data"]["bearerToken"], token);
+        assert_eq!(by_env["data"]["machineId"], "bx_dev");
+
+        let by_machine_id = command(port, "machine_proxy_access", json!({ "machineId": "bx_dev" })).await;
+        assert_eq!(by_machine_id["data"]["bearerToken"], token);
+
+        // Internal proxy token must never pollute paired browser client_tokens.
+        assert!(machine.record().client_tokens.is_empty());
+        let state = command(port, "get_state", json!({})).await;
+        assert_eq!(state["data"]["machines"][0]["paired"], false);
+
+        // Missing or unknown identifiers return an error.
+        let client = reqwest::Client::new();
+        let missing = client
+            .post(format!("http://127.0.0.1:{port}/api/command/machine_proxy_access"))
+            .bearer_auth(TOKEN)
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let unknown = client
+            .post(format!("http://127.0.0.1:{port}/api/command/machine_proxy_access"))
+            .bearer_auth(TOKEN)
+            .json(&json!({ "environmentId": "env-missing" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        app.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn internal_proxy_token_authorizes_proxy_and_streams_session_transfers_unbuffered() {
+        let dir = test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Start a mock upstream server simulating the remote Boat T3 server.
+        let received_len = Arc::new(Mutex::new(None::<String>));
+        let received_auth = Arc::new(Mutex::new(None::<String>));
+        let received_len_up = received_len.clone();
+        let received_auth_up = received_auth.clone();
+        let upstream_app = Router::new()
+            .route(
+                "/api/session-transfers/tx-1/bundle/upload",
+                post(move |headers: HeaderMap, body: Bytes| {
+                    let received_len = received_len_up.clone();
+                    let received_auth = received_auth_up.clone();
+                    async move {
+                        *received_len.lock().unwrap() = headers
+                            .get(axum::http::header::CONTENT_LENGTH)
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_owned);
+                        *received_auth.lock().unwrap() = headers
+                            .get(AUTHORIZATION)
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_owned);
+                        Json(json!({ "ok": true, "bytes": body.len() }))
+                    }
+                }),
+            )
+            .route(
+                "/api/session-transfers/tx-1/bundle/download",
+                get(|| async move {
+                    let payload = vec![b'z'; 256 * 1024];
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                        payload,
+                    )
+                }),
+            );
+        let upstream_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let upstream_port = upstream_listener.local_addr().unwrap().port();
+        let upstream_task = tokio::spawn(async move { axum::serve(upstream_listener, upstream_app).await });
+
+        let proxy_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let proxy_port = proxy_listener.local_addr().unwrap().port();
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let shared = Arc::new(crate::machine::Shared {
+            boat: Boat::at(dir.join("no-boat")),
+            t3: t3desktop::T3Desktop::at(dir.join("no-sail")),
+            settings: std::sync::RwLock::new(Settings::default()),
+            events: tx,
+            http: reqwest::Client::new(),
+            saving: Mutex::new(std::collections::HashSet::new()),
+        });
+        let record = crate::store::Machine {
+            id: "bx_dev".into(),
+            sandbox_id: "bx_dev".into(),
+            name: "dev".into(),
+            size: "small".into(),
+            upstream_url: format!("http://127.0.0.1:{upstream_port}"),
+            upstream_token: "upstream-secret".into(),
+            watchdog_url: "http://127.0.0.1:9".into(),
+            watchdog_secret: "watchdog".into(),
+            local_port: proxy_port,
+            t3_version: "0.0.0".into(),
+            provision_revision: String::new(),
+            lifecycle_enrolled: false,
+            pending_resume: None,
+            environment_id: "env-dev".into(),
+            client_tokens: Vec::new(),
+            link_tokens: Vec::new(),
+            created_at: 0,
+            next_due_at: None,
+            connect: false,
+            saved_stop: None,
+            project_origins: Default::default(),
+        };
+        let machine = Arc::new(crate::machine::MachineRuntime::new(shared, record, dir.join("machine")));
+        machine.set_power(crate::machine::Power::Running);
+        let proxy_task = tokio::spawn(axum::serve(proxy_listener, crate::proxy::router(machine.clone())).into_future());
+
+        let local_url = machine.local_url();
+        let bearer_token = machine.internal_proxy_token().to_owned();
+        let client = reqwest::Client::new();
+
+        // Internal bearer token authorizes RPC ticket issuance without touching client_tokens.
+        let ticket_res = client
+            .post(format!("{local_url}/api/auth/websocket-ticket/rpc"))
+            .bearer_auth(&bearer_token)
+            .send()
+            .await
+            .expect("proxy should accept internal bearer token");
+        assert_eq!(ticket_res.status(), StatusCode::OK);
+        let ticket_json: Value = ticket_res.json().await.unwrap();
+        assert!(ticket_json["ticket"].as_str().is_some_and(|t| !t.is_empty()));
+        assert!(machine.record().client_tokens.is_empty());
+
+        // Wrong bearer token must be rejected.
+        let bad_ticket = client
+            .post(format!("{local_url}/api/auth/websocket-ticket/rpc"))
+            .bearer_auth("wrong-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bad_ticket.status(), StatusCode::UNAUTHORIZED);
+
+        // Streamed POST upload to /api/session-transfers/ preserves Content-Length and swaps upstream bearer.
+        let upload_payload = vec![b'a'; 512 * 1024];
+        let epoch_before_upload = machine.cache.lock().unwrap().epoch;
+        let upload_res = client
+            .post(format!("{local_url}/api/session-transfers/tx-1/bundle/upload?token=url-tok"))
+            .bearer_auth(&bearer_token)
+            .header(axum::http::header::CONTENT_LENGTH, upload_payload.len().to_string())
+            .body(upload_payload.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(upload_res.status(), StatusCode::OK);
+        let upload_json: Value = upload_res.json().await.unwrap();
+        assert_eq!(upload_json["bytes"], upload_payload.len());
+        assert_eq!(received_len.lock().unwrap().as_deref(), Some("524288"));
+        assert_eq!(received_auth.lock().unwrap().as_deref(), Some("Bearer upstream-secret"));
+        assert!(machine.cache.lock().unwrap().epoch > epoch_before_upload, "upload must signal user_action");
+
+        // URL-token GET download from /api/session-transfers/ (no Authorization header) works and bumps user_action.
+        let epoch_before_download = machine.cache.lock().unwrap().epoch;
+        let download_res = client
+            .get(format!("{local_url}/api/session-transfers/tx-1/bundle/download?token=url-tok"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(download_res.status(), StatusCode::OK);
+        let downloaded = download_res.bytes().await.unwrap();
+        assert_eq!(downloaded.len(), 256 * 1024);
+        assert!(
+            machine.cache.lock().unwrap().epoch > epoch_before_download,
+            "session-transfer download must signal user_action"
+        );
+
+        proxy_task.abort();
+        upstream_task.abort();
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
