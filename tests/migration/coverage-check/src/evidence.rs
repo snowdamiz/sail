@@ -95,6 +95,7 @@ struct Capture {
     fixture_id: String,
     source_sha: String,
     screenshot_sha256: String,
+    capture_run_id: String,
     package_sha256: Option<String>,
     coverage: CaptureCoverage,
     profile: serde_json::Value,
@@ -233,6 +234,12 @@ pub fn verify_reference_pair(evidence: &Evidence, observation: &Observation) -> 
     ensure!(
         first_image != repeat_image && first_receipt != repeat_receipt,
         "incumbent repeat reuses the first run's capture paths"
+    );
+    ensure!(
+        !first_capture.capture_run_id.trim().is_empty()
+            && !repeat_capture.capture_run_id.trim().is_empty()
+            && first_capture.capture_run_id != repeat_capture.capture_run_id,
+        "expected distinct capture run IDs for first and repeat"
     );
     ensure!(
         first_capture.profile == repeat_capture.profile,

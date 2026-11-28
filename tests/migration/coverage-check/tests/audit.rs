@@ -106,7 +106,7 @@ fn reports_each_unobserved_state_and_keeps_supplemental_receipts_separate() {
     assert_eq!(report["observedCells"], 1);
     assert_eq!(report["unobservedCells"], 2);
     assert_eq!(report["supplementalReceipts"], 1);
-    assert_eq!(report["passingReleaseReferenceObservations"], 1);
+    assert_eq!(report["verifiedVisualReferenceObservations"], 1);
     assert_eq!(report["missing"][0]["state"], "draft");
     assert_eq!(report["missing"][1]["state"], "streaming");
 }
@@ -207,6 +207,48 @@ fn rejects_a_passing_repeat_that_reuses_the_first_capture() {
     let runs = &mut fixture.catalog["observations"][0]["runs"];
     runs[1]["artifacts"] = runs[0]["artifacts"].clone();
     fixture.rejects("reuses the first run's capture paths");
+}
+
+#[test]
+fn rejects_a_copied_capture_even_at_new_paths() {
+    let mut fixture = Fixture::new();
+    let runs = &mut fixture.catalog["observations"][0]["runs"];
+    for (kind, alias) in [
+        ("screenshot", "copied.png"),
+        ("capture-receipt", "copied.json"),
+    ] {
+        let mut artifact = runs[0]["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|artifact| artifact["kind"] == kind)
+            .unwrap()
+            .clone();
+        let original = artifact["path"].as_str().unwrap();
+        fs::copy(
+            fixture.directory.path().join(original),
+            fixture.directory.path().join(alias),
+        )
+        .unwrap();
+        artifact["path"] = json!(alias);
+        let repeat = runs[1]["artifacts"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|artifact| artifact["kind"] == kind)
+            .unwrap();
+        *repeat = artifact;
+    }
+    fixture.rejects("expected distinct capture run IDs");
+}
+
+#[test]
+fn rejects_a_catalog_that_removes_required_visual_evidence() {
+    let mut fixture = Fixture::new();
+    fixture.catalog["observationContract"]["evidenceProfiles"]["interaction"] =
+        json!(["capture-receipt", "state-receipt"]);
+    fixture.catalog["observations"][0]["state"] = json!("draft");
+    fixture.rejects("schema-v1 evidence profile interaction requires screenshot");
 }
 
 #[test]

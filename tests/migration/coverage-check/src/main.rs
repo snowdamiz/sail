@@ -23,7 +23,7 @@ struct Report {
     observed_cells: usize,
     unobserved_cells: usize,
     verified_observations: usize,
-    passing_release_reference_observations: usize,
+    verified_visual_reference_observations: usize,
     supplemental_receipts: usize,
     open_matrix_items: Vec<OpenItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -116,6 +116,35 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
         }
     }
     let contract = &catalog.observation_contract;
+    for (profile, required_kinds) in [
+        (
+            "interaction",
+            ["screenshot", "capture-receipt", "state-receipt"],
+        ),
+        (
+            "process",
+            ["terminal-screenshot", "process-transcript", "state-receipt"],
+        ),
+        (
+            "negative",
+            [
+                "terminal-screenshot",
+                "mutation-receipt",
+                "comparison-result",
+            ],
+        ),
+    ] {
+        let kinds = contract
+            .evidence_profiles
+            .get(profile)
+            .with_context(|| format!("missing schema-v1 evidence profile {profile}"))?;
+        for kind in required_kinds {
+            ensure!(
+                kinds.iter().any(|value| value == kind),
+                "schema-v1 evidence profile {profile} requires {kind}"
+            );
+        }
+    }
     let mut required = BTreeSet::new();
     let mut evidence_profiles = BTreeMap::new();
     let mut supplemental = BTreeSet::new();
@@ -183,7 +212,7 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
 
     let mut observed = BTreeSet::new();
     let mut records = BTreeSet::new();
-    let mut passing_references = 0;
+    let mut verified_visual_references = 0;
     for observation in &catalog.observations {
         let cell = &observation.cell;
         let label = format!(
@@ -265,14 +294,17 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
         for artifact in &observation.comparison_artifacts {
             evidence.verify(artifact).with_context(|| label.clone())?;
         }
-        if pass && release_reference {
-            if evidence_profiles[&cell.case_id]
+        let has_visual_reference = evidence_profiles[&cell.case_id]
+            .iter()
+            .any(|kind| kind == "screenshot")
+            || observation
+                .runs
                 .iter()
-                .any(|kind| kind == "screenshot")
-            {
-                verify_reference_pair(&evidence, observation).with_context(|| label.clone())?;
-            }
-            passing_references += 1;
+                .flat_map(|run| &run.artifacts)
+                .any(|artifact| artifact.kind == "capture-receipt");
+        if pass && release_reference && has_visual_reference {
+            verify_reference_pair(&evidence, observation).with_context(|| label.clone())?;
+            verified_visual_references += 1;
         }
     }
     let declared_cells = required.len();
@@ -285,7 +317,7 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
         observed_cells,
         unobserved_cells: declared_cells - observed_cells,
         verified_observations: catalog.observations.len(),
-        passing_release_reference_observations: passing_references,
+        verified_visual_reference_observations: verified_visual_references,
         supplemental_receipts: supplemental.len(),
         open_matrix_items: catalog.open_matrix_items,
         missing: list_missing.then(|| {

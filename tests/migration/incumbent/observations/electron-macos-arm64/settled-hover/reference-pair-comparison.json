@@ -13,8 +13,8 @@
     "bounds": null
   },
   "artifactSha256": {
-    "baselineReceipt": "b83742d81c5ddde8a9bf1595917b896cbabb88643967fd42e824a06cccda9a95",
-    "candidateReceipt": "b83742d81c5ddde8a9bf1595917b896cbabb88643967fd42e824a06cccda9a95",
+    "baselineReceipt": "58313e949a4b3856495181c9e3f9eb1e8ff9aef7ff1cc9159660dd9482257ee5",
+    "candidateReceipt": "c10dbce528c7f8b93ec839b1af91b200e948b249453f93739bba52e3f1b9a8a5",
     "diff": "d3b10c7216bebee659527f9ffa8a0c763befab957d00bad4b8c7897e06aed653"
   }
 }

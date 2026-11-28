@@ -1190,7 +1190,7 @@
             {
               "kind": "capture-receipt",
               "path": "observations/served-chromium-macos/settled/a/receipt.json",
-              "sha256": "02f919f7a2ea7b404ac35e578eb81aa04e7e20ca008f6ab5ab079914abc94204"
+              "sha256": "d0630b9594aefbf2b358b8cf0399b2b5c8f31fbd16c1b08a6c6929d5cdf14857"
             },
             {
               "kind": "state-receipt",
@@ -1236,7 +1236,7 @@
             {
               "kind": "capture-receipt",
               "path": "observations/served-chromium-macos/settled/b/receipt.json",
-              "sha256": "02f919f7a2ea7b404ac35e578eb81aa04e7e20ca008f6ab5ab079914abc94204"
+              "sha256": "b56e17542d224745df5d2ed511f6a63ad9b58221c98bda00dc52033920a4ae6c"
             },
             {
               "kind": "state-receipt",
@@ -1255,7 +1255,7 @@
         {
           "kind": "action-and-state",
           "path": "observations/served-chromium-macos/settled/reference-pair-comparison.json",
-          "sha256": "c7791160acdfe20d92fe0bdb57a4b890d9b4bfa8ac7de404bce2dca5987e5ecb"
+          "sha256": "dae35fb868f3cb63125e24de86c144f6f5b67c86eb049e19fead5729e5a6b399"
         },
         {
           "kind": "action-traces",
@@ -1310,7 +1310,7 @@
             {
               "kind": "capture-receipt",
               "path": "observations/electron-macos-arm64/settled-hover/a/receipt.json",
-              "sha256": "b83742d81c5ddde8a9bf1595917b896cbabb88643967fd42e824a06cccda9a95"
+              "sha256": "58313e949a4b3856495181c9e3f9eb1e8ff9aef7ff1cc9159660dd9482257ee5"
             },
             {
               "kind": "state-receipt",
@@ -1356,7 +1356,7 @@
             {
               "kind": "capture-receipt",
               "path": "observations/electron-macos-arm64/settled-hover/b/receipt.json",
-              "sha256": "b83742d81c5ddde8a9bf1595917b896cbabb88643967fd42e824a06cccda9a95"
+              "sha256": "c10dbce528c7f8b93ec839b1af91b200e948b249453f93739bba52e3f1b9a8a5"
             },
             {
               "kind": "state-receipt",
@@ -1375,7 +1375,7 @@
         {
           "kind": "action-and-state",
           "path": "observations/electron-macos-arm64/settled-hover/reference-pair-comparison.json",
-          "sha256": "892ae5238dab71fdc58306683058fd25a308f5915a49b1c47f8c5dc8e29cd93a"
+          "sha256": "048c8ec1a3e4602aed26527e6ebe016e4239b9196f7198c9db05368069ed051d"
         },
         {
           "kind": "action-traces",
@@ -1430,7 +1430,7 @@
             {
               "kind": "capture-receipt",
               "path": "observations/served-firefox-macos/settled/a/receipt.json",
-              "sha256": "868534902bb154fd6dfbd5007eeb7a681e2c783fec8e1db46dc587aeae94b192"
+              "sha256": "8f99b43331d5c43dd28a4807d8f8fe5e1932ab1c660ef50608d58f0054e2a84d"
             },
             {
               "kind": "state-receipt",
@@ -1476,7 +1476,7 @@
             {
               "kind": "capture-receipt",
               "path": "observations/served-firefox-macos/settled/b/receipt.json",
-              "sha256": "868534902bb154fd6dfbd5007eeb7a681e2c783fec8e1db46dc587aeae94b192"
+              "sha256": "4fdacf5b950006ad572e639c7a4ca40fa2da96e699ac30474a0fc3deafd2a63d"
             },
             {
               "kind": "state-receipt",
@@ -1495,7 +1495,7 @@
         {
           "kind": "action-and-state",
           "path": "observations/served-firefox-macos/settled/reference-pair-comparison.json",
-          "sha256": "e351fda05a4142e45557c14751388d332253404941251c60b234b49cab5346d5"
+          "sha256": "bf73f8c1bc4a98a7532516eadeb23455e27bbe8f59e8a883cecf9df7139c64cf"
         },
         {
           "kind": "action-traces",
@@ -1550,7 +1550,7 @@
             {
               "kind": "capture-receipt",
               "path": "observations/served-firefox-linux/settled/a/receipt.json",
-              "sha256": "ee17a3f7281f7a66fd8e17a13d5bf36be6295b31b41a6b264dbf39405ddf1614"
+              "sha256": "a9b0ca5231fedb4e120be974db9b9ee829f19c6bba3c09f50c56b85572132f47"
             },
             {
               "kind": "state-receipt",
@@ -1596,7 +1596,7 @@
             {
               "kind": "capture-receipt",
               "path": "observations/served-firefox-linux/settled/b/receipt.json",
-              "sha256": "ee17a3f7281f7a66fd8e17a13d5bf36be6295b31b41a6b264dbf39405ddf1614"
+              "sha256": "38b8e800a2b53ea3efdfd77c41193ed9bd8462c3f87a856c8c5f70c54b8b1b46"
             },
             {
               "kind": "state-receipt",
@@ -1615,7 +1615,7 @@
         {
           "kind": "action-and-state",
           "path": "observations/served-firefox-linux/settled/reference-pair-comparison.json",
-          "sha256": "708bc1dcdadfe8faa499e5b763d6a901a3f82c6cb6e365652f4ed37b89c8b16d"
+          "sha256": "483ce0a0b7123fa4763e743d899e1dd310b38694d22a2232246360751b747e44"
         }
       ]
     }

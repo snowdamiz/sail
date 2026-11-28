@@ -52,5 +52,6 @@
     "state": "settled",
     "entrypoint": "chat",
     "configurationId": "firefox-esr-153.8.0-debian-arm64-en-light-640x600-2x"
-  }
+  },
+  "captureRunId": "firefox-esr-153.8.0-debian-arm64-en-light-640x600-2x-a"
 }

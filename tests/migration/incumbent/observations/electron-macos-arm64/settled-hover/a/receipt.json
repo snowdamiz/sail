@@ -61,5 +61,6 @@
     "state": "settled",
     "entrypoint": "chat",
     "configurationId": "electron-44.10.1-macos-en-dark-1100x780-2x-hover"
-  }
+  },
+  "captureRunId": "electron-44.10.1-macos-en-dark-1100x780-2x-hover-a"
 }

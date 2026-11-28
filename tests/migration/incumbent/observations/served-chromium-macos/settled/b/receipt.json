@@ -52,5 +52,6 @@
     "state": "settled",
     "entrypoint": "chat",
     "configurationId": "chromium-154-macos-en-light-640x600-2x"
-  }
+  },
+  "captureRunId": "chromium-154-macos-en-light-640x600-2x-b"
 }

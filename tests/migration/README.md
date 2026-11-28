@@ -26,7 +26,7 @@ The report counts catalog observations at the case, platform, state, and entrypo
 
 3. Save `receipt.json` beside `capture.png`. Record `schemaVersion` as `1`, the catalog `fixtureId`, the full `sourceSha`, and the actual `client` and `server` implementations. Include the `profile` with `surface`, `platform`, `browser`, `origin`, `locale`, `theme`, `motion`, `fonts`, and `viewport`. For `desktop`, record the renderer in `client` and set `browser` to `null`. List the pinned fonts in order. The `viewport` holds `width` and `height` in CSS pixels or window points, its effective device `scale`, and the `zoom` multiplier. Save screenshots at the physical dimensions implied by the width, height, and scale. Use the same profile values for both implementations within a comparison.
 4. Set `trace` to the ordered array of `{ "action": "…", "observed": { … } }` steps. Record visible behavior and relevant server outcomes. Use stable names for fixture entities, and keep tokens and random identifiers out of the trace. Set `screenshotSha256` to the value printed by `python3 tests/migration/compare.py digest "$capture_dir/capture.png"`.
-5. For a catalog reference, record `coverage` with the case, platform, state, entrypoint, and configuration IDs. Put the published package digest in `packageSha256` when the reference uses one. Keep the comparator's JSON output with the linked diff.
+5. For a catalog reference, record `coverage` with the case, platform, state, entrypoint, and configuration IDs. Assign each acquisition its own `captureRunId` and keep that ID with the receipt. Put the published package digest in `packageSha256` when the reference uses one. Keep the comparator's JSON output with the linked diff.
 
 ## Compare two captures
 

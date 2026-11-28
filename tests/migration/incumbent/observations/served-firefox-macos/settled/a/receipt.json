@@ -80,5 +80,6 @@
     "state": "settled",
     "entrypoint": "chat",
     "configurationId": "firefox-161.0-macos-arm64-en-light-640x600-2x-headless-non-overlay"
-  }
+  },
+  "captureRunId": "firefox-161.0-macos-arm64-en-light-640x600-2x-headless-non-overlay-a"
 }
