@@ -4,6 +4,9 @@ import { m } from "~/i18n/messages";
 import { isClearComposerCommand, parseSideChatCommand } from "@t3tools/shared/composerTrigger";
 import { readWorktreeBaseBranch } from "../../worktreeRepositoryChoiceStore";
 import { armFreshSession, disarmFreshSession, readFreshSessionArm } from "./freshSessionArms";
+import { disarmPotetoMode, isPotetoModeActiveInSession, readPotetoModeArm } from "./potetoModeArms";
+import { COMPACT_COMMAND_PATTERN } from "@t3tools/client-runtime/state/context-window";
+import type { ThreadStructure } from "@t3tools/client-runtime/state/models";
 import {
   mergeDirectPreviewAnnotation,
   resolveBackgroundDraftWorkspaceOptions,
@@ -246,6 +249,7 @@ interface ComposerSendInput {
   readonly keepFullHistory: boolean;
   /** `/clear` can arm a fresh session on this thread. */
   readonly freshSessionAvailable: boolean;
+  readonly activeThreadRuns: ThreadStructure["runs"];
   readonly resumeCompactionTokens: number | null;
   readonly usageLimitsKey: string | null;
   readonly usageLimitsOffered: boolean;
@@ -344,6 +348,7 @@ export function useComposerSend(input: ComposerSendInput) {
     panelAnimationDurationMs,
     keepFullHistory,
     freshSessionAvailable,
+    activeThreadRuns,
     resumeCompactionTokens,
     usageLimitsKey,
     usageLimitsOffered,
@@ -950,6 +955,7 @@ export function useComposerSend(input: ComposerSendInput) {
       replyTo === null;
     if (freshSessionAvailable && composerHoldsOnlyText && isClearComposerCommand(trimmed)) {
       armFreshSession(routeThreadKey);
+      disarmPotetoMode(routeThreadKey);
       clearComposerDraftContent(composerDraftTarget);
       if (currentRouteThreadKeyRef.current === routeThreadKey) {
         promptRef.current = "";
@@ -959,6 +965,11 @@ export function useComposerSend(input: ComposerSendInput) {
     }
     // Read once: an arm made while this send is in flight belongs to the next message.
     const freshArm = freshSessionAvailable ? readFreshSessionArm(routeThreadKey) : undefined;
+    const potetoArm = readPotetoModeArm(routeThreadKey);
+    const potetoActiveInSession = isPotetoModeActiveInSession(
+      activeThreadRuns,
+      freshArm !== undefined,
+    );
     if (!hasSendableContent) {
       if (expiredTerminalContextCount > 0) {
         const toastCopy = buildExpiredTerminalContextToastCopy(
@@ -1030,7 +1041,15 @@ export function useComposerSend(input: ComposerSendInput) {
       phase,
       dispatchMode,
       freshContext: freshArm !== undefined,
+      potetoMode:
+        potetoArm !== undefined &&
+        !potetoActiveInSession &&
+        !COMPACT_COMMAND_PATTERN.test(messageTextForSend),
     });
+    const shouldSendPotetoMode =
+      potetoArm !== undefined &&
+      !potetoActiveInSession &&
+      !COMPACT_COMMAND_PATTERN.test(messageTextForSend);
     if (missingWorktreeBaseBranch) {
       setThreadError(
         threadIdForSend,
@@ -1402,9 +1421,13 @@ export function useComposerSend(input: ComposerSendInput) {
         usesAttachmentUploads: turnUsesAttachmentUploads,
         readFileBlockReason: () => readLiveAttachmentCapabilities().fileBlockReason,
         buildOutgoingMessageContext,
+        potetoMode: shouldSendPotetoMode,
         isCurrentSend: () => composerSendGenerationRef.current === sendGeneration,
         draftChangedDuringPreparation,
       });
+      if (shouldSendPotetoMode && potetoArm !== undefined) {
+        disarmPotetoMode(routeThreadKey, potetoArm);
+      }
       return;
     }
     const optimisticAttachments = optimisticMessageAttachments(composerAttachmentsSnapshot);
@@ -1595,6 +1618,7 @@ export function useComposerSend(input: ComposerSendInput) {
           interactionMode: DEFAULT_INTERACTION_MODE,
           dispatchMode: turnDispatchMode,
           ...(freshArm === undefined ? {} : { freshContext: true }),
+          ...(shouldSendPotetoMode ? { potetoMode: true } : {}),
           ...(bootstrap ? { bootstrap } : {}),
           createdAt: messageCreatedAt,
         },
@@ -1635,6 +1659,9 @@ export function useComposerSend(input: ComposerSendInput) {
         }
         setKeepFullHistory(routeThreadKey, false);
         if (freshArm !== undefined) disarmFreshSession(routeThreadKey, freshArm);
+        if (shouldSendPotetoMode && potetoArm !== undefined) {
+          disarmPotetoMode(routeThreadKey, potetoArm);
+        }
         clearUsageLimitsFor(routeThreadKey);
         if (turnUsesAttachmentUploads) {
           releaseDraftAttachments(composerAttachmentsSnapshot);

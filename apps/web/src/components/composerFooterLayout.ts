@@ -114,6 +114,11 @@ export function resolveRestingComposerControlsLayout(
   ) {
     step += 1;
   }
+  // Never replace visible controls with an overflow menu that is no narrower than keeping them visible.
+  const resolvedWidth = widthAtStep(step);
+  while (step > iconSteps && widthAtStep(step - 1) <= resolvedWidth) {
+    step -= 1;
+  }
   const hiddenCount = Math.max(0, step - iconSteps);
   const iconOnlyCount = Math.min(step, iconSteps);
   const minimumWidth = widthAtStep(step, input.minimumFixedWidth);

@@ -12,6 +12,7 @@ import { parse as parseYamlDocument } from "yaml";
 import type * as ServerConfig from "../config.ts";
 
 export const BUILTIN_PSTACK_PACK_ID = "pstack" as const;
+const BUILTIN_POTETO_MODE_SKILL_NAME = "poteto-mode" as const;
 const BUILTIN_PSTACK_PREFIX = `${BUILTIN_PSTACK_PACK_ID}:`;
 const PACK_HASH_FILENAME = ".pack-hash";
 const SENTINEL_SKILL_RELATIVE_PATH = NodePath.join("poteto-mode", "SKILL.md");
@@ -491,17 +492,48 @@ export function findReferencedBuiltinSkills(
 export function resolveBuiltinSkillPromptHint(
   prompt: string,
   pack: Pick<MaterializedBuiltinSkillPack, "skillsDir" | "skills"> | undefined,
+  options?: { readonly forcePotetoMode?: boolean },
 ): string | undefined {
   if (!pack) return undefined;
-  const matched = findReferencedBuiltinSkills(prompt, pack.skills);
+  const referenced = findReferencedBuiltinSkills(prompt, pack.skills);
+  const potetoSkill =
+    options?.forcePotetoMode === true
+      ? pack.skills.find((skill) => skill.name === BUILTIN_POTETO_MODE_SKILL_NAME)
+      : undefined;
+  const matched =
+    potetoSkill !== undefined && !referenced.some((skill) => skill.name === potetoSkill.name)
+      ? [potetoSkill, ...referenced]
+      : referenced;
   if (matched.length === 0) return undefined;
 
+  const header =
+    potetoSkill !== undefined
+      ? "Poteto mode is enabled for this session. Read the SKILL.md file(s) below before proceeding:"
+      : "Built-in pstack skill referenced. Read the SKILL.md file(s) below before proceeding:";
   const skillLines = matched.map((skill) => `- ${skill.name}: ${skill.path}`).join("\n");
   return [
-    "Built-in pstack skill referenced. Read the SKILL.md file(s) below before proceeding:",
+    header,
     skillLines,
     `Resolve relative ../<name>/SKILL.md and <plugin root>/skills/ references inside "${pack.skillsDir}".`,
   ].join("\n");
+}
+
+export function prependClaudePotetoModeDirective(
+  prompt: string,
+  pack: Pick<MaterializedBuiltinSkillPack, "skills"> | undefined,
+): string {
+  if (!pack) return prompt;
+  const potetoSkill = pack.skills.find((skill) => skill.name === BUILTIN_POTETO_MODE_SKILL_NAME);
+  if (!potetoSkill) return prompt;
+  if (
+    findReferencedBuiltinSkills(prompt, pack.skills).some(
+      (skill) => skill.name === BUILTIN_POTETO_MODE_SKILL_NAME,
+    )
+  ) {
+    return prompt;
+  }
+  const mention = `$${BUILTIN_POTETO_MODE_SKILL_NAME}`;
+  return prompt.trim().length === 0 ? mention : `${mention}\n\n${prompt}`;
 }
 
 export function prependBuiltinSkillPromptHint(

@@ -62,6 +62,7 @@ import { feedbackBannerItem } from "./chat/ComposerFeedback";
 import { freshSessionBannerItem } from "./chat/ComposerFreshSession";
 import { heldComposerSendBannerItem } from "./chat/ComposerHeldSendBanner";
 import { armFreshSession, disarmFreshSession, useFreshSessionArmed } from "./chat/freshSessionArms";
+import { disarmPotetoMode } from "./chat/potetoModeArms";
 import { cancelHeldComposerSend, useComposerSendHeld } from "./chat/preparingComposerImages";
 import { useUsageLimitsPanel } from "./chat/useUsageLimitsPanel";
 import { useWorktreeSetup } from "./chat/useWorktreeSetup";
@@ -2724,7 +2725,10 @@ export default function ChatView(props: ChatViewProps) {
     setKeepFullHistory(routeThreadKey, !keepFullHistory);
   };
   const toggleKeepFullHistoryStable = useStableCallback(toggleKeepFullHistory);
-  const armFreshSessionStable = useStableCallback(() => armFreshSession(routeThreadKey));
+  const armFreshSessionStable = useStableCallback(() => {
+    armFreshSession(routeThreadKey);
+    disarmPotetoMode(routeThreadKey);
+  });
   const handleRestoreThreadBranch = () => {
     if (!canWriteSourceControl) return;
     if (gitStatusQuery.data?.hasWorkingTreeChanges) {
@@ -3170,6 +3174,7 @@ export default function ChatView(props: ChatViewProps) {
     panelAnimationDurationMs,
     keepFullHistory,
     freshSessionAvailable: freshSessionCommandAvailable,
+    activeThreadRuns: serverProjection?.runs ?? EMPTY_RUNS,
     resumeCompactionTokens,
     usageLimitsKey,
     usageLimitsOffered,

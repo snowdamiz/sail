@@ -11,6 +11,8 @@ import {
   ComposerModelPicker,
   type RuntimeModeOption,
 } from "./ComposerFooterControls";
+import { ComposerPotetoModeToggle } from "./ComposerPotetoModeToggle";
+import type { ComposerPotetoModeState } from "./potetoModeArms";
 import {
   type EnvironmentId,
   type ModelSelection,
@@ -30,12 +32,15 @@ import {
   describeComposerEffort,
 } from "./ComposerModelEffort";
 import type { useComposerProviderModel } from "./useComposerProviderModel";
-import { resolveComposerControlsOwnership } from "./composerControlsOwnership";
+import {
+  resolveComposerControlsOwnership,
+  type ComposerRestingBlockId,
+} from "./composerControlsOwnership";
 
 /**
  * The composer footer controls: the model picker (which also holds effort, speed and
- * permissions), mode controls and the overflow menu for blocks that do not fit. Rendered in the
- * expanded footer or the resting controls host.
+ * permissions), Poteto mode toggle, mode controls and the overflow menu for blocks that do not
+ * fit. Rendered in the expanded footer or the resting controls host.
  */
 // Model and effort share one trigger; it stays filled while its popup is open.
 const MODEL_TRIGGER_STATES = "data-popup-open:bg-accent data-popup-open:text-foreground";
@@ -61,6 +66,8 @@ export function ComposerControlsBar(props: {
   defaultRuntimeMode: RuntimeMode | undefined;
   compatibleRuntimeModeOptions: ReadonlyArray<RuntimeModeOption>;
   handleRuntimeModeChange: (mode: RuntimeMode) => void;
+  potetoModeState: ComposerPotetoModeState;
+  onTogglePotetoMode: () => void;
   composerControlsCollapsed: boolean;
   composerControlsHidden: boolean;
   restingHiddenBlockCount: number;
@@ -105,6 +112,8 @@ export function ComposerControlsBar(props: {
     defaultRuntimeMode,
     compatibleRuntimeModeOptions,
     handleRuntimeModeChange,
+    potetoModeState,
+    onTogglePotetoMode,
     composerControlsCollapsed,
     composerControlsHidden,
     restingHiddenBlockCount: measuredHiddenBlockCount,
@@ -139,11 +148,13 @@ export function ComposerControlsBar(props: {
     hiddenBlockCount: restingHiddenBlockCount,
     hiddenBlockIds: hiddenRestingBlockIds,
     overflowShowsPermissions,
+    overflowShowsPotetoMode,
     pickerOwnsModeShortcut,
   } = resolveComposerControlsOwnership({
     matchesDefault: accessMatchesDefault || props.permissionsShownInStrip,
     collapsed: composerControlsCollapsed,
     measuredHiddenBlockCount,
+    showPotetoBlock: true,
   });
   const controlSize = composerControlsCollapsed ? "xs" : "sm";
   const gt = useGT();
@@ -165,24 +176,37 @@ export function ComposerControlsBar(props: {
     onPromptEdit,
   });
   const effort = describeComposerEffort(traitsInput, props.effortDisplay, controlSize, m);
-  const restingBlockDefs = showModeBlock
-    ? [
-        {
-          id: "mode",
-          content: (
-            <ComposerFooterModeControls
-              runtimeMode={compatibleRuntimeMode}
-              runtimeModeOptions={compatibleRuntimeModeOptions}
-              size={controlSize}
-              hidden={composerControlsHidden || restingHiddenBlockCount > 0}
-              accessDisplay={accessDisplay}
-              emphasized={!accessMatchesDefault}
-              onRuntimeModeChange={handleRuntimeModeChange}
-            />
-          ),
-        },
-      ]
-    : [];
+  const restingBlockDefs: Array<{ id: ComposerRestingBlockId; content: React.ReactNode }> = [
+    {
+      id: "poteto",
+      content: (
+        <ComposerPotetoModeToggle
+          state={potetoModeState}
+          size={controlSize}
+          disabled={isSendBusy}
+          onToggle={onTogglePotetoMode}
+        />
+      ),
+    },
+    ...(showModeBlock
+      ? [
+          {
+            id: "mode" as const,
+            content: (
+              <ComposerFooterModeControls
+                runtimeMode={compatibleRuntimeMode}
+                runtimeModeOptions={compatibleRuntimeModeOptions}
+                size={controlSize}
+                hidden={composerControlsHidden || overflowShowsPermissions}
+                accessDisplay={accessDisplay}
+                emphasized={!accessMatchesDefault}
+                onRuntimeModeChange={handleRuntimeModeChange}
+              />
+            ),
+          },
+        ]
+      : []),
+  ];
   // Its own element, so typing (which rebuilds the controls around it) leaves it cached.
   const composerModelPicker = (
     <ComposerModelPicker
@@ -306,7 +330,11 @@ export function ComposerControlsBar(props: {
             hidden={composerControlsHidden || hiddenRestingBlockIds.length === 0}
             // Permissions join the overflow only when their normal home is in it.
             showPermissions={overflowShowsPermissions}
+            showPotetoMode={overflowShowsPotetoMode}
+            potetoModeState={potetoModeState}
+            potetoModeDisabled={isSendBusy}
             onRuntimeModeChange={handleRuntimeModeChange}
+            onTogglePotetoMode={onTogglePotetoMode}
           />
         </div>
       </>

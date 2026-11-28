@@ -37,6 +37,7 @@ import {
   mergeBuiltinSkills,
   parseBuiltinSkillFrontmatter,
   prependBuiltinSkillPromptHint,
+  prependClaudePotetoModeDirective,
   resolveBuiltinSkillPromptHint,
   resolveBundledPstackSourceDir,
   rewriteUnprefixedBuiltinClaudeCommand,
@@ -372,6 +373,104 @@ describe("BuiltinSkills", () => {
       skills,
     });
     assert.equal(slashMessage.message.content, "/pstack:poteto-mode fix bug");
+  });
+
+  it("forces poteto-mode hints for non-Claude prompts and prepends $poteto-mode for Claude without duplication", () => {
+    const pack = {
+      skillsDir: "/state/builtin-skills/pstack/skills",
+      skills: [
+        {
+          name: "poteto-mode",
+          description: "Poteto mode",
+          path: "/state/builtin-skills/pstack/skills/poteto-mode/SKILL.md",
+          scope: "builtin",
+          enabled: true,
+          userInvocationOnly: true,
+        },
+        {
+          name: "arena",
+          description: "Arena",
+          path: "/state/builtin-skills/pstack/skills/arena/SKILL.md",
+          scope: "builtin",
+          enabled: true,
+          userInvocationOnly: true,
+        },
+      ] satisfies ReadonlyArray<ServerProviderSkill>,
+    };
+
+    const forcedHint = resolveBuiltinSkillPromptHint("Ship the toggle", pack, {
+      forcePotetoMode: true,
+    });
+    assert.isDefined(forcedHint);
+    assert.include(forcedHint, "Poteto mode is enabled for this session");
+    assert.include(
+      forcedHint,
+      "- poteto-mode: /state/builtin-skills/pstack/skills/poteto-mode/SKILL.md",
+    );
+
+    const combinedHint = resolveBuiltinSkillPromptHint("Run $arena on this", pack, {
+      forcePotetoMode: true,
+    });
+    assert.isDefined(combinedHint);
+    assert.include(
+      combinedHint,
+      "- poteto-mode: /state/builtin-skills/pstack/skills/poteto-mode/SKILL.md",
+    );
+    assert.include(combinedHint, "- arena: /state/builtin-skills/pstack/skills/arena/SKILL.md");
+
+    const dedupedHint = resolveBuiltinSkillPromptHint("Use $poteto-mode now", pack, {
+      forcePotetoMode: true,
+    });
+    assert.isDefined(dedupedHint);
+    assert.equal(dedupedHint.split("- poteto-mode:").length - 1, 1);
+
+    assert.equal(
+      prependClaudePotetoModeDirective("Ship the toggle", pack),
+      "$poteto-mode\n\nShip the toggle",
+    );
+    assert.equal(prependClaudePotetoModeDirective("   ", pack), "$poteto-mode");
+    assert.equal(
+      prependClaudePotetoModeDirective("Use $poteto-mode here", pack),
+      "Use $poteto-mode here",
+    );
+    assert.equal(
+      prependClaudePotetoModeDirective("/poteto-mode ship it", pack),
+      "/poteto-mode ship it",
+    );
+    assert.equal(
+      prependClaudePotetoModeDirective("/pstack:poteto-mode ship it", pack),
+      "/pstack:poteto-mode ship it",
+    );
+
+    const skills = new Map([
+      [
+        "poteto-mode",
+        {
+          path: "/state/builtin-skills/pstack/skills/poteto-mode/SKILL.md",
+          scope: "builtin",
+          userInvocationOnly: true,
+        },
+      ],
+    ]);
+    const directiveText = prependClaudePotetoModeDirective("Ship the toggle", pack);
+    const directMessage = makeClaudeUserMessage({
+      text: directiveText,
+      skills,
+    });
+    assert.deepEqual(directMessage.message.content, [
+      { type: "text", text: "/pstack:poteto-mode\n\nShip the toggle" },
+    ]);
+
+    const handoffPrefix = "Prior session context.\n\n";
+    const claudeMessage = makeClaudeUserMessage({
+      text: handoffPrefix + directiveText,
+      skills,
+      skillMentionsFrom: handoffPrefix.length,
+    });
+    assert.deepEqual(claudeMessage.message.content, [
+      { type: "text", text: "Prior session context.\n\n/poteto-mode\n\nShip the toggle" },
+      { type: "text", text: "/pstack:poteto-mode\n\nShip the toggle" },
+    ]);
   });
 });
 

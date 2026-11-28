@@ -168,6 +168,8 @@ export interface ThreadManagementSendInput {
   readonly mode: ThreadManagementSendMode;
   /** Start a new provider session; the orchestrator queues it instead of steering. */
   readonly freshContext?: boolean;
+  /** Trigger built-in pstack poteto-mode once for this session. */
+  readonly potetoMode?: boolean;
   /** Ask the run for a result as data matching this JSON Schema; it is queued, never steered. */
   readonly outputSchema?: Readonly<Record<string, Schema.Json>>;
   readonly createdBy: OrchestrationV2Actor;
@@ -923,7 +925,7 @@ const make = Effect.gen(function* () {
     const steerableRun = latestSteerableRun(target);
     // A fresh send, or one that asks for a result, never joins a running turn.
     const mode =
-      (input.freshContext || input.outputSchema !== undefined) &&
+      (input.freshContext || input.potetoMode || input.outputSchema !== undefined) &&
       (input.mode === "steer" || input.mode === "restart")
         ? "queue"
         : input.mode;
@@ -984,6 +986,7 @@ const make = Effect.gen(function* () {
       attachments: input.attachments,
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
       ...(input.freshContext ? { freshContext: true } : {}),
+      ...(input.potetoMode ? { potetoMode: true } : {}),
       ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
       dispatchMode,
       ...(mode === "auto" ? { deliveryIntent: "auto" } : {}),
