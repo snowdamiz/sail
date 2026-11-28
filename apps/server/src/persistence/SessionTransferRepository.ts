@@ -67,8 +67,13 @@ export interface SessionTransferTransitionPhaseInput {
   readonly destinationMachineId?: SessionTransferRecord["destinationMachineId"];
   readonly destinationProjectId?: ProjectId | null;
   readonly destinationThreadId?: ThreadId | null;
+  readonly sourceWasRunning?: boolean;
+  readonly autoResume?: boolean;
+  readonly hadPendingRuntimeRequest?: boolean;
   readonly destinationBranch?: SessionTransferRecord["destinationBranch"];
   readonly destinationWorktreePath?: SessionTransferRecord["destinationWorktreePath"];
+  readonly modelSelectionOverride?: SessionTransferRecord["modelSelectionOverride"];
+  readonly cloneDestinationPath?: SessionTransferRecord["cloneDestinationPath"];
   readonly warnings?: ReadonlyArray<string>;
   readonly updatedAt: IsoDateTime;
   readonly completedAt?: IsoDateTime | null;
@@ -483,10 +488,27 @@ const make = Effect.gen(function* () {
                 input.destinationBranch !== undefined
                   ? input.destinationBranch
                   : existing.destinationBranch,
+              sourceWasRunning:
+                input.sourceWasRunning !== undefined
+                  ? input.sourceWasRunning
+                  : existing.sourceWasRunning,
+              autoResume: input.autoResume !== undefined ? input.autoResume : existing.autoResume,
+              hadPendingRuntimeRequest:
+                input.hadPendingRuntimeRequest !== undefined
+                  ? input.hadPendingRuntimeRequest
+                  : existing.hadPendingRuntimeRequest,
               destinationWorktreePath:
                 input.destinationWorktreePath !== undefined
                   ? input.destinationWorktreePath
                   : existing.destinationWorktreePath,
+              modelSelectionOverride:
+                input.modelSelectionOverride !== undefined
+                  ? input.modelSelectionOverride
+                  : existing.modelSelectionOverride,
+              cloneDestinationPath:
+                input.cloneDestinationPath !== undefined
+                  ? input.cloneDestinationPath
+                  : existing.cloneDestinationPath,
               warnings: input.warnings !== undefined ? input.warnings : existing.warnings,
               updatedAt: input.updatedAt,
               completedAt: nextCompletedAt,

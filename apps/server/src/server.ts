@@ -97,6 +97,7 @@ import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as SecretCheck from "./secrets/SecretCheck.ts";
 import * as BoatCredentialSync from "./boat/BoatCredentialSync.ts";
 import * as BoatProviderSync from "./boat/BoatProviderSync.ts";
+import * as SessionTransferCoordinator from "./boat/SessionTransferCoordinator.ts";
 import * as ProviderAuthSync from "./provider/ProviderAuthSync.ts";
 import * as ProjectCredentials from "./secrets/ProjectCredentials.ts";
 import * as SecretResolver from "./secrets/SecretResolver.ts";
@@ -990,6 +991,12 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
   ),
+  // Reconciles any in-flight session transfers left behind by a server restart.
+  Layer.effectDiscard(
+    SessionTransferCoordinator.SessionTransferCoordinator.pipe(
+      Effect.flatMap((coordinator) => coordinator.reconcileOnStartup),
+    ),
+  ),
 ).pipe(
   Layer.provide(
     PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
@@ -997,11 +1004,16 @@ const layerMakeRoutes = Layer.mergeAll(
   // delegate_task to a linked environment, from /mcp and the follower above.
   Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
   Layer.provide(
-    SessionTransferEndpointService.layer.pipe(
-      Layer.provide(RuntimeLayer.layerEventSink),
+    SessionTransferCoordinator.layer.pipe(
+      Layer.provideMerge(
+        SessionTransferEndpointService.layer.pipe(
+          Layer.provide(RuntimeLayer.layerEventSink),
+          Layer.provide(ProjectionStoreV2.layer),
+          Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
+          Layer.provide(WorkspaceBundle.layer),
+        ),
+      ),
       Layer.provide(ProjectionStoreV2.layer),
-      Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
-      Layer.provide(WorkspaceBundle.layer),
     ),
   ),
   // Links agents ask for: shown in a thread from /mcp, answered over WebSocket.
