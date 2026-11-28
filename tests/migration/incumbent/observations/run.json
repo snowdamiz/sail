@@ -103,6 +103,10 @@
     "x64Receipt": "../runtime/v0.1.17-linux-x64.json",
     "scope": "Published CLI shell installer, desktop shell installer and Debian package on both Linux architectures. The arm64 AppImage booted in extract-and-run mode. The emulated x64 AppImage runtime exited 127 and its extracted AppRun booted. The installed CLI and all four tested desktop payloads opened the copied Replay thread."
   },
+  "ociRuntime": {
+    "receipt": "../runtime/v0.1.17-oci.json",
+    "scope": "The published linux/arm64 and linux/amd64 manifests each passed the v2 wire check from a fresh data mount and opened the saved Replay thread from a copied mount."
+  },
   "negativeControls": {
     "result": "pass",
     "receipt": "harness-controls/receipt.json"

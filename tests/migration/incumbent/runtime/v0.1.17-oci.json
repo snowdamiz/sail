@@ -1,0 +1,108 @@
+{
+  "release": "v0.1.17",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "imageIndexDigest": "sha256:15f72134abee1c7bbb958a542a2870187401cd87c74099d9758df3e5bd9bc7e5",
+  "entrypoint": ["/usr/bin/tini", "--", "/usr/local/bin/sail-entrypoint"],
+  "containerCommand": "Default published entrypoint with a scratch /data bind mount and loopback port mapping",
+  "serverHome": "/data/sail",
+  "copiedDatabase": {
+    "path": "/data/sail/userdata/statev2.sqlite",
+    "sha256BeforeBoot": "729b1b31578df8ea0c48f3ab0b834c9d259451e32ad15cc1dc110aac9b9ef27a"
+  },
+  "wireFixture": "../../wire/incumbent-v2.json",
+  "startupPairingUrlPrinted": false,
+  "platforms": {
+    "arm64": {
+      "image": "ghcr.io/snowdamiz/sail-server@sha256:6bb362ecf3f709a00160094af40931b3a63e1d5fff643d1d9a7d3fe0ccd38f32",
+      "imageOs": "linux",
+      "imageArchitecture": "arm64",
+      "runner": "Local Docker arm64 engine",
+      "cases": {
+        "fresh": {
+          "cliVersion": "t3 v0.1.17",
+          "descriptor": {
+            "platform": {
+              "os": "linux",
+              "arch": "arm64"
+            },
+            "serverVersion": "0.1.17",
+            "orchestrationProtocolVersion": 2,
+            "databaseMigration": 118
+          },
+          "serverUid": 1000,
+          "cwd": "/data/home",
+          "incumbentWireCheck": "Incumbent v2 wire checks passed.",
+          "containerExitCode": 130,
+          "runtimeRecordRemoved": true,
+          "loopbackListenerClosed": true
+        },
+        "copied": {
+          "cliVersion": "t3 v0.1.17",
+          "descriptor": {
+            "platform": {
+              "os": "linux",
+              "arch": "arm64"
+            },
+            "serverVersion": "0.1.17",
+            "orchestrationProtocolVersion": 2,
+            "databaseMigration": 118
+          },
+          "serverUid": 1000,
+          "cwd": "/data/home",
+          "threadTitle": "Compatibility replay",
+          "messageCount": 3,
+          "replayTextPresent": true,
+          "containerExitCode": 130,
+          "runtimeRecordRemoved": true,
+          "loopbackListenerClosed": true
+        }
+      }
+    },
+    "amd64": {
+      "image": "ghcr.io/snowdamiz/sail-server@sha256:df3eac36a85e62a304320c1df8cdc66e0978bae556b3f4e0814aa5dc66f3b218",
+      "imageOs": "linux",
+      "imageArchitecture": "amd64",
+      "runner": "Emulated amd64 on local Docker arm64 engine",
+      "cases": {
+        "fresh": {
+          "cliVersion": "t3 v0.1.17",
+          "descriptor": {
+            "platform": {
+              "os": "linux",
+              "arch": "x64"
+            },
+            "serverVersion": "0.1.17",
+            "orchestrationProtocolVersion": 2,
+            "databaseMigration": 118
+          },
+          "serverUid": 1000,
+          "cwd": "/data/home",
+          "incumbentWireCheck": "Incumbent v2 wire checks passed.",
+          "containerExitCode": 130,
+          "runtimeRecordRemoved": true,
+          "loopbackListenerClosed": true
+        },
+        "copied": {
+          "cliVersion": "t3 v0.1.17",
+          "descriptor": {
+            "platform": {
+              "os": "linux",
+              "arch": "x64"
+            },
+            "serverVersion": "0.1.17",
+            "orchestrationProtocolVersion": 2,
+            "databaseMigration": 118
+          },
+          "serverUid": 1000,
+          "cwd": "/data/home",
+          "threadTitle": "Compatibility replay",
+          "messageCount": 3,
+          "replayTextPresent": true,
+          "containerExitCode": 130,
+          "runtimeRecordRemoved": true,
+          "loopbackListenerClosed": true
+        }
+      }
+    }
+  }
+}
