@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "read-only-chat",
+  "sourceSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+  "client": "Chromium headless shell 156.0.8078.4",
+  "server": "Packaged Sail v0.1.18",
+  "profile": {
+    "surface": "server-served-web",
+    "platform": "macOS arm64",
+    "origin": "direct loopback",
+    "browser": "Chromium/156.0.8078.4",
+    "locale": "en",
+    "theme": "light",
+    "motion": "standard",
+    "viewport": {
+      "width": 1100,
+      "height": 780,
+      "scale": 2,
+      "zoom": 1
+    },
+    "fonts": [
+      "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+      "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+    ]
+  },
+  "trace": [
+    {
+      "action": "pairReadOnlyCookieSession",
+      "observed": {
+        "authenticated": true,
+        "status": 200,
+        "scopes": ["orchestration:read"],
+        "permissions": ["orchestration:read"]
+      }
+    },
+    {
+      "action": "typeDraftAndPressEnter",
+      "observed": {
+        "title": "Compatibility replay",
+        "draft": "A read-only draft",
+        "editable": true,
+        "composer": "Message Compatibility replay",
+        "focused": true,
+        "submitDisabled": true,
+        "submitLabel": "This connection cannot change threads.",
+        "permissionNotice": "Permissions have changed for Compatibility host",
+        "controls": [
+          {
+            "name": "Attach files",
+            "disabled": false
+          },
+          {
+            "name": "Showcase",
+            "disabled": false
+          },
+          {
+            "name": "Enable Poteto mode for this session",
+            "disabled": false
+          },
+          {
+            "name": "More composer controls",
+            "disabled": false
+          },
+          {
+            "name": "Start voice input",
+            "disabled": true
+          },
+          {
+            "name": "This connection cannot change threads.",
+            "disabled": true
+          }
+        ]
+      }
+    },
+    {
+      "action": "dispatchMessageFromReadOnlyCookieSession",
+      "observed": {
+        "ticketHttpStatus": 200,
+        "readBefore": "Success",
+        "readAfter": "Success",
+        "priorRuns": 1,
+        "priorMessages": 3,
+        "resultingRuns": 1,
+        "resultingMessages": 3,
+        "projectionUnchanged": true,
+        "dispatch": {
+          "_tag": "Failure",
+          "cause": [
+            {
+              "_tag": "Fail",
+              "error": {
+                "_tag": "EnvironmentAuthorizationError",
+                "message": "The authenticated token is missing required scope: orchestration:operate.",
+                "requiredScope": "orchestration:operate",
+                "requiredPermission": "orchestration:operate"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "action": "dispatchSameMessageWithOperateScope",
+      "observed": {
+        "grants": {
+          "authenticated": true,
+          "status": 200,
+          "scopes": ["orchestration:read", "orchestration:operate"],
+          "permissions": ["orchestration:read", "orchestration:operate"]
+        },
+        "submitEnabled": true,
+        "accepted": true,
+        "resultingRuns": 2
+      }
+    }
+  ],
+  "screenshotSha256": "56d8eb923726d0f297a6328963eb803c1368df0c8aa779d08ef1c28975c86ebc"
+}

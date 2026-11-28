@@ -86,6 +86,14 @@ Close the sidebar and thread details, capture the pending question, then click *
 
 Reopen the same thread URL. The published client shows **Pair with this environment** on that fresh visit. Redeem a new link in the same browser profile and reopen the original thread. The [capture receipt](observations/served-chromium-macos/stop-and-relink/receipt.json) records socket closure, rejection of the revoked cookie, and restoration of the same interrupted run. This covers the directly served loopback browser and a Replay run awaiting input.
 
+## Capture read-only chat
+
+Start the scratch server with `T3CODE_ENVIRONMENT_LABEL="Compatibility host"` so the permissions notice shows the fixture name. Seed the Showcase turn, mint a pairing link with `pair --scope orchestration:read`, and open the settled thread. Type **A read-only draft** and press Enter. The composer keeps the draft and Send stays disabled with the accessible label **This connection cannot change threads.**
+
+Use the same browser cookie to request a v2 WebSocket ticket. Read the projection, send the [Replay fixture's message request](../wire/incumbent-replay-v2.json) with a fresh command ID and this thread's ID, and read the projection again. The server returns `EnvironmentAuthorizationError` requiring `orchestration:operate` and preserves one run and three messages. In a separate browser profile with both scopes, the same request succeeds and creates a second run.
+
+The [read-only receipt](observations/served-chromium-macos/read-only-chat/receipt.json) records the published and candidate behavior. The candidate shows the Poteto control alongside the disabled Send action. The whole-window comparison records 3,478 changed composer pixels and 219 changed pixels from the independently seeded runs' elapsed-time labels.
+
 ## Capture chat loading and reconnect
 
 Run the packaged server with the seeded home. Put [the loopback gate](thread-load-gate.mjs) in front of it and pair the browser at the gate's port. Use a fresh origin or browser profile so the client has no saved transcript for the thread.

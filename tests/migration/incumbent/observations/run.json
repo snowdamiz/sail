@@ -186,6 +186,11 @@
     "receipt": "served-chromium-macos/stop-and-relink/receipt.json",
     "scope": "Published served Chromium on macOS. Stopping a Replay Question run awaiting input interrupted that same run and restored the composer. Cookie revocation ended the connection and showed the pairing form on a fresh visit. A new link reopened the same stopped thread."
   },
+  "readOnlyChat": {
+    "result": "observed",
+    "receipt": "served-chromium-macos/read-only-chat/receipt.json",
+    "scope": "Published and locally built macOS arm64 packages, direct loopback Chromium cookie session. Read-only draft editing remained available, Enter left the draft unsent, and typed denial preserved the projection. The operate-scope control succeeded on both builds. The visible Poteto control differs."
+  },
   "approval": {
     "result": "pass",
     "receipt": "served-chromium-macos/approval/receipt.json"

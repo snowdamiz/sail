@@ -1,0 +1,469 @@
+{
+  "schemaVersion": 1,
+  "fixture": "read-only-chat",
+  "scope": "Server-served Chromium on macOS arm64 with direct loopback cookie sessions and a configured Replay provider",
+  "fixtureLabel": "Compatibility host",
+  "setup": {
+    "recording": "Replay (dev) Showcase",
+    "prompt": "Give me a short tour",
+    "capture": "Chromium headless shell via Playwright Core 1.64.1",
+    "grant": "One-time pairing link with only orchestration:read",
+    "control": "Separate browser profile paired with orchestration:read and orchestration:operate, then the same RPC payload",
+    "imageState": "Capture after Enter preserved the unsent draft, before the operate control sent it"
+  },
+  "browserPanelCheck": {
+    "client": "Acid Browser panel",
+    "initial": {
+      "auth": {
+        "authenticated": true,
+        "permissions": ["orchestration:read"],
+        "scopes": ["orchestration:read"],
+        "status": 200
+      },
+      "title": "Compatibility replay"
+    },
+    "afterEnter": {
+      "disabled": true,
+      "draft": "A read-only draft",
+      "focus": "Message Compatibility replay",
+      "submitLabel": "This connection cannot change threads.",
+      "title": "Compatibility replay"
+    },
+    "wire": {
+      "denial": {
+        "_tag": "Failure",
+        "cause": [
+          {
+            "_tag": "Fail",
+            "error": {
+              "_tag": "EnvironmentAuthorizationError",
+              "message": "The authenticated token is missing required scope: orchestration:operate.",
+              "requiredPermission": "orchestration:operate",
+              "requiredScope": "orchestration:operate"
+            }
+          }
+        ]
+      },
+      "priorMessages": 3,
+      "priorRuns": 1,
+      "projectionUnchanged": true,
+      "readAfter": "Success",
+      "readBefore": "Success",
+      "scopes": ["orchestration:read"],
+      "threadId": "mcp:a9042bd6-20ef-44d5-a8b5-52080f161aac",
+      "ticketHttpStatus": 200
+    }
+  },
+  "captures": {
+    "published": {
+      "package": {
+        "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+        "archive": "Sail-0.1.17-arm64.zip",
+        "archiveSha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+        "packageReceipt": "../../../runtime/v0.1.17-macos-arm64.json"
+      },
+      "capture": "published/receipt.json",
+      "server": {
+        "version": "0.1.17",
+        "migration": 118,
+        "protocol": 2,
+        "threadId": "mcp:814d7e29-ba5e-40cc-bc9a-99f8d75de246"
+      },
+      "readOnly": {
+        "beforeEnter": {
+          "title": "Compatibility replay",
+          "draft": "A read-only draft",
+          "editable": true,
+          "composer": "Message Compatibility replay",
+          "focused": true,
+          "submitDisabled": true,
+          "submitLabel": "This connection cannot change threads.",
+          "controls": [
+            {
+              "name": "Attach files",
+              "disabled": false
+            },
+            {
+              "name": "Showcase",
+              "disabled": false
+            },
+            {
+              "name": "More composer controls",
+              "disabled": false
+            },
+            {
+              "name": "Start voice input",
+              "disabled": true
+            },
+            {
+              "name": "This connection cannot change threads.",
+              "disabled": true
+            }
+          ],
+          "viewport": {
+            "width": 1100,
+            "height": 780,
+            "scale": 2,
+            "zoom": 1
+          },
+          "fonts": [
+            "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+            "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+          ],
+          "locale": "en",
+          "theme": "light"
+        },
+        "afterEnter": {
+          "title": "Compatibility replay",
+          "draft": "A read-only draft",
+          "editable": true,
+          "composer": "Message Compatibility replay",
+          "focused": true,
+          "submitDisabled": true,
+          "submitLabel": "This connection cannot change threads.",
+          "controls": [
+            {
+              "name": "Attach files",
+              "disabled": false
+            },
+            {
+              "name": "Showcase",
+              "disabled": false
+            },
+            {
+              "name": "More composer controls",
+              "disabled": false
+            },
+            {
+              "name": "Start voice input",
+              "disabled": true
+            },
+            {
+              "name": "This connection cannot change threads.",
+              "disabled": true
+            }
+          ],
+          "viewport": {
+            "width": 1100,
+            "height": 780,
+            "scale": 2,
+            "zoom": 1
+          },
+          "fonts": [
+            "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+            "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+          ],
+          "locale": "en",
+          "theme": "light"
+        },
+        "denial": {
+          "ticketHttpStatus": 200,
+          "readBefore": "Success",
+          "readAfter": "Success",
+          "priorRuns": 1,
+          "priorMessages": 3,
+          "resultingRuns": 1,
+          "resultingMessages": 3,
+          "projectionUnchanged": true,
+          "dispatch": {
+            "_tag": "Failure",
+            "cause": [
+              {
+                "_tag": "Fail",
+                "error": {
+                  "_tag": "EnvironmentAuthorizationError",
+                  "message": "The authenticated token is missing required scope: orchestration:operate.",
+                  "requiredScope": "orchestration:operate",
+                  "requiredPermission": "orchestration:operate"
+                }
+              }
+            ]
+          }
+        },
+        "permissionNotice": "Permissions have changed for Compatibility host"
+      },
+      "operateControl": {
+        "writable": {
+          "title": "Compatibility replay",
+          "draft": "A read-only draft",
+          "editable": true,
+          "composer": "Message Compatibility replay",
+          "focused": true,
+          "submitDisabled": false,
+          "submitLabel": "Submit message",
+          "controls": [
+            {
+              "name": "Attach files",
+              "disabled": false
+            },
+            {
+              "name": "Showcase",
+              "disabled": false
+            },
+            {
+              "name": "More composer controls",
+              "disabled": false
+            },
+            {
+              "name": "Start voice input",
+              "disabled": false
+            },
+            {
+              "name": "Submit message",
+              "disabled": false
+            }
+          ],
+          "viewport": {
+            "width": 1100,
+            "height": 780,
+            "scale": 2,
+            "zoom": 1
+          },
+          "fonts": [
+            "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+            "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+          ],
+          "locale": "en",
+          "theme": "light"
+        },
+        "accepted": {
+          "ticketHttpStatus": 200,
+          "readBefore": "Success",
+          "readAfter": "Success",
+          "priorRuns": 1,
+          "priorMessages": 3,
+          "resultingRuns": 2,
+          "resultingMessages": 4,
+          "projectionUnchanged": false,
+          "dispatch": {
+            "_tag": "Success",
+            "value": {
+              "sequence": 78
+            }
+          }
+        }
+      }
+    },
+    "candidate": {
+      "package": {
+        "sourceSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+        "archive": "Sail-0.1.18-arm64.zip",
+        "archiveSha256": "139921c785019bd432b8582c26eb8c5fc5c80c4e9b2b4e4d9df98e8323cc98b7",
+        "packageReceipt": "../../electron-macos-arm64/migration-head-9982ba07/package-receipt.json"
+      },
+      "capture": "candidate/receipt.json",
+      "server": {
+        "version": "0.1.18",
+        "migration": 119,
+        "protocol": 2,
+        "threadId": "mcp:e9ba6009-d621-4cab-8c61-8a8ba27f210c"
+      },
+      "readOnly": {
+        "beforeEnter": {
+          "title": "Compatibility replay",
+          "draft": "A read-only draft",
+          "editable": true,
+          "composer": "Message Compatibility replay",
+          "focused": true,
+          "submitDisabled": true,
+          "submitLabel": "This connection cannot change threads.",
+          "controls": [
+            {
+              "name": "Attach files",
+              "disabled": false
+            },
+            {
+              "name": "Showcase",
+              "disabled": false
+            },
+            {
+              "name": "Enable Poteto mode for this session",
+              "disabled": false
+            },
+            {
+              "name": "More composer controls",
+              "disabled": false
+            },
+            {
+              "name": "Start voice input",
+              "disabled": true
+            },
+            {
+              "name": "This connection cannot change threads.",
+              "disabled": true
+            }
+          ],
+          "viewport": {
+            "width": 1100,
+            "height": 780,
+            "scale": 2,
+            "zoom": 1
+          },
+          "fonts": [
+            "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+            "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+          ],
+          "locale": "en",
+          "theme": "light"
+        },
+        "afterEnter": {
+          "title": "Compatibility replay",
+          "draft": "A read-only draft",
+          "editable": true,
+          "composer": "Message Compatibility replay",
+          "focused": true,
+          "submitDisabled": true,
+          "submitLabel": "This connection cannot change threads.",
+          "controls": [
+            {
+              "name": "Attach files",
+              "disabled": false
+            },
+            {
+              "name": "Showcase",
+              "disabled": false
+            },
+            {
+              "name": "Enable Poteto mode for this session",
+              "disabled": false
+            },
+            {
+              "name": "More composer controls",
+              "disabled": false
+            },
+            {
+              "name": "Start voice input",
+              "disabled": true
+            },
+            {
+              "name": "This connection cannot change threads.",
+              "disabled": true
+            }
+          ],
+          "viewport": {
+            "width": 1100,
+            "height": 780,
+            "scale": 2,
+            "zoom": 1
+          },
+          "fonts": [
+            "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+            "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+          ],
+          "locale": "en",
+          "theme": "light"
+        },
+        "denial": {
+          "ticketHttpStatus": 200,
+          "readBefore": "Success",
+          "readAfter": "Success",
+          "priorRuns": 1,
+          "priorMessages": 3,
+          "resultingRuns": 1,
+          "resultingMessages": 3,
+          "projectionUnchanged": true,
+          "dispatch": {
+            "_tag": "Failure",
+            "cause": [
+              {
+                "_tag": "Fail",
+                "error": {
+                  "_tag": "EnvironmentAuthorizationError",
+                  "message": "The authenticated token is missing required scope: orchestration:operate.",
+                  "requiredScope": "orchestration:operate",
+                  "requiredPermission": "orchestration:operate"
+                }
+              }
+            ]
+          }
+        },
+        "permissionNotice": "Permissions have changed for Compatibility host"
+      },
+      "operateControl": {
+        "writable": {
+          "title": "Compatibility replay",
+          "draft": "A read-only draft",
+          "editable": true,
+          "composer": "Message Compatibility replay",
+          "focused": true,
+          "submitDisabled": false,
+          "submitLabel": "Submit message",
+          "controls": [
+            {
+              "name": "Attach files",
+              "disabled": false
+            },
+            {
+              "name": "Showcase",
+              "disabled": false
+            },
+            {
+              "name": "Enable Poteto mode for this session",
+              "disabled": false
+            },
+            {
+              "name": "More composer controls",
+              "disabled": false
+            },
+            {
+              "name": "Start voice input",
+              "disabled": false
+            },
+            {
+              "name": "Submit message",
+              "disabled": false
+            }
+          ],
+          "viewport": {
+            "width": 1100,
+            "height": 780,
+            "scale": 2,
+            "zoom": 1
+          },
+          "fonts": [
+            "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+            "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+          ],
+          "locale": "en",
+          "theme": "light"
+        },
+        "accepted": {
+          "ticketHttpStatus": 200,
+          "readBefore": "Success",
+          "readAfter": "Success",
+          "priorRuns": 1,
+          "priorMessages": 3,
+          "resultingRuns": 2,
+          "resultingMessages": 4,
+          "projectionUnchanged": false,
+          "dispatch": {
+            "_tag": "Success",
+            "value": {
+              "sequence": 80
+            }
+          }
+        }
+      }
+    }
+  },
+  "comparison": "comparison.json",
+  "observed": {
+    "readOnlyBehavior": "pass",
+    "wholeWindowParity": "fail",
+    "controlChange": "The candidate exposes the session-scoped Poteto control and retains the disabled Send action.",
+    "controlChangeSource": "386d27b43c1b2e5eadbf4856dd096fba3a4ba866",
+    "pixelDifferences": [
+      {
+        "region": "Elapsed-time label",
+        "differentPixels": 219,
+        "published": "Worked for 5.7s",
+        "candidate": "Worked for 5.8s"
+      },
+      {
+        "region": "Composer control row",
+        "differentPixels": 3478,
+        "source": "Session-scoped Poteto control and the associated Showcase shift"
+      }
+    ]
+  }
+}
