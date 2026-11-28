@@ -242,6 +242,8 @@ import * as CursorUsageAccounts from "@t3tools/provider-cursor/server/CursorUsag
 import * as UsageService from "./usage/UsageService.ts";
 import * as CodexUsageHistory from "./usage/CodexUsageHistory.ts";
 import * as RuntimeLayer from "./orchestration-v2/runtimeLayer.ts";
+import * as SessionTransferEndpointService from "./orchestration-v2/SessionTransferEndpointService.ts";
+import * as WorkspaceBundle from "./vcs/WorkspaceBundle.ts";
 import * as ThreadViewers from "./orchestration-v2/ThreadViewers.ts";
 import * as WorkflowForge from "./workflows/WorkflowForge.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
@@ -968,6 +970,8 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerDesktopReadinessProofRoute,
     ServerHttp.layerAssetRoute,
     ServerHttp.layerAttachmentUploadRoute,
+    ServerHttp.layerSessionTransferBundleDownloadRoute,
+    ServerHttp.layerSessionTransferBundleUploadRoute,
     GuestHttp.layer,
     LinkThreadHttp.layer,
     DeviceHubProxy.layer,
@@ -992,6 +996,14 @@ const layerMakeRoutes = Layer.mergeAll(
   ),
   // delegate_task to a linked environment, from /mcp and the follower above.
   Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
+  Layer.provide(
+    SessionTransferEndpointService.layer.pipe(
+      Layer.provide(RuntimeLayer.layerEventSink),
+      Layer.provide(ProjectionStoreV2.layer),
+      Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
+      Layer.provide(WorkspaceBundle.layer),
+    ),
+  ),
   // Links agents ask for: shown in a thread from /mcp, answered over WebSocket.
   Layer.provide(PeerLinkRequests.layer),
   // Share the service so HTTP/WS clients single-flight reads and invalidate each other's cached patches.
