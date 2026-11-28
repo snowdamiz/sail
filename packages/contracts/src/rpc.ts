@@ -510,6 +510,28 @@ import {
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 import { BoatError, BoatEvent, BoatInvokeInput, BoatInvokeResult, BoatNotice } from "./boat.ts";
+import {
+  SessionTransferAbortInput,
+  SessionTransferAbortResult,
+  SessionTransferCancelInput,
+  SessionTransferCommitImportInput,
+  SessionTransferCommitImportResult,
+  SessionTransferError,
+  SessionTransferFinalizeSourceInput,
+  SessionTransferFinalizeSourceResult,
+  SessionTransferListInput,
+  SessionTransferListResult,
+  SessionTransferPreflightInput,
+  SessionTransferPreflightResult,
+  SessionTransferPrepareSourceInput,
+  SessionTransferPrepareSourceResult,
+  SessionTransferProgressEvent,
+  SessionTransferRecord,
+  SessionTransferRetryInput,
+  SessionTransferStageImportInput,
+  SessionTransferStageImportResult,
+  SessionTransferStartInput,
+} from "./sessionTransfer.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
@@ -614,6 +636,18 @@ export const WS_METHODS = {
   deviceAction: "device.action",
 
   boatsInvoke: "boats.invoke",
+
+  sessionTransferPreflight: "sessionTransfer.preflight",
+  sessionTransferStart: "sessionTransfer.start",
+  sessionTransferCancel: "sessionTransfer.cancel",
+  sessionTransferRetry: "sessionTransfer.retry",
+  sessionTransferList: "sessionTransfer.list",
+  subscribeSessionTransfers: "sessionTransfer.subscribe",
+  sessionTransferPrepareSource: "sessionTransfer.prepareSource",
+  sessionTransferStageImport: "sessionTransfer.stageImport",
+  sessionTransferCommitImport: "sessionTransfer.commitImport",
+  sessionTransferFinalizeSource: "sessionTransfer.finalizeSource",
+  sessionTransferAbort: "sessionTransfer.abort",
 
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
@@ -2185,6 +2219,75 @@ const WsSubscribeBoatNoticesRpc = Rpc.make(WS_METHODS.subscribeBoatNotices, {
   stream: true,
 });
 
+const SessionTransferRpcError = Schema.Union([SessionTransferError, EnvironmentAuthorizationError]);
+
+const WsSessionTransferPreflightRpc = Rpc.make(WS_METHODS.sessionTransferPreflight, {
+  payload: SessionTransferPreflightInput,
+  success: SessionTransferPreflightResult,
+  error: SessionTransferRpcError,
+});
+
+const WsSessionTransferStartRpc = Rpc.make(WS_METHODS.sessionTransferStart, {
+  payload: SessionTransferStartInput,
+  success: SessionTransferRecord,
+  error: SessionTransferRpcError,
+});
+
+const WsSessionTransferCancelRpc = Rpc.make(WS_METHODS.sessionTransferCancel, {
+  payload: SessionTransferCancelInput,
+  success: SessionTransferRecord,
+  error: SessionTransferRpcError,
+});
+
+const WsSessionTransferRetryRpc = Rpc.make(WS_METHODS.sessionTransferRetry, {
+  payload: SessionTransferRetryInput,
+  success: SessionTransferRecord,
+  error: SessionTransferRpcError,
+});
+
+const WsSessionTransferListRpc = Rpc.make(WS_METHODS.sessionTransferList, {
+  payload: SessionTransferListInput,
+  success: SessionTransferListResult,
+  error: SessionTransferRpcError,
+});
+
+const WsSubscribeSessionTransfersRpc = Rpc.make(WS_METHODS.subscribeSessionTransfers, {
+  payload: Schema.Struct({}),
+  success: SessionTransferProgressEvent,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+const WsSessionTransferPrepareSourceRpc = Rpc.make(WS_METHODS.sessionTransferPrepareSource, {
+  payload: SessionTransferPrepareSourceInput,
+  success: SessionTransferPrepareSourceResult,
+  error: SessionTransferRpcError,
+});
+
+const WsSessionTransferStageImportRpc = Rpc.make(WS_METHODS.sessionTransferStageImport, {
+  payload: SessionTransferStageImportInput,
+  success: SessionTransferStageImportResult,
+  error: SessionTransferRpcError,
+});
+
+const WsSessionTransferCommitImportRpc = Rpc.make(WS_METHODS.sessionTransferCommitImport, {
+  payload: SessionTransferCommitImportInput,
+  success: SessionTransferCommitImportResult,
+  error: SessionTransferRpcError,
+});
+
+const WsSessionTransferFinalizeSourceRpc = Rpc.make(WS_METHODS.sessionTransferFinalizeSource, {
+  payload: SessionTransferFinalizeSourceInput,
+  success: SessionTransferFinalizeSourceResult,
+  error: SessionTransferRpcError,
+});
+
+const WsSessionTransferAbortRpc = Rpc.make(WS_METHODS.sessionTransferAbort, {
+  payload: SessionTransferAbortInput,
+  success: SessionTransferAbortResult,
+  error: SessionTransferRpcError,
+});
+
 const WsOrchestrationV2DispatchCommandRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, {
   payload: OrchestrationV2RpcSchemas.dispatchCommand.input,
   success: OrchestrationV2RpcSchemas.dispatchCommand.output,
@@ -2826,6 +2929,17 @@ export const WsRpcGroup = RpcGroup.make(
   WsBoatsInvokeRpc,
   WsSubscribeBoatsRpc,
   WsSubscribeBoatNoticesRpc,
+  WsSessionTransferPreflightRpc,
+  WsSessionTransferStartRpc,
+  WsSessionTransferCancelRpc,
+  WsSessionTransferRetryRpc,
+  WsSessionTransferListRpc,
+  WsSubscribeSessionTransfersRpc,
+  WsSessionTransferPrepareSourceRpc,
+  WsSessionTransferStageImportRpc,
+  WsSessionTransferCommitImportRpc,
+  WsSessionTransferFinalizeSourceRpc,
+  WsSessionTransferAbortRpc,
   WsSubscribeServerConfigRpc,
   WsSubscribeServerLifecycleRpc,
   WsSubscribeAuthAccessRpc,

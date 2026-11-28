@@ -43,6 +43,7 @@ import {
   RunId,
   RuntimeRequestId,
   ScheduledTaskId,
+  SessionTransferId,
   ThreadId,
   TrimmedNonEmptyString,
   TurnItemId,
@@ -148,6 +149,28 @@ export const OrchestrationV2DelegatedFrom = Schema.Struct({
   title: Schema.String,
 });
 export type OrchestrationV2DelegatedFrom = typeof OrchestrationV2DelegatedFrom.Type;
+
+export const SessionTransferThreadOrigin = Schema.Struct({
+  transferId: SessionTransferId,
+  environmentId: EnvironmentId,
+  environmentName: Schema.NullOr(TrimmedNonEmptyString),
+  machineId: Schema.NullOr(TrimmedNonEmptyString),
+  projectId: ProjectId,
+  threadId: ThreadId,
+  transferredAt: IsoDateTime,
+});
+export type SessionTransferThreadOrigin = typeof SessionTransferThreadOrigin.Type;
+
+export const SessionTransferThreadDestination = Schema.Struct({
+  transferId: SessionTransferId,
+  environmentId: EnvironmentId,
+  environmentName: Schema.NullOr(TrimmedNonEmptyString),
+  machineId: Schema.NullOr(TrimmedNonEmptyString),
+  projectId: ProjectId,
+  threadId: ThreadId,
+  transferredAt: IsoDateTime,
+});
+export type SessionTransferThreadDestination = typeof SessionTransferThreadDestination.Type;
 
 /**
  * The thread in a linked environment whose agent sent this message here, and its title
@@ -545,6 +568,12 @@ export const OrchestrationV2AppThread = Schema.Struct({
   lastSnoozeWakeAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   limitRecovery: Schema.optional(Schema.NullOr(OrchestrationV2LimitRecovery)),
   guestShare: Schema.optional(Schema.NullOr(ThreadGuestShare)),
+  transferOrigin: Schema.optional(Schema.NullOr(SessionTransferThreadOrigin)).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  transferredTo: Schema.optional(Schema.NullOr(SessionTransferThreadDestination)).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   pinnedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   autoSettleDisabledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   pinOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -2224,6 +2253,7 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.model-selection-updated",
       "thread.provider-switched",
       "thread.guest-share-updated",
+      "thread.transfer-state-updated",
     ]),
     payload: OrchestrationV2AppThread,
   }),
@@ -3184,6 +3214,7 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.model-selection-updated",
       "thread.provider-switched",
       "thread.guest-share-updated",
+      "thread.transfer-state-updated",
     ]),
     payload: OrchestrationV2AppThreadJson,
   }),

@@ -11,7 +11,9 @@ import {
   ProviderInstanceId,
   ProjectId,
   IssueTrackerKind,
+  IsoDateTime,
   SecretProviderId,
+  SessionTransferId,
   ThreadId,
   TurnItemId,
   AuthOrchestrationOperateScope,
@@ -1161,3 +1163,312 @@ it.effect(
       });
     }).pipe(Effect.scoped),
 );
+
+describe("session transfer RPC authorization", () => {
+  const readMethods = [
+    WS_METHODS.sessionTransferPreflight,
+    WS_METHODS.sessionTransferList,
+    WS_METHODS.subscribeSessionTransfers,
+  ] as const;
+
+  const operateMethods = [
+    WS_METHODS.sessionTransferStart,
+    WS_METHODS.sessionTransferCancel,
+    WS_METHODS.sessionTransferRetry,
+    WS_METHODS.sessionTransferPrepareSource,
+    WS_METHODS.sessionTransferStageImport,
+    WS_METHODS.sessionTransferCommitImport,
+    WS_METHODS.sessionTransferFinalizeSource,
+    WS_METHODS.sessionTransferAbort,
+  ] as const;
+
+  it("maps read and mutating session transfer RPCs to orchestration read and operate scopes", () => {
+    for (const method of readMethods) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
+    for (const method of operateMethods) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+  });
+
+  it.effect(
+    "allows read-only clients to query session transfers and rejects all mutating transfer RPCs without operate scope",
+    () =>
+      Effect.gen(function* () {
+        const tested = [...readMethods, ...operateMethods] as const;
+        const group = WsRpcGroup.omit(
+          ...[...WsRpcGroup.requests.keys()].filter(
+            (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof tested)[number]> =>
+              !(tested as ReadonlyArray<string>).includes(tag),
+          ),
+        );
+        const now = IsoDateTime.make("2026-11-28T05:00:00.000Z");
+        const transferId = SessionTransferId.make("transfer-auth-1");
+        const sourceEnvironmentId = EnvironmentId.make("env-local");
+        const destinationEnvironmentId = EnvironmentId.make("env-boat");
+        const sourceProjectId = ProjectId.make("project-local");
+        const destinationProjectId = ProjectId.make("project-boat");
+        const sourceThreadId = ThreadId.make("thread-local");
+        const destinationThreadId = ThreadId.make("thread-boat");
+        const providerInstanceId = ProviderInstanceId.make("codex");
+        const modelSelection = { instanceId: providerInstanceId, model: "gpt-5.4" } as const;
+        const sampleRecord = {
+          transferId,
+          direction: "local_to_boat" as const,
+          sourceEnvironmentId,
+          sourceEnvironmentName: "MacBook",
+          sourceMachineId: null,
+          sourceProjectId,
+          sourceThreadId,
+          destinationEnvironmentId,
+          destinationEnvironmentName: "dev-boat",
+          destinationMachineId: "machine-1",
+          destinationProjectId,
+          destinationThreadId,
+          phase: "queued" as const,
+          phaseDetail: null,
+          sourceWasRunning: false,
+          autoResume: false,
+          hadPendingRuntimeRequest: false,
+          destinationBranch: null,
+          destinationWorktreePath: null,
+          warnings: [],
+          errorMessage: null,
+          createdAt: now,
+          updatedAt: now,
+          completedAt: null,
+        };
+        const sampleManifest = {
+          schemaVersion: 1 as const,
+          transferId,
+          direction: "local_to_boat" as const,
+          exportedAt: now,
+          sourceEnvironmentId,
+          sourceEnvironmentName: "MacBook",
+          sourceMachineId: null,
+          sourceProjectId,
+          sourceProjectName: "sail",
+          sourceWorkspaceRoot: "/Users/dev/sail",
+          sourceThreadId,
+          title: "Transfer auth test",
+          providerInstanceId,
+          modelSelection,
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          sourceState: {
+            wasRunning: false,
+            hadPendingRuntimeRequest: false,
+            pendingRuntimeRequests: [],
+            heldQueuedRunCount: 0,
+            activeSubagentCount: 0,
+            branch: "main",
+            headSha: "386d27b4",
+            isDirty: false,
+            isGitRepo: true,
+          },
+          workspace: {
+            mode: "none" as const,
+            isGitRepo: true,
+            branch: "main",
+            headSha: "386d27b4",
+            baseRef: null,
+            isDetachedHead: false,
+            hasStagedChanges: false,
+            hasUnstagedChanges: false,
+            hasUntrackedFiles: false,
+            bundleSizeBytes: null,
+            bundleSha256: null,
+            warnings: [],
+          },
+          attachments: [],
+          messages: [],
+          turnItems: [],
+          plans: [],
+          heldQueuedRuns: [],
+          handoffSummary: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        const handledMutations: Array<string> = [];
+        const recordMutation = (name: string) =>
+          Effect.sync(() => {
+            handledMutations.push(name);
+          });
+
+        const handlers = group.toLayer({
+          [WS_METHODS.sessionTransferPreflight]: () =>
+            Effect.succeed({
+              ready: true,
+              warnings: [],
+              needsProjectSelection: false,
+              candidateProjects: [],
+              needsCloneDestination: false,
+              needsModelSelection: false,
+              availableModels: [],
+              needsRunningConfirmation: false,
+              unsupportedReason: null,
+            }),
+          [WS_METHODS.sessionTransferList]: () => Effect.succeed({ transfers: [sampleRecord] }),
+          [WS_METHODS.subscribeSessionTransfers]: () =>
+            Stream.make({ _tag: "snapshot" as const, transfers: [sampleRecord] }),
+          [WS_METHODS.sessionTransferStart]: () =>
+            recordMutation("start").pipe(Effect.as(sampleRecord)),
+          [WS_METHODS.sessionTransferCancel]: () =>
+            recordMutation("cancel").pipe(Effect.as(sampleRecord)),
+          [WS_METHODS.sessionTransferRetry]: () =>
+            recordMutation("retry").pipe(Effect.as(sampleRecord)),
+          [WS_METHODS.sessionTransferPrepareSource]: () =>
+            recordMutation("prepareSource").pipe(
+              Effect.as({
+                manifest: sampleManifest,
+                bundleDownloadRelativeUrl: null,
+                bundleExpiresAt: null,
+              }),
+            ),
+          [WS_METHODS.sessionTransferStageImport]: () =>
+            recordMutation("stageImport").pipe(
+              Effect.as({
+                destinationProjectId,
+                destinationThreadId,
+                destinationBranch: null,
+                destinationWorktreePath: null,
+                resolvedModelSelection: modelSelection,
+                bundleUploadRelativeUrl: null,
+                bundleUploadExpiresAt: null,
+                attachmentUploads: [],
+                warnings: [],
+              }),
+            ),
+          [WS_METHODS.sessionTransferCommitImport]: () =>
+            recordMutation("commitImport").pipe(
+              Effect.as({
+                destinationProjectId,
+                destinationThreadId,
+                destinationBranch: null,
+                destinationWorktreePath: null,
+                resumed: false,
+                warnings: [],
+              }),
+            ),
+          [WS_METHODS.sessionTransferFinalizeSource]: () =>
+            recordMutation("finalizeSource").pipe(Effect.as({ archived: true })),
+          [WS_METHODS.sessionTransferAbort]: () =>
+            recordMutation("abort").pipe(Effect.as({ cleanedUp: true })),
+        });
+
+        const clientWith = (...scopes: Parameters<typeof RpcAuthorization.layer>[0]) =>
+          RpcTest.makeClient(group).pipe(
+            Effect.provide(Layer.merge(handlers, RpcAuthorization.layer(scopes))),
+          );
+
+        const reader = yield* clientWith(AuthOrchestrationReadScope);
+        expect(
+          (yield* reader[WS_METHODS.sessionTransferPreflight]({
+            direction: "local_to_boat",
+            sourceEnvironmentId,
+            sourceThreadId,
+            target: { kind: "boat", machineId: "machine-1" },
+          })).ready,
+        ).toBe(true);
+        expect((yield* reader[WS_METHODS.sessionTransferList]({})).transfers).toHaveLength(1);
+        expect(
+          Array.from(
+            yield* reader[WS_METHODS.subscribeSessionTransfers]({}).pipe(Stream.runCollect),
+          ),
+        ).toHaveLength(1);
+
+        const operateDenied = {
+          _tag: "EnvironmentAuthorizationError",
+          requiredPermission: AuthOrchestrationOperateScope,
+        };
+        const startPayload = {
+          direction: "local_to_boat" as const,
+          sourceEnvironmentId,
+          sourceThreadId,
+          target: { kind: "boat" as const, machineId: "machine-1" },
+        };
+        const preparePayload = {
+          transferId,
+          direction: "local_to_boat" as const,
+          threadId: sourceThreadId,
+        };
+        const stagePayload = {
+          transferId,
+          manifest: sampleManifest,
+        };
+        const commitPayload = {
+          transferId,
+          manifest: sampleManifest,
+          destinationProjectId,
+          destinationThreadId,
+          autoResume: false,
+        };
+        const finalizePayload = {
+          transferId,
+          threadId: sourceThreadId,
+          destination: {
+            transferId,
+            environmentId: destinationEnvironmentId,
+            environmentName: "dev-boat",
+            machineId: "machine-1",
+            projectId: destinationProjectId,
+            threadId: destinationThreadId,
+            transferredAt: now,
+          },
+        };
+        const abortPayload = {
+          transferId,
+          role: "destination" as const,
+        };
+
+        expect(
+          yield* reader[WS_METHODS.sessionTransferStart](startPayload).pipe(Effect.flip),
+        ).toMatchObject(operateDenied);
+        expect(
+          yield* reader[WS_METHODS.sessionTransferCancel]({ transferId }).pipe(Effect.flip),
+        ).toMatchObject(operateDenied);
+        expect(
+          yield* reader[WS_METHODS.sessionTransferRetry]({ transferId }).pipe(Effect.flip),
+        ).toMatchObject(operateDenied);
+        expect(
+          yield* reader[WS_METHODS.sessionTransferPrepareSource](preparePayload).pipe(Effect.flip),
+        ).toMatchObject(operateDenied);
+        expect(
+          yield* reader[WS_METHODS.sessionTransferStageImport](stagePayload).pipe(Effect.flip),
+        ).toMatchObject(operateDenied);
+        expect(
+          yield* reader[WS_METHODS.sessionTransferCommitImport](commitPayload).pipe(Effect.flip),
+        ).toMatchObject(operateDenied);
+        expect(
+          yield* reader[WS_METHODS.sessionTransferFinalizeSource](finalizePayload).pipe(
+            Effect.flip,
+          ),
+        ).toMatchObject(operateDenied);
+        expect(
+          yield* reader[WS_METHODS.sessionTransferAbort](abortPayload).pipe(Effect.flip),
+        ).toMatchObject(operateDenied);
+        expect(handledMutations).toEqual([]);
+
+        const operator = yield* clientWith(AuthOrchestrationOperateScope);
+        yield* operator[WS_METHODS.sessionTransferStart](startPayload);
+        yield* operator[WS_METHODS.sessionTransferCancel]({ transferId });
+        yield* operator[WS_METHODS.sessionTransferRetry]({ transferId });
+        yield* operator[WS_METHODS.sessionTransferPrepareSource](preparePayload);
+        yield* operator[WS_METHODS.sessionTransferStageImport](stagePayload);
+        yield* operator[WS_METHODS.sessionTransferCommitImport](commitPayload);
+        yield* operator[WS_METHODS.sessionTransferFinalizeSource](finalizePayload);
+        yield* operator[WS_METHODS.sessionTransferAbort](abortPayload);
+        expect(handledMutations).toEqual([
+          "start",
+          "cancel",
+          "retry",
+          "prepareSource",
+          "stageImport",
+          "commitImport",
+          "finalizeSource",
+          "abort",
+        ]);
+      }).pipe(Effect.scoped),
+  );
+});

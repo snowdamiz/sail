@@ -65,6 +65,7 @@ export * from "./browserImport.ts";
 export * from "./browserProfile.ts";
 export * from "./device.ts";
 export * from "./boat.ts";
+export * from "./sessionTransfer.ts";
 export * from "./preview.ts";
 export * from "./previewAutomation.ts";
 export * from "./previewCapture.ts";

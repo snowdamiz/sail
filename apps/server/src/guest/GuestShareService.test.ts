@@ -4,8 +4,10 @@ import { assert, it } from "@effect/vitest";
 import {
   ChatAttachmentId,
   CommandId,
+  EnvironmentId,
   EventId,
   GuestShareId,
+  IsoDateTime,
   type GuestStreamEvent,
   MessageId,
   type OrchestrationV2ThreadHistoryPage,
@@ -14,6 +16,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   RunId,
+  SessionTransferId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -1433,4 +1436,48 @@ it.effect("keeps a connected guest's images while other shares come and go", () 
     yield* Stream.runDrain(Stream.take(yield* guestShares.stream(next.token), 2));
     assert.equal((yield* guestShares.media(next.token, shot)).mimeType, "image/png");
   }).pipe(Effect.scoped, Effect.provide(layerTest)),
+);
+
+it.effect("ends the guest stream when thread.transfer-state-updated archives the thread", () =>
+  Effect.gen(function* () {
+    const { orchestrator, guestShares, credential } = yield* shareThread;
+    const { token: session } = yield* guestShares.redeem({ credential, name: "Sam" });
+    const events = yield* guestShares.stream(session);
+    const currentThread = (yield* orchestrator.getThreadSnapshotWindow(threadId, {
+      rowLimit: 10,
+    })).projection.thread;
+    const eventSink = yield* EventSink.EventSinkV2;
+    const now = yield* DateTime.now;
+    yield* eventSink.write({
+      events: [
+        {
+          id: EventId.make("event:transfer-state-archived"),
+          type: "thread.transfer-state-updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            ...currentThread,
+            transferredTo: {
+              transferId: SessionTransferId.make("transfer-1"),
+              environmentId: EnvironmentId.make("env-boat"),
+              environmentName: "dev-boat",
+              machineId: "machine-1",
+              projectId: ProjectId.make("project:boat"),
+              threadId: ThreadId.make("thread:boat"),
+              transferredAt: IsoDateTime.make(DateTime.formatIso(now)),
+            },
+            archivedAt: now,
+            updatedAt: now,
+          },
+        },
+      ],
+    });
+    const received = Array.from(yield* Stream.runCollect(events));
+    assert.deepEqual(
+      received.map((event) => (event.type === "thread" ? event.item.kind : event.type)),
+      ["view", "snapshot", "ended"],
+    );
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(guestShares.stream(session))));
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(guestShares.check(session))));
+  }).pipe(Effect.provide(layerTest)),
 );
