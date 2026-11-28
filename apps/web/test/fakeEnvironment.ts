@@ -17,6 +17,7 @@ import {
   RunId,
   RuntimeRequestId,
   ServerConfig,
+  type ServerConfigStreamEvent,
   ThreadId,
   TurnItemId,
   WS_METHODS,
@@ -33,6 +34,8 @@ import {
   type OrchestrationV2ThreadShell,
   type OrchestrationV2ThreadStreamItem,
   type OrchestrationV2TurnItem,
+  type SessionTransferThreadDestination,
+  type SessionTransferThreadOrigin,
   type TerminalMetadataStreamEvent,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
@@ -247,6 +250,9 @@ export interface FakeThread {
   readonly runs: ReadonlyArray<OrchestrationV2Run>;
   readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
   readonly runtimeRequests?: OrchestrationV2ThreadProjection["runtimeRequests"];
+  readonly transferOrigin?: SessionTransferThreadOrigin | null;
+  readonly transferredTo?: SessionTransferThreadDestination | null;
+  readonly archived?: boolean;
 }
 
 /** A thread of `turns` user prompts, each answered in markdown with a list and inline code. */
@@ -356,7 +362,7 @@ function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
     visibleItemCount: thread.items.length,
     createdAt: AT,
     updatedAt: AT,
-    archivedAt: null,
+    archivedAt: thread.archived ? AT : null,
     settledOverride: thread.olderSettled ? "settled" : null,
     settledAt: thread.olderSettled ? AT : null,
     lastVisitedAt: AT,
@@ -393,7 +399,9 @@ function projectionOf(thread: FakeThread): OrchestrationV2ThreadProjection {
       creationSource: shell.creationSource,
       createdAt: AT,
       updatedAt: AT,
-      archivedAt: null,
+      archivedAt: shell.archivedAt,
+      transferOrigin: thread.transferOrigin ?? null,
+      transferredTo: thread.transferredTo ?? null,
       settledOverride: shell.settledOverride,
       settledAt: shell.settledAt,
       lastVisitedAt: AT,
@@ -438,6 +446,17 @@ let pendingDispatches: Array<{
 let pendingAssetUrls: Array<Deferred.Deferred<AssetCreateUrlResult>> = [];
 let sequence = 1;
 let vcsStatusSubscriber: Queue.Queue<VcsStatusStreamEvent> | null = null;
+const serverConfigSubscribers = new Set<Queue.Queue<ServerConfigStreamEvent>>();
+const subscribeServerConfigStream = () =>
+  subscribe<ServerConfigStreamEvent>(
+    [{ version: 1 as const, type: "snapshot" as const, config: serverConfig() }],
+    (queue) => {
+      serverConfigSubscribers.add(queue);
+      return () => {
+        serverConfigSubscribers.delete(queue);
+      };
+    },
+  );
 
 const subscribe = <A>(first: ReadonlyArray<A>, register?: (queue: Queue.Queue<A>) => () => void) =>
   Stream.unwrap(
@@ -504,7 +523,9 @@ const handlers: Record<string, (input: never) => unknown> = {
             schemaVersion: 1,
             snapshotSequence: sequence,
             projects,
-            threads: threads.filter((thread) => !thread.olderSettled).map(shellOf),
+            threads: threads
+              .filter((thread) => !thread.olderSettled && !thread.archived)
+              .map(shellOf),
             archivedThreads: [],
           },
         },
@@ -552,8 +573,7 @@ const handlers: Record<string, (input: never) => unknown> = {
         if (vcsStatusSubscriber === queue) vcsStatusSubscriber = null;
       };
     }),
-  [WS_METHODS.subscribeServerConfig]: () =>
-    subscribe([{ version: 1 as const, type: "snapshot" as const, config: serverConfig() }]),
+  [WS_METHODS.subscribeServerConfig]: subscribeServerConfigStream,
 };
 
 // Unanswered calls stay pending, like a server that has not replied yet.
@@ -569,8 +589,7 @@ const client = new Proxy(handlers, {
 const session: EnvironmentConnectionLease["session"] = {
   client: client as unknown as WsRpcProtocolClient,
   initialConfig: Effect.sync(serverConfig),
-  subscribeServerConfig: () =>
-    subscribe([{ version: 1 as const, type: "snapshot" as const, config: serverConfig() }]),
+  subscribeServerConfig: subscribeServerConfigStream,
   ready: Effect.void,
   probe: Effect.void,
   inboundFrames: Effect.succeed(0),
@@ -614,6 +633,9 @@ export function installFakeEnvironment(
     /** Commands left unanswered even when accepting, until `rejectPendingCommand`. */
     readonly holdCommand?: (command: OrchestrationV2Command) => boolean;
     readonly providers?: ReadonlyArray<unknown>;
+    readonly serverConfigOverrides?: Partial<
+      Pick<ServerConfig, "hasConfiguredBoats" | "sessionTransfer" | "portableProviderAuthSync">
+    >;
   },
 ): Disposable {
   threads = fixtures;
@@ -623,7 +645,16 @@ export function installFakeEnvironment(
       fixtures.some((thread) => (thread.issues?.length ?? 0) > 0),
     ),
     keybindings: options?.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS,
+    ...options?.serverConfigOverrides,
   };
+  const nextConfig = serverConfig();
+  for (const queue of serverConfigSubscribers) {
+    Queue.offerUnsafe(queue, {
+      version: 1 as const,
+      type: "snapshot" as const,
+      config: nextConfig,
+    });
+  }
   dispatched = [];
   acceptCommands = options?.acceptCommands === true;
   projects = [
@@ -635,6 +666,20 @@ export function installFakeEnvironment(
     })),
   ];
   holdCommand = options?.holdCommand ?? (() => false);
+  if (shellSubscriber !== null) {
+    sequence += 1;
+    Queue.offerUnsafe(shellSubscriber, {
+      kind: "snapshot",
+      snapshot: {
+        schemaVersion: 1,
+        snapshotSequence: sequence,
+        projects,
+        threads: threads.filter((thread) => !thread.olderSettled && !thread.archived).map(shellOf),
+        archivedThreads: [],
+      },
+    });
+    Queue.offerUnsafe(shellSubscriber, { kind: "synchronized" });
+  }
   globalThis.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
     if (url.origin !== window.location.origin) return realFetch(input, init);

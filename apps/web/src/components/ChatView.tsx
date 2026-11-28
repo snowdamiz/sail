@@ -68,6 +68,7 @@ import { useUsageLimitsPanel } from "./chat/useUsageLimitsPanel";
 import { useWorktreeSetup } from "./chat/useWorktreeSetup";
 import { useChatShortcuts } from "./chat/useChatShortcuts";
 import { ChatBannerLane } from "./chat/ChatBannerLane";
+import { SessionTransferBanner } from "./SessionTransferBanner";
 import * as Schema from "effect/Schema";
 import {
   AuthOrchestrationOperateScope,
@@ -3612,6 +3613,11 @@ export default function ChatView(props: ChatViewProps) {
             />
           </header>
         )}
+
+        <SessionTransferBanner
+          transferredTo={serverProjection?.thread.transferredTo ?? null}
+          transferOrigin={serverProjection?.thread.transferOrigin ?? null}
+        />
 
         <div className="relative flex min-h-0 min-w-0 flex-1">
           <ThreadFindCanvas

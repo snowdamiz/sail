@@ -59,6 +59,15 @@ const ICON_PATHS: Record<string, ReadonlyArray<{ tag: string; attrs: Record<stri
     { tag: "line", attrs: { x1: "10", x2: "8", y1: "3", y2: "21" } },
     { tag: "line", attrs: { x1: "16", x2: "14", y1: "3", y2: "21" } },
   ],
+  laptop: [
+    {
+      tag: "path",
+      attrs: {
+        d: "M18 5a2 2 0 0 1 2 2v8.526a2 2 0 0 0 .212.897l1.068 2.127a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45l1.068-2.127A2 2 0 0 0 4 15.526V7a2 2 0 0 1 2-2z",
+      },
+    },
+    { tag: "path", attrs: { d: "M20.054 15.987H3.946" } },
+  ],
   "mail-open": [
     {
       tag: "path",
@@ -120,6 +129,23 @@ const ICON_PATHS: Record<string, ReadonlyArray<{ tag: string; attrs: Record<stri
       },
     },
     { tag: "circle", attrs: { cx: "12", cy: "12", r: "3" } },
+  ],
+  ship: [
+    { tag: "path", attrs: { d: "M12 10.189V14" } },
+    { tag: "path", attrs: { d: "M12 2v3" } },
+    { tag: "path", attrs: { d: "M19 13V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v6" } },
+    {
+      tag: "path",
+      attrs: {
+        d: "M19.38 20A11.6 11.6 0 0 0 21 14l-8.188-3.639a2 2 0 0 0-1.624 0L3 14a11.6 11.6 0 0 0 2.81 7.76",
+      },
+    },
+    {
+      tag: "path",
+      attrs: {
+        d: "M2 21c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1s1.2 1 2.5 1c2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1",
+      },
+    },
   ],
   "user-plus": [
     { tag: "path", attrs: { d: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" } },

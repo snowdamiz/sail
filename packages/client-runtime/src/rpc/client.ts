@@ -81,6 +81,7 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.subscribeDeviceState
   | typeof WS_METHODS.subscribeBoats
   | typeof WS_METHODS.subscribeBoatNotices
+  | typeof WS_METHODS.subscribeSessionTransfers
   | typeof WS_METHODS.subscribeResourceTelemetry
   | typeof WS_METHODS.pullRequestsSubscribeRefreshes
   | typeof WS_METHODS.pullRequestsSubscribeLinkedThreadRefreshes
@@ -597,6 +598,21 @@ export const refreshVcsBranch = Effect.fn("EnvironmentRpc.refreshVcsBranch")(fun
   }
   // Older hosts retain their existing status stream without adding per-row wake scans.
 });
+
+export const sessionTransfer = {
+  preflight: (input: EnvironmentRpcInput<typeof WS_METHODS.sessionTransferPreflight>) =>
+    requestGuarded(WS_METHODS.sessionTransferPreflight, input),
+  start: (input: EnvironmentRpcInput<typeof WS_METHODS.sessionTransferStart>) =>
+    requestGuarded(WS_METHODS.sessionTransferStart, input),
+  cancel: (input: EnvironmentRpcInput<typeof WS_METHODS.sessionTransferCancel>) =>
+    requestGuarded(WS_METHODS.sessionTransferCancel, input),
+  retry: (input: EnvironmentRpcInput<typeof WS_METHODS.sessionTransferRetry>) =>
+    requestGuarded(WS_METHODS.sessionTransferRetry, input),
+  list: (input: EnvironmentRpcInput<typeof WS_METHODS.sessionTransferList>) =>
+    requestGuarded(WS_METHODS.sessionTransferList, input),
+  subscribe: (options?: SubscriptionOptions<typeof WS_METHODS.subscribeSessionTransfers>) =>
+    subscribe(WS_METHODS.subscribeSessionTransfers, {}, options),
+} as const;
 
 export const request = <TTag extends Exclude<EnvironmentUnaryRpcTag, ClientGuardedRpcTag>>(
   tag: TTag,

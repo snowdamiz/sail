@@ -24,6 +24,9 @@ export type ThreadActionMenuId =
   | "regenerate-title"
   | "mark-unread"
   | "share-guest"
+  | "move-session"
+  | "move-to-local"
+  | `move-to-boat:${string}`
   | "copy"
   | "copy-path"
   | "copy-branch"
@@ -31,6 +34,31 @@ export type ThreadActionMenuId =
   | "copy-thread-id"
   | "archive"
   | "delete";
+
+export type ThreadActionMenuBoatMachineState =
+  | "idle"
+  | "working"
+  | "asleep"
+  | "sleeping"
+  | "waking"
+  | "creating"
+  | "error"
+  | "missing"
+  | "unknown";
+
+export interface ThreadActionMenuBoatTarget {
+  readonly machineId: string;
+  readonly name: string;
+  readonly state: ThreadActionMenuBoatMachineState;
+  readonly environmentId?: string | null;
+}
+
+export interface ThreadActionMenuSessionTransferState {
+  readonly sourceIsBoat: boolean;
+  readonly isTransferring: boolean;
+  readonly canMoveToLocal: boolean;
+  readonly boatTargets: ReadonlyArray<ThreadActionMenuBoatTarget>;
+}
 
 export type DraftActionMenuId =
   | "copy"
@@ -127,6 +155,8 @@ export interface ThreadActionMenuState {
   readonly canShareWithGuest?: boolean;
   /** A No project thread with its own folder, on a server that can promote it. */
   readonly canTurnIntoProject?: boolean;
+  /** Bidirectional Local <-> Boat session transfer options; omit when no Boat targets exist. */
+  readonly sessionTransfer?: ThreadActionMenuSessionTransferState | null;
 }
 
 /** Local navigation, read markers, and copying remain available to read-only clients. */
@@ -153,6 +183,106 @@ export function isThreadTriageAction(action: string): boolean {
     action === "unsnooze" ||
     action.startsWith("snooze:")
   );
+}
+
+function boatTargetMenuPresentation(
+  state: ThreadActionMenuBoatMachineState,
+  resolve: MessageResolver,
+): { readonly detail: string | undefined; readonly disabled: boolean } {
+  switch (state) {
+    case "idle":
+      return {
+        detail: resolve(msg("Idle", { $context: "Boat machine status" })),
+        disabled: false,
+      };
+    case "working":
+      return {
+        detail: resolve(msg("Working", { $context: "Boat machine status" })),
+        disabled: false,
+      };
+    case "asleep":
+    case "sleeping":
+      return {
+        detail: resolve(msg("Asleep", { $context: "Boat machine status" })),
+        disabled: false,
+      };
+    case "waking":
+      return {
+        detail: resolve(msg("Waking", { $context: "Boat machine status" })),
+        disabled: false,
+      };
+    case "creating":
+      return {
+        detail: resolve(msg("Creating", { $context: "Boat machine status" })),
+        disabled: true,
+      };
+    case "error":
+      return {
+        detail: resolve(msg("Error", { $context: "Boat machine status" })),
+        disabled: true,
+      };
+    case "missing":
+      return {
+        detail: resolve(msg("Missing", { $context: "Boat machine status" })),
+        disabled: true,
+      };
+    case "unknown":
+      return { detail: undefined, disabled: false };
+  }
+}
+
+function buildSessionTransferMenuItems(
+  state: ThreadActionMenuState,
+  resolve: MessageResolver,
+): ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> {
+  const transfer = state.sessionTransfer;
+  if (!transfer) return [];
+
+  const showMoveToLocal = transfer.sourceIsBoat && transfer.canMoveToLocal;
+  const showMoveToBoat = transfer.boatTargets.length > 0;
+  if (!showMoveToLocal && !showMoveToBoat) return [];
+
+  const parentDetail = transfer.isTransferring
+    ? resolve(msg("Moving\u2026", { $context: "session transfer in progress" }))
+    : state.isRunning
+      ? resolve(msg("Pauses and resumes"))
+      : undefined;
+
+  const moveItems: ContextMenuItem<ThreadActionMenuId>[] = [];
+
+  if (showMoveToLocal) {
+    moveItems.push({
+      id: "move-to-local",
+      label: resolve(msg("Move to Local")),
+      icon: "laptop",
+      disabled: transfer.isTransferring,
+      separatorBefore: true,
+      ...(parentDetail !== undefined ? { detail: parentDetail } : {}),
+    });
+  }
+
+  if (showMoveToBoat) {
+    moveItems.push({
+      id: "move-session",
+      label: resolve(msg("Move to Boat")),
+      icon: "ship",
+      disabled: transfer.isTransferring,
+      separatorBefore: moveItems.length === 0,
+      ...(parentDetail !== undefined ? { detail: parentDetail } : {}),
+      children: transfer.boatTargets.map((boat) => {
+        const presentation = boatTargetMenuPresentation(boat.state, resolve);
+        return {
+          id: `move-to-boat:${boat.machineId}` as const,
+          label: boat.name,
+          icon: "ship",
+          disabled: transfer.isTransferring || presentation.disabled,
+          ...(presentation.detail !== undefined ? { detail: presentation.detail } : {}),
+        };
+      }),
+    });
+  }
+
+  return moveItems;
 }
 
 export function buildThreadActionMenuItems(
@@ -207,7 +337,7 @@ export function buildThreadActionMenuItems(
                   })),
                   {
                     id: "snooze:custom" as const,
-                    label: resolve(msg("Custom…")),
+                    label: resolve(msg("Custom\u2026")),
                     separatorBefore: state.snoozePresets.length > 0,
                   },
                 ],
@@ -226,7 +356,7 @@ export function buildThreadActionMenuItems(
           {
             id: "regenerate-title" as const,
             label: state.isRegeneratingTitle
-              ? resolve(msg("Regenerating…"))
+              ? resolve(msg("Regenerating\u2026"))
               : resolve(msg("Regenerate title")),
             icon: "refresh-cw",
             disabled: state.isRegeneratingTitle,
@@ -310,6 +440,7 @@ export function buildThreadActionMenuItems(
       ],
     },
     { id: "project-settings", label: resolve(msg("Project settings")), icon: "settings" },
+    ...buildSessionTransferMenuItems(state, resolve),
     {
       id: "archive",
       label: resolve(msg("Archive thread")),
