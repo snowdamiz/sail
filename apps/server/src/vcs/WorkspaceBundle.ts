@@ -121,6 +121,9 @@ export interface ImportWorkspaceBundleInput {
   readonly onWorktreeAllocated?: (
     allocation: AllocatedWorkspaceWorktree,
   ) => Effect.Effect<void, WorkspaceBundleError>;
+  readonly onWorktreeCreated?: (
+    allocation: AllocatedWorkspaceWorktree,
+  ) => Effect.Effect<void, WorkspaceBundleError>;
   readonly onWorktreeAllocationCleared?: (
     allocation: AllocatedWorkspaceWorktree,
   ) => Effect.Effect<void>;
@@ -145,8 +148,20 @@ export interface RemoveWorkspaceWorktreeInput {
   readonly branch?: string | null;
 }
 
+export interface RegisteredWorkspaceWorktree {
+  readonly path: string;
+  readonly isMain: boolean;
+  readonly branch: string | null;
+  readonly locked: boolean;
+  readonly lockReason: string | null;
+}
+
 export interface WorkspaceBundleShape {
   readonly resolveGitCommonDir: (cwd: string) => Effect.Effect<string | null, WorkspaceBundleError>;
+  readonly findRegisteredWorktree: (
+    repoCwd: string,
+    worktreePath: string,
+  ) => Effect.Effect<RegisteredWorkspaceWorktree | null, WorkspaceBundleError>;
   readonly exportWorkspaceBundle: (
     input: ExportWorkspaceBundleInput,
   ) => Effect.Effect<ExportWorkspaceBundleResult, WorkspaceBundleError>;
@@ -210,16 +225,8 @@ function formatByteSize(bytes: number): string {
   return `${bytes} B`;
 }
 
-interface ParsedWorktreeEntry {
-  readonly path: string;
-  readonly isMain: boolean;
-  readonly branch: string | null;
-  readonly locked: boolean;
-  readonly lockReason: string | null;
-}
-
-function parseWorktreeListPorcelainZ(stdout: string): ReadonlyArray<ParsedWorktreeEntry> {
-  const entries: Array<ParsedWorktreeEntry> = [];
+function parseWorktreeListPorcelainZ(stdout: string): ReadonlyArray<RegisteredWorkspaceWorktree> {
+  const entries: Array<RegisteredWorkspaceWorktree> = [];
   let currentPath: string | null = null;
   let currentBranch: string | null = null;
   let currentLocked = false;
@@ -1350,39 +1357,60 @@ const make = Effect.gen(function* () {
 
       const cleanupIncompleteAdd = Effect.fn("WorkspaceBundle.cleanupIncompleteAdd")(function* (
         allocation: AllocatedWorkspaceWorktree,
-        options?: { readonly isExternalCollision?: boolean },
+        options: {
+          readonly gitWorktreeAddInvoked: boolean;
+          readonly worktreePathPreExisted: boolean;
+          readonly isExternalCollision?: boolean;
+        },
       ) {
         // Still under the per-repo allocation lock: never leave ownership claiming a path or
-        // branch this transfer did not create, and clean up any partial artifacts we created.
+        // branch this transfer did not create, and clean up only partial artifacts we created.
         const clearOwnership =
           input.onWorktreeAllocationCleared !== undefined
             ? input.onWorktreeAllocationCleared(allocation)
             : Effect.void;
-        if (options?.isExternalCollision) {
+        if (options.isExternalCollision || !options.gitWorktreeAddInvoked) {
           yield* clearOwnership;
           return;
         }
+
+        // Inspect git worktree registration BEFORE removing anything (removing the worktree
+        // unregisters it). Never guess on lookup failure: preserve ownership instead.
+        const registeredEntryResult = yield* Effect.result(
+          findRegisteredWorktree(input.repoCwd, allocation.worktreePath),
+        );
+        if (Result.isFailure(registeredEntryResult)) {
+          yield* Effect.logWarning(
+            "Failed to inspect registered worktrees while cleaning up incomplete git worktree add.",
+            {
+              repoCwd: input.repoCwd,
+              worktreePath: allocation.worktreePath,
+              branch: allocation.branch,
+              cause: registeredEntryResult.failure,
+            },
+          );
+          return;
+        }
+        const registeredEntry = registeredEntryResult.success;
+        if (registeredEntry?.isMain) {
+          yield* clearOwnership;
+          return;
+        }
+
         const pathExists = yield* fileSystem
           .exists(allocation.worktreePath)
           .pipe(Effect.orElseSucceed(() => false));
-        const registeredEntry = yield* findRegisteredWorktree(
-          input.repoCwd,
-          allocation.worktreePath,
-        ).pipe(Effect.orElseSucceed(() => null));
-        const hasWorktreeArtifact = pathExists || registeredEntry !== null;
-        const hasBranchArtifact = allocation.createdBranch
-          ? yield* runGit(
-              "WorkspaceBundle.checkFailedAddBranch",
-              input.repoCwd,
-              ["show-ref", "--verify", "--quiet", `refs/heads/${allocation.branch}`],
-              { allowNonZeroExit: true },
-            ).pipe(
-              Effect.map((r) => r.exitCode === 0),
-              Effect.orElseSucceed(() => true),
-            )
-          : false;
+        const shouldRemoveWorktree =
+          !options.worktreePathPreExisted && (registeredEntry !== null || pathExists);
+        // Only delete createdBranch if git worktree add actually registered worktreePath on
+        // refs/heads/<branch>. If someone independently created the branch, worktreePath is NOT
+        // registered on refs/heads/<branch> and the external branch must never be deleted.
+        const shouldDeleteBranch =
+          allocation.createdBranch &&
+          registeredEntry !== null &&
+          registeredEntry.branch === allocation.branch;
 
-        if (!hasWorktreeArtifact && !hasBranchArtifact) {
+        if (!shouldRemoveWorktree && !shouldDeleteBranch) {
           yield* clearOwnership;
           return;
         }
@@ -1390,8 +1418,8 @@ const make = Effect.gen(function* () {
         const cleanupPartialResult = yield* Effect.result(
           removeWorktree({
             repoCwd: input.repoCwd,
-            worktreePath: hasWorktreeArtifact ? allocation.worktreePath : null,
-            branch: hasBranchArtifact ? allocation.branch : null,
+            worktreePath: shouldRemoveWorktree ? allocation.worktreePath : null,
+            branch: shouldDeleteBranch ? allocation.branch : null,
           }),
         );
         if (Result.isSuccess(cleanupPartialResult)) {
@@ -1412,7 +1440,9 @@ const make = Effect.gen(function* () {
       const { branchAllocation, worktreePath } = yield* runWithAllocationLock(
         Effect.suspend(() => {
           let allocatedInLock: AllocatedWorkspaceWorktree | null = null;
-          let addSucceeded = false;
+          let gitWorktreeAddInvoked = false;
+          let gitWorktreeAddSucceeded = false;
+          let worktreePathPreExisted = false;
 
           return Effect.gen(function* () {
             const [localBranchesOutput, registeredWorktrees, dynamicReserved] = yield* Effect.all([
@@ -1491,6 +1521,16 @@ const make = Effect.gen(function* () {
               ),
             );
 
+            const existedBeforeAllocation = yield* fileSystem
+              .exists(worktreePath)
+              .pipe(Effect.orElseSucceed(() => true));
+            if (existedBeforeAllocation) {
+              return yield* new WorkspaceBundleError({
+                code: "io_error",
+                message: `Requested worktree path '${worktreePath}' already exists.`,
+              });
+            }
+
             const allocation: AllocatedWorkspaceWorktree = {
               repoCwd: input.repoCwd,
               gitCommonDir,
@@ -1504,9 +1544,28 @@ const make = Effect.gen(function* () {
               yield* input.onWorktreeAllocated(allocation);
             }
 
+            // Re-verify under the allocation lock right before invoking git worktree add that
+            // worktreePath does not pre-exist (e.g. created externally while paused in callback).
+            const existedBeforeAdd = yield* fileSystem
+              .exists(worktreePath)
+              .pipe(Effect.orElseSucceed(() => true));
+            if (existedBeforeAdd) {
+              worktreePathPreExisted = true;
+              yield* cleanupIncompleteAdd(allocation, {
+                gitWorktreeAddInvoked: false,
+                worktreePathPreExisted: true,
+              });
+              allocatedInLock = null;
+              return yield* new WorkspaceBundleError({
+                code: "io_error",
+                message: `Worktree path '${worktreePath}' already exists before git worktree add.`,
+              });
+            }
+
             const addArgs = branchAllocation.useExistingBranch
               ? ["worktree", "add", "--", worktreePath, branchAllocation.branch]
               : ["worktree", "add", "-b", branchAllocation.branch, "--", worktreePath, headSha];
+            gitWorktreeAddInvoked = true;
             const addResult = yield* Effect.result(
               runGit("WorkspaceBundle.addWorktree", input.repoCwd, addArgs, {
                 timeoutMs: BUNDLE_TIMEOUT_MS,
@@ -1518,22 +1577,32 @@ const make = Effect.gen(function* () {
                 errMsg.includes("already exists") ||
                 errMsg.includes("already used by worktree") ||
                 errMsg.includes("already checked out");
-              yield* cleanupIncompleteAdd(allocation, { isExternalCollision });
+              yield* cleanupIncompleteAdd(allocation, {
+                isExternalCollision,
+                gitWorktreeAddInvoked,
+                worktreePathPreExisted,
+              });
               allocatedInLock = null;
               return yield* addResult.failure;
             }
 
-            addSucceeded = true;
+            gitWorktreeAddSucceeded = true;
             createdWorktreePath = worktreePath;
             if (!branchAllocation.useExistingBranch) {
               createdBranchName = branchAllocation.branch;
             }
             allocatedWorktree = allocation;
+            if (input.onWorktreeCreated !== undefined) {
+              yield* input.onWorktreeCreated(allocation);
+            }
             return { branchAllocation, worktreePath };
           }).pipe(
             Effect.onInterrupt(() =>
-              !addSucceeded && allocatedInLock !== null
-                ? cleanupIncompleteAdd(allocatedInLock)
+              !gitWorktreeAddSucceeded && allocatedInLock !== null
+                ? cleanupIncompleteAdd(allocatedInLock, {
+                    gitWorktreeAddInvoked,
+                    worktreePathPreExisted,
+                  })
                 : Effect.void,
             ),
           );
@@ -1656,6 +1725,7 @@ const make = Effect.gen(function* () {
 
   return WorkspaceBundle.of({
     resolveGitCommonDir,
+    findRegisteredWorktree,
     exportWorkspaceBundle,
     importWorkspaceBundle,
     removeWorktree,

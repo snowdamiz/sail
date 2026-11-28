@@ -140,34 +140,72 @@ const PersistedWorktreeOwnership = Schema.Struct({
   transferId: SessionTransferId,
   destinationProjectId: ProjectId,
   projectWorkspaceRoot: Schema.String,
+  repoRoot: Schema.optionalKey(Schema.String),
   gitCommonDir: Schema.optionalKey(Schema.NullOr(Schema.String)),
   destinationThreadId: ThreadId,
   worktreePath: Schema.NullOr(Schema.String),
   branch: Schema.NullOr(GitRefName),
   createdBranch: Schema.Boolean,
+  worktreeCreated: Schema.optionalKey(Schema.Boolean),
   importCompleted: Schema.Boolean,
 });
 type PersistedWorktreeOwnership = typeof PersistedWorktreeOwnership.Type;
 
 const PersistedWorktreeOwnershipJson = Schema.fromJsonString(PersistedWorktreeOwnership);
 
+function persistedOwnershipRepoRoot(ownership: PersistedWorktreeOwnership): string {
+  return ownership.repoRoot !== undefined && ownership.repoRoot.length > 0
+    ? ownership.repoRoot
+    : ownership.projectWorkspaceRoot;
+}
+
+function persistedOwnershipWorktreeCreated(ownership: PersistedWorktreeOwnership): boolean {
+  return ownership.worktreeCreated !== undefined
+    ? ownership.worktreeCreated
+    : ownership.importCompleted;
+}
+
+interface StagedWorktreeAllocation {
+  readonly repoRoot: string;
+  readonly gitCommonDir: string | null;
+  readonly worktreePath: string | null;
+  readonly branch: GitRefNameValue | null;
+  readonly createdBranch: boolean;
+  readonly worktreeCreated: boolean;
+  readonly importCompleted: boolean;
+}
+
 interface StagedImportState {
   readonly transferId: SessionTransferId;
   readonly destinationProjectId: SessionTransferStageImportResult["destinationProjectId"];
   readonly projectWorkspaceRoot: string;
-  readonly gitCommonDir: string | null;
   readonly destinationThreadId: ThreadId;
   readonly resolvedModelSelection: ModelSelection;
   readonly attachmentUploads: ReadonlyArray<SessionTransferAttachmentUploadTarget>;
   readonly claimedAttachmentIds: Readonly<Record<string, ChatAttachmentId>>;
   readonly warnings: ReadonlyArray<string>;
-  readonly worktreePath: string | null;
-  readonly branch: GitRefNameValue | null;
-  readonly createdBranch: boolean;
-  readonly worktreeImportCompleted: boolean;
+  readonly worktreeAllocation: StagedWorktreeAllocation | null;
   readonly committed: boolean;
   readonly handoffComplete: boolean;
   readonly committedResult: SessionTransferCommitImportResult | null;
+}
+
+function resolveExistingAllocation(
+  persistedOwnership: PersistedWorktreeOwnership | null,
+  staged: StagedImportState | undefined,
+): StagedWorktreeAllocation | null {
+  if (persistedOwnership !== null) {
+    return {
+      repoRoot: persistedOwnershipRepoRoot(persistedOwnership),
+      gitCommonDir: persistedOwnership.gitCommonDir ?? null,
+      worktreePath: persistedOwnership.worktreePath,
+      branch: persistedOwnership.branch,
+      createdBranch: persistedOwnership.createdBranch,
+      worktreeCreated: persistedOwnershipWorktreeCreated(persistedOwnership),
+      importCompleted: persistedOwnership.importCompleted,
+    };
+  }
+  return staged?.worktreeAllocation ?? null;
 }
 
 export interface SessionTransferEndpointServiceShape {
@@ -910,7 +948,7 @@ const make = Effect.gen(function* () {
             normalizedTargetGitCommonDir;
         } else {
           const resolvedOtherCommonDir = yield* workspaceBundle
-            .resolveGitCommonDir(decoded.projectWorkspaceRoot)
+            .resolveGitCommonDir(persistedOwnershipRepoRoot(decoded))
             .pipe(Effect.orElseSucceed(() => null));
           // Conservatively reserve the branch if an older record omits gitCommonDir and its repo
           // cannot be resolved to prove it belongs to a different repository.
@@ -1027,6 +1065,328 @@ const make = Effect.gen(function* () {
           );
       }),
     );
+
+  // Never swallow projection-read errors as "uncommitted": a transient DB/storage error must fail
+  // so we never delete an already-committed thread's worktree or branch.
+  const isTransferAlreadyCommitted = Effect.fn(
+    "SessionTransferEndpointService.isTransferAlreadyCommitted",
+  )(function* (
+    transferId: SessionTransferId,
+    staged: StagedImportState | undefined,
+    persistedOwnership: PersistedWorktreeOwnership | null,
+  ): Effect.fn.Return<boolean, SessionTransferError> {
+    if (staged?.committed === true) {
+      return true;
+    }
+    const candidateThreadIds = [
+      ...new Set(
+        [
+          staged?.destinationThreadId,
+          persistedOwnership?.destinationThreadId,
+          deterministicDestinationThreadId(transferId),
+        ].filter((id): id is ThreadId => id !== undefined),
+      ),
+    ];
+    for (const candidateThreadId of candidateThreadIds) {
+      const existingThreadOption = yield* projectionStore
+        .getThreadRecords(candidateThreadId, [])
+        .pipe(
+          Effect.asSome,
+          Effect.catchTags({
+            ProjectionStoreThreadNotFoundError: () => Effect.succeedNone,
+          }),
+          Effect.mapError(
+            (cause) =>
+              new SessionTransferError({
+                code: "internal",
+                transferId,
+                message: `Failed to verify whether destination thread '${candidateThreadId}' was committed for transfer '${transferId}': ${cause.message}`,
+                cause,
+              }),
+          ),
+        );
+      if (
+        Option.isSome(existingThreadOption) &&
+        existingThreadOption.value.thread.transferOrigin?.transferId === transferId
+      ) {
+        return true;
+      }
+    }
+    return false;
+  });
+
+  const isSameGitRepository = Effect.fn("SessionTransferEndpointService.isSameGitRepository")(
+    function* (
+      allocation: StagedWorktreeAllocation,
+      targetGitCommonDir: string | null,
+    ): Effect.fn.Return<boolean> {
+      if (targetGitCommonDir === null || targetGitCommonDir.length === 0) {
+        return false;
+      }
+      const normalizedTarget = yield* normalizePathForComparison(targetGitCommonDir);
+      const allocationCommonDir =
+        allocation.gitCommonDir !== null && allocation.gitCommonDir.length > 0
+          ? yield* normalizePathForComparison(allocation.gitCommonDir)
+          : yield* workspaceBundle
+              .resolveGitCommonDir(allocation.repoRoot)
+              .pipe(Effect.orElseSucceed(() => null));
+      return allocationCommonDir !== null && allocationCommonDir === normalizedTarget;
+    },
+  );
+
+  interface CleanupUncommittedAllocationResult {
+    readonly cleanedWorktree: boolean;
+    readonly removedOwnership: boolean;
+    readonly worktreeOrBranchFailed: boolean;
+    readonly remainingAllocation: StagedWorktreeAllocation | null;
+    readonly failures: ReadonlyArray<SessionTransferError>;
+  }
+
+  // Cleans up an uncommitted worktree/branch allocation strictly against its own repoRoot and
+  // gitCommonDir (never substituting staged.projectWorkspaceRoot), and strictly obeys the
+  // worktreeCreated invariant so a branch this transfer never created is never deleted.
+  const cleanupUncommittedAllocation = Effect.fn(
+    "SessionTransferEndpointService.cleanupUncommittedAllocation",
+  )(function* (input: {
+    readonly transferId: SessionTransferId;
+    readonly allocation: StagedWorktreeAllocation;
+    readonly persistedOwnership: PersistedWorktreeOwnership | null;
+    readonly contextLabel: string;
+  }): Effect.fn.Return<CleanupUncommittedAllocationResult, SessionTransferError> {
+    const { transferId, allocation, persistedOwnership, contextLabel } = input;
+    return yield* withRepoLock(
+      allocation.repoRoot,
+      Effect.gen(function* () {
+        const failures: Array<SessionTransferError> = [];
+        let cleanedWorktree = false;
+        let removedOwnership = false;
+        let worktreeOrBranchFailed = false;
+        let nextWorktreePath = allocation.worktreePath;
+        let nextBranch = allocation.branch;
+        let nextCreatedBranch = allocation.createdBranch;
+        let nextWorktreeCreated = allocation.worktreeCreated;
+
+        // Defense-in-depth: verify allocation.repoRoot still resolves to allocation.gitCommonDir
+        // before touching any worktree or branch inside it.
+        if (allocation.gitCommonDir !== null && allocation.gitCommonDir.length > 0) {
+          const expectedGitCommonDir = yield* normalizePathForComparison(allocation.gitCommonDir);
+          const resolvedGitCommonDir = yield* workspaceBundle
+            .resolveGitCommonDir(allocation.repoRoot)
+            .pipe(Effect.orElseSucceed(() => null));
+          if (resolvedGitCommonDir !== null && resolvedGitCommonDir !== expectedGitCommonDir) {
+            const mismatchError = new SessionTransferError({
+              code: "workspace_error",
+              transferId,
+              message: `Refusing to clean up destination worktree/branch during ${contextLabel} for transfer '${transferId}' because '${allocation.repoRoot}' resolved to git common dir '${resolvedGitCommonDir}' instead of expected '${expectedGitCommonDir}'.`,
+            });
+            return {
+              cleanedWorktree: false,
+              removedOwnership: false,
+              worktreeOrBranchFailed: true,
+              remainingAllocation: allocation,
+              failures: [mismatchError],
+            } satisfies CleanupUncommittedAllocationResult;
+          }
+        }
+
+        // Defense-in-depth: refuse to remove a worktree or branch if ANY non-deleted committed
+        // thread in SQLite references this worktreePath (propagating DB errors).
+        const owningCommittedThreadId =
+          allocation.worktreePath !== null
+            ? yield* findCommittedThreadOwningWorktree(allocation.worktreePath, transferId)
+            : null;
+
+        if (owningCommittedThreadId !== null) {
+          yield* Effect.logWarning(
+            `Refusing to remove destination worktree/branch during ${contextLabel} because worktree is owned by a committed thread.`,
+            {
+              transferId,
+              worktreePath: allocation.worktreePath,
+              branch: allocation.branch,
+              owningCommittedThreadId,
+            },
+          );
+          nextWorktreePath = null;
+          nextBranch = null;
+          nextCreatedBranch = false;
+        } else {
+          let worktreeToRemove: string | null = null;
+          let branchToDelete: GitRefNameValue | null = null;
+
+          if (allocation.worktreeCreated) {
+            worktreeToRemove = allocation.worktreePath;
+            branchToDelete =
+              allocation.createdBranch && allocation.branch !== null ? allocation.branch : null;
+          } else if (allocation.worktreePath !== null) {
+            // worktreeCreated !== true (interrupted/crashed before git worktree add completed):
+            // check git worktree registration BEFORE removing anything. Only delete createdBranch
+            // if worktreePath is actually registered on refs/heads/<branch>.
+            const registeredResult = yield* Effect.result(
+              workspaceBundle
+                .findRegisteredWorktree(allocation.repoRoot, allocation.worktreePath)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new SessionTransferError({
+                        code: "workspace_error",
+                        transferId,
+                        message: `Failed to inspect registered destination worktrees during ${contextLabel} for transfer '${transferId}': ${cause.message}`,
+                        cause,
+                      }),
+                  ),
+                ),
+            );
+            if (Result.isFailure(registeredResult)) {
+              worktreeOrBranchFailed = true;
+              failures.push(registeredResult.failure);
+            } else {
+              const registeredEntry = registeredResult.success;
+              if (registeredEntry !== null && !registeredEntry.isMain) {
+                worktreeToRemove = allocation.worktreePath;
+                if (
+                  allocation.createdBranch &&
+                  allocation.branch !== null &&
+                  registeredEntry.branch === allocation.branch
+                ) {
+                  branchToDelete = allocation.branch;
+                  // Positively verified that this transfer bound createdBranch to worktreePath.
+                  nextWorktreeCreated = true;
+                } else {
+                  nextBranch = null;
+                  nextCreatedBranch = false;
+                }
+              } else {
+                // Neither worktreePath nor createdBranch was created/bound by this transfer.
+                nextWorktreePath = null;
+                nextBranch = null;
+                nextCreatedBranch = false;
+              }
+            }
+          } else {
+            // worktreeCreated !== true and no worktreePath to verify: never touch branch.
+            nextBranch = null;
+            nextCreatedBranch = false;
+          }
+
+          if (!worktreeOrBranchFailed && worktreeToRemove !== null) {
+            const worktreeResult = yield* Effect.result(
+              workspaceBundle
+                .removeWorktree({
+                  repoCwd: allocation.repoRoot,
+                  worktreePath: worktreeToRemove,
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new SessionTransferError({
+                        code: "workspace_error",
+                        transferId,
+                        message: `Failed to remove destination worktree during ${contextLabel} for transfer '${transferId}': ${cause.message}`,
+                        cause,
+                      }),
+                  ),
+                ),
+            );
+            if (Result.isSuccess(worktreeResult)) {
+              cleanedWorktree = true;
+              nextWorktreePath = null;
+              if (branchToDelete === null) {
+                nextBranch = null;
+              }
+            } else {
+              worktreeOrBranchFailed = true;
+              failures.push(worktreeResult.failure);
+            }
+          }
+
+          if (!worktreeOrBranchFailed && branchToDelete !== null) {
+            const branchResult = yield* Effect.result(
+              workspaceBundle
+                .removeWorktree({
+                  repoCwd: allocation.repoRoot,
+                  branch: branchToDelete,
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new SessionTransferError({
+                        code: "workspace_error",
+                        transferId,
+                        message: `Failed to delete destination branch '${branchToDelete}' during ${contextLabel} for transfer '${transferId}': ${cause.message}`,
+                        cause,
+                      }),
+                  ),
+                ),
+            );
+            if (Result.isSuccess(branchResult)) {
+              cleanedWorktree = true;
+              nextBranch = null;
+              nextCreatedBranch = false;
+            } else {
+              worktreeOrBranchFailed = true;
+              failures.push(branchResult.failure);
+            }
+          }
+        }
+
+        if (!worktreeOrBranchFailed) {
+          const ownershipResult = yield* Effect.result(removeWorktreeOwnership(transferId));
+          if (Result.isSuccess(ownershipResult)) {
+            removedOwnership = ownershipResult.success;
+          } else {
+            failures.push(ownershipResult.failure);
+          }
+        } else if (
+          persistedOwnership !== null &&
+          (nextWorktreePath !== persistedOwnership.worktreePath ||
+            nextBranch !== persistedOwnership.branch ||
+            nextCreatedBranch !== persistedOwnership.createdBranch ||
+            nextWorktreeCreated !== persistedOwnershipWorktreeCreated(persistedOwnership))
+        ) {
+          yield* writeWorktreeOwnership({
+            ...persistedOwnership,
+            repoRoot: allocation.repoRoot,
+            gitCommonDir: allocation.gitCommonDir,
+            worktreePath: nextWorktreePath,
+            branch: nextBranch,
+            createdBranch: nextCreatedBranch,
+            worktreeCreated: nextWorktreeCreated,
+            importCompleted: nextWorktreePath === null ? false : persistedOwnership.importCompleted,
+          }).pipe(
+            Effect.tapError((cause) =>
+              Effect.logWarning(
+                `Failed to update persisted worktree ownership after partial ${contextLabel} cleanup.`,
+                { transferId, cause },
+              ),
+            ),
+            Effect.ignore,
+          );
+        }
+
+        const remainingAllocation: StagedWorktreeAllocation | null =
+          !worktreeOrBranchFailed && failures.length === 0
+            ? null
+            : {
+                repoRoot: allocation.repoRoot,
+                gitCommonDir: allocation.gitCommonDir,
+                worktreePath: nextWorktreePath,
+                branch: nextBranch,
+                createdBranch: nextCreatedBranch,
+                worktreeCreated: nextWorktreeCreated,
+                importCompleted: nextWorktreePath === null ? false : allocation.importCompleted,
+              };
+
+        return {
+          cleanedWorktree,
+          removedOwnership,
+          worktreeOrBranchFailed,
+          remainingAllocation,
+          failures,
+        } satisfies CleanupUncommittedAllocationResult;
+      }),
+      { gitCommonDir: allocation.gitCommonDir },
+    );
+  });
 
   const transferLockKey = (transferId: SessionTransferId): string => `transfer:${transferId}`;
   const threadLockKey = (threadId: ThreadId): string => `thread:${threadId}`;
@@ -1998,8 +2358,7 @@ const make = Effect.gen(function* () {
           ),
         );
 
-        let bundleUploadRelativeUrl: TrimmedNonEmptyStringValue | null = null;
-        let bundleUploadExpiresAt: IsoDateTime | null = null;
+        let targetGitCommonDir: string | null = null;
         if (input.manifest.workspace.mode === "git_bundle") {
           // Verify destination project has a git repository before accepting a git bundle.
           const gitMarkerExists = yield* fileSystem
@@ -2012,7 +2371,86 @@ const make = Effect.gen(function* () {
               message: `Destination project '${project.title}' at '${project.workspaceRoot}' is not a Git repository.`,
             });
           }
+          targetGitCommonDir = yield* workspaceBundle
+            .resolveGitCommonDir(project.workspaceRoot)
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new SessionTransferError({
+                    code: "workspace_error",
+                    transferId: input.transferId,
+                    message: `Failed to inspect Git repository for destination project '${project.title}' at '${project.workspaceRoot}': ${cause.message}`,
+                    cause,
+                  }),
+              ),
+            );
+          if (targetGitCommonDir === null) {
+            return yield* new SessionTransferError({
+              code: "workspace_error",
+              transferId: input.transferId,
+              message: `Destination project '${project.title}' at '${project.workspaceRoot}' is not a Git repository.`,
+            });
+          }
+        }
 
+        // Reconcile any existing in-memory or persisted allocation for this transferId.
+        // If restaging against a DIFFERENT repository, clean up the old allocation strictly
+        // against its own repoRoot/gitCommonDir first and fail stageImport if cleanup fails so a
+        // cross-repo ownership record is never silently orphaned or mixed with the new project.
+        const persistedOwnership = yield* readWorktreeOwnership(input.transferId);
+        const existingAllocation = resolveExistingAllocation(persistedOwnership, existingStaged);
+        let nextWorktreeAllocation: StagedWorktreeAllocation | null = null;
+        if (existingAllocation !== null) {
+          const sameRepo =
+            input.manifest.workspace.mode === "git_bundle" &&
+            (yield* isSameGitRepository(existingAllocation, targetGitCommonDir));
+          if (sameRepo) {
+            nextWorktreeAllocation = existingAllocation;
+          } else {
+            const alreadyCommitted = yield* isTransferAlreadyCommitted(
+              input.transferId,
+              existingStaged,
+              persistedOwnership,
+            );
+            if (alreadyCommitted) {
+              nextWorktreeAllocation = existingAllocation;
+            } else {
+              const cleanupResult = yield* cleanupUncommittedAllocation({
+                transferId: input.transferId,
+                allocation: existingAllocation,
+                persistedOwnership,
+                contextLabel: "cross-repository restaging",
+              });
+              if (cleanupResult.failures.length > 0) {
+                if (existingStaged !== undefined) {
+                  yield* Ref.update(stagedImports, (map) => {
+                    const latest = map.get(input.transferId);
+                    if (latest === undefined) return map;
+                    const next = new Map(map);
+                    next.set(input.transferId, {
+                      ...latest,
+                      worktreeAllocation: cleanupResult.remainingAllocation,
+                    });
+                    return next;
+                  });
+                }
+                const [firstFailure, ...restFailures] = cleanupResult.failures;
+                for (const extraFailure of restFailures) {
+                  yield* Effect.logWarning(
+                    "Additional cleanup failure while cleaning previous repository allocation during restaging.",
+                    { transferId: input.transferId, cause: extraFailure },
+                  );
+                }
+                return yield* firstFailure!;
+              }
+              nextWorktreeAllocation = null;
+            }
+          }
+        }
+
+        let bundleUploadRelativeUrl: TrimmedNonEmptyStringValue | null = null;
+        let bundleUploadExpiresAt: IsoDateTime | null = null;
+        if (input.manifest.workspace.mode === "git_bundle") {
           const issuedUpload = yield* runWithAssetContext(
             issueSessionTransferBundleUrl({
               transferId: input.transferId,
@@ -2077,16 +2515,12 @@ const make = Effect.gen(function* () {
             transferId: input.transferId,
             destinationProjectId: project.id,
             projectWorkspaceRoot: project.workspaceRoot,
-            gitCommonDir: prev?.gitCommonDir ?? null,
             destinationThreadId: prev?.destinationThreadId ?? destinationThreadId,
             resolvedModelSelection,
             attachmentUploads,
             claimedAttachmentIds: prev?.claimedAttachmentIds ?? {},
             warnings,
-            worktreePath: prev?.worktreePath ?? null,
-            branch: prev?.branch ?? null,
-            createdBranch: prev?.createdBranch ?? false,
-            worktreeImportCompleted: prev?.worktreeImportCompleted ?? false,
+            worktreeAllocation: nextWorktreeAllocation,
             committed: prev?.committed ?? false,
             handoffComplete: prev?.handoffComplete ?? false,
             committedResult: prev?.committedResult ?? null,
@@ -2096,14 +2530,13 @@ const make = Effect.gen(function* () {
           return [nextState, next] as const;
         });
 
+        const stagedWorktreePath = updatedStaged.worktreeAllocation?.worktreePath ?? null;
         return {
           destinationProjectId: project.id,
           destinationThreadId: updatedStaged.destinationThreadId,
-          destinationBranch: updatedStaged.branch,
+          destinationBranch: updatedStaged.worktreeAllocation?.branch ?? null,
           destinationWorktreePath:
-            updatedStaged.worktreePath !== null
-              ? TrimmedNonEmptyString.make(updatedStaged.worktreePath)
-              : null,
+            stagedWorktreePath !== null ? TrimmedNonEmptyString.make(stagedWorktreePath) : null,
           resolvedModelSelection,
           bundleUploadRelativeUrl,
           bundleUploadExpiresAt,
@@ -2319,17 +2752,24 @@ const make = Effect.gen(function* () {
               transferId: input.transferId,
               destinationProjectId: thread.projectId,
               projectWorkspaceRoot: prev?.projectWorkspaceRoot ?? "",
-              gitCommonDir: prev?.gitCommonDir ?? null,
               destinationThreadId: thread.id,
               resolvedModelSelection: thread.modelSelection,
               attachmentUploads: prev?.attachmentUploads ?? [],
               claimedAttachmentIds: prev?.claimedAttachmentIds ?? {},
               warnings: replayWarnings,
-              worktreePath: thread.worktreePath,
-              branch: thread.branch,
-              createdBranch: prev?.createdBranch ?? false,
-              worktreeImportCompleted:
-                prev?.worktreeImportCompleted ?? thread.worktreePath !== null,
+              worktreeAllocation:
+                prev?.worktreeAllocation ??
+                (thread.worktreePath !== null
+                  ? {
+                      repoRoot: prev?.projectWorkspaceRoot ?? "",
+                      gitCommonDir: null,
+                      worktreePath: thread.worktreePath,
+                      branch: thread.branch,
+                      createdBranch: false,
+                      worktreeCreated: true,
+                      importCompleted: true,
+                    }
+                  : null),
               committed: true,
               handoffComplete,
               committedResult: replayedResult,
@@ -2374,128 +2814,76 @@ const make = Effect.gen(function* () {
         const warnings: string[] = [...modelWarnings];
         let destinationBranch: GitRefNameValue | null = null;
         let destinationWorktreePath: TrimmedNonEmptyStringValue | null = null;
-        let createdBranch = existingStaged?.createdBranch ?? false;
+        let createdBranch = existingStaged?.worktreeAllocation?.createdBranch ?? false;
 
         // 3. Apply uploaded git workspace bundle into a fresh isolated worktree,
-        //    reusing an already-created worktree ONLY when importCompleted === true.
+        //    reusing an already-created worktree ONLY when importCompleted === true AND it belongs
+        //    to the same destination repository.
         if (input.manifest.workspace.mode === "git_bundle") {
           const persistedOwnership = yield* readWorktreeOwnership(input.transferId);
-          const inMemoryCompleted =
-            existingStaged !== undefined &&
-            existingStaged.worktreeImportCompleted &&
-            existingStaged.worktreePath !== null &&
-            existingStaged.branch !== null &&
-            (persistedOwnership === null || persistedOwnership.importCompleted === true);
-          const persistedCompleted =
-            persistedOwnership !== null &&
-            persistedOwnership.importCompleted === true &&
-            persistedOwnership.worktreePath !== null &&
-            persistedOwnership.branch !== null;
-
-          const reusableWorktreePath = inMemoryCompleted
-            ? existingStaged.worktreePath
-            : persistedCompleted
-              ? persistedOwnership.worktreePath
-              : null;
-          const reusableBranch = inMemoryCompleted
-            ? existingStaged.branch
-            : persistedCompleted
-              ? persistedOwnership.branch
-              : null;
-          const reusableCreatedBranch = inMemoryCompleted
-            ? existingStaged.createdBranch
-            : persistedCompleted
-              ? persistedOwnership.createdBranch
-              : false;
+          const existingAllocation = resolveExistingAllocation(persistedOwnership, existingStaged);
+          const targetGitCommonDir = yield* workspaceBundle
+            .resolveGitCommonDir(project.workspaceRoot)
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new SessionTransferError({
+                    code: "workspace_error",
+                    transferId: input.transferId,
+                    message: `Failed to resolve Git repository for destination project '${project.title}': ${cause.message}`,
+                    cause,
+                  }),
+              ),
+            );
+          const sameRepoAllocation =
+            existingAllocation !== null &&
+            (yield* isSameGitRepository(existingAllocation, targetGitCommonDir));
 
           const canReuseWorktree =
-            reusableWorktreePath !== null &&
-            reusableBranch !== null &&
+            sameRepoAllocation &&
+            existingAllocation.importCompleted &&
+            existingAllocation.worktreePath !== null &&
+            existingAllocation.branch !== null &&
             (yield* fileSystem
-              .exists(reusableWorktreePath)
+              .exists(existingAllocation.worktreePath)
               .pipe(Effect.orElseSucceed(() => false)));
 
           if (canReuseWorktree) {
-            destinationBranch = reusableBranch;
-            destinationWorktreePath = TrimmedNonEmptyString.make(reusableWorktreePath);
-            createdBranch = reusableCreatedBranch;
+            destinationBranch = existingAllocation.branch;
+            destinationWorktreePath = TrimmedNonEmptyString.make(existingAllocation.worktreePath);
+            createdBranch = existingAllocation.createdBranch;
           } else {
-            // If an earlier interrupted/crashed/incomplete attempt left partial worktree/branch
-            // intent in memory or on disk, clean it up under the per-repo mutex BEFORE allocating
-            // a fresh worktree. Never commit a partial worktree if cleanup fails.
-            const staleRepoCwd =
-              persistedOwnership?.projectWorkspaceRoot ??
-              (existingStaged !== undefined && existingStaged.projectWorkspaceRoot.length > 0
-                ? existingStaged.projectWorkspaceRoot
-                : null);
-            const staleGitCommonDir =
-              persistedOwnership?.gitCommonDir ?? existingStaged?.gitCommonDir ?? null;
-            const staleWorktreePath =
-              persistedOwnership?.worktreePath ?? existingStaged?.worktreePath ?? null;
-            const staleCreatedBranch =
-              (persistedOwnership?.createdBranch ?? false) ||
-              (existingStaged?.createdBranch ?? false);
-            const staleBranch = staleCreatedBranch
-              ? (persistedOwnership?.branch ?? existingStaged?.branch ?? null)
-              : null;
-
-            if (staleRepoCwd !== null && (staleWorktreePath !== null || staleBranch !== null)) {
-              yield* withRepoLock(
-                staleRepoCwd,
-                Effect.gen(function* () {
-                  const owningCommittedThreadId =
-                    staleWorktreePath !== null
-                      ? yield* findCommittedThreadOwningWorktree(
-                          staleWorktreePath,
-                          input.transferId,
-                        )
-                      : null;
-                  if (owningCommittedThreadId !== null) {
-                    yield* Effect.logWarning(
-                      "Refusing to remove stale destination worktree/branch before retry because worktree is owned by a committed thread.",
-                      {
-                        transferId: input.transferId,
-                        worktreePath: staleWorktreePath,
-                        owningCommittedThreadId,
-                      },
-                    );
-                  } else {
-                    yield* workspaceBundle
-                      .removeWorktree({
-                        repoCwd: staleRepoCwd,
-                        worktreePath: staleWorktreePath,
-                        branch: staleBranch,
-                      })
-                      .pipe(
-                        Effect.mapError(
-                          (cause) =>
-                            new SessionTransferError({
-                              code: "workspace_error",
-                              transferId: input.transferId,
-                              message: `Failed to clean up partial destination worktree before retry for transfer '${input.transferId}': ${cause.message}`,
-                              cause,
-                            }),
-                        ),
-                      );
-                  }
-                  yield* removeWorktreeOwnership(input.transferId);
-                  yield* Ref.update(stagedImports, (map) => {
-                    const prev = map.get(input.transferId);
-                    if (prev === undefined) return map;
-                    const next = new Map(map);
-                    next.set(input.transferId, {
-                      ...prev,
-                      gitCommonDir: null,
-                      worktreePath: null,
-                      branch: null,
-                      createdBranch: false,
-                      worktreeImportCompleted: false,
-                    });
-                    return next;
-                  });
-                }),
-                { gitCommonDir: staleGitCommonDir },
-              );
+            // If an earlier interrupted/crashed/incomplete or cross-repo attempt left worktree or
+            // branch ownership in memory or on disk, clean it up strictly against its OWN repoRoot
+            // and gitCommonDir BEFORE allocating a fresh worktree. Never commit a partial worktree
+            // if cleanup fails.
+            if (existingAllocation !== null && existingAllocation.repoRoot.length > 0) {
+              const cleanupResult = yield* cleanupUncommittedAllocation({
+                transferId: input.transferId,
+                allocation: existingAllocation,
+                persistedOwnership,
+                contextLabel: "pre-retry cleanup",
+              });
+              yield* Ref.update(stagedImports, (map) => {
+                const prev = map.get(input.transferId);
+                if (prev === undefined) return map;
+                const next = new Map(map);
+                next.set(input.transferId, {
+                  ...prev,
+                  worktreeAllocation: cleanupResult.remainingAllocation,
+                });
+                return next;
+              });
+              if (cleanupResult.failures.length > 0) {
+                const [firstFailure, ...restFailures] = cleanupResult.failures;
+                for (const extraFailure of restFailures) {
+                  yield* Effect.logWarning(
+                    "Additional cleanup failure during pre-retry destination worktree cleanup.",
+                    { transferId: input.transferId, cause: extraFailure },
+                  );
+                }
+                return yield* firstFailure!;
+              }
             } else if (persistedOwnership !== null) {
               yield* removeWorktreeOwnership(input.transferId);
             }
@@ -2553,6 +2941,72 @@ const make = Effect.gen(function* () {
                   ),
             });
 
+            const persistAllocationState = (
+              allocation: {
+                readonly repoCwd: string;
+                readonly gitCommonDir: string;
+                readonly worktreePath: string;
+                readonly branch: string;
+                readonly createdBranch: boolean;
+              },
+              worktreeCreated: boolean,
+            ) => {
+              const allocatedBranch = GitRefName.make(allocation.branch);
+              const stagedAllocation: StagedWorktreeAllocation = {
+                repoRoot: allocation.repoCwd,
+                gitCommonDir: allocation.gitCommonDir,
+                worktreePath: allocation.worktreePath,
+                branch: allocatedBranch,
+                createdBranch: allocation.createdBranch,
+                worktreeCreated,
+                importCompleted: false,
+              };
+              return writeWorktreeOwnership({
+                schemaVersion: 1,
+                transferId: input.transferId,
+                destinationProjectId: project.id,
+                projectWorkspaceRoot: allocation.repoCwd,
+                repoRoot: allocation.repoCwd,
+                gitCommonDir: allocation.gitCommonDir,
+                destinationThreadId: input.destinationThreadId,
+                worktreePath: allocation.worktreePath,
+                branch: allocatedBranch,
+                createdBranch: allocation.createdBranch,
+                worktreeCreated,
+                importCompleted: false,
+              }).pipe(
+                Effect.andThen(
+                  Ref.update(stagedImports, (map) => {
+                    const next = new Map(map);
+                    const prev = next.get(input.transferId);
+                    next.set(input.transferId, {
+                      transferId: input.transferId,
+                      destinationProjectId: project.id,
+                      projectWorkspaceRoot: allocation.repoCwd,
+                      destinationThreadId: input.destinationThreadId,
+                      resolvedModelSelection,
+                      attachmentUploads: prev?.attachmentUploads ?? [],
+                      claimedAttachmentIds: prev?.claimedAttachmentIds ?? {},
+                      warnings: prev?.warnings ?? [],
+                      worktreeAllocation: stagedAllocation,
+                      committed: false,
+                      handoffComplete: false,
+                      committedResult: null,
+                    });
+                    return next;
+                  }),
+                ),
+                Effect.mapError(
+                  (cause) =>
+                    new WorkspaceBundle.WorkspaceBundleError({
+                      code: "io_error",
+                      message: cause.message,
+                      cause,
+                    }),
+                ),
+              );
+            };
+
             const importedWorkspace = yield* workspaceBundle
               .importWorkspaceBundle({
                 transferId: input.transferId,
@@ -2578,55 +3032,8 @@ const make = Effect.gen(function* () {
                         }),
                     ),
                   ),
-                onWorktreeAllocated: (allocation) => {
-                  const allocatedBranch = GitRefName.make(allocation.branch);
-                  return writeWorktreeOwnership({
-                    schemaVersion: 1,
-                    transferId: input.transferId,
-                    destinationProjectId: project.id,
-                    projectWorkspaceRoot: allocation.repoCwd,
-                    gitCommonDir: allocation.gitCommonDir,
-                    destinationThreadId: input.destinationThreadId,
-                    worktreePath: allocation.worktreePath,
-                    branch: allocatedBranch,
-                    createdBranch: allocation.createdBranch,
-                    importCompleted: false,
-                  }).pipe(
-                    Effect.andThen(
-                      Ref.update(stagedImports, (map) => {
-                        const next = new Map(map);
-                        const prev = next.get(input.transferId);
-                        next.set(input.transferId, {
-                          transferId: input.transferId,
-                          destinationProjectId: project.id,
-                          projectWorkspaceRoot: allocation.repoCwd,
-                          gitCommonDir: allocation.gitCommonDir,
-                          destinationThreadId: input.destinationThreadId,
-                          resolvedModelSelection,
-                          attachmentUploads: prev?.attachmentUploads ?? [],
-                          claimedAttachmentIds: prev?.claimedAttachmentIds ?? {},
-                          warnings: prev?.warnings ?? [],
-                          worktreePath: allocation.worktreePath,
-                          branch: allocatedBranch,
-                          createdBranch: allocation.createdBranch,
-                          worktreeImportCompleted: false,
-                          committed: false,
-                          handoffComplete: false,
-                          committedResult: null,
-                        });
-                        return next;
-                      }),
-                    ),
-                    Effect.mapError(
-                      (cause) =>
-                        new WorkspaceBundle.WorkspaceBundleError({
-                          code: "io_error",
-                          message: cause.message,
-                          cause,
-                        }),
-                    ),
-                  );
-                },
+                onWorktreeAllocated: (allocation) => persistAllocationState(allocation, false),
+                onWorktreeCreated: (allocation) => persistAllocationState(allocation, true),
                 onWorktreeAllocationCleared: (allocation) =>
                   Effect.result(removeWorktreeOwnership(input.transferId)).pipe(
                     Effect.flatMap((removeRes) => {
@@ -2643,19 +3050,16 @@ const make = Effect.gen(function* () {
                         const prev = map.get(input.transferId);
                         if (
                           prev === undefined ||
-                          prev.worktreePath !== allocation.worktreePath ||
-                          prev.worktreeImportCompleted
+                          prev.worktreeAllocation === null ||
+                          prev.worktreeAllocation.worktreePath !== allocation.worktreePath ||
+                          prev.worktreeAllocation.importCompleted
                         ) {
                           return map;
                         }
                         const next = new Map(map);
                         next.set(input.transferId, {
                           ...prev,
-                          gitCommonDir: null,
-                          worktreePath: null,
-                          branch: null,
-                          createdBranch: false,
-                          worktreeImportCompleted: false,
+                          worktreeAllocation: null,
                         });
                         return next;
                       });
@@ -2686,11 +3090,13 @@ const make = Effect.gen(function* () {
               transferId: input.transferId,
               destinationProjectId: project.id,
               projectWorkspaceRoot: project.workspaceRoot,
+              repoRoot: project.workspaceRoot,
               gitCommonDir: importedWorkspace.gitCommonDir,
               destinationThreadId: input.destinationThreadId,
               worktreePath: importedWorkspace.worktreePath,
               branch: destinationBranch,
               createdBranch,
+              worktreeCreated: true,
               importCompleted: true,
             });
 
@@ -2702,16 +3108,20 @@ const make = Effect.gen(function* () {
                 transferId: input.transferId,
                 destinationProjectId: project.id,
                 projectWorkspaceRoot: project.workspaceRoot,
-                gitCommonDir: importedWorkspace.gitCommonDir,
                 destinationThreadId: input.destinationThreadId,
                 resolvedModelSelection,
                 attachmentUploads: prev?.attachmentUploads ?? [],
                 claimedAttachmentIds: prev?.claimedAttachmentIds ?? {},
                 warnings: prev?.warnings ?? [],
-                worktreePath: importedWorkspace.worktreePath,
-                branch: destinationBranch,
-                createdBranch,
-                worktreeImportCompleted: true,
+                worktreeAllocation: {
+                  repoRoot: project.workspaceRoot,
+                  gitCommonDir: importedWorkspace.gitCommonDir,
+                  worktreePath: importedWorkspace.worktreePath,
+                  branch: destinationBranch,
+                  createdBranch,
+                  worktreeCreated: true,
+                  importCompleted: true,
+                },
                 committed: false,
                 handoffComplete: false,
                 committedResult: null,
@@ -3240,16 +3650,23 @@ const make = Effect.gen(function* () {
             transferId: input.transferId,
             destinationProjectId: project.id,
             projectWorkspaceRoot: project.workspaceRoot,
-            gitCommonDir: prev?.gitCommonDir ?? null,
             destinationThreadId: input.destinationThreadId,
             resolvedModelSelection,
             attachmentUploads: prev?.attachmentUploads ?? [],
             claimedAttachmentIds: claimedAttachmentIdsRecord,
             warnings,
-            worktreePath: destinationWorktreePath,
-            branch: destinationBranch,
-            createdBranch,
-            worktreeImportCompleted: destinationWorktreePath !== null,
+            worktreeAllocation:
+              destinationWorktreePath !== null
+                ? {
+                    repoRoot: prev?.worktreeAllocation?.repoRoot ?? project.workspaceRoot,
+                    gitCommonDir: prev?.worktreeAllocation?.gitCommonDir ?? null,
+                    worktreePath: destinationWorktreePath,
+                    branch: destinationBranch,
+                    createdBranch,
+                    worktreeCreated: true,
+                    importCompleted: true,
+                  }
+                : null,
             committed: true,
             handoffComplete,
             committedResult,
@@ -3544,46 +3961,11 @@ const make = Effect.gen(function* () {
         const persistedOwnership = Result.isSuccess(persistedOwnershipResult)
           ? persistedOwnershipResult.success
           : null;
-        const candidateThreadIds = [
-          ...new Set(
-            [
-              staged?.destinationThreadId,
-              persistedOwnership?.destinationThreadId,
-              deterministicDestinationThreadId(input.transferId),
-            ].filter((id): id is ThreadId => id !== undefined),
-          ),
-        ];
-        // Never swallow projection-read errors as "uncommitted": a transient DB/storage error
-        // must fail abort so we never delete an already-committed thread's worktree or branch.
-        let alreadyCommitted = staged?.committed === true;
-        if (!alreadyCommitted) {
-          for (const candidateThreadId of candidateThreadIds) {
-            const existingThreadOption = yield* projectionStore
-              .getThreadRecords(candidateThreadId, [])
-              .pipe(
-                Effect.asSome,
-                Effect.catchTags({
-                  ProjectionStoreThreadNotFoundError: () => Effect.succeedNone,
-                }),
-                Effect.mapError(
-                  (cause) =>
-                    new SessionTransferError({
-                      code: "internal",
-                      transferId: input.transferId,
-                      message: `Failed to verify whether destination thread '${candidateThreadId}' was committed before aborting transfer '${input.transferId}': ${cause.message}`,
-                      cause,
-                    }),
-                ),
-              );
-            if (
-              Option.isSome(existingThreadOption) &&
-              existingThreadOption.value.thread.transferOrigin?.transferId === input.transferId
-            ) {
-              alreadyCommitted = true;
-              break;
-            }
-          }
-        }
+        const alreadyCommitted = yield* isTransferAlreadyCommitted(
+          input.transferId,
+          staged,
+          persistedOwnership,
+        );
 
         if (alreadyCommitted) {
           yield* removeWorktreeOwnershipBestEffort(input.transferId);
@@ -3605,154 +3987,37 @@ const make = Effect.gen(function* () {
 
         const cleanupFailures: Array<SessionTransferError> = [];
 
-        const effectiveRepoCwd =
-          staged?.projectWorkspaceRoot ?? persistedOwnership?.projectWorkspaceRoot ?? null;
-        const effectiveGitCommonDir =
-          staged?.gitCommonDir ?? persistedOwnership?.gitCommonDir ?? null;
-        const effectiveWorktreePath =
-          staged?.worktreePath ?? persistedOwnership?.worktreePath ?? null;
-        const effectiveBranch = staged?.branch ?? persistedOwnership?.branch ?? null;
-        const effectiveCreatedBranch =
-          (staged?.createdBranch ?? false) || (persistedOwnership?.createdBranch ?? false);
+        // Always clean up strictly against the allocation's own repoRoot and gitCommonDir —
+        // never substitute staged.projectWorkspaceRoot for an allocation's repository.
+        const allocation = resolveExistingAllocation(persistedOwnership, staged);
 
         let cleanedWorktree = false;
         let removedOwnership = false;
         let worktreeOrBranchFailed = false;
-        let nextWorktreePath = effectiveWorktreePath;
-        let nextBranch = effectiveBranch;
-        let nextCreatedBranch = effectiveCreatedBranch;
+        let remainingAllocation: StagedWorktreeAllocation | null = allocation;
 
-        // Perform worktree & branch removal under the per-repo mutex BEFORE deleting the ownership
-        // file / staging directory so concurrent imports into the same repo are serialized and any
-        // worktree/branch failure preserves durable ownership across retries and restarts.
+        // Perform worktree & branch removal under the allocation's per-repo mutex BEFORE deleting
+        // the ownership file / staging directory so concurrent imports into that repo are
+        // serialized and any failure preserves durable ownership across retries and restarts.
         const needsRepoCleanup =
-          effectiveRepoCwd !== null &&
-          (effectiveWorktreePath !== null || (effectiveCreatedBranch && effectiveBranch !== null));
+          allocation !== null &&
+          allocation.repoRoot.length > 0 &&
+          (allocation.worktreePath !== null ||
+            (allocation.createdBranch && allocation.branch !== null) ||
+            persistedOwnership !== null);
 
         if (needsRepoCleanup) {
-          yield* withRepoLock(
-            effectiveRepoCwd,
-            Effect.gen(function* () {
-              // Defense-in-depth: refuse to remove a worktree or branch if ANY non-deleted
-              // committed thread in SQLite references this worktreePath (propagating DB errors).
-              const owningCommittedThreadId =
-                effectiveWorktreePath !== null
-                  ? yield* findCommittedThreadOwningWorktree(
-                      effectiveWorktreePath,
-                      input.transferId,
-                    )
-                  : null;
-
-              if (owningCommittedThreadId !== null) {
-                yield* Effect.logWarning(
-                  "Refusing to remove destination worktree/branch during abort because worktree is owned by a committed thread.",
-                  {
-                    transferId: input.transferId,
-                    worktreePath: effectiveWorktreePath,
-                    branch: effectiveBranch,
-                    owningCommittedThreadId,
-                  },
-                );
-                nextWorktreePath = null;
-                nextBranch = null;
-                nextCreatedBranch = false;
-              } else {
-                if (effectiveWorktreePath !== null) {
-                  const worktreeResult = yield* Effect.result(
-                    workspaceBundle
-                      .removeWorktree({
-                        repoCwd: effectiveRepoCwd,
-                        worktreePath: effectiveWorktreePath,
-                      })
-                      .pipe(
-                        Effect.mapError(
-                          (cause) =>
-                            new SessionTransferError({
-                              code: "workspace_error",
-                              transferId: input.transferId,
-                              message: `Failed to remove destination worktree for transfer '${input.transferId}': ${cause.message}`,
-                              cause,
-                            }),
-                        ),
-                      ),
-                  );
-                  if (Result.isSuccess(worktreeResult)) {
-                    cleanedWorktree = true;
-                    nextWorktreePath = null;
-                    if (!effectiveCreatedBranch) {
-                      nextBranch = null;
-                    }
-                  } else {
-                    worktreeOrBranchFailed = true;
-                    cleanupFailures.push(worktreeResult.failure);
-                  }
-                }
-
-                if (effectiveCreatedBranch && effectiveBranch !== null) {
-                  const branchResult = yield* Effect.result(
-                    workspaceBundle
-                      .removeWorktree({
-                        repoCwd: effectiveRepoCwd,
-                        branch: effectiveBranch,
-                      })
-                      .pipe(
-                        Effect.mapError(
-                          (cause) =>
-                            new SessionTransferError({
-                              code: "workspace_error",
-                              transferId: input.transferId,
-                              message: `Failed to delete destination branch '${effectiveBranch}' for transfer '${input.transferId}': ${cause.message}`,
-                              cause,
-                            }),
-                        ),
-                      ),
-                  );
-                  if (Result.isSuccess(branchResult)) {
-                    cleanedWorktree = true;
-                    nextBranch = null;
-                    nextCreatedBranch = false;
-                  } else {
-                    worktreeOrBranchFailed = true;
-                    cleanupFailures.push(branchResult.failure);
-                  }
-                }
-              }
-
-              if (!worktreeOrBranchFailed) {
-                const ownershipResult = yield* Effect.result(
-                  removeWorktreeOwnership(input.transferId),
-                );
-                if (Result.isSuccess(ownershipResult)) {
-                  removedOwnership = ownershipResult.success;
-                } else {
-                  cleanupFailures.push(ownershipResult.failure);
-                }
-              } else if (
-                persistedOwnership !== null &&
-                (nextWorktreePath !== persistedOwnership.worktreePath ||
-                  nextBranch !== persistedOwnership.branch ||
-                  nextCreatedBranch !== persistedOwnership.createdBranch)
-              ) {
-                yield* writeWorktreeOwnership({
-                  ...persistedOwnership,
-                  worktreePath: nextWorktreePath,
-                  branch: nextBranch,
-                  createdBranch: nextCreatedBranch,
-                  importCompleted:
-                    nextWorktreePath === null ? false : persistedOwnership.importCompleted,
-                }).pipe(
-                  Effect.tapError((cause) =>
-                    Effect.logWarning(
-                      "Failed to update persisted worktree ownership after partial abort cleanup.",
-                      { transferId: input.transferId, cause },
-                    ),
-                  ),
-                  Effect.ignore,
-                );
-              }
-            }),
-            { gitCommonDir: effectiveGitCommonDir },
-          );
+          const cleanupResult = yield* cleanupUncommittedAllocation({
+            transferId: input.transferId,
+            allocation,
+            persistedOwnership,
+            contextLabel: "abort",
+          });
+          cleanedWorktree = cleanupResult.cleanedWorktree;
+          removedOwnership = cleanupResult.removedOwnership;
+          worktreeOrBranchFailed = cleanupResult.worktreeOrBranchFailed;
+          remainingAllocation = cleanupResult.remainingAllocation;
+          cleanupFailures.push(...cleanupResult.failures);
         }
 
         // Only delete the ownership file & staging directory once worktree and created-branch
@@ -3804,11 +4069,7 @@ const make = Effect.gen(function* () {
               const next = new Map(current);
               next.set(input.transferId, {
                 ...latest,
-                worktreePath: nextWorktreePath,
-                branch: nextBranch,
-                createdBranch: nextCreatedBranch,
-                worktreeImportCompleted:
-                  nextWorktreePath === null ? false : latest.worktreeImportCompleted,
+                worktreeAllocation: remainingAllocation,
                 attachmentUploads: remainingAttachmentUploads,
               });
               return next;

@@ -5,7 +5,9 @@ import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -1127,6 +1129,173 @@ describe("WorkspaceBundle", () => {
         expect((yield* git(dstRepo, ["branch", "--list", "feat/truncated-wt"])).trim()).not.toBe(
           "",
         );
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+  it.effect(
+    "never deletes an externally created branch when interrupted after onWorktreeAllocated (both before and during git worktree add) and invokes onWorktreeCreated inside the lock",
+    () =>
+      Effect.gen(function* () {
+        const baseFs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseVcsProcess = yield* VcsProcess.VcsProcess;
+
+        const root = yield* baseFs.makeTempDirectoryScoped({
+          prefix: "t3-wb-interrupt-ext-branch-",
+        });
+        const srcRepo = path.join(root, "src");
+        const dstRepo = path.join(root, "dst");
+        const bundlePath = path.join(root, "interrupt-ext.bundle");
+
+        yield* baseFs.makeDirectory(srcRepo, { recursive: true });
+        yield* git(srcRepo, ["init", "-b", "main"]);
+        yield* baseFs.writeFileString(path.join(srcRepo, "file.txt"), "base\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "init"]);
+        yield* git(root, ["clone", srcRepo, dstRepo]);
+
+        yield* git(srcRepo, ["checkout", "-b", "feat/ext-branch-interrupt"]);
+        yield* baseFs.writeFileString(path.join(srcRepo, "file.txt"), "feature\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "feature"]);
+
+        const baseBundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const exported = yield* baseBundleService.exportWorkspaceBundle({
+          transferId: "xfer-ext-branch-interrupt",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+
+        // Part 1: Interrupt while paused in onWorktreeAllocated (gitWorktreeAddInvoked === false)
+        // after someone independently creates the requested branch in dstRepo.
+        const allocPaused = yield* Deferred.make<void>();
+        let allocatedBranchName = "";
+        let allocatedWorktreePath = "";
+        let clearedCount = 0;
+
+        const fiber1 = yield* Effect.forkChild(
+          baseBundleService.importWorkspaceBundle({
+            transferId: "xfer-ext-branch-interrupt",
+            repoCwd: dstRepo,
+            bundlePath,
+            sourceBranch: exported.branch,
+            targetLabel: "boat",
+            onWorktreeAllocated: (allocation) =>
+              Effect.gen(function* () {
+                allocatedBranchName = allocation.branch;
+                allocatedWorktreePath = allocation.worktreePath;
+                yield* Deferred.succeed(allocPaused, undefined);
+                return yield* Effect.never;
+              }),
+            onWorktreeAllocationCleared: () =>
+              Effect.sync(() => {
+                clearedCount += 1;
+              }),
+          }),
+        );
+        yield* Deferred.await(allocPaused);
+        expect(allocatedBranchName).toBe("feat/ext-branch-interrupt");
+
+        // Independently create the branch in dstRepo before interrupting the transfer.
+        yield* git(dstRepo, ["branch", allocatedBranchName]);
+        const extBranchSha1 = (yield* git(dstRepo, [
+          "rev-parse",
+          `refs/heads/${allocatedBranchName}`,
+        ])).trim();
+        yield* Fiber.interrupt(fiber1);
+
+        expect(clearedCount).toBe(1);
+        expect(
+          (yield* git(dstRepo, ["rev-parse", `refs/heads/${allocatedBranchName}`])).trim(),
+        ).toBe(extBranchSha1);
+        expect(yield* baseFs.exists(allocatedWorktreePath)).toBe(false);
+
+        // Remove the external branch to run Part 2 on the same branch name.
+        yield* git(dstRepo, ["branch", "-D", allocatedBranchName]);
+
+        // Part 2: Pause right at VcsProcess.run("WorkspaceBundle.addWorktree") (gitWorktreeAddInvoked === true,
+        // gitWorktreeAddSucceeded === false), independently create the branch in dstRepo, then interrupt.
+        const addPaused = yield* Deferred.make<void>();
+        let pauseAdd = true;
+        let clearedCount2 = 0;
+        let createdCallbackInsideLock = false;
+        let lockHeld = false;
+
+        const pausedVcsLayer = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) => {
+            if (runInput.operation === "WorkspaceBundle.addWorktree" && pauseAdd) {
+              pauseAdd = false;
+              return Deferred.succeed(addPaused, undefined).pipe(Effect.andThen(Effect.never));
+            }
+            return baseVcsProcess.run(runInput);
+          },
+        });
+        const pausedBundleLayer = Layer.fresh(WorkspaceBundle.layer).pipe(
+          Layer.provide(pausedVcsLayer),
+        );
+
+        yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          let allocatedPath2 = "";
+          const fiber2 = yield* Effect.forkChild(
+            svc.importWorkspaceBundle({
+              transferId: "xfer-ext-branch-interrupt",
+              repoCwd: dstRepo,
+              bundlePath,
+              sourceBranch: exported.branch,
+              targetLabel: "boat",
+              onWorktreeAllocated: (allocation) =>
+                Effect.sync(() => {
+                  allocatedPath2 = allocation.worktreePath;
+                }),
+              onWorktreeAllocationCleared: () =>
+                Effect.sync(() => {
+                  clearedCount2 += 1;
+                }),
+            }),
+          );
+          yield* Deferred.await(addPaused);
+          yield* git(dstRepo, ["branch", "feat/ext-branch-interrupt"]);
+          const extBranchSha2 = (yield* git(dstRepo, [
+            "rev-parse",
+            "refs/heads/feat/ext-branch-interrupt",
+          ])).trim();
+          yield* Fiber.interrupt(fiber2);
+
+          expect(clearedCount2).toBe(1);
+          expect(
+            (yield* git(dstRepo, ["rev-parse", "refs/heads/feat/ext-branch-interrupt"])).trim(),
+          ).toBe(extBranchSha2);
+          expect(yield* baseFs.exists(allocatedPath2)).toBe(false);
+
+          // Part 3: Normal import invokes onWorktreeCreated while still holding withWorktreeAllocationLock.
+          const imported = yield* svc.importWorkspaceBundle({
+            transferId: "xfer-ext-branch-interrupt",
+            repoCwd: dstRepo,
+            bundlePath,
+            sourceBranch: exported.branch,
+            targetLabel: "boat",
+            withWorktreeAllocationLock: (effect) =>
+              Effect.acquireUseRelease(
+                Effect.sync(() => {
+                  lockHeld = true;
+                }),
+                () => effect,
+                () =>
+                  Effect.sync(() => {
+                    lockHeld = false;
+                  }),
+              ),
+            onWorktreeCreated: () =>
+              Effect.sync(() => {
+                createdCallbackInsideLock = lockHeld;
+              }),
+          });
+          expect(createdCallbackInsideLock).toBe(true);
+          expect(imported.branch).not.toBe("feat/ext-branch-interrupt");
+          expect(
+            (yield* git(dstRepo, ["rev-parse", "refs/heads/feat/ext-branch-interrupt"])).trim(),
+          ).toBe(extBranchSha2);
+        }).pipe(Effect.provide(pausedBundleLayer));
       }).pipe(Effect.provide(makeTestLayer())),
   );
 });
