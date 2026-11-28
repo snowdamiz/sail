@@ -90,6 +90,17 @@
       "changedSteps": [],
       "scope": "Two published v0.1.17 Linux arm64 CLI installs on Debian 12.15. The packaged Browser panel used Chrome for Testing 158.0.8127.88 in separate profiles and opened the saved Replay thread at 640 by 600 CSS pixels and scale 2 with Showcase available."
     },
+    "chromiumLinuxMigrationHead": {
+      "sourceSha": "87ca7814f721cfa04540fd76ead915745ffd064f",
+      "receipt": "served-chromium-linux/migration-head-87ca7814/receipt.json",
+      "visualResult": "fail",
+      "differentPixels": 5560,
+      "changedSteps": [3],
+      "pairedTimingResult": "pass",
+      "incumbentFirstTimingResult": "fail",
+      "timingQualification": "inconclusive",
+      "scope": "Saved Replay thread in separate Linux arm64 Chromium profiles, with two warmups and 12 measured captures per install in each series. The Poteto control and shifted Showcase account for the visual difference. The candidate met both limits in the paired run and exceeded them against the earlier incumbent-only series."
+    },
     "electronSettledHover": {
       "result": "pass",
       "observations": "electron-macos-arm64/settled-hover/capture-timings.json",

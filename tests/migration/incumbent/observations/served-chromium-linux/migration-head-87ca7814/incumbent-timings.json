@@ -1,0 +1,2313 @@
+{
+  "comparisons": {},
+  "measuredRounds": 12,
+  "rotation": ["a", "b"],
+  "samples": [
+    {
+      "elapsedNs": 4889482669,
+      "host": "a",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 0,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 0,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 82935750,
+        "highlight": 3523148169,
+        "navigate": 843210875,
+        "screenshot": 303729209,
+        "trace": 136458666
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": true
+    },
+    {
+      "elapsedNs": 4961585502,
+      "host": "b",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 0,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 1,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 180984500,
+        "highlight": 4207118710,
+        "navigate": 315517625,
+        "screenshot": 123521583,
+        "trace": 134443084
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": true
+    },
+    {
+      "elapsedNs": 2529321126,
+      "host": "b",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 1,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 2,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 66439000,
+        "highlight": 1745121334,
+        "navigate": 322278792,
+        "screenshot": 231567250,
+        "trace": 163914750
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": true
+    },
+    {
+      "elapsedNs": 2485770583,
+      "host": "a",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 1,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 3,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 51271000,
+        "highlight": 1715566584,
+        "navigate": 460315708,
+        "screenshot": 124666708,
+        "trace": 133950583
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": true
+    },
+    {
+      "elapsedNs": 2342801877,
+      "host": "a",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": true,
+      "round": 2,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 4,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 229941250,
+        "highlight": 1512144876,
+        "navigate": 284838917,
+        "screenshot": 156452500,
+        "trace": 159424334
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 3625143585,
+      "host": "b",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": true,
+      "round": 2,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 5,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 73983583,
+        "highlight": 2427732585,
+        "navigate": 899079542,
+        "screenshot": 92179792,
+        "trace": 132168083
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 2771446001,
+      "host": "b",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 3,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 6,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 43823959,
+        "highlight": 1976416000,
+        "navigate": 338279542,
+        "screenshot": 246941167,
+        "trace": 165985333
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 2407000001,
+      "host": "a",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 3,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 7,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 48686000,
+        "highlight": 1431702501,
+        "navigate": 265057917,
+        "screenshot": 155688292,
+        "trace": 505865291
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 1554303334,
+      "host": "a",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 4,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 8,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 61633917,
+        "highlight": 1128859959,
+        "navigate": 136378667,
+        "screenshot": 97976333,
+        "trace": 129454458
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 2616643084,
+      "host": "b",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 4,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 9,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 100138792,
+        "highlight": 1437918376,
+        "navigate": 776512958,
+        "screenshot": 176322583,
+        "trace": 125750375
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 1934202751,
+      "host": "b",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 5,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 10,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 50467292,
+        "highlight": 1060135542,
+        "navigate": 566120292,
+        "screenshot": 124894750,
+        "trace": 132584875
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 3265444918,
+      "host": "a",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 5,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 11,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 173852292,
+        "highlight": 2181106084,
+        "navigate": 630045625,
+        "screenshot": 130236792,
+        "trace": 150204125
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 1436539668,
+      "host": "a",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 6,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 12,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 55604292,
+        "highlight": 940224625,
+        "navigate": 209834917,
+        "screenshot": 88656917,
+        "trace": 142218917
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 3029235834,
+      "host": "b",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 6,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 13,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 59447125,
+        "highlight": 2260900876,
+        "navigate": 469030208,
+        "screenshot": 109599916,
+        "trace": 130257709
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 2091166751,
+      "host": "b",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 7,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 14,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 58157416,
+        "highlight": 1618599710,
+        "navigate": 140646541,
+        "screenshot": 112171459,
+        "trace": 161591625
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 2737607709,
+      "host": "a",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 7,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 15,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 60474083,
+        "highlight": 2047170292,
+        "navigate": 322386375,
+        "screenshot": 178311500,
+        "trace": 129265459
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 2610924793,
+      "host": "a",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 8,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 16,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 87691541,
+        "highlight": 1891462918,
+        "navigate": 170838375,
+        "screenshot": 276100333,
+        "trace": 184831626
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 3466499918,
+      "host": "b",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 8,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 17,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 82344792,
+        "highlight": 1491913542,
+        "navigate": 1197047167,
+        "screenshot": 563825625,
+        "trace": 131368792
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 3285718918,
+      "host": "b",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 9,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 18,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 74556166,
+        "highlight": 2705816418,
+        "navigate": 230994834,
+        "screenshot": 140042458,
+        "trace": 134309042
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 3804838544,
+      "host": "a",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 9,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 19,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 66612875,
+        "highlight": 2760011168,
+        "navigate": 735631542,
+        "screenshot": 91001667,
+        "trace": 151581292
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 2731480168,
+      "host": "a",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 10,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 20,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 56848917,
+        "highlight": 1792518584,
+        "navigate": 589608250,
+        "screenshot": 150153584,
+        "trace": 142350833
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 2918943377,
+      "host": "b",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 10,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 21,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 134028667,
+        "highlight": 1407047167,
+        "navigate": 1103773209,
+        "screenshot": 131193750,
+        "trace": 142900584
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 2545622876,
+      "host": "b",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 11,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 22,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 44531250,
+        "highlight": 1904314626,
+        "navigate": 222204167,
+        "screenshot": 194246208,
+        "trace": 180326625
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 3276728418,
+      "host": "a",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 11,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 23,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 79790084,
+        "highlight": 2379277418,
+        "navigate": 369499583,
+        "screenshot": 255660083,
+        "trace": 192501250
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 2665085335,
+      "host": "a",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 12,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 24,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 63086666,
+        "highlight": 2116006876,
+        "navigate": 239630334,
+        "screenshot": 115112417,
+        "trace": 131249042
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 4027631876,
+      "host": "b",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 12,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 25,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 73994708,
+        "highlight": 2856350710,
+        "navigate": 778702083,
+        "screenshot": 188647083,
+        "trace": 129937292
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 2812960793,
+      "host": "b",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 13,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 26,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 93541042,
+        "highlight": 2047488417,
+        "navigate": 393577042,
+        "screenshot": 133294417,
+        "trace": 145059875
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    },
+    {
+      "elapsedNs": 3500780710,
+      "host": "a",
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "locale": "en",
+        "motion": "standard",
+        "theme": "light",
+        "viewport": {
+          "height": 600,
+          "scale": 2,
+          "width": 640,
+          "zoom": 1
+        }
+      },
+      "representative": false,
+      "round": 13,
+      "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+      "sequence": 27,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "stagesNs": {
+        "focus": 71617875,
+        "highlight": 1982970459,
+        "navigate": 333201000,
+        "screenshot": 939294542,
+        "trace": 173696834
+      },
+      "trace": [
+        {
+          "action": "openDirectThreadUrl",
+          "observed": {
+            "availableModel": true,
+            "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "replyVisible": true,
+            "stopVisible": false,
+            "table": [
+              ["Step", "Tool", "Result"],
+              ["Read", "read", "1 file"],
+              ["Edit", "edit", "+4 lines"],
+              ["Test", "execute", "12 passed"]
+            ],
+            "tableRows": 4,
+            "threadTitle": "Compatibility replay"
+          }
+        },
+        {
+          "action": "tabToAttachFiles",
+          "observed": {
+            "composerName": "Message Compatibility replay",
+            "focusName": "Attach files",
+            "focusRole": "button",
+            "menuCount": 0
+          }
+        },
+        {
+          "action": "readComposerControls",
+          "observed": {
+            "controls": [
+              {
+                "name": "Attach files",
+                "pressed": null
+              },
+              {
+                "name": "Showcase",
+                "pressed": null
+              },
+              {
+                "name": "Submit message",
+                "pressed": null
+              }
+            ]
+          }
+        }
+      ],
+      "warmup": false
+    }
+  ],
+  "schemaVersion": 1,
+  "timings": {
+    "a": {
+      "maxNs": 3804838544,
+      "medianNs": 2698282751,
+      "minNs": 1436539668,
+      "p95Ns": 3804838544,
+      "p95Sequence": 19,
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "pngDigests": 1,
+      "samples": 12,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "traces": 1
+    },
+    "b": {
+      "maxNs": 4027631876,
+      "medianNs": 2865952085,
+      "minNs": 1934202751,
+      "p95Ns": 4027631876,
+      "p95Sequence": 25,
+      "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+      "pngDigests": 1,
+      "samples": 12,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "traces": 1
+    }
+  },
+  "warmupRounds": 2,
+  "pngDecodeChecks": {
+    "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f": {
+      "rgbaSha256": "686f4e963585d6106238b69f56dd92b2a6e763897e155716dab412e5e24fa618",
+      "firstSequence": 0
+    }
+  },
+  "distinctDecodedPngsByHost": {
+    "a": 1,
+    "b": 1
+  }
+}

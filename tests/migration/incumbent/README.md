@@ -67,6 +67,8 @@ bash "$fixture/linux-chromium/run-timings.sh" "$inputs" "$scratch/paired" sail-m
 
 The Rust runner rotates which host starts each round and allows one capture at a time. Timing starts at direct navigation and ends when the Browser panel returns the screenshot. Package startup, pairing, and the final composer-control read take place outside that interval. The output contains `timings.json`, per-capture PNGs, and a representative receipt for each install. Both the 15% and 2 s limits apply against each published install.
 
+The [comparison for `87ca7814`](observations/served-chromium-linux/migration-head-87ca7814/receipt.json) records 5,560 changed composer pixels from the Poteto control and the Showcase shift. Both published installs matched each other. The candidate passed the paired timing comparisons and exceeded both limits against the earlier incumbent-only series. All three paired p95s came from the same round, so timing qualification remains open for this profile.
+
 ## Capture the settled Firefox replay
 
 ### Linux

@@ -475,6 +475,9 @@
       "states": ["draft", "streaming", "settled"],
       "check": "The same Replay prompt produces the same ordered transcript, controls, focus and server receipt. For P01 lane 1, two independent same-build captures have identical image hashes and action traces.",
       "evidenceProfile": "interaction",
+      "supplementalReceipts": [
+        "observations/served-chromium-linux/migration-head-87ca7814/receipt.json"
+      ],
       "sourceReferences": ["scripts/scenarios/replay-turn-streams.e2e.ts"]
     },
     {

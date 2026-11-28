@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "caseId": "chat-turn",
+  "platformId": "served-chromium-linux",
+  "candidate": {
+    "version": "0.1.18",
+    "sourceSha": "87ca7814f721cfa04540fd76ead915745ffd064f",
+    "archiveSha256": "3270b86e24343d47c9c0cb39e91e918a5acfb1f797811305c49dd5dbc1576392",
+    "databaseMigration": 119,
+    "trunkSha": "2ea2e7a8941a48c2499f29c139a516eadc876ae1",
+    "sourceTarSha256": "f5f997639ee87eb112148fe2e048b7f126146f08596fcecbf2ce7ff85ca20151",
+    "buildRecipeSha256": "e2d8b2af852139f843f4de672cb8b1da55c10d194d7324ade995d5d2399abad6",
+    "archiveBytes": 179959372,
+    "build": "Native Linux arm64 Docker build from the Git archive. Used the Rust and web build stages from the source Dockerfile, then built the single executable, packaged the CLI archive, and ran scripts/smoke-cli-archive.ts.",
+    "smokePassed": ["--version", "__service-launcher", "serve"]
+  },
+  "captureRunnerSha": "5409431774c3e43dfdf5e222f14ed8c60e940397",
+  "inputs": {
+    "fixtureImageId": "sha256:a8368dd63cde856e0c123e4376e8c0d76ce9a5935b8287f4cf4a8ff60bb69c62",
+    "chromeArchiveSha256": "9f89b7ef6574e4bbf6ddda9f17f1fab5626e93d6f7d852653232d0d3554df975",
+    "replaySourceArchiveSha256": "d5e4734da563609b752e0b4e1452fdc4c7ac539a750ed60f45ce211f8daed449",
+    "seedDatabaseSha256": "b76ac23ca172ea7223867b52aef8eb2af96ba46db04d2a829f7531bdce8b4dc6"
+  },
+  "pairedInstallsPreservedSeedPayloads": {
+    "matchingInstalls": ["a", "b", "head"],
+    "messagesSha256": "575ae62e5027b648775dcb0ab7eada7005d996a4c71223daff6948d104b6d4d6",
+    "runsSha256": "a543ae94a7af7d28ce23d8149c516a62fd9fb4e1da3ce6ebfe152550aac6ef47"
+  },
+  "comparisons": "comparisons.json",
+  "visualResult": "fail",
+  "visualReason": "The Poteto control and displaced Showcase control changed 5,560 composer pixels and the third trace step in both candidate comparisons. The content, table cells, and Tab focus matched.",
+  "composerChangeSourceSha": "386d27b43c1b2e5eadbf4856dd096fba3a4ba866",
+  "timing": {
+    "incumbentFirst": "incumbent-timings.json",
+    "paired": "capture-timings.json",
+    "pairedBudgetResult": "pass",
+    "incumbentFirstBudgetResult": "fail",
+    "incumbentFirstBudgetComparisons": {
+      "a": {
+        "baselineP95Ns": 3804838544,
+        "candidateP95Ns": 7539039420,
+        "deltaNs": 3734200876,
+        "withinRelativeBudget": false,
+        "withinAbsoluteBudget": false
+      },
+      "b": {
+        "baselineP95Ns": 4027631876,
+        "candidateP95Ns": 7539039420,
+        "deltaNs": 3511407544,
+        "withinRelativeBudget": false,
+        "withinAbsoluteBudget": false
+      }
+    },
+    "scope": "Direct navigation through screenshot return for one saved Replay thread in the packaged Browser panel. The timer excludes setup, pairing, screenshot copy, and the final composer-control read.",
+    "qualification": "inconclusive",
+    "timingVariation": "All three paired p95s were the maximum of 12 measured samples and occurred in the first measured round. The p95 on each published install rose from about 4 seconds to more than 16 seconds in the paired run.",
+    "machine": "macOS arm64 host with a 15-vCPU Linux arm64 Docker VM",
+    "hostLoadAverages": {
+      "incumbentBefore": {
+        "utc": "2026-11-28T13:58:40Z",
+        "loadAverages": [20.13, 33.04, 33.08]
+      },
+      "incumbentAfter": {
+        "utc": "2026-11-28T14:01:18Z",
+        "loadAverages": [27.06, 30.58, 32.03]
+      },
+      "pairedBefore": {
+        "utc": "2026-11-28T14:01:18Z",
+        "loadAverages": [27.06, 30.58, 32.03]
+      },
+      "pairedDuring": {
+        "utc": "2026-11-28T14:04:42Z",
+        "loadAverages": [39.0, 34.9, 33.45]
+      },
+      "pairedAfter": {
+        "utc": "2026-11-28T14:06:42Z",
+        "loadAverages": [24.49, 31.58, 32.38]
+      }
+    }
+  }
+}
