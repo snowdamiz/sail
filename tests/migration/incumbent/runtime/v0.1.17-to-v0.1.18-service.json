@@ -67,6 +67,16 @@
     "sameEnvironment": true,
     "sessionsPreserved": 2
   },
+  "bearerGrants": [
+    {
+      "scopes": ["orchestration:read"],
+      "permissions": ["orchestration:read"]
+    },
+    {
+      "scopes": [],
+      "permissions": ["environment:maintain"]
+    }
+  ],
   "savedThread": {
     "messageCount": 3,
     "runCount": 1,

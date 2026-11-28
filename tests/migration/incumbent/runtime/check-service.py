@@ -210,10 +210,13 @@ def exercise(container, selection, runtime_file, database, thread, saved, scratc
         processes = process_pair(container, runtime, version)
         return descriptor["environmentId"], processes
 
-    def session(token):
+    def session(token, scopes, permissions):
         status, auth = http(origin, "/api/auth/session", token)
         assert status == 200 and auth["authenticated"] is True
         assert auth["sessionMethod"] == "bearer-access-token"
+        assert (
+            auth["scopes"] == scopes and auth["permissions"] == permissions
+        ), "Unexpected bearer grants"
         return {field: auth[field] for field in ("expiresAt", "scopes", "permissions")}
 
     origin = origin_for(container)
@@ -226,7 +229,11 @@ def exercise(container, selection, runtime_file, database, thread, saved, scratc
         "-fsS", f"http://127.0.0.1:8877/v{NEW}/SHA256SUMS",
     )
     read_token, maintain_token = issue("orchestration:read"), issue("environment:maintain")
-    original_sessions = [session(token) for token in (read_token, maintain_token)]
+    bearer_sessions = [
+        (read_token, ["orchestration:read"], ["orchestration:read"]),
+        (maintain_token, [], ["environment:maintain"]),
+    ]
+    original_sessions = [session(*bearer) for bearer in bearer_sessions]
     denied = update(read_token)
     assert denied["_tag"] == "Failure"
     denial, = denied["cause"]
@@ -246,21 +253,25 @@ def exercise(container, selection, runtime_file, database, thread, saved, scratc
     assert accepted["_tag"] == "Success"
     result = accepted["value"]
     assert result["method"] == "boot-service" and result["targetVersion"] == NEW
+    update_id = result["updateId"]
+    assert (
+        isinstance(update_id, str) and update_id and update_id == update_id.strip()
+    ), "Invalid update ID"
     resumed_identity, (same_launcher, new_server) = snapshot(NEW)
     assert resumed_identity == environment_id and same_launcher == launcher_pid and new_server != server_pid
     committed = read_selection()
     assert committed == {
         "protocol": 4,
         "activeVersion": NEW,
-        "update": {"id": result["updateId"], "fromVersion": OLD, "targetVersion": NEW, "status": "committed"},
+        "update": {"id": update_id, "fromVersion": OLD, "targetVersion": NEW, "status": "committed"},
     }
-    assert [session(token) for token in (read_token, maintain_token)] == original_sessions
+    assert [session(*bearer) for bearer in bearer_sessions] == original_sessions
 
     stop(container, origin, runtime_file)
     docker("start", container)
     origin = origin_for(container)
     assert snapshot(NEW)[0] == environment_id and read_selection() == committed
-    assert [session(token) for token in (read_token, maintain_token)] == original_sessions
+    assert [session(*bearer) for bearer in bearer_sessions] == original_sessions
     debian_version = docker("exec", container, "cat", "/etc/debian_version")
     stop(container, origin, runtime_file)
     return {
@@ -280,6 +291,9 @@ def exercise(container, selection, runtime_file, database, thread, saved, scratc
         "committedSelection": {**committed, "update": {key: value for key, value in committed["update"].items() if key != "id"}},
         "activation": {"originalLauncherStayedAlive": True, "newChildServed": True},
         "restart": {"originalLauncherSelectedCommittedVersion": True, "sameEnvironment": True, "sessionsPreserved": 2},
+        "bearerGrants": [
+            {field: auth[field] for field in ("scopes", "permissions")} for auth in original_sessions
+        ],
         "savedThread": {
             "messageCount": len(saved["messages"]),
             "runCount": len(saved["runs"]),
