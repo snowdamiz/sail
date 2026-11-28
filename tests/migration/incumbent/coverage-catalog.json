@@ -1,0 +1,1094 @@
+{
+  "schemaVersion": 1,
+  "releaseInventory": "release-inventory.json",
+  "incumbentSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "migrationBaseSha": "f29f09835c97386742075c6edf799d1669923b15",
+  "status": "missing",
+  "coverageKey": ["caseId", "platformId", "state", "entrypoint", "configurationId"],
+  "coverageRules": [
+    "Expand each case into the product of its platform set and states at its declared entrypoint. A missing observation or unresolved applicability leaves that cell open.",
+    "Configuration IDs distinguish concrete capture setups for a cell. Record every applicable published package format, locale, input mode, viewport or connection variant for the cases that exercise them. Resolve applicability using pinned source and an explicit reason for any excluded configuration.",
+    "A source reference is a fixture lead or source of expected behavior. Resolve it at the incumbent SHA unless a stage explicitly uses the migration base or candidate SHA.",
+    "P01 release captures use the incumbent source and published artifacts where applicable. Trunk regression captures use the recorded migration base, with the roles and distinct SHAs recorded explicitly.",
+    "Approve Electron and web references independently. P03 compares native with its matching Electron reference and WASM with its matching web reference, using the same seeded host, configuration and event sequence.",
+    "Treat every missing required capture, action trace, mismatched state or unapproved pixel difference as open. Leave the incumbent renderer in place for unqualified configurations.",
+    "Use exported observations from the capture and comparison tools. This catalog declares coverage requirements and does not attest to their execution."
+  ],
+  "platforms": {
+    "electron-macos-arm64": {
+      "surface": "electron",
+      "os": "macos",
+      "arch": "arm64",
+      "inventoryTarget": "macos-arm64"
+    },
+    "electron-macos-x64": {
+      "surface": "electron",
+      "os": "macos",
+      "arch": "x64",
+      "inventoryTarget": "macos-x64"
+    },
+    "electron-linux-arm64": {
+      "surface": "electron",
+      "os": "linux",
+      "arch": "arm64",
+      "inventoryTarget": "linux-arm64"
+    },
+    "electron-linux-x64": {
+      "surface": "electron",
+      "os": "linux",
+      "arch": "x64",
+      "inventoryTarget": "linux-x64"
+    },
+    "served-chromium-macos": {
+      "surface": "server-served-web",
+      "browserFamily": "chromium",
+      "os": "macos"
+    },
+    "served-chromium-linux": {
+      "surface": "server-served-web",
+      "browserFamily": "chromium",
+      "os": "linux"
+    },
+    "served-firefox-macos": {
+      "surface": "server-served-web",
+      "browserFamily": "firefox",
+      "os": "macos"
+    },
+    "served-firefox-linux": {
+      "surface": "server-served-web",
+      "browserFamily": "firefox",
+      "os": "linux"
+    },
+    "served-safari-macos": {
+      "surface": "server-served-web",
+      "browserFamily": "safari",
+      "os": "macos"
+    },
+    "hosted-chromium-macos": {
+      "surface": "hosted-web",
+      "browserFamily": "chromium",
+      "os": "macos"
+    },
+    "hosted-chromium-linux": {
+      "surface": "hosted-web",
+      "browserFamily": "chromium",
+      "os": "linux"
+    },
+    "hosted-firefox-macos": {
+      "surface": "hosted-web",
+      "browserFamily": "firefox",
+      "os": "macos"
+    },
+    "hosted-firefox-linux": {
+      "surface": "hosted-web",
+      "browserFamily": "firefox",
+      "os": "linux"
+    },
+    "hosted-safari-macos": {
+      "surface": "hosted-web",
+      "browserFamily": "safari",
+      "os": "macos"
+    },
+    "cli-linux-arm64": {
+      "surface": "cli",
+      "os": "linux",
+      "arch": "arm64"
+    },
+    "cli-linux-x64": {
+      "surface": "cli",
+      "os": "linux",
+      "arch": "x64"
+    },
+    "oci-linux-arm64": {
+      "surface": "oci",
+      "os": "linux",
+      "arch": "arm64"
+    },
+    "oci-linux-amd64": {
+      "surface": "oci",
+      "os": "linux",
+      "arch": "amd64"
+    },
+    "comparison-runner": {
+      "surface": "harness"
+    }
+  },
+  "platformSets": {
+    "app": [
+      "electron-macos-arm64",
+      "electron-macos-x64",
+      "electron-linux-arm64",
+      "electron-linux-x64",
+      "served-chromium-macos",
+      "served-chromium-linux",
+      "served-firefox-macos",
+      "served-firefox-linux",
+      "served-safari-macos",
+      "hosted-chromium-macos",
+      "hosted-chromium-linux",
+      "hosted-firefox-macos",
+      "hosted-firefox-linux",
+      "hosted-safari-macos"
+    ],
+    "desktop": [
+      "electron-macos-arm64",
+      "electron-macos-x64",
+      "electron-linux-arm64",
+      "electron-linux-x64"
+    ],
+    "served-web": [
+      "served-chromium-macos",
+      "served-chromium-linux",
+      "served-firefox-macos",
+      "served-firefox-linux",
+      "served-safari-macos"
+    ],
+    "hosted-web": [
+      "hosted-chromium-macos",
+      "hosted-chromium-linux",
+      "hosted-firefox-macos",
+      "hosted-firefox-linux",
+      "hosted-safari-macos"
+    ],
+    "packaged": [
+      "electron-macos-arm64",
+      "electron-macos-x64",
+      "electron-linux-arm64",
+      "electron-linux-x64",
+      "cli-linux-arm64",
+      "cli-linux-x64",
+      "oci-linux-arm64",
+      "oci-linux-amd64"
+    ],
+    "standalone-host": ["cli-linux-arm64", "cli-linux-x64", "oci-linux-arm64", "oci-linux-amd64"],
+    "harness": ["comparison-runner"]
+  },
+  "displayProfiles": {
+    "localesAtIncumbent": ["de", "en", "es", "fr", "ja", "ko", "pt-BR", "ru", "sv", "zh"],
+    "localeSource": "apps/web/src/i18n/locales.ts",
+    "requiredVariants": ["light", "dark", "zoomed", "translated", "compact", "wide"],
+    "concreteProfiles": [],
+    "localeConfig": "apps/web/gt.config.json"
+  },
+  "observationContract": {
+    "results": ["pass", "fail", "blocked", "not-applicable"],
+    "eachRecord": [
+      "caseId",
+      "platformId",
+      "state",
+      "entrypoint",
+      "configurationId",
+      "stage",
+      "result",
+      "runs"
+    ],
+    "eachRun": [
+      "role",
+      "sourceSha",
+      "serverImplementation",
+      "serverSourceSha",
+      "fixtureId",
+      "environment",
+      "artifacts"
+    ],
+    "roleValues": ["incumbent-first", "incumbent-repeat", "trunk", "candidate", "scratch-negative"],
+    "environment": [
+      "osVersion",
+      "arch",
+      "clientVersion",
+      "browserVersion",
+      "installerAssetDigest",
+      "origin",
+      "connectionMode",
+      "displayProfile"
+    ],
+    "displayProfile": [
+      "viewportWidth",
+      "viewportHeight",
+      "deviceScale",
+      "zoom",
+      "theme",
+      "locale",
+      "fonts",
+      "motion"
+    ],
+    "artifactReference": ["kind", "path", "sha256"],
+    "evidenceProfiles": {
+      "interaction": ["screenshot", "capture-receipt", "state-receipt"],
+      "process": ["terminal-screenshot", "process-transcript", "state-receipt"],
+      "negative": ["terminal-screenshot", "mutation-receipt", "comparison-result"]
+    },
+    "comparisonArtifacts": [
+      "pixel-diff for visual comparisons",
+      "action and state comparison receipt"
+    ],
+    "applicabilityNote": "Record the reason and supporting evidence for blocked or not-applicable cells. A null environment field requires a reason where the field could apply.",
+    "stages": [
+      "p01-release-reference",
+      "p01-trunk-regression",
+      "p01-harness-control",
+      "p03-parity"
+    ],
+    "captureTool": "../compare.py",
+    "coverageOutcome": "One passing observation with required evidence completes only its own cell and configuration. An evidenced not-applicable decision resolves only that cell and configuration. Keep fail, blocked and absent observations visible."
+  },
+  "p01": {
+    "lanes": [
+      {
+        "number": 1,
+        "title": "Trunk reference Replay determinism",
+        "screenshot": "ref-chat.png",
+        "cases": ["chat-turn"]
+      },
+      {
+        "number": 2,
+        "title": "Provider approval and denial",
+        "screenshot": "ref-approval.png",
+        "cases": ["approval"]
+      },
+      {
+        "number": 3,
+        "title": "Empty, loading and error views",
+        "screenshot": "ref-states.png",
+        "cases": ["chat-view-states"]
+      },
+      {
+        "number": 4,
+        "title": "Chat and command-palette entry points",
+        "screenshot": "ref-entry.png",
+        "cases": ["chat-link", "palette-link"]
+      },
+      {
+        "number": 5,
+        "title": "Theme, zoom and translation",
+        "screenshot": "ref-theme.png",
+        "cases": ["chat-display"]
+      },
+      {
+        "number": 6,
+        "title": "Offline and reconnect",
+        "screenshot": "ref-offline.png",
+        "cases": ["disconnect-recover"]
+      },
+      {
+        "number": 7,
+        "title": "Exact-version rejection",
+        "screenshot": "ref-contract.png",
+        "cases": ["version-rejection"]
+      },
+      {
+        "number": 8,
+        "title": "Published installer with copied seeded home",
+        "screenshot": "ref-install.png",
+        "cases": ["installer-home"]
+      },
+      {
+        "number": 9,
+        "title": "Deterministic Browser panel fixture",
+        "screenshot": "ref-preview.png",
+        "cases": ["browser-preview"]
+      },
+      {
+        "number": 10,
+        "title": "Deliberate pixel and replay-result mutations",
+        "screenshot": "ref-negative.png",
+        "cases": ["compare-negative"]
+      }
+    ],
+    "perf": {
+      "metric": "capture time per fixture",
+      "baseline": "Two independent incumbent copies, same machine, seeded state and viewport",
+      "comparison": "Migration head with the same fixture and viewport",
+      "minPairedSamples": 12,
+      "requiredArtifacts": ["raw-samples", "p95-report"],
+      "maxExtraPercent": 15,
+      "maxExtraMilliseconds": 2000,
+      "limit": "Fail when either the percentage limit or per-fixture absolute limit is exceeded."
+    },
+    "unitComparisonChecks": {
+      "requiredCases": ["compare-negative", "compare-missing-state"],
+      "sameBuildPassingRuns": 2
+    },
+    "referenceCasesNeededByP03": [
+      "chat-turn",
+      "local-pair",
+      "hosted-pair",
+      "replay-resume",
+      "send-once",
+      "stop-turn",
+      "read-only-chat",
+      "session-revoked",
+      "chat-scroll-position",
+      "candidate-fallback"
+    ]
+  },
+  "p03": {
+    "lanes": [
+      {
+        "number": 1,
+        "title": "Replay turn parity",
+        "screenshot": "chat-turn.png",
+        "cases": ["chat-turn"]
+      },
+      {
+        "number": 2,
+        "title": "Desktop pairs to bundled local server",
+        "screenshot": "chat-local.png",
+        "cases": ["local-pair"]
+      },
+      {
+        "number": 3,
+        "title": "Hosted client pairs to existing HTTPS host",
+        "screenshot": "chat-pair.png",
+        "cases": ["hosted-pair"]
+      },
+      {
+        "number": 4,
+        "title": "Disconnect between replay chunks",
+        "screenshot": "chat-resume.png",
+        "cases": ["replay-resume"]
+      },
+      {
+        "number": 5,
+        "title": "Disconnect after command acceptance",
+        "screenshot": "chat-once.png",
+        "cases": ["send-once"]
+      },
+      {
+        "number": 6,
+        "title": "Stop during streaming",
+        "screenshot": "chat-stop.png",
+        "cases": ["stop-turn"]
+      },
+      {
+        "number": 7,
+        "title": "Read-only session",
+        "screenshot": "chat-read-only.png",
+        "cases": ["read-only-chat"]
+      },
+      {
+        "number": 8,
+        "title": "Active session revoked",
+        "screenshot": "chat-revoked.png",
+        "cases": ["session-revoked"]
+      },
+      {
+        "number": 9,
+        "title": "Long settled and empty threads",
+        "screenshot": "chat-states.png",
+        "cases": ["chat-scroll-position"]
+      },
+      {
+        "number": 10,
+        "title": "Unmigrated workflow falls back with context",
+        "screenshot": "chat-fallback.png",
+        "cases": ["candidate-fallback"]
+      }
+    ],
+    "requiredEvidence": [
+      "matched captures",
+      "zero differing app-owned pixels",
+      "ordered event trace",
+      "server receipt",
+      "30 to 60 second video",
+      "operator approval at exact head"
+    ],
+    "wireReference": "../wire/",
+    "perf": {
+      "metrics": ["prompt-to-first-token p95", "reconnect-to-current-transcript p95"],
+      "minPairedSamples": 12,
+      "maxExtraPercent": 10,
+      "maxExtraMilliseconds": 100,
+      "note": "Apply the stricter limit, keep the P02 WASM budget, and measure WASM boot separately."
+    },
+    "rendererPairs": [
+      {
+        "incumbentSurface": "electron",
+        "candidateSurface": "native-gpui"
+      },
+      {
+        "incumbentSurface": "server-served-web",
+        "candidateSurface": "server-served-wasm"
+      },
+      {
+        "incumbentSurface": "hosted-web",
+        "candidateSurface": "hosted-wasm"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "chat-turn",
+      "feature": "chat",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": ["draft", "streaming", "settled"],
+      "check": "The same Replay prompt produces the same ordered transcript, controls, focus and server receipt. For P01 lane 1, two independent same-build captures have identical image hashes and action traces.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["scripts/scenarios/replay-turn-streams.e2e.ts"]
+    },
+    {
+      "id": "approval",
+      "feature": "provider-approval",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": ["requested", "approved", "denied"],
+      "check": "Record the prompt and the UI, scope and server outcome for both decisions.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["packages/contracts/src/rpc.ts"]
+    },
+    {
+      "id": "chat-view-states",
+      "feature": "chat",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": ["empty", "initial-loading", "error"],
+      "check": "Name each state separately and capture its visible controls, focus and recovery action where exposed.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/web/src/routes/_chat.$environmentId.$threadId.tsx"]
+    },
+    {
+      "id": "chat-link",
+      "feature": "thread-links",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": ["linked-thread-opened"],
+      "check": "Open a thread link from chat and record route, active environment and destination focus.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["scripts/scenarios/thread-opens-by-link.e2e.ts"]
+    },
+    {
+      "id": "palette-link",
+      "feature": "thread-links",
+      "platformSet": "app",
+      "entrypoint": "command-palette",
+      "states": ["selected-thread-opened"],
+      "check": "Open a thread via the command palette and record route and focus.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["scripts/scenarios/thread-opens-by-link.e2e.ts"]
+    },
+    {
+      "id": "direct-thread-url",
+      "feature": "thread-links",
+      "platformSet": "served-web",
+      "entrypoint": "direct-url",
+      "states": ["known-thread", "unknown-thread", "linked-thread"],
+      "check": "Record exact destination, denied or missing state, and recovery without losing the selected environment.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": [
+        "apps/web/src/routes/threads.$environmentId.$threadId.tsx",
+        "scripts/scenarios/thread-opens-by-link.e2e.ts"
+      ]
+    },
+    {
+      "id": "chat-display",
+      "feature": "appearance",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": ["light", "dark", "zoomed", "translated", "compact", "wide"],
+      "check": "Pin and record theme, locale, zoom, viewport, device scale, font and motion. Capture the app chrome and an active thread.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/web/src/i18n/locales.ts"]
+    },
+    {
+      "id": "appearance-settings",
+      "feature": "appearance",
+      "platformSet": "app",
+      "entrypoint": "settings",
+      "states": ["light", "dark", "zoomed", "translated", "persisted"],
+      "check": "Capture the changed appearance and its effect after relaunch or reload.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/web/src/routes/_chat.settings.appearance.tsx"]
+    },
+    {
+      "id": "disconnect-recover",
+      "feature": "connection",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": ["online", "offline", "reconnecting", "recovered"],
+      "check": "Turn off the isolated host and reconnect. The stale transcript and recovered state are visibly distinct. Confirm the expected thread and final server state.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": [
+        "scripts/scenarios/reconnect-survives-config-stream-failing-while-interrupted.e2e.ts"
+      ]
+    },
+    {
+      "id": "version-rejection",
+      "feature": "version-negotiation",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": ["exact-version-rejected"],
+      "check": "Record HTTP 426, the reported required version and the available update action.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/server/src/ws.test.ts", "docs/user/updating.md"]
+    },
+    {
+      "id": "installer-home",
+      "feature": "installer",
+      "platformSet": "packaged",
+      "entrypoint": "installer",
+      "states": ["copied-home-boots"],
+      "check": "Boot the installed artifact with an isolated copy of the seeded home and open the expected thread. Record the artifact digest, command and application result.",
+      "evidenceProfile": "process",
+      "sourceReferences": ["scripts/install.sh", ".github/workflows/release.yml"]
+    },
+    {
+      "id": "installer-formats",
+      "feature": "installer",
+      "platformSet": "desktop",
+      "entrypoint": "installer",
+      "states": ["fresh-install", "existing-home"],
+      "check": "Exercise every published desktop install format and the shell install route using the matching architecture. Check installed version, boot and state preservation.",
+      "evidenceProfile": "process",
+      "sourceReferences": ["scripts/build-desktop-installers.ts"],
+      "configurationAxes": {
+        "installMethodByTarget": {
+          "macos-arm64": ["install-desktop.sh", "Sail-0.1.17-arm64.zip", "Sail-0.1.17-arm64.dmg"],
+          "macos-x64": ["install-desktop.sh", "Sail-0.1.17-x64.zip", "Sail-0.1.17-x64.dmg"],
+          "linux-arm64": ["install-desktop.sh", "Sail-arm64.AppImage", "Sail-0.1.17-arm64.deb"],
+          "linux-x64": ["install-desktop.sh", "Sail-x86_64.AppImage", "Sail-0.1.17-x64.deb"]
+        }
+      }
+    },
+    {
+      "id": "updater",
+      "feature": "updates",
+      "platformSet": "desktop",
+      "entrypoint": "settings",
+      "states": ["available", "installed", "failed-recovery"],
+      "check": "Exercise the applicable feed and package format. Record predecessor and target digests, restart, expected thread and recovery result.",
+      "evidenceProfile": "process",
+      "sourceReferences": ["apps/desktop/src/updates/DesktopUpdates.ts"],
+      "configurationAxes": {
+        "updateAssetByTarget": {
+          "macos-arm64": ["Sail-0.1.17-arm64.zip"],
+          "macos-x64": ["Sail-0.1.17-x64.zip"],
+          "linux-arm64": ["Sail-arm64.AppImage", "Sail-0.1.17-arm64.deb"],
+          "linux-x64": ["Sail-x86_64.AppImage", "Sail-0.1.17-x64.deb"]
+        }
+      }
+    },
+    {
+      "id": "host-upgrade",
+      "feature": "updates",
+      "platformSet": "standalone-host",
+      "entrypoint": "cli",
+      "states": ["available", "installed", "failed-recovery"],
+      "check": "Exercise the standalone CLI update or Fly volume-preserving redeploy for the selected platform and record version and session survival.",
+      "evidenceProfile": "process",
+      "sourceReferences": ["apps/server/src/cli/update.ts", "docs/user/self-host-fly.md"]
+    },
+    {
+      "id": "browser-preview",
+      "feature": "browser-panel",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": ["preview-rendered", "tool-result"],
+      "check": "Play the existing Browser panel fixture. Capture deterministic preview content and record the exact tool result.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": [
+        "scripts/scenarios/browser-tab-follows-page-title.e2e.ts",
+        "scripts/scenarios/server-preview-app-link-stops-loading.e2e.ts"
+      ]
+    },
+    {
+      "id": "compare-negative",
+      "feature": "comparison-harness",
+      "platformSet": "harness",
+      "entrypoint": "harness",
+      "states": ["pixel-changed", "replay-result-changed"],
+      "check": "Copy inputs to scratch. Mutate exactly one required input per probe. Record a distinct expected failure for each and retain the unchanged passing control.",
+      "evidenceProfile": "negative",
+      "sourceReferences": []
+    },
+    {
+      "id": "compare-missing-state",
+      "feature": "comparison-harness",
+      "platformSet": "harness",
+      "entrypoint": "harness",
+      "states": ["widget-state-missing"],
+      "check": "Copy inputs to scratch. Mutate exactly one required input per probe. Record a distinct expected failure for each and retain the unchanged passing control.",
+      "evidenceProfile": "negative",
+      "sourceReferences": []
+    },
+    {
+      "id": "local-pair",
+      "feature": "pairing",
+      "platformSet": "desktop",
+      "entrypoint": "desktop-activation",
+      "states": ["bundled-server-paired"],
+      "check": "Pair to the existing bundled local server and open the expected environment and thread.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/web/src/routes/pair.tsx"]
+    },
+    {
+      "id": "hosted-pair",
+      "feature": "pairing",
+      "platformSet": "hosted-web",
+      "entrypoint": "permitted-remote-route",
+      "states": ["https-session-approved"],
+      "check": "Pair the hosted client to the existing HTTPS host and record the approved exchange, scope, environment and destination.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/web/src/hostedPairing.ts", "apps/web/src/routes/pair.tsx"]
+    },
+    {
+      "id": "served-pair",
+      "feature": "pairing",
+      "platformSet": "served-web",
+      "entrypoint": "permitted-remote-route",
+      "states": ["https-session-approved", "rejected", "one-use-token-consumed"],
+      "check": "Open the server-served pairing route and verify UI and scoped session outcomes with the pinned host.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/web/src/routes/pair.tsx", "apps/server/src/browserPairing.test.ts"]
+    },
+    {
+      "id": "desktop-remote-pair",
+      "feature": "pairing",
+      "platformSet": "desktop",
+      "entrypoint": "permitted-remote-route",
+      "states": ["session-approved", "session-rejected"],
+      "check": "Open the permitted HTTPS pairing or desktop deep link and verify UI and scoped session outcomes.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/web/src/routes/pair.tsx", "docs/user/self-host-fly.md"]
+    },
+    {
+      "id": "replay-resume",
+      "feature": "stream-replay",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": ["disconnected-between-chunks", "cursor-replayed"],
+      "check": "Resume across a deliberate disconnect between chunks. Check ordered text, cursor progression and absence of duplication or loss.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": [
+        "scripts/scenarios/replay-turn-streams.e2e.ts",
+        "packages/client-runtime/src/rpc/session.test.ts"
+      ]
+    },
+    {
+      "id": "send-once",
+      "feature": "command-replay",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": ["accepted-reply-lost", "reconnected"],
+      "check": "Drop the connection after server acceptance. Verify a single accepted turn and the same command receipt.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": [
+        "packages/contracts/src/rpc.ts",
+        "packages/client-runtime/src/rpc/session.test.ts"
+      ]
+    },
+    {
+      "id": "stop-turn",
+      "feature": "chat",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": ["streaming", "stopped"],
+      "check": "Stop mid-turn and verify the same turn and final stopped server state, including restored composer controls.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["scripts/scenarios/stopped-worktree-turn-sends-in-checkout.e2e.ts"]
+    },
+    {
+      "id": "read-only-chat",
+      "feature": "session-scopes",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": ["composer-restricted", "server-denial"],
+      "check": "Use a read-only session. Capture disabled or hidden controls and record a denied mutation with its typed error and scope.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": [
+        "packages/contracts/src/rpc.ts",
+        "apps/server/src/auth/SessionStore.test.ts"
+      ]
+    },
+    {
+      "id": "session-revoked",
+      "feature": "session-scopes",
+      "platformSet": "app",
+      "entrypoint": "permitted-remote-route",
+      "states": ["session-revoked", "relink"],
+      "check": "Revoke the active session and capture the relink state and recovery to the expected context.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/server/src/auth/SessionStore.test.ts"]
+    },
+    {
+      "id": "chat-scroll-position",
+      "feature": "chat",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": ["long-settled", "empty"],
+      "check": "Verify the image, reading position, scroll anchoring and focus of the long thread and empty thread.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["scripts/scenarios/side-panel-preserves-reading-position.e2e.ts"]
+    },
+    {
+      "id": "candidate-fallback",
+      "feature": "incumbent-fallback",
+      "platformSet": "app",
+      "entrypoint": "candidate-opt-in",
+      "states": ["incumbent-destination"],
+      "check": "Invoke an unmigrated feature and compare its incumbent destination with opening it directly. Preserve account, environment, thread and session intent.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["scripts/scenarios/thread-opens-by-link.e2e.ts"]
+    },
+    {
+      "id": "onboarding",
+      "feature": "onboarding",
+      "platformSet": "app",
+      "entrypoint": "direct-url",
+      "states": ["first-launch", "provider-required", "workspace-ready"],
+      "check": "Capture welcome, provider setup and first workspace, including localized labels and keyboard navigation.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/web/src/routes/welcome.tsx"]
+    },
+    {
+      "id": "workspace-chrome",
+      "feature": "workspace-chrome",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": ["wide", "compact", "sidebar-collapsed", "panel-open"],
+      "check": "Capture sidebar, thread header, composer, panels, notifications and responsive layout.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/web/src/routes/_chat.tsx"]
+    },
+    {
+      "id": "projects-threads",
+      "feature": "projects-and-threads",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": [
+        "created",
+        "selected",
+        "renamed",
+        "forked",
+        "closed",
+        "reopened",
+        "archived",
+        "restored"
+      ],
+      "check": "Record project and thread actions, selection, ordering and persistence.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["scripts/scenarios/archive-lists-thread-archived-elsewhere.e2e.ts"]
+    },
+    {
+      "id": "thread-palette",
+      "feature": "projects-and-threads",
+      "platformSet": "app",
+      "entrypoint": "command-palette",
+      "states": ["searched", "selected", "created"],
+      "check": "Check searchable commands and projects, focus restoration and new thread context.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/web/src/routes/_chat.new.tsx"]
+    },
+    {
+      "id": "thread-shortcuts",
+      "feature": "keyboard-navigation",
+      "platformSet": "app",
+      "entrypoint": "keybinding",
+      "states": ["new-thread", "switch-thread", "open-settings", "panel-toggle"],
+      "check": "Check commands, keyboard focus and keybinding overrides with the same document and thread selected.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/web/src/routes/_chat.settings.keybindings.tsx"]
+    },
+    {
+      "id": "composer-input",
+      "feature": "composer-input",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": [
+        "draft-restored",
+        "mention",
+        "slash-command",
+        "pasted",
+        "attachment",
+        "editing",
+        "queued",
+        "ime-composition"
+      ],
+      "check": "Record controls, selection, clipboard, attachment, input method behavior and send outcome.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["scripts/scenarios/queued-message-shows-file-mention-by-name.e2e.ts"]
+    },
+    {
+      "id": "transcript-tools",
+      "feature": "transcript-tools",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": ["streaming", "tool-output", "question", "citation", "diff", "checkpoint-restored"],
+      "check": "Capture tool and message presentation and record typed actions, scope and resulting state.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["scripts/scenarios/command-output-keeps-literal-json.e2e.ts"]
+    },
+    {
+      "id": "terminal-files",
+      "feature": "workspace-tools",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": ["terminal-open", "terminal-closed", "file-preview", "diff-open", "external-open"],
+      "check": "Verify terminal I/O, file navigation, preview and diff focus, and opening the same target in its supported context.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["scripts/scenarios/terminal-closed-elsewhere-leaves-drawer.e2e.ts"]
+    },
+    {
+      "id": "workspace-git",
+      "feature": "source-control",
+      "platformSet": "app",
+      "entrypoint": "chat",
+      "states": [
+        "repository-loaded",
+        "branch-changed",
+        "worktree-created",
+        "worktree-recovered",
+        "pull-request-linked"
+      ],
+      "check": "Match branch and worktree selection, source control actions, and failure recovery.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["scripts/scenarios/branch-picker-sees-external-worktree.e2e.ts"]
+    },
+    {
+      "id": "issues-and-prs",
+      "feature": "issues-and-pull-requests",
+      "platformSet": "app",
+      "entrypoint": "direct-url",
+      "states": ["loaded", "empty", "error", "retried", "opened"],
+      "check": "Capture supported tracker and forge flows, cursor/selection and return to the same thread.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": [
+        "apps/web/src/routes/_chat.issues.tsx",
+        "apps/web/src/routes/_chat.pull-requests.tsx"
+      ]
+    },
+    {
+      "id": "settings-navigation",
+      "feature": "settings",
+      "platformSet": "app",
+      "entrypoint": "settings",
+      "states": ["loaded", "changed", "reopened"],
+      "check": "Inventory and exercise each published settings page and each applicable control, including restoration and persisted values. Track specific workflows with separate case IDs before claiming full parity.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/web/src/routes/_chat.settings.tsx"],
+      "configurationAxes": {
+        "settingsRouteFile": [
+          "_chat.settings.about.tsx",
+          "_chat.settings.access.tsx",
+          "_chat.settings.appearance.tsx",
+          "_chat.settings.archived.tsx",
+          "_chat.settings.beta.tsx",
+          "_chat.settings.browser.tsx",
+          "_chat.settings.chat.tsx",
+          "_chat.settings.connections.tsx",
+          "_chat.settings.devices.tsx",
+          "_chat.settings.diagnostics.tsx",
+          "_chat.settings.diffs.tsx",
+          "_chat.settings.general.tsx",
+          "_chat.settings.integrations.tsx",
+          "_chat.settings.keybindings.tsx",
+          "_chat.settings.labs.tsx",
+          "_chat.settings.maintenance.tsx",
+          "_chat.settings.open-source-licenses.tsx",
+          "_chat.settings.projects.tsx",
+          "_chat.settings.providers.tsx",
+          "_chat.settings.scheduled-tasks.tsx",
+          "_chat.settings.secrets.tsx",
+          "_chat.settings.snap-shot.tsx",
+          "_chat.settings.source-control.tsx",
+          "_chat.settings.storage.tsx",
+          "_chat.settings.threads.tsx",
+          "_chat.settings.tsx",
+          "_chat.settings.voice.tsx",
+          "_chat.settings.worktrees.tsx"
+        ]
+      }
+    },
+    {
+      "id": "provider-adapters",
+      "feature": "providers",
+      "platformSet": "app",
+      "entrypoint": "settings",
+      "states": ["unconfigured", "configured", "unavailable", "ready", "session-replay"],
+      "check": "Record each pinned built-in adapter, its actual installed version, authentication, model selection and visible turn behavior where supported. Use a fixture per qualified adapter.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/server/src/provider/builtInDrivers.ts"],
+      "configurationAxes": {
+        "providerKind": [
+          "codex",
+          "claude",
+          "cursor",
+          "grok",
+          "fx",
+          "opencode",
+          "antigravity",
+          "kiro",
+          "pi",
+          "muse",
+          "acpRegistry"
+        ]
+      }
+    },
+    {
+      "id": "scheduled-work",
+      "feature": "scheduled-tasks",
+      "platformSet": "app",
+      "entrypoint": "settings",
+      "states": ["created", "disabled", "reenabled", "ran", "removed"],
+      "check": "Capture task setup, scheduler result and navigation to the owning thread.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/web/src/routes/_chat.settings.scheduled-tasks.tsx"]
+    },
+    {
+      "id": "workflow-usage",
+      "feature": "workflows-and-usage",
+      "platformSet": "app",
+      "entrypoint": "direct-url",
+      "states": ["loaded", "empty", "error"],
+      "check": "Record workflow and usage navigation, filters and applicable actions.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": [
+        "apps/web/src/routes/_chat.workflows.tsx",
+        "apps/web/src/routes/_chat.usage.tsx"
+      ]
+    },
+    {
+      "id": "access-settings",
+      "feature": "access-and-devices",
+      "platformSet": "app",
+      "entrypoint": "settings",
+      "states": ["paired", "limited", "revoked", "reconnected"],
+      "check": "Capture device and access settings and verify scope enforcement and revocation across clients.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": [
+        "apps/web/src/routes/_chat.settings.access.tsx",
+        "apps/web/src/routes/_chat.settings.devices.tsx"
+      ]
+    },
+    {
+      "id": "guest-and-links",
+      "feature": "access-and-devices",
+      "platformSet": "served-web",
+      "entrypoint": "permitted-remote-route",
+      "states": ["guest", "linked-thread", "denied", "expired"],
+      "check": "Verify allowed cross-origin routes, role and scope, expired grants and recovery.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": [
+        "apps/web/src/routes/guest.tsx",
+        "apps/web/src/routes/_chat.linked.$viaEnvironmentId.$linkedEnvironmentId.$linkedThreadId.tsx"
+      ]
+    },
+    {
+      "id": "connection-modes",
+      "feature": "connection",
+      "platformSet": "app",
+      "entrypoint": "settings",
+      "states": [
+        "local",
+        "direct-https",
+        "lan",
+        "tailscale",
+        "relay",
+        "tunnel",
+        "multiple-environments",
+        "ssh",
+        "boat"
+      ],
+      "check": "Record endpoint configuration. Check identity, pair, reconnect, switch and remove in each applicable mode.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["docs/user/remote-access.md"]
+    },
+    {
+      "id": "boat-lifecycle",
+      "feature": "boats",
+      "platformSet": "app",
+      "entrypoint": "direct-url",
+      "states": ["unconfigured", "ready", "added", "sleeping", "woken", "removed"],
+      "check": "Record the Boats workspace, environment handoff and state transitions with a fixture.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/web/src/routes/_chat.boats.tsx", "docs/user/self-host-fly.md"]
+    },
+    {
+      "id": "desktop-open",
+      "feature": "desktop-activation",
+      "platformSet": "desktop",
+      "entrypoint": "desktop-activation",
+      "states": ["app-open", "deep-link", "folder-drop"],
+      "check": "Verify launch, thread and environment routing, focused window and project selection.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["README.md", "docs/user/install.md"]
+    },
+    {
+      "id": "cli-open",
+      "feature": "cli",
+      "platformSet": "packaged",
+      "entrypoint": "cli",
+      "states": ["version", "start", "pair", "stop"],
+      "check": "Record version, process lifecycle, bootstrap, selected home and pairing. Use the installed binary or launcher for the applicable target.",
+      "evidenceProfile": "process",
+      "sourceReferences": ["scripts/install.sh", "docs/user/install.md"]
+    },
+    {
+      "id": "hosted-origin",
+      "feature": "hosted-web",
+      "platformSet": "hosted-web",
+      "entrypoint": "direct-url",
+      "states": ["configured-origin", "reloaded"],
+      "check": "Record the official published origin and exact deployed revision, or retain the unresolved matrix item until its applicability is decided.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/web/src/hostedPairing.ts"]
+    },
+    {
+      "id": "accessibility",
+      "feature": "accessibility",
+      "platformSet": "app",
+      "entrypoint": "keybinding",
+      "states": ["tab-order", "screen-reader", "reduced-motion", "zoomed"],
+      "check": "Record related focus transitions, accessibility names and roles, motion and input behavior using the pinned profile.",
+      "evidenceProfile": "interaction",
+      "sourceReferences": ["apps/web/src/i18n/locales.ts"]
+    }
+  ],
+  "openMatrixItems": [
+    {
+      "id": "official-hosted-origin",
+      "status": "unresolved",
+      "affects": ["hosted-origin", "hosted-pair"],
+      "detail": "The pinned release names no official independently hosted origin or deployed revision. A test-host substitute needs its own identity and does not close the official-origin item."
+    },
+    {
+      "id": "browser-versions",
+      "status": "unresolved",
+      "detail": "Pin exact qualifying versions for Chromium, Firefox and Safari. The incumbent release states no browser version support bounds."
+    },
+    {
+      "id": "updater-support-window",
+      "status": "unresolved",
+      "affects": ["updater", "host-upgrade"],
+      "detail": "Resolve supported predecessor releases and keep old-to-new receipts per package format and architecture."
+    },
+    {
+      "id": "fixture-and-display-pins",
+      "status": "missing",
+      "detail": "Save fixture IDs, seeded-data identity, Replay configuration and display profiles used for actual captures."
+    },
+    {
+      "id": "feature-inventory-expansion",
+      "status": "missing",
+      "detail": "The catalog identifies workflow families and immediate chat slices. Fill in the remaining action, settings control, entrypoint, state and applicable configuration cells against the published app before full-platform qualification."
+    }
+  ],
+  "observations": [],
+  "platformScope": {
+    "status": "proposed",
+    "note": "The browser entries are planned capture hosts. Resolve remaining host, architecture and browser applicability against the published app. Windows and native mobile have no Sail v0.1.17 build in the GitHub release."
+  },
+  "entrypoints": [
+    "candidate-opt-in",
+    "chat",
+    "cli",
+    "command-palette",
+    "desktop-activation",
+    "direct-url",
+    "harness",
+    "installer",
+    "keybinding",
+    "permitted-remote-route",
+    "settings"
+  ]
+}

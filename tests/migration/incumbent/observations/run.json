@@ -1,0 +1,44 @@
+{
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "release": "v0.1.17",
+  "platform": "macOS 27.0.1 (26A434) arm64",
+  "artifact": {
+    "name": "Sail-0.1.17-arm64.zip",
+    "sha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+    "updaterSha512": "LXnOh/+QKz1HlD+J/4OTWqXuB0Vvrrj/GxMHnVvNlOK8yWsQKInOydyd9DR8ix3Fkgq16CUViGMv3OgxFQ4Wlw==",
+    "installedBundleId": "com.sail.desktop",
+    "installedVersion": "0.1.17"
+  },
+  "installer": {
+    "result": "pass",
+    "check": "The published install-desktop.sh verified the ZIP from a local mirror of the release assets and installed it into a scratch home. The installed app started its bundled backend and completed the seeded Replay turn."
+  },
+  "wire": {
+    "result": "pass",
+    "fixture": "../../wire/incumbent-v2.json",
+    "check": "The published ZIP's bundled backend passed the standalone checker on a fresh seeded loopback server with a read-only token."
+  },
+  "sqlite": {
+    "filename": "statev2.sqlite",
+    "journalMode": "wal",
+    "userVersion": 0,
+    "appliedMigrations": 118,
+    "latestMigration": { "id": 118, "name": "PeerMutationIntents" },
+    "projects": 1,
+    "threads": 1,
+    "messages": 3
+  },
+  "captures": {
+    "electron": { "receipt": "electron-macos-arm64/receipt.json", "result": "observed" },
+    "chromium": {
+      "receipts": [
+        "served-chromium-macos/first/receipt.json",
+        "served-chromium-macos/repeat/receipt.json"
+      ],
+      "result": "pixel-difference",
+      "changedSteps": [],
+      "differentPixels": 169,
+      "diff": "served-chromium-macos/diff.png"
+    }
+  }
+}
