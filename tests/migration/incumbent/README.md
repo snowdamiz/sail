@@ -102,6 +102,14 @@ In the long thread, close the sidebar and details, expand the full user message,
 
 The [reading position receipt](observations/served-chromium-macos/reading-position/receipt.json) records Browser panel actions and two full-resolution Chromium captures per state and build. The anchor stayed at 47.75 CSS pixels across the panel transition, and the empty composer kept focus. The cross-build images differ by 3,170 pixels in the composer row where Poteto shifts the model control.
 
+## Capture hosted HTTPS pairing
+
+Build the web client at the release tag with `VITE_HOSTED_APP_CHANNEL=latest` and `VITE_HOSTED_APP_URL` set to the hosted fixture's HTTPS origin. Serve the static assets with an index fallback for application routes. Expose the isolated installed backend on a second HTTPS origin with HTTP and WebSocket forwarding. Keep the backend's CORS responses and forward the public host and scheme.
+
+Mint a one-time link with `pair --scope orchestration:read`. Open the hosted `/pair` route with the backend origin as `host` and the pairing token in the fragment. Verify **Add this backend?** names the backend and waits for approval. Click **Add backend**, open the seeded thread at its hosted URL, then reload it. Check that the same DPoP session remains active and a fresh browser context cannot redeem the used link.
+
+The [hosted pairing receipt](observations/hosted-chromium-macos/approved-pairing/receipt.json) records the two loopback HTTPS fixture origins, the confirmation and thread screenshots, and the sanitized exchange through WSS. The official hosted deployment identity remains open.
+
 ## Capture chat loading and reconnect
 
 Run the packaged server with the seeded home. Put [the loopback gate](thread-load-gate.mjs) in front of it and pair the browser at the gate's port. Use a fresh origin or browser profile so the client has no saved transcript for the thread.

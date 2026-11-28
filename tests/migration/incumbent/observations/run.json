@@ -196,6 +196,11 @@
     "receipt": "served-chromium-macos/reading-position/receipt.json",
     "scope": "Published and locally built macOS arm64 packages, direct loopback Chromium. The long user-message anchor stayed at 47.75 CSS pixels when the right panel opened. The empty thread focused its composer with zero saved runs and messages. Each build repeated all three images exactly. Cross-build images differ in the composer control row."
   },
+  "hostedHttpsPairing": {
+    "result": "observed",
+    "receipt": "hosted-chromium-macos/approved-pairing/receipt.json",
+    "scope": "Local HTTPS hosted build from the published source tag, paired to the installed macOS arm64 v0.1.17 backend in Chromium. The approved link issued one read-only DPoP session, opened the same saved thread after reload, and returned HTTP 401 when reused."
+  },
   "approval": {
     "result": "pass",
     "receipt": "served-chromium-macos/approval/receipt.json"
