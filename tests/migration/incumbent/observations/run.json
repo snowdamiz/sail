@@ -329,5 +329,19 @@
     "result": "pass",
     "receipt": "electron-macos-arm64/display/receipt.json",
     "scope": "macOS arm64 Electron. English light and dark, native 120% zoom, German, and wide and compact sidebars."
+  },
+  "linuxDebDesktopReferences": {
+    "result": "pass",
+    "differentPixelsBeforeResize": {
+      "arm64": 8,
+      "x64": 1135
+    },
+    "differentPixels": {
+      "arm64": 0,
+      "x64": 0
+    },
+    "arm64": "electron-linux-arm64/deb-settled",
+    "x64": "electron-linux-x64/deb-settled",
+    "scope": "Two independent v0.1.17 Debian installations per architecture on Debian 13.8, with x64 under Rosetta. Each cold argv activation paired with its bundled backend, focused the copied Replay thread, and preserved all saved message and run payloads through shutdown. The architecture-specific X11 comparisons use the whole unmasked 1100 \u00d7 780 window after a resize-triggered repaint. Capture timing and candidate comparisons remain open."
   }
 }

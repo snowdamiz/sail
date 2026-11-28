@@ -1,0 +1,20 @@
+{
+  "fixtureId": "chat-turn",
+  "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "changedSteps": [],
+  "pixels": {
+    "baseline": "/tmp/sail-p01-linux-electron.DyeM7K/tmpvxdh8kcr/a/capture.png",
+    "candidate": "/tmp/sail-p01-linux-electron.DyeM7K/tmpvxdh8kcr/b/capture.png",
+    "diff": "tests/migration/incumbent/observations/electron-linux-x64/deb-settled/chat-turn-diff.png",
+    "baselineSize": [1100, 780],
+    "candidateSize": [1100, 780],
+    "differentPixels": 0,
+    "bounds": null
+  },
+  "artifactSha256": {
+    "baselineReceipt": "02bb3ee1ffd1bacb20c82135782f7e2babcaca1114e009df75cec430dd4cb22b",
+    "candidateReceipt": "cb34b104d8eebacf51a7ea31a116eecd351f282a5c87d8d9fd0b565349388902",
+    "diff": "4e8c2851cc2a639b9f0f06efb15296b25722bbddd41e6bb7c0270f20f0e04a1c"
+  }
+}

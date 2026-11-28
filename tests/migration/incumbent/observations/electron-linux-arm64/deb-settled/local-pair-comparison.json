@@ -1,0 +1,20 @@
+{
+  "fixtureId": "local-pair",
+  "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "changedSteps": [],
+  "pixels": {
+    "baseline": "/tmp/sail-p01-linux-electron.DyeM7K/tmpzv7sczev/a/capture.png",
+    "candidate": "/tmp/sail-p01-linux-electron.DyeM7K/tmpzv7sczev/b/capture.png",
+    "diff": "tests/migration/incumbent/observations/electron-linux-arm64/deb-settled/local-pair-diff.png",
+    "baselineSize": [1100, 780],
+    "candidateSize": [1100, 780],
+    "differentPixels": 0,
+    "bounds": null
+  },
+  "artifactSha256": {
+    "baselineReceipt": "09fbb1619beab44416bf02adbc08a4087d740db2daba90c32a75368dcbaa4402",
+    "candidateReceipt": "14ea17a11e986255bf447665c8cb07c94a97c145206cc8ae094a00266721090f",
+    "diff": "4e8c2851cc2a639b9f0f06efb15296b25722bbddd41e6bb7c0270f20f0e04a1c"
+  }
+}

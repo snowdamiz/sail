@@ -174,6 +174,26 @@ The [hosted pairing receipt](observations/hosted-chromium-macos/approved-pairing
 
 The [desktop activation comparison](observations/electron-macos-arm64/local-activation/comparison.json) records one launch per build. The launch traces match. The screenshots differ by 3,485 pixels, including the candidate's Poteto control and the shifted Showcase control.
 
+## Repeat the Linux Debian desktop capture
+
+Put the pinned `Sail-0.1.17-arm64.deb` or `Sail-0.1.17-x64.deb` in `$input` with the activation fixture's `seed.sqlite`, `thread-id`, and `replay.tar`. The [Replay setup script](replay-fixture.sh) generates the source archive as `replay-source.tar`. Use the same SQLite backup for both installations and a new output directory for each.
+
+```sh
+platform=linux/arm64
+fixture="$PWD/tests/migration"
+docker build --platform "$platform" -t sail-migration-deb "$fixture/incumbent/linux-electron"
+docker run --platform "$platform" --rm --init --network none \
+  --hostname sail-migration-fixture --shm-size 256m \
+  --mount "type=bind,src=$input,dst=/input,readonly" \
+  --mount "type=bind,src=$fixture,dst=/fixtures,readonly" \
+  --mount "type=bind,src=$output,dst=/out" \
+  sail-migration-deb sh /fixtures/incumbent/linux-electron/capture.sh
+```
+
+Use `linux/amd64` for the x64 package. The archived x64 runs use Rosetta in Docker on arm64. Each run installs the release in a fresh container, then starts Sail as an unprivileged user under Xvfb with `--no-sandbox` and software compositing. The probe checks that the argv link opens the copied thread with composer focus on the bundled protocol-2 server. It closes the sidebar and details panel, clears composer focus, and resizes the X11 window from 1100 to 1101 and back to 1100 pixels to repaint the settled layout. It captures the whole 1100 × 780 window in light English at 1× scale after the layout stabilizes. After desktop shutdown it checks listener cleanup and compares the full saved message and run payloads against the seed.
+
+Use `capture.png` and the sanitized `state.json` in the comparison. Keep `desktop.private.log` in scratch. The [arm64](observations/electron-linux-arm64/deb-settled/) and [x64](observations/electron-linux-x64/deb-settled/) receipts cover settled Replay and bundled-server activation for this profile.
+
 ## Capture chat loading and reconnect
 
 Run the packaged server with the seeded home. Put [the loopback gate](thread-load-gate.mjs) in front of it and pair the browser at the gate's port. Use a fresh origin or browser profile so the client has no saved transcript for the thread.

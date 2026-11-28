@@ -320,10 +320,15 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
                         .with_context(|| {
                             format!("unknown installer target {target_id}: {label}")
                         })?;
+                    let desktop_asset = target.desktop_assets.iter().any(|name| name == asset);
+                    let cli_asset = target.cli_archive.as_deref() == Some(asset);
                     ensure!(
-                        target.cli_archive.as_deref() == Some(asset)
-                            || target.desktop_assets.iter().any(|name| name == asset),
+                        desktop_asset || cli_asset,
                         "installer asset {asset} is outside target {target_id}: {label}"
+                    );
+                    ensure!(
+                        platform.surface != "electron" || desktop_asset,
+                        "Electron reference requires a published desktop installer: {label}"
                     );
                 }
             }

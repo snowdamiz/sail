@@ -530,6 +530,12 @@ fn reference_with_linux_archive(platform: &str, origin: &str, connection_mode: &
 }
 
 #[test]
+fn rejects_a_rehashed_electron_reference_with_a_same_target_cli_archive() {
+    reference_with_linux_archive("electron-linux-arm64", "desktop local", "loopback")
+        .rejects("Electron reference requires a published desktop installer");
+}
+
+#[test]
 fn rejects_a_rehashed_reference_with_an_installer_for_another_target() {
     let fixture = reference_with_linux_archive(
         "served-chromium-macos",

@@ -3336,6 +3336,466 @@
           ]
         }
       ]
+    },
+    {
+      "caseId": "chat-turn",
+      "platformId": "electron-linux-arm64",
+      "state": "settled",
+      "entrypoint": "chat",
+      "configurationId": "electron-44.10.1-debian-13.8-deb-en-light-1100x780-1x",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-turn",
+          "environment": {
+            "osVersion": "Debian 13.8",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "586f462a77a7973d51bea119712dcc3bc1245753cff986f32d6568040fa20f91",
+            "origin": "desktop local",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 1100,
+              "viewportHeight": 780,
+              "deviceScale": 1,
+              "zoom": 1,
+              "locale": "en",
+              "theme": "light",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/electron-linux-arm64/deb-settled/a/capture.png",
+              "sha256": "9e71b1e84c909655cb8f104b23c3fd5319c008b5973ca7a9a762a06decf3ff26"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/electron-linux-arm64/deb-settled/a/chat-turn.json",
+              "sha256": "5f8b455f95aedcb2fcede3a6b27b30150b0623569deca021f7791fbb3a8c1e82"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/electron-linux-arm64/deb-settled/a/state.json",
+              "sha256": "43944f1dac15736f28318eec3ef3ca535151b2c746eb7fcae524abc020699ec0"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-turn",
+          "environment": {
+            "osVersion": "Debian 13.8",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "586f462a77a7973d51bea119712dcc3bc1245753cff986f32d6568040fa20f91",
+            "origin": "desktop local",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 1100,
+              "viewportHeight": 780,
+              "deviceScale": 1,
+              "zoom": 1,
+              "locale": "en",
+              "theme": "light",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/electron-linux-arm64/deb-settled/b/capture.png",
+              "sha256": "9e71b1e84c909655cb8f104b23c3fd5319c008b5973ca7a9a762a06decf3ff26"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/electron-linux-arm64/deb-settled/b/chat-turn.json",
+              "sha256": "6d980a3e410fdcaf1a08a2fdf507c50dddd4a6a85a4231c923143e03d5a87ab6"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/electron-linux-arm64/deb-settled/b/state.json",
+              "sha256": "d5e9997a1d3aecbec01f9d272792e8a1b51d7fadcf8e53a37c0b789209878cb5"
+            }
+          ]
+        }
+      ],
+      "comparisonArtifacts": [
+        {
+          "kind": "pixel-diff",
+          "path": "observations/electron-linux-arm64/deb-settled/chat-turn-diff.png",
+          "sha256": "4e8c2851cc2a639b9f0f06efb15296b25722bbddd41e6bb7c0270f20f0e04a1c"
+        },
+        {
+          "kind": "action-and-state",
+          "path": "observations/electron-linux-arm64/deb-settled/chat-turn-comparison.json",
+          "sha256": "c389150a6386661270e4cca931f7566085ace39dc27d805b9f36688986fbfacc"
+        }
+      ]
+    },
+    {
+      "caseId": "local-pair",
+      "platformId": "electron-linux-arm64",
+      "state": "bundled-server-paired",
+      "entrypoint": "desktop-activation",
+      "configurationId": "electron-44.10.1-debian-13.8-deb-en-light-1100x780-1x",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "local-pair",
+          "environment": {
+            "osVersion": "Debian 13.8",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "586f462a77a7973d51bea119712dcc3bc1245753cff986f32d6568040fa20f91",
+            "origin": "desktop local",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 1100,
+              "viewportHeight": 780,
+              "deviceScale": 1,
+              "zoom": 1,
+              "locale": "en",
+              "theme": "light",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/electron-linux-arm64/deb-settled/a/capture.png",
+              "sha256": "9e71b1e84c909655cb8f104b23c3fd5319c008b5973ca7a9a762a06decf3ff26"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/electron-linux-arm64/deb-settled/a/local-pair.json",
+              "sha256": "09fbb1619beab44416bf02adbc08a4087d740db2daba90c32a75368dcbaa4402"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/electron-linux-arm64/deb-settled/a/state.json",
+              "sha256": "43944f1dac15736f28318eec3ef3ca535151b2c746eb7fcae524abc020699ec0"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "local-pair",
+          "environment": {
+            "osVersion": "Debian 13.8",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "586f462a77a7973d51bea119712dcc3bc1245753cff986f32d6568040fa20f91",
+            "origin": "desktop local",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 1100,
+              "viewportHeight": 780,
+              "deviceScale": 1,
+              "zoom": 1,
+              "locale": "en",
+              "theme": "light",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/electron-linux-arm64/deb-settled/b/capture.png",
+              "sha256": "9e71b1e84c909655cb8f104b23c3fd5319c008b5973ca7a9a762a06decf3ff26"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/electron-linux-arm64/deb-settled/b/local-pair.json",
+              "sha256": "14ea17a11e986255bf447665c8cb07c94a97c145206cc8ae094a00266721090f"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/electron-linux-arm64/deb-settled/b/state.json",
+              "sha256": "d5e9997a1d3aecbec01f9d272792e8a1b51d7fadcf8e53a37c0b789209878cb5"
+            }
+          ]
+        }
+      ],
+      "comparisonArtifacts": [
+        {
+          "kind": "pixel-diff",
+          "path": "observations/electron-linux-arm64/deb-settled/local-pair-diff.png",
+          "sha256": "4e8c2851cc2a639b9f0f06efb15296b25722bbddd41e6bb7c0270f20f0e04a1c"
+        },
+        {
+          "kind": "action-and-state",
+          "path": "observations/electron-linux-arm64/deb-settled/local-pair-comparison.json",
+          "sha256": "668b40f809ac0109c2584757b2559c420964627931d7aac06c9516a29126c287"
+        }
+      ]
+    },
+    {
+      "caseId": "chat-turn",
+      "platformId": "electron-linux-x64",
+      "state": "settled",
+      "entrypoint": "chat",
+      "configurationId": "electron-44.10.1-debian-13.8-deb-en-light-1100x780-1x",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-turn",
+          "environment": {
+            "osVersion": "Debian 13.8",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "31ecd16a6cc3b63bce892aa8f37d24fd8e569acf0461260b3755366890ed59cf",
+            "origin": "desktop local",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 1100,
+              "viewportHeight": 780,
+              "deviceScale": 1,
+              "zoom": 1,
+              "locale": "en",
+              "theme": "light",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/electron-linux-x64/deb-settled/a/capture.png",
+              "sha256": "e009d5166209f7e3401fe17f8b5ab37be1a01173000c407e01ee90d64c3ea4d7"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/electron-linux-x64/deb-settled/a/chat-turn.json",
+              "sha256": "02bb3ee1ffd1bacb20c82135782f7e2babcaca1114e009df75cec430dd4cb22b"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/electron-linux-x64/deb-settled/a/state.json",
+              "sha256": "5015f9486ef6de5177cb81b79045daaba9c09acdc317b1137805ad3a84f44fc7"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-turn",
+          "environment": {
+            "osVersion": "Debian 13.8",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "31ecd16a6cc3b63bce892aa8f37d24fd8e569acf0461260b3755366890ed59cf",
+            "origin": "desktop local",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 1100,
+              "viewportHeight": 780,
+              "deviceScale": 1,
+              "zoom": 1,
+              "locale": "en",
+              "theme": "light",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/electron-linux-x64/deb-settled/b/capture.png",
+              "sha256": "e009d5166209f7e3401fe17f8b5ab37be1a01173000c407e01ee90d64c3ea4d7"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/electron-linux-x64/deb-settled/b/chat-turn.json",
+              "sha256": "cb34b104d8eebacf51a7ea31a116eecd351f282a5c87d8d9fd0b565349388902"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/electron-linux-x64/deb-settled/b/state.json",
+              "sha256": "be841b7061e57a52a9f37d38ff5d65d9586fe2e0ef0a3d5e41b9953355cf6409"
+            }
+          ]
+        }
+      ],
+      "comparisonArtifacts": [
+        {
+          "kind": "pixel-diff",
+          "path": "observations/electron-linux-x64/deb-settled/chat-turn-diff.png",
+          "sha256": "4e8c2851cc2a639b9f0f06efb15296b25722bbddd41e6bb7c0270f20f0e04a1c"
+        },
+        {
+          "kind": "action-and-state",
+          "path": "observations/electron-linux-x64/deb-settled/chat-turn-comparison.json",
+          "sha256": "15774540f6e7be8f95b47be705f209613a199d23813c0b9870cdba61b36e8e62"
+        }
+      ]
+    },
+    {
+      "caseId": "local-pair",
+      "platformId": "electron-linux-x64",
+      "state": "bundled-server-paired",
+      "entrypoint": "desktop-activation",
+      "configurationId": "electron-44.10.1-debian-13.8-deb-en-light-1100x780-1x",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "local-pair",
+          "environment": {
+            "osVersion": "Debian 13.8",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "31ecd16a6cc3b63bce892aa8f37d24fd8e569acf0461260b3755366890ed59cf",
+            "origin": "desktop local",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 1100,
+              "viewportHeight": 780,
+              "deviceScale": 1,
+              "zoom": 1,
+              "locale": "en",
+              "theme": "light",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/electron-linux-x64/deb-settled/a/capture.png",
+              "sha256": "e009d5166209f7e3401fe17f8b5ab37be1a01173000c407e01ee90d64c3ea4d7"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/electron-linux-x64/deb-settled/a/local-pair.json",
+              "sha256": "1111443dfeb659baa7f998d05e270742d049463b66df9322c1ecd1b77c1f221b"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/electron-linux-x64/deb-settled/a/state.json",
+              "sha256": "5015f9486ef6de5177cb81b79045daaba9c09acdc317b1137805ad3a84f44fc7"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "local-pair",
+          "environment": {
+            "osVersion": "Debian 13.8",
+            "arch": "x64",
+            "clientVersion": "0.1.17",
+            "browserVersion": null,
+            "installerAssetDigest": "31ecd16a6cc3b63bce892aa8f37d24fd8e569acf0461260b3755366890ed59cf",
+            "origin": "desktop local",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 1100,
+              "viewportHeight": 780,
+              "deviceScale": 1,
+              "zoom": 1,
+              "locale": "en",
+              "theme": "light",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/electron-linux-x64/deb-settled/b/capture.png",
+              "sha256": "e009d5166209f7e3401fe17f8b5ab37be1a01173000c407e01ee90d64c3ea4d7"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/electron-linux-x64/deb-settled/b/local-pair.json",
+              "sha256": "cc2a3229d832469dcfdd157490ef51e671970b70187dccb644adc9a4f2cea5d9"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/electron-linux-x64/deb-settled/b/state.json",
+              "sha256": "be841b7061e57a52a9f37d38ff5d65d9586fe2e0ef0a3d5e41b9953355cf6409"
+            }
+          ]
+        }
+      ],
+      "comparisonArtifacts": [
+        {
+          "kind": "pixel-diff",
+          "path": "observations/electron-linux-x64/deb-settled/local-pair-diff.png",
+          "sha256": "4e8c2851cc2a639b9f0f06efb15296b25722bbddd41e6bb7c0270f20f0e04a1c"
+        },
+        {
+          "kind": "action-and-state",
+          "path": "observations/electron-linux-x64/deb-settled/local-pair-comparison.json",
+          "sha256": "a1dfa2e08100a81a2d83b7a3a9a5a1ba8b8637156843179231e22e849511072d"
+        }
+      ]
     }
   ],
   "platformScope": {

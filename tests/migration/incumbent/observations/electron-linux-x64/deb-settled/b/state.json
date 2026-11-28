@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "captureRunId": "45ea39e5-22a8-439d-a9d6-244afd4fc2d3",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "packageSha256": "31ecd16a6cc3b63bce892aa8f37d24fd8e569acf0461260b3755366890ed59cf",
+  "arch": "x64",
+  "osVersion": "Debian 13.8",
+  "electronVersion": "44.10.1",
+  "seedSha256": "84b10b976c546179059ed6200c7e6e5ef2c883ee9cbf6795c0c85c2995f1adbd",
+  "stateFingerprint": {
+    "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+    "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+  },
+  "backend": {
+    "version": "0.1.17",
+    "protocol": 2,
+    "databaseMigration": 118,
+    "capability": "desktop-managed",
+    "ownedChild": true,
+    "rendererRequestsMatch": true,
+    "bootstrapSessionMethod": "bearer-access-token",
+    "scopes": [
+      "orchestration:read",
+      "orchestration:operate",
+      "settings:write",
+      "providers:manage",
+      "environment:maintain",
+      "preview:operate",
+      "diagnostics:read",
+      "terminal:read",
+      "terminal:operate",
+      "source-control:write",
+      "filesystem:read",
+      "filesystem:write",
+      "relay:read",
+      "access:read",
+      "access:write",
+      "relay:write",
+      "relay:configure"
+    ],
+    "shutdown": "CDP Browser.close",
+    "listenerClosed": true,
+    "runtimeRecordRemoved": true
+  },
+  "activation": {
+    "source": "native launch argv",
+    "openedExpectedThread": true,
+    "title": "Compatibility replay",
+    "composerFocused": true,
+    "windowFocused": true
+  },
+  "chat": {
+    "title": "Compatibility replay",
+    "reply": true,
+    "highlightedCode": true,
+    "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+    "table": [
+      ["Step", "Tool", "Result"],
+      ["Read", "read", "1 file"],
+      ["Edit", "edit", "+4 lines"],
+      ["Test", "execute", "12 passed"]
+    ],
+    "composerFocused": false,
+    "windowFocused": true,
+    "sidebarOpen": false,
+    "detailsOpen": false,
+    "desktopBridge": true,
+    "showcase": true,
+    "menuOpen": false,
+    "locale": "en",
+    "theme": "light",
+    "motion": "standard",
+    "fonts": [
+      "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+      "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+    ],
+    "viewport": {
+      "width": 1100,
+      "height": 780,
+      "scale": 1,
+      "zoom": 1
+    }
+  },
+  "screenshotSha256": "e009d5166209f7e3401fe17f8b5ab37be1a01173000c407e01ee90d64c3ea4d7"
+}
