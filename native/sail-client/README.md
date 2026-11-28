@@ -20,7 +20,7 @@ Build the browser page with the version of `wasm-bindgen-cli` in `Cargo.lock`. S
 python3 -m http.server 8765 --bind 127.0.0.1 --directory target/preview
 ```
 
-Open `http://127.0.0.1:8765/`. The browser tries WebGPU first, then WebGL2. To run one backend, use `?backend=webgpu` or `?backend=webgl`. When serving the fixture separately from Sail, append `incumbent` with its loopback HTTP or HTTPS URL to exercise the **Open Sail** link. The default link points to the same origin's root.
+Open `http://127.0.0.1:8765/`. The browser tries WebGPU first, then WebGL2. To run one backend, use `?backend=webgpu` or `?backend=webgl`. When serving the fixture separately from Sail, append `incumbent` with its loopback HTTP or HTTPS URL to exercise the **Open Sail** link. The standalone preview shows that link when the URL is configured.
 
 ## Capture verification receipts
 

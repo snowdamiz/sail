@@ -73,6 +73,10 @@ func focused(_ element: AXUIElement) -> Bool {
     ax(element, kAXFocusedAttribute) ?? false
 }
 
+func frontmost(_ running: NSRunningApplication) -> Bool {
+    ax(AXUIElementCreateApplication(running.processIdentifier), kAXFrontmostAttribute) ?? false
+}
+
 func validateExecutable(_ path: String) throws -> URL {
     let executable = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
     guard executable.lastPathComponent == "sail-client",
@@ -104,9 +108,14 @@ func launchFixture(_ executable: URL) throws -> Process {
 }
 
 func stopFixture(_ process: Process) {
+    guard process.isRunning else { return }
+    process.terminate()
+    let deadline = clock.now + .seconds(1)
+    while process.isRunning && clock.now < deadline {
+        Thread.sleep(forTimeInterval: 0.02)
+    }
     if process.isRunning {
-        process.terminate()
-        process.waitUntilExit()
+        kill(process.processIdentifier, SIGKILL)
     }
 }
 
@@ -173,7 +182,7 @@ func fixtureControls(_ window: AXUIElement) async throws -> (AXUIElement, AXUIEl
 func sendKey(
     _ code: Int, to running: NSRunningApplication, flags: CGEventFlags = [], character: UInt16? = nil
 ) throws {
-    guard !running.isTerminated, running.isActive else {
+    guard !running.isTerminated, frontmost(running) else {
         throw DriverError("The verified sail-client PID must own keyboard focus")
     }
     for down in [true, false] {
@@ -287,11 +296,11 @@ func verify(_ executable: URL, _ out: URL, _ reopen: Bool, _ evidence: Evidence)
 func verifyWindow(
     _ window: AXUIElement, _ running: NSRunningApplication, _ out: URL, _ evidence: Evidence
 ) async throws {
-    if !running.isActive {
+    if !frontmost(running) {
         let app = AXUIElementCreateApplication(running.processIdentifier)
         try requireAX(AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue), "Activate fixture application")
         try requireAX(AXUIElementPerformAction(window, kAXRaiseAction as CFString), "Raise fixture window")
-        let _: Bool = try await waitFor("fixture application to become active") { running.isActive ? true : nil }
+        let _: Bool = try await waitFor("fixture application to become active") { frontmost(running) ? true : nil }
     }
     let (project, composer) = try await fixtureControls(window)
     evidence.record("initial_focus", ["role": kAXButtonRole, "name": name(project)])

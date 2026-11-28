@@ -16,7 +16,9 @@ if (incumbent && loopback.has(location.hostname)) {
       !target.username &&
       !target.password
     ) {
-      document.querySelector("#incumbent").href = target.href;
+      const link = document.querySelector("#incumbent");
+      link.href = target.href;
+      link.hidden = false;
     }
   }
 }

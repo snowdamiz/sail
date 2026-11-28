@@ -69,8 +69,8 @@ def wait_for(description, probe):
         time.sleep(0.05)
 
 
-def command(*args, check=True):
-    result = subprocess.run(args, capture_output=True, check=False, timeout=6)
+def command(*args, check=True, input=None):
+    result = subprocess.run(args, input=input, capture_output=True, check=False, timeout=6)
     if check and result.returncode:
         stderr = result.stderr.decode(errors="replace").strip()
         raise DriverError(f"{args[0]} {args[1]} failed ({result.returncode}): {stderr}")
@@ -251,6 +251,21 @@ class Fixture:
         write_atomic(output / name, png)
         evidence.record("screenshot", file=name, window_id=int(self.xid), width=width, height=height)
 
+        pixels = command("convert", "png:-", "-alpha", "off", "-depth", "8", "rgb:-", input=png).stdout
+        colors = (pixels[index:index + 3] for index in range(0, len(pixels), 3))
+        sidebar, transcript = 0, 0
+        for pixel in colors:
+            sidebar += pixel == b"\x20\x20\x24"
+            transcript += pixel == b"\x18\x18\x1b"
+        if min(sidebar, transcript) < width * height // 20:
+            raise DriverError(f"{name} does not show the fixture's sidebar and transcript")
+
+        # Compare the composer interior without its focus border.
+        return command(
+            "convert", "png:-", "-crop", f"{width - 260}x20+236+{height - 50}",
+            "+repage", "-alpha", "off", "-depth", "8", "rgb:-", input=png,
+        ).stdout
+
 
 def verify_text(description, read, evidence):
     observed = None
@@ -278,7 +293,7 @@ def selected_text(interface, text):
 def verify(executable, output, reopen, evidence):
     if not os.environ.get("DISPLAY"):
         raise DriverError("Set DISPLAY to the isolated fixture's X11 display")
-    for name in ("xdotool", "import", "wmctrl"):
+    for name in ("xdotool", "import", "convert", "wmctrl"):
         if shutil.which(name) is None:
             raise DriverError(f"Missing {name} in PATH")
     try:
@@ -318,7 +333,7 @@ def verify_window(fixture, output, evidence):
     text_interface = fixture.atspi.Text
     if text is not None and text_interface.get_text(text, 0, -1):
         raise DriverError("Expected a fresh composer with an empty value")
-    fixture.capture("gpui-native.png", output, evidence)
+    initial_composer = fixture.capture("gpui-native.png", output, evidence)
 
     fixture.send_keys("Tab")
     evidence.record("keyboard", key="Tab")
@@ -336,7 +351,11 @@ def verify_window(fixture, output, evidence):
         for description in ("value", "selection"):
             evidence.result["gaps"].append(f"AT-SPI Text did not expose {description}")
             evidence.record(description, expected=INPUT, observed=None)
-    fixture.capture("gpui-input.png", output, evidence)
+    selected_composer = fixture.capture("gpui-input.png", output, evidence)
+    if not initial_composer or initial_composer == selected_composer:
+        raise DriverError("The captured composer did not change after typing and selecting text")
+    evidence.record("visible_composer_change")
+
 
     fixture.send_keys("Shift+Tab")
     evidence.record("keyboard", key="Shift+Tab")
