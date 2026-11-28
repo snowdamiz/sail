@@ -18,6 +18,7 @@ import {
   type OrchestrationV2Run,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
+  PlanId,
   ProviderThreadId,
   RunId,
   type SessionTransferAbortInput,
@@ -40,6 +41,7 @@ import {
   type SessionTransferThreadOrigin,
   type SessionTransferWorkspaceSpec,
   ThreadId,
+  TurnItemId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -1422,14 +1424,20 @@ const make = Effect.gen(function* () {
     ];
 
     // Imported conversation messages (excluding held queued run user messages which are re-enqueued below).
+    // Assign deterministic transfer-scoped IDs so round-trips back to the origin environment never
+    // collide with or steal rows belonging to the archived original thread.
     const heldQueuedRunIds = new Set(input.manifest.heldQueuedRuns.map((r) => r.runId));
+    const messageIdMap = new Map<MessageId, MessageId>();
     for (let i = 0; i < input.manifest.messages.length; i += 1) {
       const sourceMessage = input.manifest.messages[i]!;
       if (sourceMessage.runId !== null && heldQueuedRunIds.has(sourceMessage.runId)) {
         continue;
       }
+      const importedMessageId = MessageId.make(`xfer-msg:${safeId}:${i}`);
+      messageIdMap.set(sourceMessage.id, importedMessageId);
       const rewrittenMessage: OrchestrationV2ConversationMessage = {
         ...sourceMessage,
+        id: importedMessageId,
         threadId: input.destinationThreadId,
         runId: null,
         attachments: rewriteAttachments(sourceMessage.attachments, claimedIdMap),
@@ -1449,23 +1457,40 @@ const make = Effect.gen(function* () {
       if (sourceItem.runId !== null && heldQueuedRunIds.has(sourceItem.runId)) {
         continue;
       }
+      const importedItemId = TurnItemId.make(`xfer-item:${safeId}:${i}`);
       const rewrittenItem: OrchestrationV2TurnItem = (
         sourceItem.type === "user_message"
           ? {
               ...sourceItem,
+              id: importedItemId,
+              messageId: messageIdMap.get(sourceItem.messageId) ?? sourceItem.messageId,
               threadId: input.destinationThreadId,
               runId: null,
               providerThreadId: null,
               providerTurnId: null,
               attachments: rewriteAttachments(sourceItem.attachments, claimedIdMap),
             }
-          : {
-              ...sourceItem,
-              threadId: input.destinationThreadId,
-              runId: null,
-              providerThreadId: null,
-              providerTurnId: null,
-            }
+          : sourceItem.type === "assistant_message"
+            ? {
+                ...sourceItem,
+                id: importedItemId,
+                messageId: messageIdMap.get(sourceItem.messageId) ?? sourceItem.messageId,
+                threadId: input.destinationThreadId,
+                runId: null,
+                providerThreadId: null,
+                providerTurnId: null,
+                ...(sourceItem.attachments !== undefined
+                  ? { attachments: rewriteAttachments(sourceItem.attachments, claimedIdMap) }
+                  : {}),
+              }
+            : {
+                ...sourceItem,
+                id: importedItemId,
+                threadId: input.destinationThreadId,
+                runId: null,
+                providerThreadId: null,
+                providerTurnId: null,
+              }
       ) as OrchestrationV2TurnItem;
       events.push({
         id: EventId.make(`xfer:${safeId}:turn-item:${i}`),
@@ -1476,7 +1501,7 @@ const make = Effect.gen(function* () {
       });
     }
 
-    // Imported plans.
+    // Imported plans with deterministic transfer-scoped IDs.
     for (let i = 0; i < input.manifest.plans.length; i += 1) {
       const plan = input.manifest.plans[i]!;
       events.push({
@@ -1486,6 +1511,7 @@ const make = Effect.gen(function* () {
         occurredAt: now,
         payload: {
           ...plan,
+          id: PlanId.make(`xfer-plan:${safeId}:${i}`),
           threadId: input.destinationThreadId,
         },
       });
