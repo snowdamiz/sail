@@ -99,19 +99,29 @@ impl Boat {
 
     /// Runs the CLI; returns whether it succeeded, stdout and stderr.
     async fn output(&self, args: &[&str], timeout: Duration) -> Result<(bool, String, String)> {
-        let mut cmd = command(&self.bin);
-        // `--json` first: anything after `--` belongs to the remote command, and a nested
-        // subcommand (`snapshot rm`) is only read as one with no option before it.
-        cmd.arg("--json")
-            .args(args)
-            .env("BOAT_NO_UPDATE", "1")
-            .kill_on_drop(true);
         // Only the subcommand goes into errors: arguments can hold scripts.
         let sub = args.first().copied().unwrap_or_default();
-        let out = tokio::time::timeout(timeout, cmd.output())
-            .await
-            .map_err(|_| anyhow!("boat {sub} timed out"))?
-            .with_context(|| format!("running boat {sub}"))?;
+        let deadline = tokio::time::Instant::now() + timeout;
+        let out = loop {
+            let mut cmd = command(&self.bin);
+            // `--json` first: anything after `--` belongs to the remote command, and a nested
+            // subcommand (`snapshot rm`) is only read as one with no option before it.
+            cmd.arg("--json")
+                .args(args)
+                .env("BOAT_NO_UPDATE", "1")
+                .kill_on_drop(true);
+            match tokio::time::timeout_at(deadline, cmd.output()).await {
+                Ok(Ok(out)) => break out,
+                Ok(Err(err))
+                    if err.kind() == std::io::ErrorKind::ExecutableFileBusy
+                        && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Ok(Err(err)) => return Err(err).with_context(|| format!("running boat {sub}")),
+                Err(_) => return Err(anyhow!("boat {sub} timed out")),
+            }
+        };
         Ok((
             out.status.success(),
             String::from_utf8_lossy(&out.stdout).into_owned(),
