@@ -14,8 +14,11 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
+import { normalizeHttpBaseUrl } from "../environment/endpoint.ts";
 import * as ClientCapabilities from "../platform/capabilities.ts";
 import {
+  BearerConnectionProfile,
+  BearerConnectionRegistration,
   type ConnectionCatalogEntry,
   type ConnectionCredential,
   type ConnectionProfile,
@@ -35,7 +38,7 @@ import type {
   PersistedConnectionTarget,
   SupervisorConnectionState,
 } from "./model.ts";
-import { ConnectionBlockedError } from "./model.ts";
+import { BearerConnectionTarget, ConnectionBlockedError } from "./model.ts";
 import * as Persistence from "../platform/persistence.ts";
 import * as EnvironmentSupervisor from "./supervisor.ts";
 import * as ConnectionDriver from "./driver.ts";
@@ -108,7 +111,10 @@ export class EnvironmentRegistry extends Context.Service<
      */
     readonly register: (
       registration: ConnectionRegistration,
-      options?: { readonly knownAddressOnly?: boolean },
+      options?: {
+        readonly knownAddressOnly?: boolean;
+        readonly replaceConnectionId?: string;
+      },
     ) => Effect.Effect<boolean, Persistence.ConnectionPersistenceError | ConnectionBlockedError>;
     /**
      * Fails when the route would add a new address to a saved user environment. Pairing that does
@@ -565,31 +571,104 @@ export const make = Effect.gen(function* () {
     }
   });
 
+  const withReplacedBearerConnectionId = (
+    registration: ConnectionRegistration,
+    previous: ConnectionCatalogEntry | undefined,
+    existing: ReadonlyArray<ConnectionRoute>,
+    replaceConnectionId: string | undefined,
+  ): Effect.Effect<ConnectionRegistration, ConnectionBlockedError> => {
+    if (replaceConnectionId === undefined) {
+      return Effect.succeed(registration);
+    }
+    const routeChangedOrRemovedError = () =>
+      new ConnectionBlockedError({
+        reason: "configuration",
+        ...translatableDetail(
+          msg("That saved route changed or was removed before sign-in completed. Try again."),
+        ),
+      });
+    if (registration._tag !== "BearerConnectionRegistration" || previous === undefined) {
+      return Effect.fail(routeChangedOrRemovedError());
+    }
+    const targetRoute = existing.find(
+      (candidate) =>
+        candidate.target._tag === "BearerConnectionTarget" &&
+        candidate.target.connectionId === replaceConnectionId &&
+        Option.isSome(candidate.profile) &&
+        candidate.profile.value._tag === "BearerConnectionProfile" &&
+        candidate.profile.value.learned !== true,
+    );
+    if (
+      targetRoute === undefined ||
+      Option.isNone(targetRoute.profile) ||
+      targetRoute.profile.value._tag !== "BearerConnectionProfile"
+    ) {
+      return Effect.fail(routeChangedOrRemovedError());
+    }
+    let existingBaseUrl: string;
+    let nextBaseUrl: string;
+    try {
+      existingBaseUrl = normalizeHttpBaseUrl(targetRoute.profile.value.httpBaseUrl);
+      nextBaseUrl = normalizeHttpBaseUrl(registration.profile.httpBaseUrl);
+    } catch {
+      return Effect.fail(routeChangedOrRemovedError());
+    }
+    if (existingBaseUrl !== nextBaseUrl) {
+      return Effect.fail(routeChangedOrRemovedError());
+    }
+    return Effect.succeed(
+      new BearerConnectionRegistration({
+        target: new BearerConnectionTarget({
+          environmentId: registration.target.environmentId,
+          label: registration.target.label,
+          connectionId: replaceConnectionId,
+        }),
+        profile: new BearerConnectionProfile({
+          connectionId: replaceConnectionId,
+          environmentId: registration.profile.environmentId,
+          label: registration.profile.label,
+          httpBaseUrl: registration.profile.httpBaseUrl,
+          wsBaseUrl: registration.profile.wsBaseUrl,
+        }),
+        credential: registration.credential,
+      }),
+    );
+  };
+
   const register = Effect.fn("EnvironmentRegistry.register")(function* (
     registration: ConnectionRegistration,
-    options?: { readonly knownAddressOnly?: boolean },
+    options?: {
+      readonly knownAddressOnly?: boolean;
+      readonly replaceConnectionId?: string;
+    },
   ) {
-    const registered = connectionRegistrationCatalogEntry(registration);
-    const environmentId = registered.target.environmentId;
-    const route: ConnectionRoute = { target: registered.target, profile: registered.profile };
+    const environmentId = registration.target.environmentId;
     return yield* withLeaseLock(
       environmentId,
       Effect.gen(function* () {
         if ((yield* Ref.get(platformEnvironmentIds)).has(environmentId)) {
           return false;
         }
+        const previous = (yield* SubscriptionRef.get(entries)).get(environmentId);
+        const existing = previous === undefined ? [] : connectionRoutes(previous);
+        const effectiveRegistration = yield* withReplacedBearerConnectionId(
+          registration,
+          previous,
+          existing,
+          options?.replaceConnectionId,
+        );
+        const registered = connectionRegistrationCatalogEntry(effectiveRegistration);
+        const route: ConnectionRoute = { target: registered.target, profile: registered.profile };
         if (options?.knownAddressOnly === true) {
           yield* assertKnownAddress(route);
         }
-        const previous = (yield* SubscriptionRef.get(entries)).get(environmentId);
         let entry = registered;
         if (previous !== undefined) {
-          const existing = connectionRoutes(previous);
           const sameAddress = findRouteToSameAddress(existing, route);
           const routes = existing.filter(
-            (existing) =>
-              existing !== sameAddress ||
-              connectionRouteId(existing.target) === connectionRouteId(route.target),
+            (candidate) =>
+              candidate !== sameAddress ||
+              connectionRouteId(candidate.target) === connectionRouteId(route.target),
           );
           const next = withRoutes(previous, upsertRoute(routes, route));
           if (next.addressesChanged) {
@@ -597,7 +676,7 @@ export const make = Effect.gen(function* () {
           }
           entry = next.entry;
         }
-        yield* registrations.register(registration, persistedRoutes(entry));
+        yield* registrations.register(effectiveRegistration, persistedRoutes(entry));
         yield* Ref.update(persistedEnvironmentIds, (current) =>
           new Set(current).add(environmentId),
         );

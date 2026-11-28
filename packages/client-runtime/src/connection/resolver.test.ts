@@ -77,6 +77,18 @@ const makeDependencies = Effect.fn("TestConnectionResolver.makeDependencies")((o
     get: (connectionId) => Effect.succeed(Option.fromNullishOr(credentials.get(connectionId))),
     put: (connectionId, credential) =>
       Effect.sync(() => void credentials.set(connectionId, credential)),
+    replaceRenewedCredential: (connectionId, expectedPrevious, nextCredential) =>
+      Effect.sync(() => {
+        const existing = credentials.get(connectionId);
+        if (
+          existing === undefined ||
+          !ConnectionCredentialStore.connectionCredentialsEqual(existing, expectedPrevious)
+        ) {
+          return false;
+        }
+        credentials.set(connectionId, nextCredential);
+        return true;
+      }),
     remove: (connectionId) => Effect.sync(() => void credentials.delete(connectionId)),
   });
   const remote = RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization.of({

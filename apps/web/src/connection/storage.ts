@@ -87,9 +87,12 @@ const isStoredQuery = Schema.is(
   Schema.Struct({ environmentId: Schema.String, payload: Schema.String, updatedAt: Schema.Number }),
 );
 const isQueryBatch = Schema.is(Schema.Struct({ rows: Schema.Number, bytes: Schema.Number }));
+const isConnectionTransientError = Schema.is(ConnectionTransientError);
 const ConnectionCatalogDocumentJson = Schema.fromJsonString(ConnectionCatalogDocument);
 const decodeConnectionCatalogDocument = Schema.decodeUnknownEffect(ConnectionCatalogDocumentJson);
 const encodeConnectionCatalogDocument = Schema.encodeEffect(ConnectionCatalogDocumentJson);
+const decodeConnectionCatalogDocumentSync = Schema.decodeUnknownSync(ConnectionCatalogDocumentJson);
+const encodeConnectionCatalogDocumentSync = Schema.encodeSync(ConnectionCatalogDocumentJson);
 const decodeStoredShellSnapshot = Schema.decodeUnknownEffect(StoredShellSnapshotJson);
 const decodeStoredThreadSnapshot = Schema.decodeUnknownEffect(StoredThreadSnapshotJson);
 const decodeStoredServerConfig = Schema.decodeUnknownEffect(StoredServerConfigJson);
@@ -280,6 +283,70 @@ function readDatabaseValueOnConnection(database: IDBDatabase, storeName: string,
       resume(Effect.fail(catalogError("read", cause)));
     }
   }).pipe(Effect.withSpan("web.connectionStorage.readDatabaseValue"));
+}
+
+function transactCatalogOnConnection<A>(
+  database: IDBDatabase,
+  run: (
+    raw: string | null,
+  ) => readonly [result: A, nextRaw: string | null, quarantineRaw?: string | null],
+): Effect.Effect<A, ConnectionTransientError> {
+  return Effect.callback<A, ConnectionTransientError>((resume) => {
+    let settled = false;
+    const fail = (error: ConnectionTransientError) => {
+      if (settled) return;
+      settled = true;
+      resume(Effect.fail(error));
+    };
+    const succeed = (value: A) => {
+      if (settled) return;
+      settled = true;
+      resume(Effect.succeed(value));
+    };
+    try {
+      let hasResult = false;
+      let result!: A;
+      const transaction = database.transaction(CATALOG_STORE_NAME, "readwrite");
+      transaction.addEventListener("abort", () => {
+        fail(catalogError("write", transaction.error ?? m(msg("Unknown IndexedDB write error"))));
+      });
+      transaction.addEventListener("complete", () => {
+        if (hasResult) {
+          succeed(result);
+        } else {
+          fail(catalogError("read", m(msg("Unknown IndexedDB read error"))));
+        }
+      });
+      const store = transaction.objectStore(CATALOG_STORE_NAME);
+      const request = store.get(CATALOG_KEY);
+      request.addEventListener("error", () => {
+        fail(catalogError("read", request.error ?? m(msg("Unknown IndexedDB read error"))));
+      });
+      request.addEventListener("success", () => {
+        try {
+          const raw = typeof request.result === "string" ? request.result : null;
+          const [nextResult, nextRaw, quarantineRaw] = run(raw);
+          result = nextResult;
+          hasResult = true;
+          if (quarantineRaw !== undefined && quarantineRaw !== null) {
+            store.put(quarantineRaw, `${CATALOG_KEY}:corrupt:${Date.now()}`);
+          }
+          if (nextRaw !== null) {
+            store.put(nextRaw, CATALOG_KEY);
+          }
+        } catch (cause) {
+          fail(isConnectionTransientError(cause) ? cause : catalogError("write", cause));
+          try {
+            transaction.abort();
+          } catch {
+            // Ignore if the transaction already finished or aborted.
+          }
+        }
+      });
+    } catch (cause) {
+      fail(isConnectionTransientError(cause) ? cause : catalogError("write", cause));
+    }
+  }).pipe(Effect.withSpan("web.connectionStorage.transactCatalog"));
 }
 
 function writeDatabaseValueOnConnection(
@@ -514,6 +581,11 @@ export interface CatalogBackend {
   readonly read: Effect.Effect<string | null, ConnectionTransientError>;
   readonly write: (raw: string) => Effect.Effect<void, ConnectionTransientError>;
   readonly quarantine?: (raw: string) => Effect.Effect<void, ConnectionTransientError>;
+  readonly transact?: <A>(
+    run: (
+      raw: string | null,
+    ) => readonly [result: A, nextRaw: string | null, quarantineRaw?: string | null],
+  ) => Effect.Effect<A, ConnectionTransientError>;
 }
 
 export function makeCatalogBackend(database: DatabaseHandle): CatalogBackend {
@@ -550,14 +622,20 @@ export function makeCatalogBackend(database: DatabaseHandle): CatalogBackend {
     write: (raw) => writeDatabaseValue(database, CATALOG_STORE_NAME, CATALOG_KEY, raw),
     quarantine: (raw) =>
       writeDatabaseValue(database, CATALOG_STORE_NAME, `${CATALOG_KEY}:corrupt:${Date.now()}`, raw),
+    transact: (run) => withDatabase(database, (opened) => transactCatalogOnConnection(opened, run)),
   };
 }
 
-interface CatalogStore {
+export interface CatalogStore {
   readonly read: Effect.Effect<ConnectionCatalogDocumentType, ConnectionTransientError>;
   readonly update: (
     transform: (catalog: ConnectionCatalogDocumentType) => ConnectionCatalogDocumentType,
   ) => Effect.Effect<void, ConnectionTransientError>;
+  readonly updateMaybe: <A>(
+    transform: (
+      catalog: ConnectionCatalogDocumentType,
+    ) => readonly [result: A, next: ConnectionCatalogDocumentType | null],
+  ) => Effect.Effect<A, ConnectionTransientError>;
 }
 
 export const makeCatalogStore = Effect.fn("web.connectionStorage.makeCatalogStore")(function* (
@@ -606,11 +684,67 @@ export const makeCatalogStore = Effect.fn("web.connectionStorage.makeCatalogStor
     return catalog;
   });
 
+  const decodeRawForTransaction = (
+    raw: string | null,
+  ): {
+    readonly catalog: ConnectionCatalogDocumentType;
+    readonly corruptRaw: string | null;
+    readonly corruptError: ConnectionTransientError | null;
+  } => {
+    if (raw === null || raw.trim() === "") {
+      return {
+        catalog: EMPTY_CONNECTION_CATALOG_DOCUMENT,
+        corruptRaw: null,
+        corruptError: null,
+      };
+    }
+    try {
+      return {
+        catalog: decodeConnectionCatalogDocumentSync(raw),
+        corruptRaw: null,
+        corruptError: null,
+      };
+    } catch (cause) {
+      return {
+        catalog: EMPTY_CONNECTION_CATALOG_DOCUMENT,
+        corruptRaw: raw,
+        corruptError: catalogError("decode", cause),
+      };
+    }
+  };
+
+  const encodeCatalogSync = (catalog: ConnectionCatalogDocumentType): string => {
+    try {
+      return encodeConnectionCatalogDocumentSync(catalog);
+    } catch (cause) {
+      throw catalogError("encode", cause);
+    }
+  };
+
   const read = lock.withPermits(1)(loadUnlocked());
   const update: CatalogStore["update"] = Effect.fn("web.connectionStorage.updateCatalog")(
     function* (transform) {
       yield* lock.withPermits(1)(
         Effect.gen(function* () {
+          const transact = backend.transact;
+          if (transact !== undefined) {
+            const outcome = yield* transact((raw) => {
+              const decoded = decodeRawForTransaction(raw);
+              const next = transform(decoded.catalog);
+              return [
+                { next, corruptError: decoded.corruptError },
+                encodeCatalogSync(next),
+                decoded.corruptRaw,
+              ] as const;
+            });
+            if (outcome.corruptError !== null) {
+              yield* Effect.logWarning("Discarding a corrupt web connection catalog.", {
+                error: outcome.corruptError.message,
+              });
+            }
+            yield* Ref.set(state, Option.some(outcome.next));
+            return;
+          }
           const next = transform(yield* loadUnlocked());
           yield* backend.write(yield* encodeCatalog(next));
           yield* Ref.set(state, Option.some(next));
@@ -619,8 +753,97 @@ export const makeCatalogStore = Effect.fn("web.connectionStorage.makeCatalogStor
     },
   );
 
-  return { read, update } satisfies CatalogStore;
+  const updateMaybe: CatalogStore["updateMaybe"] = Effect.fn(
+    "web.connectionStorage.updateCatalogMaybe",
+  )(function* (transform) {
+    return yield* lock.withPermits(1)(
+      Effect.gen(function* () {
+        const transact = backend.transact;
+        if (transact !== undefined) {
+          const outcome = yield* transact((raw) => {
+            const decoded = decodeRawForTransaction(raw);
+            const [result, next] = transform(decoded.catalog);
+            const committed = next ?? decoded.catalog;
+            const nextRaw =
+              next !== null || decoded.corruptRaw !== null ? encodeCatalogSync(committed) : null;
+            return [
+              { result, committed, corruptError: decoded.corruptError },
+              nextRaw,
+              decoded.corruptRaw,
+            ] as const;
+          });
+          if (outcome.corruptError !== null) {
+            yield* Effect.logWarning("Discarding a corrupt web connection catalog.", {
+              error: outcome.corruptError.message,
+            });
+          }
+          yield* Ref.set(state, Option.some(outcome.committed));
+          return outcome.result;
+        }
+        const [result, next] = transform(yield* loadUnlocked());
+        if (next !== null) {
+          yield* backend.write(yield* encodeCatalog(next));
+          yield* Ref.set(state, Option.some(next));
+        }
+        return result;
+      }),
+    );
+  });
+
+  return { read, update, updateMaybe } satisfies CatalogStore;
 });
+
+export function makeCatalogCredentialStore(catalog: CatalogStore) {
+  return CredentialStore.make({
+    get: (connectionId) =>
+      catalog.read.pipe(
+        Effect.map((document) =>
+          Option.fromUndefinedOr(
+            document.credentials.find((entry) => entry.connectionId === connectionId)?.credential,
+          ),
+        ),
+      ),
+    put: (connectionId, credential) =>
+      catalog.update((document) => ({
+        ...document,
+        credentials: replaceCatalogValue(document.credentials, (value) => value.connectionId, {
+          connectionId,
+          credential,
+        }),
+      })),
+    replaceRenewedCredential: (connectionId, expectedPrevious, nextCredential) =>
+      catalog.updateMaybe((document) => {
+        const existing = document.credentials.find(
+          (entry) => entry.connectionId === connectionId,
+        )?.credential;
+        if (
+          existing === undefined ||
+          !CredentialStore.connectionCredentialsEqual(existing, expectedPrevious)
+        ) {
+          return [false, null] as const;
+        }
+        return [
+          true,
+          {
+            ...document,
+            credentials: replaceCatalogValue(document.credentials, (value) => value.connectionId, {
+              connectionId,
+              credential: nextCredential,
+            }),
+          },
+        ] as const;
+      }),
+    remove: (connectionId) =>
+      catalog.update((document) => ({
+        ...document,
+        credentials: removeCatalogValue(
+          document.credentials,
+          (value) => value.connectionId,
+          connectionId,
+        ),
+      })),
+  });
+}
 
 // The stored names predate the rename and stay, so a tab still on an older version and an
 // updated one read and revoke the same grants.
@@ -823,33 +1046,7 @@ export const layer = Layer.effectContext(
           ),
         })),
     });
-    const credentialStore = CredentialStore.make({
-      get: (connectionId) =>
-        catalog.read.pipe(
-          Effect.map((document) =>
-            Option.fromUndefinedOr(
-              document.credentials.find((entry) => entry.connectionId === connectionId)?.credential,
-            ),
-          ),
-        ),
-      put: (connectionId, credential) =>
-        catalog.update((document) => ({
-          ...document,
-          credentials: replaceCatalogValue(document.credentials, (value) => value.connectionId, {
-            connectionId,
-            credential,
-          }),
-        })),
-      remove: (connectionId) =>
-        catalog.update((document) => ({
-          ...document,
-          credentials: removeCatalogValue(
-            document.credentials,
-            (value) => value.connectionId,
-            connectionId,
-          ),
-        })),
-    });
+    const credentialStore = makeCatalogCredentialStore(catalog);
     const remoteTokenStore = TokenStore.make({
       get: (environmentId) =>
         catalog.read.pipe(
