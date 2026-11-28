@@ -56,7 +56,16 @@ done
 
 Each server gets its own installed package, home, paired Chrome profile, and capture. The probe calls the released server's Browser panel tools through a fixture ACP session. It checks the launch binary on Linux arm64, pairs through the served page, and requires an available Showcase model, the exact settled table, and **Attach files** focus. Use each run's `capture.png`, `receipt.json`, and `state.json` with the [capture comparator](../README.md#compare-two-captures).
 
-Both Debian 12.15 arm64 captures matched pixel for pixel and had identical action traces at 640 × 600 CSS pixels and 2× scale. Chrome reports `Linux x86_64` through `navigator.platform`. The probe identifies the running browser from its AArch64 executable. Candidate parity and paired timing remain open for this profile. [Linux Chromium reference](observations/served-chromium-linux/settled)
+Both Debian 12.15 arm64 captures matched pixel for pixel and had identical action traces at 640 × 600 CSS pixels and 2× scale. Chrome reports `Linux x86_64` through `navigator.platform`. The probe identifies the running browser from its AArch64 executable. [Linux Chromium reference](observations/served-chromium-linux/settled)
+
+To measure capture time, put the same inputs in one directory as `published.tar.gz`, `chrome.zip`, `seed.sqlite`, `thread-id`, and `replay.tar`. For the candidate run, add `head.tar.gz` and `head-source.json` with the build's `version`, `sourceSha`, `archiveSha256`, and `databaseMigration`.
+
+```sh
+bash "$fixture/linux-chromium/run-timings.sh" "$inputs" "$scratch/incumbents" sail-migration-chromium 2 12
+bash "$fixture/linux-chromium/run-timings.sh" "$inputs" "$scratch/paired" sail-migration-chromium 2 12 --candidate
+```
+
+The Rust runner rotates which host starts each round and allows one capture at a time. Timing starts at direct navigation and ends when the Browser panel returns the screenshot. Package startup, pairing, and the final composer-control read take place outside that interval. The output contains `timings.json`, per-capture PNGs, and a representative receipt for each install. Both the 15% and 2 s limits apply against each published install.
 
 ## Capture the settled Firefox replay
 

@@ -6,8 +6,23 @@ fixture=/fixture
 umask 077
 mkdir "$root"
 mkdir -p "$root"/{runtime,home,state/userdata,project,replay}
+edition=0.1.17
+archive_sha=207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df
+if test -f /capture-source.json; then
+  read -r edition archive_sha < <(python3 - <<'PY'
+import json
+from pathlib import Path
+import re
+
+source = json.loads(Path("/capture-source.json").read_text())
+assert re.fullmatch(r"\d+\.\d+\.\d+", source["version"])
+assert re.fullmatch(r"[0-9a-f]{64}", source["archiveSha256"])
+print(source["version"], source["archiveSha256"])
+PY
+  )
+fi
 printf '%s  %s\n' \
-  207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df /release.tar.gz \
+  "$archive_sha" /release.tar.gz \
   9f89b7ef6574e4bbf6ddda9f17f1fab5626e93d6f7d852653232d0d3554df975 /chrome.zip \
   | sha256sum -c -
 test "$(uname -m)" = aarch64
@@ -61,7 +76,7 @@ export T3CODE_HOME="$root/state"
 export T3CODE_TELEMETRY_ENABLED=false
 export T3CODE_SERVER_BROWSER_SANDBOX=0
 cli="$root/runtime/t3"
-test "$("$cli" --version)" = "t3 v0.1.17"
+test "$("$cli" --version)" = "t3 v$edition"
 "$cli" serve --base-dir "$root/state" --host 127.0.0.1 --port 47717 --startup-pairing off \
   > "$root/server.private.log" 2>&1 &
 server_pid=$!
