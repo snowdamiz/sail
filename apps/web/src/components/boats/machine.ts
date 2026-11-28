@@ -1,20 +1,80 @@
 import { ProjectId, type EnvironmentId } from "@t3tools/contracts";
-import { useGT } from "gt-react";
+import { msg, useGT } from "gt-react";
 import type { MachineState, MachineView, Size } from "./types";
 
-const TAGS: Record<MachineState, string> = {
-  working: "working",
-  idle: "idle",
-  sleeping: "dozing off",
-  asleep: "zzz",
-  waking: "waking",
-  creating: "building",
-  error: "error",
-  missing: "gone",
-  unknown: "…",
-};
+export type StatusDotClassName =
+  | "bg-success"
+  | "bg-warning"
+  | "bg-destructive"
+  | "bg-muted-foreground/40";
 
-export const stateTag = (s: MachineState) => TAGS[s];
+export type StatusBadgeVariant = "success" | "warning" | "error" | "secondary" | "outline";
+
+export interface StatusPresentation {
+  readonly label: ReturnType<typeof msg>;
+  readonly legacyTag: string;
+  readonly dotClassName: StatusDotClassName;
+  readonly badgeVariant: StatusBadgeVariant;
+}
+
+export const MACHINE_STATUS = {
+  working: {
+    label: msg("Working"),
+    legacyTag: "working",
+    dotClassName: "bg-success",
+    badgeVariant: "success",
+  },
+  idle: {
+    label: msg("Idle"),
+    legacyTag: "idle",
+    dotClassName: "bg-success",
+    badgeVariant: "success",
+  },
+  sleeping: {
+    label: msg("Going to sleep"),
+    legacyTag: "dozing off",
+    dotClassName: "bg-warning",
+    badgeVariant: "warning",
+  },
+  asleep: {
+    label: msg("Asleep"),
+    legacyTag: "zzz",
+    dotClassName: "bg-muted-foreground/40",
+    badgeVariant: "secondary",
+  },
+  waking: {
+    label: msg("Waking"),
+    legacyTag: "waking",
+    dotClassName: "bg-warning",
+    badgeVariant: "warning",
+  },
+  creating: {
+    label: msg("Creating"),
+    legacyTag: "building",
+    dotClassName: "bg-warning",
+    badgeVariant: "warning",
+  },
+  error: {
+    label: msg("Error"),
+    legacyTag: "error",
+    dotClassName: "bg-destructive",
+    badgeVariant: "error",
+  },
+  missing: {
+    label: msg("Missing"),
+    legacyTag: "gone",
+    dotClassName: "bg-destructive",
+    badgeVariant: "error",
+  },
+  unknown: {
+    label: msg("Unknown"),
+    legacyTag: "…",
+    dotClassName: "bg-muted-foreground/40",
+    badgeVariant: "outline",
+  },
+} satisfies Record<MachineState, StatusPresentation>;
+
+export const stateTag = (s: MachineState) => MACHINE_STATUS[s].legacyTag;
 
 export function managedBoatOriginProject(
   machines: readonly MachineView[],
@@ -28,33 +88,22 @@ export function managedBoatOriginProject(
   return typeof origin === "string" && origin.trim() !== "" ? ProjectId.make(origin) : undefined;
 }
 
-/** Stable key: creating rows have no id yet. */
 export const machineKey = (m: MachineView) => m.id || `new:${m.name}`;
 
-export function seedOf(key: string): number {
-  let h = 0;
-  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0;
-  return (h >>> 0) / 4294967296;
-}
+export const isMachineOpenable = (m: MachineView) => !!m.id && m.state !== "creating";
 
-/** A backend command for one machine, with the arguments it needs beyond the id. */
 export type Action = {
   label: string;
   busy: string;
-  /** solid button when primary; outline otherwise */
   solid?: boolean;
 } & (
   | { cmd: "open_machine" | "pair_machine" | "wake_machine" | "sleep_machine" | "turn_on_connect" }
   | { cmd: "resize_machine"; size: string }
-  /** null = until stopped (auto sleep off), 0 ends it */
   | { cmd: "keep_awake"; minutes: number | null }
-  /** the agent's name as `signedOut` lists it */
   | { cmd: "sign_in_agent"; agent: string }
-  /** discard: delete even while work runs on it */
   | { cmd: "delete_machine"; discard: boolean }
 );
 
-/** UI-only ⋯ menu entry: opens the project picker in the details view. */
 export const PICK_PROJECT = { kind: "pickProject", label: "Add a project…" } as const;
 
 export type MenuItem = Action | typeof PICK_PROJECT;
@@ -79,19 +128,18 @@ export const ACTIONS = {
   deleteAnyway: { cmd: "delete_machine", label: "Delete anyway", busy: "Deleting…", discard: true },
 } satisfies Record<string, Action>;
 
-/** The one obvious thing to do with a machine right now, if any. */
 export function primaryAction(m: MachineView, paired: boolean): Action | null {
   switch (m.state) {
     case "working":
     case "idle":
-    case "asleep": // wakes by itself when used in Sail; opening it lives in the details view
+    case "asleep":
       return paired ? null : ACTIONS.pair;
     case "error":
       return ACTIONS.retry;
     case "missing":
       return ACTIONS.remove;
     default:
-      return null; // transitional: the boat + detail line say what's happening
+      return null;
   }
 }
 
@@ -109,16 +157,22 @@ export function useMachineActionLabel() {
         return gt("Wake now");
       case ACTIONS.retry.label:
         return gt("Try waking");
+      case ACTIONS.sleep.label:
+        return gt("Sleep now");
+      case ACTIONS.remove.label:
+        return gt("Remove");
+      case ACTIONS.connect.label:
+        return gt("Turn on");
+      case PICK_PROJECT.label:
+        return gt("Add a project…");
       default:
         return action.label;
     }
   };
 }
 
-/** "Stay awake for…" choices, in minutes. */
 export const STAY_AWAKE = [15, 30, 60, 120] as const;
 
-/** A one-time "stay up at least this long"; 0 stops it early. */
 export const keepAwake = (minutes: number): Action => ({
   cmd: "keep_awake",
   label: minutes ? `Stay awake for ${duration(minutes * 60)}` : "Stop staying awake",
@@ -126,7 +180,6 @@ export const keepAwake = (minutes: number): Action => ({
   minutes,
 });
 
-/** The auto sleep switch: off keeps the machine up until it's turned back on. */
 export const autoSleep = (on: boolean): Action => ({
   cmd: "keep_awake",
   label: on ? "Turn on auto sleep" : "Turn off auto sleep",
@@ -141,8 +194,7 @@ export const resizeTo = (size: string): Action => ({
   size,
 });
 
-/** Secondary actions for the ⋯ menu (delete is always appended by the menu). */
-export function menuActions(m: MachineView, sizes: Size[], paired: boolean): MenuItem[] {
+export function menuActions(m: MachineView, sizes: readonly Size[], paired: boolean): MenuItem[] {
   if (!m.id || m.state === "missing") return [];
   const out: MenuItem[] = [];
   if (m.state === "asleep") out.push(ACTIONS.wake);
@@ -153,14 +205,12 @@ export function menuActions(m: MachineView, sizes: Size[], paired: boolean): Men
   return out;
 }
 
-/** Wake or sleep, whichever applies now; null mid-transition. */
 export function powerAction(m: MachineView): Action | null {
   if (m.state === "asleep") return ACTIONS.wake;
   if (m.state === "working" || m.state === "idle") return ACTIONS.sleep;
   return null;
 }
 
-/** When a resize takes effect, per contract. */
 export function resizeHint(m: MachineView): string {
   if (m.state === "asleep") return "Applies on next wake";
   if (m.state === "working" || m.waiting) return "Applies after it next sleeps, never mid-turn";
@@ -168,28 +218,23 @@ export function resizeHint(m: MachineView): string {
   return "Billed only while awake";
 }
 
-/** "2h 14m", "2h", "38m", "0m" */
 export function duration(secs: number): string {
   const m = Math.floor(secs / 60);
   if (m < 60) return `${m}m`;
   return m % 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m / 60}h`;
 }
 
-/** "42s", "4m", "1h 5m"; minutes round up. Matches the backend's `human_secs`. */
 export function timeLeft(secs: number): string {
   if (secs < 60) return `${secs}s`;
   const m = Math.ceil(secs / 60);
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
-/** "/Users/you/Dev/app" → "~/Dev/app" */
 export const homePath = (path: string) => path.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, "~");
 
-/** The machine has this repository, or is getting it. */
 export const hasRepo = (m: MachineView, repoKey: string) =>
   m.projects.some((p) => p.repoKey === repoKey);
 
-/** Up and added to Sail, but nothing to work on yet: the last step of setting it up. */
 export const needsProject = (m: MachineView, paired: boolean) =>
   paired && !m.projects.length && !["creating", "missing", "error"].includes(m.state);
 
@@ -203,7 +248,7 @@ export const shortDate = (unixSecs: number) =>
 export const money = (n: number) => `$${n.toFixed(2)}`;
 export const hourly = (n: number) => `$${n < 0.1 ? n.toFixed(3) : n.toFixed(2)}/h`;
 
-export const sizeOf = (sizes: Size[], id: string) => sizes.find((s) => s.id === id);
+export const sizeOf = (sizes: readonly Size[], id: string) => sizes.find((s) => s.id === id);
 
 const NAMES = [
   "skiff",
