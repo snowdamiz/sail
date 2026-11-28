@@ -104,5 +104,15 @@
   "browserPanel": {
     "result": "pass",
     "receipt": "served-chromium-macos/browser-panel/receipt.json"
+  },
+  "chatViewStates": {
+    "result": "pass",
+    "receipt": "served-chromium-macos/chat-states/receipt.json",
+    "scope": "empty composer, initial thread detail loading and unavailable environment in the recorded Chromium profile"
+  },
+  "disconnectRecover": {
+    "result": "pass",
+    "receipt": "served-chromium-macos/disconnect-recover/receipt.json",
+    "scope": "isolated packaged host stop and restart with draft and transcript preserved in the same Chromium tab"
   }
 }

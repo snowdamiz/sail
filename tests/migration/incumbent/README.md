@@ -48,6 +48,19 @@ The [Electron comparisons](observations/electron-macos-arm64/settled-hover/compa
 
 The [approval receipt](observations/served-chromium-macos/approval/receipt.json) records the published Chromium client's supervised Replay approval and decline paths, SQLite outcomes, and disabled approval controls in a read-only session. The [version rejection receipt](observations/served-chromium-macos/version-rejection/receipt.json) records the published server's HTTP 426 and the published client's **Update** and **Retry update** states against the [simulated older service](version-rejection/README.md).
 
+## Capture chat loading and reconnect
+
+Run the packaged server with the seeded home. Put [the loopback gate](thread-load-gate.mjs) in front of it and pair the browser at the gate's port. Use a fresh origin or browser profile so the client has no saved transcript for the thread.
+
+```sh
+printf '%s\n' hold > "$gate_file"
+node tests/migration/incumbent/thread-load-gate.mjs "$gate_port" "$server_port" "$thread_id" "$gate_file"
+```
+
+Capture the empty draft, then open the seeded thread. The gate holds the thread detail request while the released client shows **Loading messages...**. Write `open` to the gate file and confirm the Replay reply appears. For the error view, open that thread under an unpaired environment ID and follow **Open Environments**. [Chat states receipt](observations/served-chromium-macos/chat-states/receipt.json)
+
+For reconnect, keep the gate open and leave an unsent draft in the loaded thread. Stop only the isolated packaged server. Capture the reconnect banner and use **Retry now**. Restart the same server and confirm the warning clears and the transcript and draft are present in that tab. [Reconnect receipt](observations/served-chromium-macos/disconnect-recover/receipt.json)
+
 ## Capture the Browser panel fixture
 
 Serve the page from [the title-change scenario](../../../scripts/scenarios/browser-tab-follows-page-title.e2e.ts) on loopback. Open it in the seeded thread's **Browser** panel and click the page canvas. Wait for the tab to display **Updated title** at the same address. Select **Release control** and use the thread provider's `preview_status` to locate the tab. Call `preview_evaluate` on that tab with the expression in the [Browser panel receipt](observations/served-chromium-macos/browser-panel/receipt.json). The receipt includes the packaged v0.1.17 screenshots and the tool's returned value.

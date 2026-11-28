@@ -13,7 +13,8 @@
       "scale": 2,
       "zoom": 1
     },
-    "screenshotPixels": [1280, 960]
+    "screenshotPixels": [1280, 960],
+    "capture": "The Browser panel saves wider viewport screenshots at a maximum of 1280 pixels across."
   },
   "fixtureSource": "scripts/scenarios/browser-tab-follows-page-title.e2e.ts",
   "actions": [

@@ -1,0 +1,155 @@
+{
+  "fixtureId": "disconnect-recover",
+  "tag": "v0.1.17",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "artifact": "Sail-0.1.17-arm64.zip",
+  "artifactSha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+  "os": "macOS 27.0.1 (26A434) arm64",
+  "origin": "server-served loopback via gate in open mode",
+  "states": [
+    {
+      "state": "online",
+      "action": "Open Compatibility replay and type an unsent draft.",
+      "observed": {
+        "threadTitle": "Compatibility replay",
+        "reply": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "tableRows": 4,
+        "draft": "P01 draft survives reconnect",
+        "warning": [],
+        "focus": "Message Compatibility replay",
+        "browser": "Chrome/154.0.0.0",
+        "viewport": {
+          "width": 640,
+          "height": 600,
+          "scale": 2,
+          "zoom": 1
+        },
+        "locale": "en",
+        "theme": "light",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ]
+      },
+      "screenshot": {
+        "path": "online.png",
+        "sha256": "6b13cf00e3225d8c265c48d60ce283fa3322addf139092ba3614abfba4f7e0f2",
+        "pixels": [1280, 1200]
+      }
+    },
+    {
+      "state": "offline",
+      "action": "Stop the isolated packaged server and wait for the reconnect banner.",
+      "observed": {
+        "threadTitle": "Compatibility replay",
+        "reply": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "tableRows": 4,
+        "draft": "P01 draft survives reconnect",
+        "warning": ["Compatibility fixture is reconnecting", "Retry now"],
+        "focus": "Message Compatibility replay",
+        "browser": "Chrome/154.0.0.0",
+        "viewport": {
+          "width": 640,
+          "height": 600,
+          "scale": 2,
+          "zoom": 1
+        },
+        "locale": "en",
+        "theme": "light",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ]
+      },
+      "screenshot": {
+        "path": "ref-offline.png",
+        "sha256": "068476d10f4840b4e2cd516c7dbda457cf745a576dbbcc7a5f68002532225474",
+        "pixels": [1280, 1200]
+      }
+    },
+    {
+      "state": "reconnecting",
+      "action": "Click Retry now while the host is stopped.",
+      "observed": {
+        "threadTitle": "Compatibility replay",
+        "reply": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "tableRows": 4,
+        "draft": "P01 draft survives reconnect",
+        "warning": ["Compatibility fixture is reconnecting", "Retry now"],
+        "focus": "Message Compatibility replay",
+        "browser": "Chrome/154.0.0.0",
+        "viewport": {
+          "width": 640,
+          "height": 600,
+          "scale": 2,
+          "zoom": 1
+        },
+        "locale": "en",
+        "theme": "light",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ]
+      },
+      "screenshot": {
+        "path": "retry.png",
+        "sha256": "0216d61418d349f347efc0dd153bfb2ae3d00bb37e00bda7cfd6523a6d4b8b23",
+        "pixels": [1280, 1200]
+      }
+    },
+    {
+      "state": "recovered",
+      "action": "Restart the same packaged server and keep the same browser tab open.",
+      "observed": {
+        "threadTitle": "Compatibility replay",
+        "reply": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "tableRows": 4,
+        "draft": "P01 draft survives reconnect",
+        "warning": [],
+        "focus": "Message Compatibility replay",
+        "browser": "Chrome/154.0.0.0",
+        "viewport": {
+          "width": 640,
+          "height": 600,
+          "scale": 2,
+          "zoom": 1
+        },
+        "locale": "en",
+        "theme": "light",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ]
+      },
+      "screenshot": {
+        "path": "recovered.png",
+        "sha256": "12766e6200bd34aabb57f4d9533f46c86f267e22ed7d7aa6bc32621554eef1db",
+        "pixels": [1280, 1200]
+      }
+    }
+  ],
+  "host": {
+    "stopSignal": "TERM",
+    "stoppedDirectListener": "connection refused",
+    "stoppedProxyHttp": 503,
+    "recoveredProtocol": 2,
+    "sameEnvironment": true
+  },
+  "serverRecords": {
+    "threadsBeforeRestart": 1,
+    "messagesBeforeRestart": 3,
+    "threadsAfterRestart": 1,
+    "messagesAfterRestart": 3
+  },
+  "authenticatedAfterRestart": true,
+  "reloadedPage": false,
+  "offlineAndRecoveredPixelsDiffer": true
+}
