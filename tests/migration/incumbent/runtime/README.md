@@ -27,7 +27,7 @@ The probe compares JSON values and returns exit 1 for a mismatch. Two fresh runs
 
 At the time of this check, remote `main` was `bf6b9482a27bdae8e1f723bee173cedfc3fcaa8e` and the server and desktop manifests named `0.1.18`. Source comparison found the same descriptor implementation, protocol constant, desktop bootstrap schema and backend launch configuration. Main adds a built-in skills state path and changes the WS settings handler for isolated provider homes. The focused source tests in `apps/server/src/ws.test.ts` and `packages/client-runtime/src/rpc/session.test.ts` passed 64 tests in the PR worktree at `94730fd425c8d0a2f0c341495d1b784e2d0c245b`. The packaged live receipt is for v0.1.17.
 
-The macOS receipt covers HTTP protocol rejection from the server. The wider live matrix, launchers on other hosts, server side channels, service launcher, remote pairing, and paired screenshot and trace timing remain open under P01. The run index links the separate client update interaction and desktop observations. [Run index](../observations/run.json)
+The macOS receipt covers HTTP protocol rejection from the server. The wider live matrix, launchers on other hosts, server side channels, OS service registration, remote pairing, and paired screenshot and trace timing remain open under P01. The run index links the separate client update interaction and desktop observations. [Run index](../observations/run.json)
 
 ## Published macOS ZIP and DMG formats
 
@@ -53,7 +53,21 @@ The arm64 AppImage launched with `APPIMAGE_EXTRACT_AND_RUN=1` because there was 
 
 The [upgrade receipt](v0.1.17-to-v0.1.18-cli.json) covers `t3 update 0.1.18 --yes` on Linux arm64 and emulated x64. Install v0.1.17 into a scratch home with a copy of the Replay database. Run its installed foreground server and establish both a browser cookie session and a bearer session with `orchestration:read`. Serve the published v0.1.18 archives and checksums through `T3CODE_RELEASE_BASE_URL`.
 
-Both launchers rejected the target with a deliberately invalid checksum and left the original server and launcher intact. With the published checksum, the installed command switched to v0.1.18. The foreground server stayed at v0.1.17 until it was stopped. On restarting with the same home and port, v0.1.18 reported the same environment identity and three saved messages, accepted both original sessions with their original scope, and returned HTTP 426 to a protocol 1 request. Both published versions used migration 118. Service-managed upgrades require their own run.
+Both launchers rejected the target with a deliberately invalid checksum and left the original server and launcher intact. With the published checksum, the installed command switched to v0.1.18. The foreground server stayed at v0.1.17 until it was stopped. On restarting with the same home and port, v0.1.18 reported the same environment identity and three saved messages, accepted both original sessions with their original scope, and returned HTTP 426 to a protocol 1 request. Both published versions used migration 118.
+
+## Published Linux service launcher update
+
+Use an arm64 Debian 12 Docker image with Python 3, curl, and tar. Put the two published arm64 CLI archives and their `SHA256SUMS` files under `$releases/v0.1.17` and `$releases/v0.1.18`. Set `$seed` and `$thread` to the saved Replay fixture database and thread ID. Use a new scratch directory path, Node 24 or newer, and Python 3.11 or newer on the host.
+
+```sh
+python3 tests/migration/incumbent/runtime/check-service.py \
+  "$releases" "$seed" "$thread" "$image" "$scratch/service" \
+  --expect tests/migration/incumbent/runtime/v0.1.17-to-v0.1.18-service.json
+```
+
+The probe starts the packaged `__service-launcher` under Docker init with a scratch version selection and a copied database. The read-only session receives the typed update denial. The maintain session first checks a zeroed archive checksum, then retries against the published manifest. Watch the launcher keep its original process, activate a new child, and retain the committed selection when restarted. The probe compares the full saved Replay payloads and checks that both original bearer tokens still work after activation and restart.
+
+The [receipt](v0.1.17-to-v0.1.18-service.json) covers the Linux arm64 launcher protocol and update RPC with a loopback release mirror. Systemd installation, service unit repointing, and recovery from a failed trial after handoff need separate runs.
 
 ## Published arm64 macOS archive update
 

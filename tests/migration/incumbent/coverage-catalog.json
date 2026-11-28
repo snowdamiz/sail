@@ -641,9 +641,12 @@
       "platformSet": "standalone-host",
       "entrypoint": "cli",
       "states": ["available", "installed", "failed-recovery"],
-      "check": "Exercise the standalone CLI update or Fly volume-preserving redeploy for the selected platform and record version and session survival.",
+      "check": "Exercise the standalone CLI update, service launcher update, or Fly volume-preserving redeploy for the selected platform and record version and session survival.",
       "evidenceProfile": "process",
-      "supplementalReceipts": ["runtime/v0.1.17-to-v0.1.18-cli.json"],
+      "supplementalReceipts": [
+        "runtime/v0.1.17-to-v0.1.18-cli.json",
+        "runtime/v0.1.17-to-v0.1.18-service.json"
+      ],
       "sourceReferences": ["apps/server/src/cli/update.ts", "docs/user/self-host-fly.md"]
     },
     {

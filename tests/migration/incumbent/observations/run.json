@@ -188,6 +188,10 @@
     "receipt": "../runtime/v0.1.17-to-v0.1.18-cli.json",
     "scope": "Published Linux foreground CLI upgrade on arm64 and emulated x64. The restarted host preserved the Replay transcript, environment identity, and scoped browser and bearer sessions. Both launchers rejected a deliberately invalid checksum."
   },
+  "serviceLauncherUpgrade": {
+    "receipt": "../runtime/v0.1.17-to-v0.1.18-service.json",
+    "scope": "Published Linux arm64 service launcher under Docker init. The update RPC denied a read-only token and rejected a corrupt checksum. A retry with the published manifest activated v0.1.18 under the original launcher. An explicit restart retained the new selection, environment, both scoped bearer tokens, and the saved Replay payloads."
+  },
   "macosArm64ArchiveUpdate": {
     "result": "observed",
     "receipt": "electron-macos-arm64/archive-update/receipt.json",
