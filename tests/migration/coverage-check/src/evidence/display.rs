@@ -1,9 +1,9 @@
-use std::{fs::File, io::BufReader, path::Path};
+use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 
-use super::{Capture, Evidence, one_artifact, read_json};
+use super::{Capture, Evidence, desktop_capture};
 use crate::catalog::{Observation, Run};
 
 pub(super) fn verify(
@@ -13,23 +13,12 @@ pub(super) fn verify(
     capture: &Capture,
     image: &Path,
 ) -> Result<()> {
-    let artifact = one_artifact(&run.artifacts, "state-receipt")?;
-    ensure!(
-        capture.state_receipt_sha256.as_deref() == Some(&artifact.sha256),
-        "display capture does not bind its runtime state receipt"
-    );
-    let state: Value = read_json(&evidence.resolve(&artifact.path)?)?;
+    let state = desktop_capture::observed_state(evidence, observation, run, capture)?;
     let variant = observation.cell.state.as_str();
     let display = &state["displayCaptures"][variant];
     ensure!(
-        state["schemaVersion"] == 1
-            && state["captureRunId"] == capture.capture_run_id
-            && state["sourceSha"] == capture.source_sha
-            && state["packageSha256"].as_str() == capture.package_sha256.as_deref()
-            && state["arch"].as_str() == run.environment.arch.as_deref()
-            && state["osVersion"].as_str() == run.environment.os_version.as_deref()
-            && display["screenshotSha256"] == capture.screenshot_sha256,
-        "display runtime evidence belongs to a different capture, state or package"
+        display["screenshotSha256"] == capture.screenshot_sha256,
+        "display screenshot disagrees with the observed pixels"
     );
     let (width, zoom, locale, theme, action) = match variant {
         "light" => (
@@ -138,18 +127,7 @@ pub(super) fn verify(
             && serde_json::to_value(&recorded.observed)? == Value::Object(observed),
         "display trace disagrees with the observed action or runtime state"
     );
-    let mut png = png::Decoder::new(BufReader::new(File::open(image)?)).read_info()?;
-    ensure!(
-        png.info().width == width && png.info().height == 780,
-        "display screenshot does not match the physical window dimensions"
-    );
-    let mut pixels = vec![
-        0;
-        png.output_buffer_size()
-            .context("invalid display screenshot buffer size")?
-    ];
-    png.next_frame(&mut pixels)?;
-    Ok(())
+    desktop_capture::verify_png(image, width, 780)
 }
 
 fn renderer_size_matches(viewport: &Value, width: u32, height: u32, scale: f64) -> bool {

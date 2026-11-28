@@ -198,6 +198,18 @@ Append `--display` to the capture command to repeat the six chat display states.
 
 The [arm64](observations/electron-linux-arm64/display/) and [x64](observations/electron-linux-x64/display/) comparison receipts use separate desktop installations and scratch homes. Compare repeat runs within the same architecture and profile.
 
+### Repeat chat-link and palette navigation
+
+Use the pinned arm64 OCI image from the release inventory to prepare a copy of the existing activation fixture.
+
+```sh
+python3 tests/migration/incumbent/linux-electron/seed-entrypoints.py "$input" "$navigation_input"
+```
+
+The seed script adds a second Replay thread through the packaged CLI. Its isolated Replay recording replies with an internal link to the existing `Compatibility replay` thread. Put the published Debian packages in `$navigation_input` and use it as the `/input` mount. Append `--entrypoints` to the Linux capture command. The probe opens the source thread before each action, clicks the rendered link chip, and then uses Ctrl+K, search, and Enter for the palette. It checks the saved destination and composer focus before clearing focus for each full-window capture.
+
+The Rust verifier binds each capture to the observed route and raw state digest in the [Linux desktop witness ledger](runtime/linux-desktop-witnesses.json). The same ledger pins the display captures to their observed pixels and independent runs.
+
 ## Capture chat loading and reconnect
 
 Run the packaged server with the seeded home. Put [the loopback gate](thread-load-gate.mjs) in front of it and pair the browser at the gate's port. Use a fresh origin or browser profile so the client has no saved transcript for the thread.

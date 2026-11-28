@@ -161,13 +161,17 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
             !case.id.trim().is_empty() && !case.states.is_empty(),
             "empty case ID or states"
         );
-        if matches!(
-            case.id.as_str(),
-            "cli-open" | "installer-home" | "installer-formats" | "updater" | "host-upgrade"
-        ) {
+        let required_profile = match case.id.as_str() {
+            "cli-open" | "installer-home" | "installer-formats" | "updater" | "host-upgrade" => {
+                Some("process")
+            }
+            "chat-display" | "chat-link" | "palette-link" => Some("interaction"),
+            _ => None,
+        };
+        if let Some(profile) = required_profile {
             ensure!(
-                case.evidence_profile == "process",
-                "schema-v1 case {} requires the process evidence profile",
+                case.evidence_profile == profile,
+                "schema-v1 case {} requires the {profile} evidence profile",
                 case.id
             );
         }
@@ -393,14 +397,17 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
                         "Electron reference requires a published desktop installer: {label}"
                     );
                     if pass
-                        && cell.case_id == "chat-display"
+                        && matches!(
+                            cell.case_id.as_str(),
+                            "chat-display" | "chat-link" | "palette-link"
+                        )
                         && let Some(arch) =
                             electron_target.and_then(|target| target.strip_prefix("linux-"))
                     {
                         let version = inventory.github_release.tag_name.trim_start_matches('v');
                         ensure!(
                             asset == format!("Sail-{version}-{arch}.deb"),
-                            "Linux Electron display reference requires the matching Debian installer: {label}"
+                            "Linux Electron reference requires the matching Debian installer: {label}"
                         );
                     }
                 }

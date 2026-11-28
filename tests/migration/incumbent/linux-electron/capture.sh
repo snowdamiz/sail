@@ -13,11 +13,12 @@ dpkg --verify sail >/out/dpkg-verify.log
 test ! -s /out/dpkg-verify.log
 
 chown sailfixture /out
-probe=probe.py
-if [ "${1:-}" = "--display" ]; then
-  probe=display.py
-  shift
-fi
+case "${1:-}" in
+  --display) probe=display.py; shift ;;
+  --entrypoints) probe=entrypoints.py; shift ;;
+  "") probe=probe.py ;;
+  *) exit 2 ;;
+esac
 test "$#" -eq 0
 exec runuser -u sailfixture -- dbus-run-session -- xvfb-run -a \
   -s '-screen 0 1400x1000x24 -dpi 96 -nolisten tcp' \

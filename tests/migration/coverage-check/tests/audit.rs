@@ -339,7 +339,99 @@ fn rejects_a_display_receipt_with_a_rehashed_fabricated_locale_observation() {
     fixture.edit_process_json(0, "capture-receipt", |capture| {
         capture["stateReceiptSha256"] = digest;
     });
-    fixture.rejects("observed Linux Electron behavior does not match display state translated");
+    fixture.rejects("desktop state bytes disagree with the observed capture witness");
+}
+
+#[test]
+fn rejects_relabeling_display_evidence_as_negative_controls() {
+    let mut fixture = Fixture::visual("chat-display", "light", "electron-linux-arm64");
+    fixture.catalog["cases"][0]["evidenceProfile"] = json!("negative");
+    fixture.rejects("schema-v1 case chat-display requires the interaction evidence profile");
+}
+
+#[test]
+fn rejects_a_desktop_repeat_with_an_invented_capture_id() {
+    let mut fixture = Fixture::visual("chat-display", "light", "electron-linux-arm64");
+    fixture.edit_process_json(1, "state-receipt", |state| {
+        state["captureRunId"] = json!("invented-repeat");
+    });
+    let digest = fixture.catalog["observations"][0]["runs"][1]["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|artifact| artifact["kind"] == "state-receipt")
+        .unwrap()["sha256"]
+        .clone();
+    fixture.edit_process_json(1, "capture-receipt", |capture| {
+        capture["captureRunId"] = json!("invented-repeat");
+        capture["stateReceiptSha256"] = digest;
+    });
+    fixture.rejects("missing observed desktop capture witness");
+}
+
+#[test]
+fn rejects_rehashing_dark_pixels_into_a_light_display_reference() {
+    let mut light = Fixture::visual("chat-display", "light", "electron-linux-arm64");
+    let dark = Fixture::visual("chat-display", "dark", "electron-linux-arm64");
+    for run in 0..2 {
+        let target = light.catalog["observations"][0]["runs"][run]["artifacts"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|a| a["kind"] == "screenshot")
+            .unwrap();
+        let replacement = dark.catalog["observations"][0]["runs"][run]["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["kind"] == "screenshot")
+            .unwrap();
+        fs::copy(
+            dark.directory
+                .path()
+                .join(replacement["path"].as_str().unwrap()),
+            light
+                .directory
+                .path()
+                .join(target["path"].as_str().unwrap()),
+        )
+        .unwrap();
+        let screenshot = replacement["sha256"].clone();
+        target["sha256"] = screenshot.clone();
+        light.edit_process_json(run, "state-receipt", |state| {
+            state["displayCaptures"]["light"]["screenshotSha256"] = screenshot.clone();
+        });
+        let digest = light.catalog["observations"][0]["runs"][run]["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["kind"] == "state-receipt")
+            .unwrap()["sha256"]
+            .clone();
+        light.edit_process_json(run, "capture-receipt", |capture| {
+            capture["stateReceiptSha256"] = digest;
+            capture["screenshotSha256"] = screenshot;
+        });
+    }
+    light.rejects("desktop state bytes disagree with the observed capture witness");
+}
+
+#[test]
+fn verifies_both_witnessed_linux_navigation_entrypoints() {
+    for (case, state) in [
+        ("chat-link", "linked-thread-opened"),
+        ("palette-link", "selected-thread-opened"),
+    ] {
+        let fixture = Fixture::visual(case, state, "electron-linux-arm64");
+        let output = fixture.run();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["verifiedVisualReferenceObservations"], 1);
+    }
 }
 
 #[test]

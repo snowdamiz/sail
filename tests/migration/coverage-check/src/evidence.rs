@@ -10,8 +10,10 @@ use std::{
 
 use crate::catalog::{Artifact, Cell, Observation, Run};
 
+mod desktop_capture;
 mod display;
 mod linux_cli;
+mod navigation;
 mod oci;
 mod process_terminal;
 mod service_upgrade;
@@ -271,13 +273,12 @@ fn load_capture(
         );
     }
     let image_path = evidence.resolve(&image.path)?;
-    if observation.cell.case_id == "chat-display"
-        && matches!(
-            observation.cell.platform_id.as_str(),
-            "electron-linux-arm64" | "electron-linux-x64"
-        )
-    {
-        display::verify(evidence, observation, run, &capture, &image_path)?;
+    match observation.cell.case_id.as_str() {
+        "chat-display" => display::verify(evidence, observation, run, &capture, &image_path)?,
+        "chat-link" | "palette-link" => {
+            navigation::verify(evidence, observation, run, &capture, &image_path)?;
+        }
+        _ => {}
     }
     Ok((capture, image_path, receipt_path))
 }

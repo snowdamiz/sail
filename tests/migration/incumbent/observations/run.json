@@ -425,5 +425,36 @@
     "arm64": "electron-linux-arm64/display",
     "x64": "electron-linux-x64/display",
     "scope": "Two independent installs of each published v0.1.17 Debian package, with x64 under Rosetta. The runs exercised the real light and dark settings, window zoom shortcuts, German language option, and the compact and wide sidebar controls. Each image covers the whole 1\u00d7 X11 window. Candidate and performance comparisons remain open."
+  },
+  "linuxDebNavigation": {
+    "arm64": "electron-linux-arm64/entrypoints",
+    "x64": "electron-linux-x64/entrypoints",
+    "comparisons": {
+      "arm64": {
+        "chat-link": {
+          "result": "pass",
+          "differentPixels": 0,
+          "changedSteps": []
+        },
+        "palette-link": {
+          "result": "pass",
+          "differentPixels": 0,
+          "changedSteps": []
+        }
+      },
+      "x64": {
+        "chat-link": {
+          "result": "pass",
+          "differentPixels": 0,
+          "changedSteps": []
+        },
+        "palette-link": {
+          "result": "pass",
+          "differentPixels": 0,
+          "changedSteps": []
+        }
+      }
+    },
+    "scope": "Two independent published v0.1.17 Debian installations per architecture, with x64 under Rosetta. Both the rendered chat link and the command palette opened the same saved Replay thread from a separate source thread and focused its composer. Captures use the full 1100 \u00d7 780 X11 window after clearing focus. Candidate comparisons and timing remain open."
   }
 }

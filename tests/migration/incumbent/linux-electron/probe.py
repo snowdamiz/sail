@@ -117,6 +117,28 @@ class Page:
         return result["result"].get("value")
 
 
+def navigate(page, route):
+    page.evaluate(f"location.hash = {json.dumps(route)}")
+
+
+def selector(label, element="button"):
+    return f'{element}[aria-label={json.dumps(label, ensure_ascii=False)}]'
+
+
+def click(page, child, query, label, text=None):
+    expression = """(() => {
+      const element = [...document.querySelectorAll(%s)].find(element =>
+        element.getClientRects().length && (%s));
+      if (!element) return null;
+      element.scrollIntoView({block: "center"});
+      const {x, y, width, height} = element.getBoundingClientRect();
+      return {x: x + width / 2, y: y + height / 2};
+    })()""" % (json.dumps(query), "true" if text is None else f"element.innerText.trim() === {json.dumps(text)}")
+    position = wait_for(lambda: page.evaluate(expression), child, label, seconds=35)
+    page.call("Input.dispatchMouseEvent", type="mousePressed", button="left", clickCount=1, **position)
+    page.call("Input.dispatchMouseEvent", type="mouseReleased", button="left", clickCount=1, **position)
+
+
 def bootstrap_sessions(database):
     with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:
         return db.execute(
@@ -329,6 +351,7 @@ def run(arch, package_sha, capture_variants=None):
         "packageSha256": package_sha, "arch": arch, "osVersion": "Debian " + Path("/etc/debian_version").read_text().strip(),
         "electronVersion": re.search(r"Electron/([0-9.]+)", settled["userAgent"])[1],
         "seedSha256": seed_sha, "stateFingerprint": state_fingerprint(initial),
+        "runtimeOwnerSha256": hashlib.sha256(runtime["ownerId"].encode()).hexdigest(),
         "backend": {"version": descriptor["serverVersion"], "protocol": 2, "databaseMigration": 118,
                     "capability": "desktop-managed", "ownedChild": True, "rendererRequestsMatch": True,
                     "bootstrapSessionMethod": sessions[0][0], "scopes": scopes,
@@ -339,7 +362,7 @@ def run(arch, package_sha, capture_variants=None):
         "screenshotSha256": screenshot_sha,
     }
     if variants is not None:
-        result["displayCaptures"] = variants
+        result.update(variants)
     (OUT / "state.json").write_text(json.dumps(result, indent=2) + "\n")
     print(f"Sail v0.1.17 {arch} desktop bootstrap and saved Replay capture verified")
 

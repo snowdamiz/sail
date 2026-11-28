@@ -2,36 +2,14 @@ import json
 import sys
 
 from probe import (
-    CODE, OBSERVE, OUT, TABLE, capture_window, command, require, resize_window, run,
-    settle_layout, wait_for,
+    CODE, OBSERVE, OUT, TABLE, capture_window, click, command, navigate, require, resize_window, run,
+    selector, settle_layout, wait_for,
 )
 
 
 SIDEBAR = '[aria-label="Toggle main sidebar"]'
 ENGLISH_ATTACH = "Attach files"
 GERMAN_ATTACH = "Dateien anhängen"
-
-
-def navigate(page, route):
-    page.evaluate(f"location.hash = {json.dumps(route)}")
-
-
-def selector(label, element="button"):
-    return f'{element}[aria-label={json.dumps(label, ensure_ascii=False)}]'
-
-
-def click(page, child, query, label, text=None):
-    expression = """(() => {
-      const element = [...document.querySelectorAll(%s)].find(element =>
-        element.getClientRects().length && (%s));
-      if (!element) return null;
-      element.scrollIntoView({block: "center"});
-      const {x, y, width, height} = element.getBoundingClientRect();
-      return {x: x + width / 2, y: y + height / 2};
-    })()""" % (json.dumps(query), "true" if text is None else f"element.innerText.trim() === {json.dumps(text)}")
-    position = wait_for(lambda: page.evaluate(expression), child, label, seconds=35)
-    page.call("Input.dispatchMouseEvent", type="mousePressed", button="left", clickCount=1, **position)
-    page.call("Input.dispatchMouseEvent", type="mouseReleased", button="left", clickCount=1, **position)
 
 
 def choose_theme(page, child, theme):
@@ -149,7 +127,7 @@ def capture_variants(page, child, route, window):
         resize_window(page, child, window, width, 780)
         action = toggle_sidebar(page, child, window, compact=name == "compact")
         variants[name] = render_profile(page, child, route, window, name, width, 1, "light", "en", action)
-    return variants
+    return {"displayCaptures": variants}
 
 
 if __name__ == "__main__":
