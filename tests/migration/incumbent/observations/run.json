@@ -64,6 +64,14 @@
       "differentPixels": 0,
       "changedSteps": [],
       "scope": "settled Replay thread with both panels closed and the reply action bar hovered"
+    },
+    "firefoxLinuxSettledRepeat": {
+      "result": "pass",
+      "comparison": "served-firefox-linux/settled/comparison.json",
+      "runtime": "served-firefox-linux/settled/runtime.json",
+      "differentPixels": 0,
+      "changedSteps": [],
+      "scope": "settled replay in the recorded Linux arm64 Firefox ESR profile"
     }
   },
   "launcherRuntime": {

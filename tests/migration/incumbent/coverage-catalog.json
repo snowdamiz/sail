@@ -1313,6 +1313,121 @@
           "sha256": "68b7aa0243736e8cf1bc9b3acc98cb706882880a4696ae7c0d90fe911dc13cea"
         }
       ]
+    },
+    {
+      "caseId": "chat-turn",
+      "platformId": "served-firefox-linux",
+      "state": "settled",
+      "entrypoint": "chat",
+      "configurationId": "firefox-esr-153.8.0-debian-arm64-en-light-640x600-2x",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-turn",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Firefox ESR 153.8.0",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "server-served loopback",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", \"SFMono-Regular\", Menlo, Consolas, \"Liberation Mono\", monospace"
+              ],
+              "motion": "standard"
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/served-firefox-linux/settled/a/capture.png",
+              "sha256": "9a6291d7429a59cbcb7f915e32f292f45456afa80dd8004373a2d3e745f7b3e7"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/served-firefox-linux/settled/a/receipt.json",
+              "sha256": "43138fd24cb2455e674c663b15dd5392846dc3bc430cd8eb23b6151a33f5341b"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/served-firefox-linux/settled/runtime.json",
+              "sha256": "da52274597f23bc4c3879ca275e493941ce006167856d8882068a01aeebe86aa"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-turn",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Firefox ESR 153.8.0",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "server-served loopback",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", \"SFMono-Regular\", Menlo, Consolas, \"Liberation Mono\", monospace"
+              ],
+              "motion": "standard"
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/served-firefox-linux/settled/b/capture.png",
+              "sha256": "9a6291d7429a59cbcb7f915e32f292f45456afa80dd8004373a2d3e745f7b3e7"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/served-firefox-linux/settled/b/receipt.json",
+              "sha256": "43138fd24cb2455e674c663b15dd5392846dc3bc430cd8eb23b6151a33f5341b"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/served-firefox-linux/settled/runtime.json",
+              "sha256": "da52274597f23bc4c3879ca275e493941ce006167856d8882068a01aeebe86aa"
+            }
+          ]
+        }
+      ],
+      "comparisonArtifacts": [
+        {
+          "kind": "pixel-diff",
+          "path": "observations/served-firefox-linux/settled/repeat-diff.png",
+          "sha256": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+        },
+        {
+          "kind": "action-and-state",
+          "path": "observations/served-firefox-linux/settled/comparison.json",
+          "sha256": "558658341c9969024ab4f74bfdffaa858a8f7b00365175d12b2bce06217032a4"
+        }
+      ]
     }
   ],
   "platformScope": {

@@ -1,6 +1,6 @@
 # Capture the published Sail baseline
 
-Use the [release inventory](release-inventory.json) to select the asset and check its SHA-256. The published reference uses the v0.1.17 macOS arm64 ZIP and its bundled server. Settled Replay is repeatable in one Chromium profile and one Electron profile. The [coverage catalog](coverage-catalog.json) tracks qualification per state and profile.
+Use the [release inventory](release-inventory.json) to select the asset and check its SHA-256. The published reference uses the v0.1.17 macOS arm64 ZIP and Linux arm64 CLI archive. Settled Replay is repeatable in the recorded Chromium, Electron, and Firefox ESR profiles. The [coverage catalog](coverage-catalog.json) tracks qualification per state and profile.
 
 ## Seed the Replay fixture on macOS
 
@@ -31,6 +31,10 @@ The [settled captures and timings](observations/served-chromium-macos/settled) c
 
 Capture timing includes Browser panel calls and rendering waits. In this run, waiting for the highlighted reply took the largest share on the published build. The three p95 values are 984 ms, 962 ms, and 953 ms. These results cover one capture profile and one settled thread.
 
+## Capture the settled Firefox replay on Linux
+
+Run the published Linux arm64 CLI archive twice under separate scratch homes with copies of the seeded database. Pair a fresh Firefox ESR profile to each server under Xvfb. Use the same viewport, Tab action, and pointer position as the Chromium capture. Adapt the probe's user-agent match to Firefox and record the installed version from GeckoDriver. The [Linux Firefox receipts](observations/served-firefox-linux/settled) contain both matching captures and the installed package versions.
+
 ## Capture the settled Electron replay on macOS
 
 1. Launch two copies of the published app with separate scratch homes, each populated from the same seeded database backup. Give each copy its own server port and pass `--remote-debugging-address=127.0.0.1 --remote-debugging-port=<fixture-port>` to the app executable. Use DevTools only for these test windows.
@@ -48,6 +52,6 @@ The [approval receipt](observations/served-chromium-macos/approval/receipt.json)
 
 Serve the page from [the title-change scenario](../../../scripts/scenarios/browser-tab-follows-page-title.e2e.ts) on loopback. Open it in the seeded thread's **Browser** panel and click the page canvas. Wait for the tab to display **Updated title** at the same address. Select **Release control** and use the thread provider's `preview_status` to locate the tab. Call `preview_evaluate` on that tab with the expression in the [Browser panel receipt](observations/served-chromium-macos/browser-panel/receipt.json). The receipt includes the packaged v0.1.17 screenshots and the tool's returned value.
 
-The [browser availability receipt](observations/browser-availability.json) records WebDriver startup failures for Safari and stock Firefox on this Mac. Both Replay profiles remain open.
+The [browser availability receipt](observations/browser-availability.json) records WebDriver startup failures for Safari and stock Firefox on macOS. Those macOS Replay profiles remain open.
 
 The [run receipt](observations/run.json) records the installer, wire, and SQLite checks. Use the [launcher and runtime probe](runtime/README.md) to reproduce the installed package's startup and capability observations.
