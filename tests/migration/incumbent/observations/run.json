@@ -82,6 +82,16 @@
       "differentPixels": 3417,
       "changedSteps": [2],
       "scope": "Settled Replay in the pinned macOS dark Electron profile. The delta is the Poteto composer control introduced by trunk 386d27b4. Timing passed against incumbent A and exceeded the budget against incumbent B."
+    },
+    "chromiumMigrationHead": {
+      "result": "fail",
+      "sourceSha": "4807bdae945354ade96b40ad7d5116483ff0d308",
+      "comparison": "served-chromium-macos/migration-head-4807bdae/comparisons.json",
+      "timing": "served-chromium-macos/migration-head-4807bdae/capture-timings.json",
+      "differentPixels": 3478,
+      "changedSteps": [3],
+      "timingBudget": "pass",
+      "scope": "Settled Replay in the recorded Chromium headless profile. The delta is the Poteto composer control introduced by trunk 386d27b4."
     }
   },
   "launcherRuntime": {

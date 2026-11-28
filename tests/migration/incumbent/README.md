@@ -31,6 +31,8 @@ The [settled captures and timings](observations/served-chromium-macos/settled) c
 
 Capture timing includes Browser panel calls and rendering waits. In this run, waiting for the highlighted reply took the largest share on the published build. The three p95 values are 984 ms, 962 ms, and 953 ms. These results cover one capture profile and one settled thread.
 
+The [packaged migration-head comparison](observations/served-chromium-macos/migration-head-4807bdae) uses Chromium headless shell 156.0.8078.4 in three isolated Playwright profiles. Both v0.1.17 copies matched. The web client built at `4807bdae` differed by 3,478 pixels in the composer and exposed the Poteto control. Its capture p95 was 572 ms against 1,137 and 1,696 ms for the incumbent copies, within the budget for this fixture.
+
 ## Capture the settled Firefox replay on Linux
 
 Run the published Linux arm64 CLI archive twice under separate scratch homes with copies of the seeded database. Pair a fresh Firefox ESR profile to each server under Xvfb. Use the same viewport, Tab action, and pointer position as the Chromium capture. Adapt the probe's user-agent match to Firefox and record the installed version from GeckoDriver. The [Linux Firefox receipts](observations/served-firefox-linux/settled) contain both matching captures and the installed package versions.
