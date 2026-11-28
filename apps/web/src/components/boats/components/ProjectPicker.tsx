@@ -1,6 +1,15 @@
+import type { EnvironmentId } from "@t3tools/contracts";
 import { useGT } from "gt-react";
 import { AlertTriangleIcon, CheckIcon, PlusIcon, SearchIcon } from "lucide-react";
-import { useEffect, useId, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type HTMLAttributes,
+  type ReactNode,
+  type RefObject,
+} from "react";
 
 import { cn } from "~/lib/utils";
 import { Alert, AlertAction, AlertDescription } from "../../ui/alert";
@@ -175,35 +184,32 @@ export interface LocalProjects {
   readonly retry: () => void;
 }
 
+function requestLocalProjects(
+  environmentId: EnvironmentId | null,
+  latestRef: RefObject<number>,
+  setList: (list: LocalProject[]) => void,
+  setError: (error: string) => void,
+) {
+  const req = ++latestRef.current;
+  void invokeBoat(environmentId, "local_projects", undefined).then(
+    ({ data }) => {
+      if (req === latestRef.current) setList(data);
+    },
+    (err) => {
+      if (req === latestRef.current) setError(errorText(err));
+    },
+  );
+}
+
 export function useLocalProjects(): LocalProjects {
   const { environmentId } = useBoatAccess();
   const [list, setList] = useState<LocalProject[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const latestRef = useRef(0);
 
-  const load = () => {
-    const req = ++latestRef.current;
-    void invokeBoat(environmentId, "local_projects", undefined).then(
-      ({ data }) => {
-        if (req === latestRef.current) setList(data);
-      },
-      (err) => {
-        if (req === latestRef.current) setError(errorText(err));
-      },
-    );
-  };
-
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads local projects from the boat RPC endpoint when environment changes
   useEffect(() => {
-    const req = ++latestRef.current;
-    void invokeBoat(environmentId, "local_projects", undefined).then(
-      ({ data }) => {
-        if (req === latestRef.current) setList(data);
-      },
-      (err) => {
-        if (req === latestRef.current) setError(errorText(err));
-      },
-    );
+    requestLocalProjects(environmentId, latestRef, setList, setError);
     return () => {
       latestRef.current += 1;
     };
@@ -214,7 +220,7 @@ export function useLocalProjects(): LocalProjects {
     error,
     retry: () => {
       setError(null);
-      load();
+      requestLocalProjects(environmentId, latestRef, setList, setError);
     },
   };
 }

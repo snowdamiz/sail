@@ -31,7 +31,6 @@ export interface ServerSelection {
   readonly select: (environmentId: EnvironmentId | null) => void;
 }
 
-// Closed keepMounted layers (such as the mobile sidebar sheet) must not block Escape navigation.
 const OPEN_OVERLAY_SELECTOR = [
   '[data-slot="dialog-popup"]:is([data-open],[data-ending-style])',
   '[data-slot="alert-dialog-popup"]:is([data-open],[data-ending-style])',

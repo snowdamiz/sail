@@ -83,7 +83,6 @@ export function useFollowBoatLink(onHost: boolean) {
         void router.navigate({ href: link.href });
         break;
       case "browser":
-        // The page shows the link too, for a browser that blocks a tab opened after a reply.
         void readLocalApi()
           ?.shell.openExternal(link.url)
           .catch(() => undefined);
@@ -95,10 +94,6 @@ export function useFollowBoatLink(onHost: boolean) {
   };
 }
 
-/**
- * Fetches a machine's details whenever `version` changes (pass the latest UiState).
- * A failed refetch keeps the last data; `onError` fires once per run of failures.
- */
 export function useMachineDetails(
   id: string,
   version: unknown,
@@ -108,30 +103,42 @@ export function useMachineDetails(
   const [details, setDetails] = useState<MachineDetails | null>(null);
   const failing = useRef(false);
   const latest = useRef(0);
+  const activeRequest = useRef<{
+    environmentId: EnvironmentId | null;
+    id: string;
+    version: unknown;
+  } | null>(null);
   const reportError = useEffectEvent(onError);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- fences in-flight details RPCs synchronously at commit time before passive cleanup runs
-  useLayoutEffect(
-    () => () => {
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- advances request generation at commit time before passive cleanup runs
+  useLayoutEffect(() => {
+    activeRequest.current = { environmentId, id, version };
+    return () => {
+      activeRequest.current = null;
       latest.current += 1;
-    },
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Any environment, machine, or version change invalidates the previous request generation at commit time.
-    [environmentId, id, version],
-  );
+    };
+  }, [environmentId, id, version]);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- fetches machine details from the boat RPC endpoint when machine state changes
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads machine details from the boat RPC endpoint when inputs change
   useEffect(() => {
     let cancelled = false;
     const req = ++latest.current;
     if (version === undefined) return;
     void invokeBoat(environmentId, "get_machine_details", { id }).then(
       ({ data }) => {
-        if (cancelled || req !== latest.current) return;
+        if (cancelled || req !== latest.current || activeRequest.current === null) return;
         failing.current = false;
         setDetails(data);
       },
       (e) => {
-        if (cancelled || req !== latest.current || failing.current) return;
+        if (
+          cancelled ||
+          req !== latest.current ||
+          activeRequest.current === null ||
+          failing.current
+        ) {
+          return;
+        }
         failing.current = true;
         reportError(errorText(e));
       },

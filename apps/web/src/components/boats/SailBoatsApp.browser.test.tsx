@@ -1600,7 +1600,6 @@ it("updates useSecsLeft on minute boundaries above 60s and stops scheduling time
   expect(renders).toBe(rendersAtExpiry);
   expect(vi.getTimerCount()).toBe(0);
 
-  // Exact deadline-relative arithmetic near expiry (250ms left -> 1s, then 0s at deadline).
   await screen.rerender(<CountdownProbe endsAt={200_250} />);
   expect(output.element().textContent).toBe("1");
   await act(() => vi.advanceTimersByTime(250));
@@ -1703,8 +1702,6 @@ it("fences stale machine details rejections during the commit-to-passive-cleanup
   );
   await vi.waitFor(() => expect(calls).toBe(1));
 
-  // Dependency-change commit window: concurrent transition commits v2 layout effects
-  // before v1 passive cleanup runs; rejecting v1 inside v2 layout commit must be fenced.
   onDepCommit = () => {
     expect(passiveCleanups.has(1)).toBe(false);
     events.push("layout-commit:2");
@@ -1720,8 +1717,6 @@ it("fences stale machine details rejections during the commit-to-passive-cleanup
   expect(events.indexOf("rejected-microtask:1")).toBeLessThan(events.indexOf("passive-cleanup:1"));
   expect(onError).not.toHaveBeenCalled();
 
-  // Unmount commit window: concurrent transition commits ListProbe layout effect
-  // before v2 passive cleanup runs; rejecting v2 inside ListProbe layout commit must be fenced.
   onListLayoutMount = () => {
     expect(passiveCleanups.has(2)).toBe(false);
     events.push("list-layout-mount");
@@ -1849,7 +1844,6 @@ it("never strands a nonzero useSecsLeft snapshot or slips a minute when Date.now
   }
 
   try {
-    // 1) Expiry crossed between render getSnapshot (999) and subscribe init (1000).
     now = 999;
     onAfterRender = () => {
       now = 1_000;
@@ -1859,8 +1853,6 @@ it("never strands a nonzero useSecsLeft snapshot or slips a minute when Date.now
     expect(output.element().textContent).toBe("0");
     expect(vi.getTimerCount()).toBe(0);
 
-    // 2) Expiry crossed immediately after subscribe reads 1999: subscribe samples once
-    // (value=1, delay=1ms) instead of reading 2000 for scheduling and stranding value=1.
     now = 1_999;
     onAfterRender = () => {
       nextNowAfterRead = 2_000;
@@ -1872,8 +1864,6 @@ it("never strands a nonzero useSecsLeft snapshot or slips a minute when Date.now
     expect(output.element().textContent).toBe("0");
     expect(vi.getTimerCount()).toBe(0);
 
-    // 3) Timer callback wakes 1ms early (2999) just before expiry (3000), and clock jumps to 3000
-    // right after that read: callback samples once, schedules 1ms retry, then settles to 0.
     now = 2_900;
     await screen.rerender(<CountdownProbe endsAt={3_000} />);
     expect(output.element().textContent).toBe("1");
@@ -1887,8 +1877,6 @@ it("never strands a nonzero useSecsLeft snapshot or slips a minute when Date.now
     expect(output.element().textContent).toBe("0");
     expect(vi.getTimerCount()).toBe(0);
 
-    // 4) Minute boundary crossed immediately after subscribe reads 999 for endsAt=121_000:
-    // subscribe schedules a 1ms wake (not 60_000ms), so advancing 1ms updates 180 -> 120.
     now = 999;
     onAfterRender = () => {
       nextNowAfterRead = 1_000;
