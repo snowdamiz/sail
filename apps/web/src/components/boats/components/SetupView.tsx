@@ -1,7 +1,7 @@
 import type { BoatSignIn, BoatSignInPhase } from "@t3tools/contracts";
 import { useGT } from "gt-react";
 import { AlertTriangleIcon, CheckIcon, RefreshCwIcon } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import { SettingsGroup } from "../../settings/SettingsGroup";
@@ -15,6 +15,7 @@ import { errorText } from "../reply";
 import type { Setup, SetupAction, UiState } from "../types";
 import { BoatsFrame, type Notice, type Notify, type ServerSelection } from "./BoatsFrame";
 import { SignInPanel } from "./SignInPanel";
+import { useIsMountedRef } from "./common";
 
 type FollowLink = ReturnType<typeof useFollowBoatLink>;
 
@@ -38,14 +39,7 @@ export function SetupBody({
   const [signIn, setSignIn] = useState<BoatSignIn | null>(null);
   const [requesting, setRequesting] = useState(false);
   const activeAttemptIdRef = useRef<string | null>(null);
-  const mountedRef = useRef(true);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
+  const mountedRef = useIsMountedRef();
 
   const finish = (attemptId: string, phase: BoatSignInPhase) => {
     if (!mountedRef.current || activeAttemptIdRef.current !== attemptId) return;

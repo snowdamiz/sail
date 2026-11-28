@@ -2,8 +2,10 @@ import type { BoatsView } from "@t3tools/client-runtime/state/boats";
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useRouter } from "@tanstack/react-router";
+import { msg } from "gt-react";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 
+import { m } from "~/i18n/messages";
 import { readLocalApi } from "~/localApi";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { boatsEnvironment } from "~/state/boats";
@@ -13,12 +15,12 @@ import { useBoatAccess } from "./access";
 import { type BoatLink, type BoatReply, classifyBoatLink, errorText } from "./reply";
 import type { CommandArgs, CommandName, MachineDetails, UiState } from "./types";
 
-async function call<C extends CommandName>(
+export async function invokeBoat<C extends CommandName>(
   environmentId: EnvironmentId | null,
   command: C,
   args: CommandArgs<C>,
 ): Promise<BoatReply<C>> {
-  if (environmentId === null) throw new Error("This app is not connected to a server.");
+  if (environmentId === null) throw new Error(m(msg("This app is not connected to a server.")));
   const result = await runAtomCommand(
     appAtomRegistry,
     boatsEnvironment.invoke,
@@ -32,7 +34,7 @@ async function call<C extends CommandName>(
 export function useBoatCall() {
   const { environmentId } = useBoatAccess();
   return <C extends CommandName>(command: C, args: CommandArgs<C>) =>
-    call(environmentId, command, args);
+    invokeBoat(environmentId, command, args);
 }
 
 export type BoatsPage =
@@ -44,7 +46,11 @@ export type BoatsPage =
 function boatsPage(view: BoatsView | null, error: string | null): BoatsPage {
   if (error !== null) return { kind: "offline", message: error, daemon: false };
   if (view?.status?.phase === "error") {
-    return { kind: "offline", message: view.status.error ?? "Boat daemon error", daemon: true };
+    return {
+      kind: "offline",
+      message: view.status.error ?? m(msg("Boat daemon error")),
+      daemon: true,
+    };
   }
   const state = (view?.state ?? null) as UiState | null;
   if (state === null) return { kind: "starting" };
@@ -59,7 +65,7 @@ export function useBoatsPage(environmentId: EnvironmentId | null) {
     environmentId === null ? { kind: "noServer" } : boatsPage(query.data, query.error);
   const retry = () =>
     page.kind === "offline" && page.daemon
-      ? call(environmentId, "get_state", undefined).then(() => undefined)
+      ? invokeBoat(environmentId, "get_state", undefined).then(() => undefined)
       : Promise.resolve(query.refresh());
   return { page, retry };
 }
@@ -104,9 +110,11 @@ export function useMachineDetails(
   const latest = useRef(0);
   const reportError = useEffectEvent(onError);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- fetches machine details from the boat RPC endpoint when machine state changes
   useEffect(() => {
+    if (version === undefined) return;
     const req = ++latest.current;
-    void call(environmentId, "get_machine_details", { id }).then(
+    void invokeBoat(environmentId, "get_machine_details", { id }).then(
       ({ data }) => {
         if (req !== latest.current) return;
         failing.current = false;

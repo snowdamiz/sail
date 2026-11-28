@@ -77,6 +77,7 @@ export function BoatsFrame({
     server.choices.length > 1 || (server.selected === null && server.choices.length > 0);
   const showToolbarRow = Boolean(pageTitle || showServerSelect || toolbar);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes window keydown listeners for Escape-to-go-back
   useEffect(() => {
     if (!hasBack) return;
     let overlayOwnedEvent: KeyboardEvent | null = null;

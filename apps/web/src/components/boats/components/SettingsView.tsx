@@ -173,7 +173,7 @@ export function SettingsView({
           <div
             className={cn(ITEM_ROW_CLASSNAME, "flex flex-wrap items-center justify-between gap-3")}
           >
-            <div className="flex min-w-0 flex-wrap items-center gap-2" title={gt("Boat account")}>
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
               {email ? (
                 <Button
                   size="xs"

@@ -258,6 +258,7 @@ function useDeleteConfirmation(targetKey: string, disabled = false): DeleteConfi
     setState((current) => (current.kind === "idle" ? current : { kind: "idle" }));
   };
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- schedules timeout to disarm delete confirmation
   useEffect(() => {
     if (disabled || state.kind !== "armed" || state.targetKey !== targetKey) return;
     const remaining = Math.max(0, state.expiresAt - Date.now());

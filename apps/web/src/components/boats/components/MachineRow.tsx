@@ -7,6 +7,7 @@ import { ITEM_ROW_CLASSNAME } from "../../settings/itemRows";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
 import { Spinner } from "../../ui/spinner";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../../ui/tooltip";
 import { MACHINE_STATUS, hourly, machineKey } from "../machine";
 import type { MachineView, Size } from "../types";
 import { AgentName, AgentNames } from "./AgentLogos";
@@ -81,9 +82,12 @@ export function MachineRow({
                 </span>
               ) : null}
             </div>
-            <p className="truncate text-xs text-muted-foreground" title={detail}>
-              {detail}
-            </p>
+            <Tooltip>
+              <TooltipTrigger render={<p className="truncate text-xs text-muted-foreground" />}>
+                {detail}
+              </TooltipTrigger>
+              <TooltipPopup>{detail}</TooltipPopup>
+            </Tooltip>
           </div>
         </div>
 
@@ -168,16 +172,19 @@ export function MachineRow({
           ) : null}
 
           {cloning.map((project) => (
-            <div
-              key={project.id}
-              className="flex items-center gap-2 text-xs text-muted-foreground"
-              title={`${project.title} · ${project.status}`}
-            >
-              <Spinner aria-hidden="true" size="xs" tone="muted" />
-              <span className="truncate">
+            <Tooltip key={project.id}>
+              <TooltipTrigger
+                render={<div className="flex items-center gap-2 text-xs text-muted-foreground" />}
+              >
+                <Spinner aria-hidden="true" size="xs" tone="muted" />
+                <span className="truncate">
+                  {project.title} · {project.status}
+                </span>
+              </TooltipTrigger>
+              <TooltipPopup>
                 {project.title} · {project.status}
-              </span>
-            </div>
+              </TooltipPopup>
+            </Tooltip>
           ))}
         </div>
       ) : null}

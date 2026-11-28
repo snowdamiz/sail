@@ -6,6 +6,7 @@ function ClaudeCodeLogo() {
   return (
     <svg viewBox="0 0 24 24" className="size-3.5 shrink-0" aria-hidden="true">
       <path
+        // oxlint-disable-next-line shadcn/no-raw-colors -- Claude Code brand mark color
         fill="#D97757"
         fillRule="evenodd"
         clipRule="evenodd"

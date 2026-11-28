@@ -1,7 +1,7 @@
 import type { BoatSignIn, BoatSignInAction, BoatSignInPhase } from "@t3tools/contracts";
 import { msg, useGT } from "gt-react";
 import { AlertTriangleIcon, CheckIcon, CopyIcon, ExternalLinkIcon } from "lucide-react";
-import { useEffect, useEffectEvent, useId, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useId, useState } from "react";
 
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { Alert, AlertDescription } from "../../ui/alert";
@@ -10,7 +10,8 @@ import { Input } from "../../ui/input";
 import { Label } from "../../ui/label";
 import { Spinner } from "../../ui/spinner";
 import { useBoatAccess } from "../access";
-import { useBoatCall } from "../api";
+import { invokeBoat, useBoatCall } from "../api";
+import { useIsMountedRef } from "./common";
 
 type SignInCommand = "manage_agent_sign_in" | "manage_boat_sign_in";
 
@@ -32,7 +33,7 @@ export function SignInPanel({
   const [action, setAction] = useState<"submit" | "cancel" | null>(null);
   const [submitted, setSubmitted] = useState(false);
   const [failed, setFailed] = useState(false);
-  const mountedRef = useRef(true);
+  const mountedRef = useIsMountedRef();
   const { copyToClipboard, isCopied } = useCopyToClipboard({
     timeout: 1500,
     target: {
@@ -42,23 +43,19 @@ export function SignInPanel({
     },
   });
   const { attemptId, prompt } = attempt;
-  const pollStatus = useEffectEvent(() => call(command, { action: "status", attemptId }));
   const reportFinish = useEffectEvent((phase: BoatSignInPhase) => onFinish(attemptId, phase));
 
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- polls sign-in status RPC on a timer until settled
   useEffect(() => {
     if (!canManage) return;
     let stopped = false;
     let timer: number | undefined;
     const poll = async () => {
       try {
-        const { data: phase } = await pollStatus();
+        const { data: phase } = await invokeBoat(access.environmentId, command, {
+          action: "status",
+          attemptId,
+        });
         if (stopped) return;
         if (phase !== "pending") {
           reportFinish(phase);

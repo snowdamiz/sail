@@ -1,17 +1,31 @@
-import { useEffect, useReducer } from "react";
+import { secondTick } from "@t3tools/client-runtime/clock";
+import { useEffect, useRef, useSyncExternalStore, type RefObject } from "react";
 import { timeLeft } from "../machine";
 import type { MachineView } from "../types";
 
-export function useSecsLeft(endsAt: number | null): number {
-  const [tick, bump] = useReducer((n: number) => n + 1, 0);
-  const ms = endsAt === null ? 0 : endsAt - Date.now();
+const NOOP_SUBSCRIBE = () => () => {};
+const ZERO_SNAPSHOT = () => 0;
+
+export function useIsMountedRef(): RefObject<boolean> {
+  const mountedRef = useRef(true);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tracks component mount lifetime for in-flight async RPC guards
   useEffect(() => {
-    if (ms <= 0) return;
-    const unit = ms <= 60_000 ? 1000 : 60_000;
-    const timer = window.setTimeout(bump, ms % unit || unit);
-    return () => window.clearTimeout(timer);
-  }, [endsAt, tick, ms]);
-  return Math.max(0, Math.ceil(ms / 1000));
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  return mountedRef;
+}
+
+export function useSecsLeft(endsAt: number | null): number {
+  const now = useSyncExternalStore(
+    endsAt === null ? NOOP_SUBSCRIBE : secondTick.subscribe,
+    endsAt === null ? ZERO_SNAPSHOT : secondTick.getSnapshot,
+    endsAt === null ? ZERO_SNAPSHOT : secondTick.getSnapshot,
+  );
+  if (endsAt === null) return 0;
+  return Math.max(0, Math.ceil((endsAt - now) / 1000));
 }
 
 export function useDetail(m: MachineView): string {

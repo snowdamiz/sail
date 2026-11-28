@@ -29,6 +29,7 @@ import {
 } from "./components/BoatsFrame";
 import { ReadyBoatsView } from "./components/ReadyBoatsView";
 import { SetupBody } from "./components/SetupView";
+import { useIsMountedRef } from "./components/common";
 import { errorText } from "./reply";
 
 function StartingSkeleton() {
@@ -90,7 +91,7 @@ function BoatsForServer({ environmentId }: { readonly environmentId: Environment
   const follow = useFollowBoatLink(onHost);
   const [notice, setNotice] = useState<Notice | null>(null);
   const timerRef = useRef<number | null>(null);
-  const mountedRef = useRef(true);
+  const mountedRef = useIsMountedRef();
 
   const notify: Notify = (text, tone = "error") => {
     if (!mountedRef.current) return;
@@ -107,10 +108,9 @@ function BoatsForServer({ environmentId }: { readonly environmentId: Environment
     setNotice(null);
   };
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- clears the notice auto-dismiss timer on unmount
   useEffect(() => {
-    mountedRef.current = true;
     return () => {
-      mountedRef.current = false;
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     };
   }, []);

@@ -113,6 +113,7 @@ export function NewMachine({
       current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
     );
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- selects the suggested machine name in the input DOM node on mount
   useEffect(() => {
     inputRef.current?.select();
   }, []);

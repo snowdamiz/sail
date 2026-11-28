@@ -2,6 +2,7 @@ import { useGT } from "gt-react";
 
 import { cn } from "~/lib/utils";
 import { SettingsGroup } from "../../settings/SettingsGroup";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../../ui/tooltip";
 import { money } from "../machine";
 import type { UiState } from "../types";
 
@@ -26,21 +27,21 @@ export function Costs({ costs }: { readonly costs: UiState["costs"] }) {
               {money(costs.month)}
             </span>
           </div>
-          <div
-            className="flex flex-col gap-0.5 px-4 py-3"
-            title={gt("Machine starts used today / daily limit")}
-          >
-            <span className="text-xs text-muted-foreground">{gt("Starts today")}</span>
-            <span
-              className={cn(
-                "font-mono text-sm font-medium tabular-nums",
-                nearLimit ? "text-warning-foreground" : "text-foreground",
-              )}
-            >
-              {costs.startsToday}
-              <span className="text-muted-foreground">/{costs.startsLimit}</span>
-            </span>
-          </div>
+          <Tooltip>
+            <TooltipTrigger render={<div className="flex flex-col gap-0.5 px-4 py-3" />}>
+              <span className="text-xs text-muted-foreground">{gt("Starts today")}</span>
+              <span
+                className={cn(
+                  "font-mono text-sm font-medium tabular-nums",
+                  nearLimit ? "text-warning-foreground" : "text-foreground",
+                )}
+              >
+                {costs.startsToday}
+                <span className="text-muted-foreground">/{costs.startsLimit}</span>
+              </span>
+            </TooltipTrigger>
+            <TooltipPopup>{gt("Machine starts used today / daily limit")}</TooltipPopup>
+          </Tooltip>
         </div>
       </SettingsGroup>
     </footer>

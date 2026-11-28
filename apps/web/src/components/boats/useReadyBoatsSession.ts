@@ -2,7 +2,7 @@ import { RegistryContext } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { BoatSignIn, BoatSignInPhase } from "@t3tools/contracts";
 import { msg, useGT, useMessages } from "gt-react";
-import { useContext, useEffect, useRef, useState } from "react";
+import { useContext, useRef, useState } from "react";
 
 import { environmentCatalog } from "~/connection/catalog";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -16,7 +16,15 @@ import {
   type MachineControls,
 } from "./components/MachineActions";
 import type { CreateMachineInput } from "./components/NewMachine";
-import { ACTIONS, isMachineOpenable, machineKey, type Action, type PendingAction } from "./machine";
+import { useIsMountedRef } from "./components/common";
+import {
+  ACTIONS,
+  isMachineOpenable,
+  machineKey,
+  useMachineBusyLabel,
+  type Action,
+  type PendingAction,
+} from "./machine";
 import { errorText } from "./reply";
 import type { LocalProject, MachineView, McpClient, Settings, UiState } from "./types";
 
@@ -80,14 +88,8 @@ export function useReadyBoatsSession({
   const inFlightKeysRef = useRef<Set<string>>(new Set());
   const startingSignInRef = useRef(false);
   const activeAttemptIdRef = useRef<string | null>(null);
-  const mountedRef = useRef(true);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
+  const mountedRef = useIsMountedRef();
+  const busyLabelFor = useMachineBusyLabel();
 
   const view = resolveReadyView(location, state);
   if (location.kind === "details" && view.kind === "list") {
@@ -120,19 +122,6 @@ export function useReadyBoatsSession({
       next.delete(key);
       return next;
     });
-  };
-
-  const busyLabelFor = (action: Action): string => {
-    switch (action.cmd) {
-      case "wake_machine":
-        return gt("Waking…");
-      case "pair_machine":
-        return gt("Sending…");
-      case "open_machine":
-        return gt("Opening…");
-      default:
-        return action.busy;
-    }
   };
 
   const dispatchAction = (target: MachineView, request: ActionRequest) => {

@@ -13,6 +13,7 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../../ui/menu";
 import { Skeleton } from "../../ui/skeleton";
 import { Spinner } from "../../ui/spinner";
 import { Switch } from "../../ui/switch";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../../ui/tooltip";
 import { useMachineDetails } from "../api";
 import {
   ACTIONS,
@@ -140,7 +141,7 @@ export function MachineDetails({
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-1 font-mono text-xs text-muted-foreground">
         {details ? (
           <>
-            <span>Sail {details.t3Version}</span>
+            <span>{gt("Sail {version}", { version: details.t3Version })}</span>
             <span aria-hidden="true">·</span>
             <span>{gt("created {date}", { date: shortDate(details.createdAt) })}</span>
             <span aria-hidden="true">·</span>
@@ -466,17 +467,26 @@ function ProjectsSection({
             key={project.id}
             className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-3")}
           >
-            <span className="truncate text-sm font-medium text-foreground" title={project.title}>
-              {project.title}
-            </span>
-            {project.status ? (
-              <span
-                className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground"
-                title={project.status}
+            <Tooltip>
+              <TooltipTrigger
+                render={<span className="truncate text-sm font-medium text-foreground" />}
               >
-                <Spinner aria-hidden="true" size="xs" tone="muted" />
-                <span className="max-w-48 truncate">{project.status}</span>
-              </span>
+                {project.title}
+              </TooltipTrigger>
+              <TooltipPopup>{project.title}</TooltipPopup>
+            </Tooltip>
+            {project.status ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground" />
+                  }
+                >
+                  <Spinner aria-hidden="true" size="xs" tone="muted" />
+                  <span className="max-w-48 truncate">{project.status}</span>
+                </TooltipTrigger>
+                <TooltipPopup>{project.status}</TooltipPopup>
+              </Tooltip>
             ) : null}
           </div>
         ))}

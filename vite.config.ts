@@ -683,26 +683,6 @@ export default defineConfig({
           "t3code/no-mobile-uniwind-theme-escape-hatches": ["error", { allowUniwindTheme: true }],
         },
       },
-      {
-        // Ported Sail Boats UI uses its own scoped CSS (.sail-boats-scope) and pixel-art Ocean canvas.
-        files: ["apps/web/src/components/boats/**"],
-        rules: {
-          "shadcn/no-unknown-classes": "off",
-          "shadcn/no-raw-colors": "off",
-          "shadcn/require-static-classes": "off",
-          "shadcn/no-arbitrary-values": "off",
-          "t3code/no-untranslated-copy": "off",
-          "t3code/no-native-title-tooltip": "off",
-          "t3code/no-em-dash-copy": "off",
-          "t3code/no-manual-memo": "off",
-          "t3code/no-raw-resize-observer": "off",
-          "t3code/no-unreasoned-state-sync": "off",
-          "react/set-state-in-effect": "off",
-          "react/no-array-index-key": "off",
-          "react/purity": "off",
-          "react/exhaustive-effect-dependencies": "off",
-        },
-      },
     ],
     options: {
       reportUnusedDisableDirectives: "error",

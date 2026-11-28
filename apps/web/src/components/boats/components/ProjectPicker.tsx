@@ -1,14 +1,6 @@
 import { useGT } from "gt-react";
 import { AlertTriangleIcon, CheckIcon, PlusIcon, SearchIcon } from "lucide-react";
-import {
-  useEffect,
-  useEffectEvent,
-  useId,
-  useRef,
-  useState,
-  type HTMLAttributes,
-  type ReactNode,
-} from "react";
+import { useEffect, useId, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import { Alert, AlertAction, AlertDescription } from "../../ui/alert";
@@ -17,8 +9,9 @@ import { Button } from "../../ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../../ui/input-group";
 import { Popover, PopoverPopup, PopoverTrigger } from "../../ui/popover";
 import { Skeleton } from "../../ui/skeleton";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../../ui/tooltip";
 import { useBoatAccess } from "../access";
-import { useBoatCall } from "../api";
+import { invokeBoat } from "../api";
 import { hasRepo, homePath } from "../machine";
 import { errorText } from "../reply";
 import type { LocalProject, MachineView } from "../types";
@@ -85,9 +78,12 @@ function PickerBody({
     if (project && !hasRepo(m, project.repoKey)) onPick(project);
   };
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls active listbox option DOM node into view
   useEffect(() => {
-    listRef.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: "nearest" });
-  }, [current]);
+    listRef.current
+      ?.querySelector(`[id="${listboxId}-${current}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [current, listboxId]);
 
   return (
     <div className="space-y-2">
@@ -178,33 +174,44 @@ export interface LocalProjects {
 
 export function useLocalProjects(): LocalProjects {
   const { environmentId } = useBoatAccess();
-  const call = useBoatCall();
-  const loadLocalProjects = useEffectEvent(() => call("local_projects", undefined));
   const [list, setList] = useState<LocalProject[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [attempt, setAttempt] = useState(0);
+  const latestRef = useRef(0);
 
-  useEffect(() => {
-    let live = true;
-    void loadLocalProjects().then(
+  const load = () => {
+    const req = ++latestRef.current;
+    void invokeBoat(environmentId, "local_projects", undefined).then(
       ({ data }) => {
-        if (live) setList(data);
+        if (req === latestRef.current) setList(data);
       },
       (err) => {
-        if (live) setError(errorText(err));
+        if (req === latestRef.current) setError(errorText(err));
+      },
+    );
+  };
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads local projects from the boat RPC endpoint when environment changes
+  useEffect(() => {
+    const req = ++latestRef.current;
+    void invokeBoat(environmentId, "local_projects", undefined).then(
+      ({ data }) => {
+        if (req === latestRef.current) setList(data);
+      },
+      (err) => {
+        if (req === latestRef.current) setError(errorText(err));
       },
     );
     return () => {
-      live = false;
+      latestRef.current += 1;
     };
-  }, [attempt, environmentId]);
+  }, [environmentId]);
 
   return {
     list,
     error,
     retry: () => {
       setError(null);
-      setAttempt((n) => n + 1);
+      load();
     },
   };
 }
@@ -285,12 +292,16 @@ export function ProjectList({
                 </span>
                 {badge}
               </span>
-              <span
-                className="block truncate font-mono text-xs text-muted-foreground"
-                title={project.path}
-              >
-                <bdi>{homePath(project.path)}</bdi>
-              </span>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span className="block truncate font-mono text-xs text-muted-foreground" />
+                  }
+                >
+                  <bdi>{homePath(project.path)}</bdi>
+                </TooltipTrigger>
+                <TooltipPopup>{project.path}</TooltipPopup>
+              </Tooltip>
             </span>
           </div>
         );
