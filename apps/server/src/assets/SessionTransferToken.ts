@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- single-handle fstat+sha256+stream avoids download TOCTOU and unique transfer-id hashing is not covered by Effect's sync API.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
-import * as NodeFSP from "node:fs/promises";
+import type * as NodeFSP from "node:fs/promises";
 import * as NodeStream from "@effect/platform-node/NodeStream";
 import { IsoDateTime } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -437,8 +437,7 @@ export const resolveExportBundleForDownload = Effect.fn(
     try: async (signal) => {
       let handle: NodeFSP.FileHandle;
       try {
-        handle = await NodeFSP.open(bundlePath, openFlags);
-        options?.onFileOpen?.(handle);
+        handle = await NodeFS.promises.open(bundlePath, openFlags);
       } catch (error) {
         const code = (error as NodeJS.ErrnoException | undefined)?.code;
         if (code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP") {
@@ -449,6 +448,7 @@ export const resolveExportBundleForDownload = Effect.fn(
 
       let handedOff = false;
       try {
+        options?.onFileOpen?.(handle);
         const stat = await handle.stat();
         if (!stat.isFile()) {
           return { ok: false, status: 404, detail: "Not Found" } as const;
@@ -548,13 +548,15 @@ export const resolveExportBundleForDownload = Effect.fn(
     return openResult satisfies ResolveExportBundleDownloadResult;
   }
 
-  let closed = false;
-  const close = Effect.promise(async () => {
-    if (closed) return;
-    closed = true;
-    if (openResult.handle !== null) {
-      await openResult.handle.close().catch(() => undefined);
+  let closePromise: Promise<void> | null = null;
+  const close = Effect.promise(() => {
+    if (closePromise === null) {
+      closePromise =
+        openResult.handle === null
+          ? Promise.resolve()
+          : openResult.handle.close().catch(() => undefined);
     }
+    return closePromise;
   });
 
   const stream: Stream.Stream<Uint8Array, SessionTransferBundleStreamError> =

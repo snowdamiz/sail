@@ -1,6 +1,10 @@
+// @effect-diagnostics nodeBuiltinImport:off -- tests verify Node FileHandle descriptor closure and SHA-256 checksums for bundle downloads.
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import type * as NodeFSP from "node:fs/promises";
 import { expect, it } from "@effect/vitest";
 import { describe, vi } from "vite-plus/test";
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeHttpPlatform from "@effect/platform-node/NodeHttpPlatform";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -32,6 +36,12 @@ import {
 } from "@t3tools/shared/desktopReadinessProof";
 import { FILE_PREVIEW_SCROLL_SCRIPT } from "@t3tools/shared/htmlRender";
 
+import * as AssetSigner from "./assets/AssetSigner.ts";
+import {
+  issueSessionTransferBundleUrl,
+  resolveExportBundlePath,
+} from "./assets/SessionTransferToken.ts";
+import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as ServerConfig from "./config.ts";
 
 import { assetResponseHeaders, assetFileResponse, downloadContentDisposition } from "./http.ts";
@@ -259,7 +269,7 @@ describe("desktop readiness proof", () => {
                 ),
               ),
             ),
-            Layer.provideMerge(NodeCrypto.layerMac),
+            Layer.provideMerge(PlatformNodeCrypto.layerMac),
             Layer.provide(NodeServices.layer),
           ),
           { disableLogger: true },
@@ -293,7 +303,7 @@ describe("desktop readiness proof", () => {
 
       expect((yield* get("")).status).toBe(404);
       expect((yield* get(`?challenge=${"a".repeat(129)}`)).status).toBe(404);
-    }).pipe(Effect.scoped, Effect.provide(NodeCrypto.layerMac)),
+    }).pipe(Effect.scoped, Effect.provide(PlatformNodeCrypto.layerMac)),
   );
 
   it.effect("does not answer on a server launched without a readiness secret", () =>
@@ -1007,4 +1017,105 @@ describe("downloadContentDisposition", () => {
       `attachment; filename="bad_name.pdf"; filename*=UTF-8''bad%EF%BF%BDname.pdf`,
     );
   });
+});
+
+describe("session transfer bundle download HEAD handling", () => {
+  it.effect(
+    "returns 200 with accurate headers, empty body, and closes the bundle FileHandle on HEAD requests",
+    () =>
+      Effect.gen(function* () {
+        const assetLayer = AssetSigner.layer.pipe(
+          Layer.provideMerge(ServerSecretStore.layer),
+          Layer.provideMerge(
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3-http-xfer-head-" }),
+          ),
+          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer)),
+        );
+
+        const services = yield* Layer.build(
+          HttpRouter.serve(ServerHttp.layerSessionTransferBundleDownloadRoute, {
+            disableListenLog: true,
+            disableLogger: true,
+          }).pipe(Layer.provideMerge(NodeHttpServer.layerTest), Layer.provideMerge(assetLayer)),
+        );
+
+        const config = Context.get(services, ServerConfig.ServerConfig);
+        const fs = Context.get(services, FileSystem.FileSystem);
+        const path = Context.get(services, Path.Path);
+        const client = Context.get(services, HttpClient.HttpClient);
+
+        const transferId = "xfer-http-head-fd";
+        const payload = new Uint8Array(64 * 1024);
+        for (let i = 0; i < payload.byteLength; i += 1) {
+          payload[i] = (i * 17) % 251;
+        }
+        const payloadSha256 = NodeCrypto.createHash("sha256").update(payload).digest("hex");
+
+        const exportPath = resolveExportBundlePath(config.stateDir, transferId, path)!;
+        yield* fs.makeDirectory(path.dirname(exportPath), { recursive: true });
+        yield* fs.writeFile(exportPath, payload);
+
+        const downloadUrl = yield* issueSessionTransferBundleUrl({
+          transferId,
+          operation: "download",
+          expectedSizeBytes: payload.byteLength,
+          expectedSha256: payloadSha256,
+        }).pipe(Effect.provide(services));
+
+        const openedHandles: Array<NodeFSP.FileHandle> = [];
+        const realOpen = NodeFS.promises.open;
+        const openSpy = vi.spyOn(NodeFS.promises, "open").mockImplementation(async (...args) => {
+          const handle = await realOpen(...args);
+          if (String(args[0]) === exportPath) {
+            openedHandles.push(handle);
+          }
+          return handle;
+        });
+
+        try {
+          // 1. HEAD on nonempty bundle returns 200, matching headers, empty body, and zero leaked FDs.
+          const headResponse = yield* client.execute(
+            HttpClientRequest.head(downloadUrl.relativeUrl),
+          );
+          expect(headResponse.status).toBe(200);
+          expect(headResponse.headers["content-type"]).toBe("application/octet-stream");
+          expect(headResponse.headers["content-length"]).toBe(String(payload.byteLength));
+          expect(headResponse.headers["cache-control"]).toBe("private, no-store");
+          expect(headResponse.headers["x-content-type-options"]).toBe("nosniff");
+          expect(yield* headResponse.text).toBe("");
+
+          expect(openedHandles).toHaveLength(1);
+          expect(openedHandles[0]?.fd).toBe(-1);
+
+          // 2. GET immediately afterward streams the full verified payload and closes its FD too.
+          const getResponse = yield* client.execute(HttpClientRequest.get(downloadUrl.relativeUrl));
+          expect(getResponse.status).toBe(200);
+          expect(getResponse.headers["content-length"]).toBe(String(payload.byteLength));
+          const downloadedBytes = new Uint8Array(yield* getResponse.arrayBuffer);
+          expect(downloadedBytes).toEqual(payload);
+
+          expect(openedHandles).toHaveLength(2);
+          for (const handle of openedHandles) {
+            expect(handle.fd).toBe(-1);
+          }
+
+          // 3. HEAD on a tampered bundle still rejects with 409 and closes its FD immediately.
+          const tampered = new Uint8Array(payload);
+          tampered[0] = (tampered[0]! + 1) % 256;
+          yield* fs.writeFile(exportPath, tampered);
+          const tamperedHead = yield* client.execute(
+            HttpClientRequest.head(downloadUrl.relativeUrl),
+          );
+          expect(tamperedHead.status).toBe(409);
+          expect(yield* tamperedHead.text).toBe("");
+
+          expect(openedHandles).toHaveLength(3);
+          for (const handle of openedHandles) {
+            expect(handle.fd).toBe(-1);
+          }
+        } finally {
+          openSpy.mockRestore();
+        }
+      }).pipe(Effect.scoped),
+  );
 });

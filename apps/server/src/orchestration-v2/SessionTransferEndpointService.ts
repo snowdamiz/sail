@@ -60,6 +60,7 @@ import { remapComposerContextAttachments } from "@t3tools/shared/composerContext
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -105,20 +106,25 @@ type TrimmedNonEmptyStringValue = typeof TrimmedNonEmptyString.Type;
 
 const UPLOADABLE_IMAGE_MIMES = new Set(["image/gif", "image/jpeg", "image/png", "image/webp"]);
 
-const WORKING_RUN_STATUSES: ReadonlySet<OrchestrationV2Run["status"]> = new Set([
-  "preparing",
-  "starting",
-  "running",
-  "waiting",
+const STOPPED_RUN_STATUSES: ReadonlySet<OrchestrationV2Run["status"]> = new Set([
+  "interrupted",
+  "cancelled",
 ]);
 
 const ACTIVE_SUBAGENT_STATUSES = new Set(["pending", "running", "waiting"]);
 
-interface SourceLockEntry {
-  readonly transferId: SessionTransferId;
-  readonly attemptId: string;
-  readonly phase: "preparing" | "prepared" | "cleaning";
-}
+type SourceLockEntry =
+  | {
+      readonly transferId: SessionTransferId;
+      readonly attemptId: string;
+      readonly phase: "preparing" | "prepared";
+    }
+  | {
+      readonly transferId: SessionTransferId;
+      readonly attemptId: string;
+      readonly phase: "cleaning";
+      readonly cleanupDeferred: Deferred.Deferred<void>;
+    };
 
 interface StagedImportState {
   readonly transferId: SessionTransferId;
@@ -974,15 +980,18 @@ const make = Effect.gen(function* () {
     // Remove staging files and cache entries BEFORE releasing the source lock so an immediate
     // retry cannot race with cleanup deleting files underneath it.
     const cleanupOnOwnError = Effect.gen(function* () {
+      const cleanupDeferred = yield* Deferred.make<void>();
       const owned = yield* Ref.modify(sourceLocks, (current) => {
         const holder = current.get(input.threadId);
-        if (holder === undefined || holder.attemptId !== attemptId) {
+        if (holder === undefined || holder.attemptId !== attemptId || holder.phase === "cleaning") {
           return [false, current] as const;
         }
         const next = new Map(current);
         next.set(input.threadId, {
-          ...holder,
+          transferId: holder.transferId,
+          attemptId: holder.attemptId,
           phase: "cleaning",
+          cleanupDeferred,
         });
         return [true, next] as const;
       });
@@ -1003,14 +1012,17 @@ const make = Effect.gen(function* () {
             Effect.ignore,
           );
         }),
-        Ref.update(sourceLocks, (current) => {
-          const holder = current.get(input.threadId);
-          if (holder === undefined || holder.attemptId !== attemptId) {
-            return current;
-          }
-          const next = new Map(current);
-          next.delete(input.threadId);
-          return next;
+        Effect.gen(function* () {
+          yield* Ref.update(sourceLocks, (current) => {
+            const holder = current.get(input.threadId);
+            if (holder === undefined || holder.attemptId !== attemptId) {
+              return current;
+            }
+            const next = new Map(current);
+            next.delete(input.threadId);
+            return next;
+          });
+          yield* Deferred.succeed(cleanupDeferred, undefined);
         }),
       );
     });
@@ -1042,16 +1054,15 @@ const make = Effect.gen(function* () {
         });
       }
 
-      const initialRunStatusById = new Map(projection.runs.map((run) => [run.id, run.status]));
-      const initialActiveRunIds = new Set(
+      const alreadyEndedBeforeStopRunIds = new Set<RunId>(
         projection.runs
-          .filter((run) => ThreadManagementService.isActiveRun(run))
+          .filter((run) => ThreadManagementService.isTerminalRunStatus(run.status))
           .map((run) => run.id),
       );
       const wasRunning = isProjectionLive(projection);
       const initialPendingRequests = collectPendingRequestsFromProjection(
         projection,
-        initialActiveRunIds,
+        new Set<RunId>(),
       );
       const activeSubagentCount = projection.subagents.filter((sub) =>
         ACTIVE_SUBAGENT_STATUSES.has(sub.status),
@@ -1122,17 +1133,12 @@ const make = Effect.gen(function* () {
         }
       }
 
-      // Compute pending runtime & secret requests from the SETTLED projection so requests
-      // arriving during settlement and open secret_request items in turnItems always pause auto-resume.
-      const stoppedRunIds = new Set<RunId>(initialActiveRunIds);
+      // Count any run that was not already terminal before stop and ended up interrupted/cancelled
+      // (including queued -> running -> stopped) as stopped by this transfer, ignoring historical
+      // cancelled secrets from already-terminal runs.
+      const stoppedRunIds = new Set<RunId>();
       for (const run of projection.runs) {
-        const previousStatus = initialRunStatusById.get(run.id);
-        if (
-          (previousStatus === undefined && run.status !== "queued") ||
-          (previousStatus !== undefined &&
-            WORKING_RUN_STATUSES.has(previousStatus) &&
-            run.status !== previousStatus)
-        ) {
+        if (!alreadyEndedBeforeStopRunIds.has(run.id) && STOPPED_RUN_STATUSES.has(run.status)) {
           stoppedRunIds.add(run.id);
         }
       }
@@ -1450,10 +1456,17 @@ const make = Effect.gen(function* () {
       });
       yield* Ref.update(sourceLocks, (current) => {
         const holder = current.get(input.threadId);
-        if (holder === undefined || holder.attemptId !== attemptId) return current;
+        if (
+          holder === undefined ||
+          holder.attemptId !== attemptId ||
+          holder.phase !== "preparing"
+        ) {
+          return current;
+        }
         const next = new Map(current);
         next.set(input.threadId, {
-          ...holder,
+          transferId: holder.transferId,
+          attemptId: holder.attemptId,
           phase: "prepared",
         });
         return next;
@@ -2619,20 +2632,44 @@ const make = Effect.gen(function* () {
     }
 
     // Delete temporary export bundle files & cache BEFORE releasing the source lock.
+    // If another cleanup owner already transitioned the lock into `cleaning`, wait for it
+    // instead of overwriting its attemptId or running a competing cleanup/release.
     const finalizeAttemptId = yield* secureRandom.uuidV4();
-    yield* Ref.update(sourceLocks, (current) => {
-      const holder = current.get(input.threadId);
-      if (holder?.transferId !== input.transferId) return current;
-      const next = new Map(current);
-      next.set(input.threadId, {
-        ...holder,
-        attemptId: finalizeAttemptId,
-        phase: "cleaning",
-      });
-      return next;
-    });
-    yield* Effect.ensuring(
-      Effect.gen(function* () {
+    const finalizeCleanupDeferred = yield* Deferred.make<void>();
+    const finalizeLockState = yield* Ref.modify(
+      sourceLocks,
+      (
+        current,
+      ): readonly [
+        (
+          | { readonly kind: "claimed" }
+          | { readonly kind: "await"; readonly deferred: Deferred.Deferred<void> }
+          | { readonly kind: "unclaimed" }
+        ),
+        Map<ThreadId, SourceLockEntry>,
+      ] => {
+        const holder = current.get(input.threadId);
+        if (holder?.transferId !== input.transferId) {
+          return [{ kind: "unclaimed" }, current];
+        }
+        if (holder.phase === "cleaning") {
+          return [{ kind: "await", deferred: holder.cleanupDeferred }, current];
+        }
+        const next = new Map(current);
+        next.set(input.threadId, {
+          transferId: holder.transferId,
+          attemptId: finalizeAttemptId,
+          phase: "cleaning",
+          cleanupDeferred: finalizeCleanupDeferred,
+        });
+        return [{ kind: "claimed" }, next];
+      },
+    );
+
+    if (finalizeLockState.kind === "await") {
+      yield* Deferred.await(finalizeLockState.deferred);
+    } else {
+      const cleanupBody = Effect.gen(function* () {
         yield* Ref.update(preparedSources, (current) => {
           if (!current.has(input.transferId)) return current;
           const next = new Map(current);
@@ -2640,14 +2677,24 @@ const make = Effect.gen(function* () {
           return next;
         });
         yield* runWithAssetContext(cleanupTransferStagingDir(input.transferId)).pipe(Effect.ignore);
-      }),
-      Ref.update(sourceLocks, (current) => {
-        if (current.get(input.threadId)?.attemptId !== finalizeAttemptId) return current;
-        const next = new Map(current);
-        next.delete(input.threadId);
-        return next;
-      }),
-    );
+      });
+      if (finalizeLockState.kind === "claimed") {
+        yield* Effect.ensuring(
+          cleanupBody,
+          Effect.gen(function* () {
+            yield* Ref.update(sourceLocks, (current) => {
+              if (current.get(input.threadId)?.attemptId !== finalizeAttemptId) return current;
+              const next = new Map(current);
+              next.delete(input.threadId);
+              return next;
+            });
+            yield* Deferred.succeed(finalizeCleanupDeferred, undefined);
+          }),
+        );
+      } else {
+        yield* cleanupBody;
+      }
+    }
 
     return { archived } satisfies SessionTransferFinalizeSourceResult;
   });
@@ -2657,50 +2704,95 @@ const make = Effect.gen(function* () {
   )(function* (input) {
     if (input.role === "source") {
       const abortAttemptId = yield* secureRandom.uuidV4();
-      const claimedLock = yield* Ref.modify(sourceLocks, (current) => {
-        let claimed = false;
-        const next = new Map(current);
-        for (const [threadId, holder] of next) {
-          if (holder.transferId === input.transferId) {
-            next.set(threadId, {
-              ...holder,
-              attemptId: abortAttemptId,
-              phase: "cleaning",
-            });
-            claimed = true;
-          }
-        }
-        return [claimed, next] as const;
-      });
-
-      const { removedCache, deletedStaging } = yield* Effect.ensuring(
-        Effect.gen(function* () {
-          const removedCache = yield* Ref.modify(preparedSources, (current) => {
-            if (!current.has(input.transferId)) return [false, current] as const;
-            const next = new Map(current);
-            next.delete(input.transferId);
-            return [true, next] as const;
-          });
-          const deletedStaging = yield* runWithAssetContext(
-            cleanupTransferStagingDir(input.transferId),
-          ).pipe(Effect.orElseSucceed(() => false));
-          return { removedCache, deletedStaging };
-        }),
-        Ref.update(sourceLocks, (current) => {
-          let changed = false;
-          const next = new Map(current);
-          for (const [threadId, holder] of next) {
-            if (holder.attemptId === abortAttemptId) {
-              next.delete(threadId);
-              changed = true;
+      const abortCleanupDeferred = yield* Deferred.make<void>();
+      const abortLockState = yield* Ref.modify(
+        sourceLocks,
+        (
+          current,
+        ): readonly [
+          (
+            | { readonly kind: "claimed" }
+            | {
+                readonly kind: "await";
+                readonly deferreds: ReadonlyArray<Deferred.Deferred<void>>;
+              }
+            | { readonly kind: "unclaimed" }
+          ),
+          Map<ThreadId, SourceLockEntry>,
+        ] => {
+          const existingCleaning: Array<Deferred.Deferred<void>> = [];
+          const claimableThreadIds: Array<ThreadId> = [];
+          for (const [threadId, holder] of current) {
+            if (holder.transferId !== input.transferId) continue;
+            if (holder.phase === "cleaning") {
+              existingCleaning.push(holder.cleanupDeferred);
+            } else {
+              claimableThreadIds.push(threadId);
             }
           }
-          return changed ? next : current;
-        }),
+          if (existingCleaning.length > 0 && claimableThreadIds.length === 0) {
+            return [{ kind: "await", deferreds: existingCleaning }, current];
+          }
+          if (claimableThreadIds.length === 0) {
+            return [{ kind: "unclaimed" }, current];
+          }
+          const next = new Map(current);
+          for (const threadId of claimableThreadIds) {
+            const holder = next.get(threadId)!;
+            next.set(threadId, {
+              transferId: holder.transferId,
+              attemptId: abortAttemptId,
+              phase: "cleaning",
+              cleanupDeferred: abortCleanupDeferred,
+            });
+          }
+          return [{ kind: "claimed" }, next];
+        },
       );
 
+      if (abortLockState.kind === "await") {
+        for (const deferred of abortLockState.deferreds) {
+          yield* Deferred.await(deferred);
+        }
+        return { cleanedUp: true } satisfies SessionTransferAbortResult;
+      }
+
+      const cleanupBody = Effect.gen(function* () {
+        const removedCache = yield* Ref.modify(preparedSources, (current) => {
+          if (!current.has(input.transferId)) return [false, current] as const;
+          const next = new Map(current);
+          next.delete(input.transferId);
+          return [true, next] as const;
+        });
+        const deletedStaging = yield* runWithAssetContext(
+          cleanupTransferStagingDir(input.transferId),
+        ).pipe(Effect.orElseSucceed(() => false));
+        return { removedCache, deletedStaging };
+      });
+
+      const { removedCache, deletedStaging } =
+        abortLockState.kind === "claimed"
+          ? yield* Effect.ensuring(
+              cleanupBody,
+              Effect.gen(function* () {
+                yield* Ref.update(sourceLocks, (current) => {
+                  let changed = false;
+                  const next = new Map(current);
+                  for (const [threadId, holder] of next) {
+                    if (holder.attemptId === abortAttemptId) {
+                      next.delete(threadId);
+                      changed = true;
+                    }
+                  }
+                  return changed ? next : current;
+                });
+                yield* Deferred.succeed(abortCleanupDeferred, undefined);
+              }),
+            )
+          : yield* cleanupBody;
+
       return {
-        cleanedUp: claimedLock || removedCache || deletedStaging,
+        cleanedUp: abortLockState.kind === "claimed" || removedCache || deletedStaging,
       } satisfies SessionTransferAbortResult;
     }
 

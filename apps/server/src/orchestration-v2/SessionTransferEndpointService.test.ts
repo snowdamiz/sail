@@ -4289,4 +4289,396 @@ describe("SessionTransferEndpointService", () => {
         }
       }),
   );
+
+  it.effect(
+    "serializes concurrent source abort calls while lock is in cleaning without premature lock release",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-xfer-conc-abort-"));
+        const repoDir = NodePath.join(tmpRoot, "repo");
+        initGitRepo(repoDir);
+
+        const projectId = ProjectId.make("proj-conc-abort");
+        const modelSelection: ModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+        const recorder: MockRecorder = {
+          dispatches: [],
+          forceStops: [],
+          detachedSessions: [],
+          sentMessages: [],
+        };
+
+        const cleanupEntered = yield* Deferred.make<void>();
+        const allowCleanupFinish = yield* Deferred.make<void>();
+        let pauseCleanup = false;
+        let cleanupTargetPrefix = "";
+        let removeCalls = 0;
+
+        const layer = makeEndpointTestLayer({
+          environmentId: "env-conc-abort",
+          environmentLabel: "Concurrent Abort Env",
+          projects: [{ id: projectId, title: "Repo", workspaceRoot: repoDir }],
+          providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+          recorder,
+          hooks: {
+            onFileSystemRemove: ({ targetPath, next }) =>
+              Effect.gen(function* () {
+                if (cleanupTargetPrefix.length > 0 && targetPath.includes(cleanupTargetPrefix)) {
+                  removeCalls += 1;
+                  if (pauseCleanup) {
+                    pauseCleanup = false;
+                    yield* Deferred.succeed(cleanupEntered, undefined);
+                    yield* Deferred.await(allowCleanupFinish);
+                  }
+                }
+                return yield* next;
+              }),
+          },
+        });
+
+        try {
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const threadId = ThreadId.make("thread-conc-abort");
+            const transferId = SessionTransferId.make("xfer-conc-abort");
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId,
+                threadId,
+                branch: "main",
+                worktreePath: repoDir,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            // Prepare first so the lock is held in `prepared` and export.bundle exists in staging.
+            const firstPrep = yield* svc.prepareSource({
+              transferId,
+              threadId,
+              direction: "local_to_boat",
+            });
+            expect(firstPrep.manifest.sourceThreadId).toBe(threadId);
+
+            const stagingDir = resolveTransferStagingDir(config.stateDir, transferId, path)!;
+            const exportBundlePath = resolveExportBundlePath(config.stateDir, transferId, path)!;
+            expect(NodeFS.existsSync(exportBundlePath)).toBe(true);
+
+            cleanupTargetPrefix = NodePath.basename(stagingDir);
+            pauseCleanup = true;
+
+            // Start first source abort; pause while it is deleting the staging directory.
+            const abortFiber1 = yield* Effect.forkChild(svc.abort({ role: "source", transferId }));
+            yield* Deferred.await(cleanupEntered);
+            expect(removeCalls).toBe(1);
+
+            // Launch a second concurrent source abort while lock is already in `cleaning`.
+            const abortFiber2 = yield* Effect.forkChild(svc.abort({ role: "source", transferId }));
+            yield* Effect.yieldNow;
+            yield* Effect.yieldNow;
+
+            // Second abort MUST await the first cleanup, NOT overwrite attemptId, run a competing
+            // cleanup, or release the lock early.
+            expect(abortFiber2.pollUnsafe()).toBeUndefined();
+            expect(removeCalls).toBe(1);
+
+            // A retry while first cleanup is still running MUST still be rejected with already_in_flight.
+            const retryDuringCleaning = yield* Effect.result(
+              svc.prepareSource({
+                transferId,
+                threadId,
+                direction: "local_to_boat",
+              }),
+            );
+            expect(Result.isFailure(retryDuringCleaning)).toBe(true);
+            if (Result.isFailure(retryDuringCleaning)) {
+              expect(retryDuringCleaning.failure.code).toBe("already_in_flight");
+            }
+
+            // Release the first cleanup -> both abort calls complete cleanly and staging is removed once.
+            yield* Deferred.succeed(allowCleanupFinish, undefined);
+            const [res1, res2] = yield* Effect.all([
+              Fiber.join(abortFiber1),
+              Fiber.join(abortFiber2),
+            ]);
+            expect(res1.cleanedUp).toBe(true);
+            expect(res2.cleanedUp).toBe(true);
+            expect(removeCalls).toBe(1);
+            expect(NodeFS.existsSync(stagingDir)).toBe(false);
+
+            // Immediate retry now acquires a fresh lock and keeps its new staging bundle intact.
+            const retryAfterCleanup = yield* svc.prepareSource({
+              transferId,
+              threadId,
+              direction: "local_to_boat",
+            });
+            expect(retryAfterCleanup.manifest.sourceThreadId).toBe(threadId);
+            expect(NodeFS.existsSync(exportBundlePath)).toBe(true);
+            expect(removeCalls).toBe(1);
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "blocks auto-resume when a queued run transitions to running and has its secret_request cancelled by thread.stop",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-xfer-queued-stop-"));
+        const srcRepo = NodePath.join(tmpRoot, "src");
+        const dstRepo = NodePath.join(tmpRoot, "dst");
+        initGitRepo(srcRepo);
+        git(tmpRoot, ["clone", srcRepo, dstRepo]);
+
+        const projectId = ProjectId.make("proj-queued-stop");
+        const destProjectId = ProjectId.make("proj-queued-stop-dst");
+        const modelSelection: ModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+        const recorder: MockRecorder = {
+          dispatches: [],
+          forceStops: [],
+          detachedSessions: [],
+          sentMessages: [],
+        };
+
+        const sourceThreadId = ThreadId.make("thread-queued-stop");
+        const historicalRunId = RunId.make(`run-hist:${sourceThreadId}`);
+        const initialActiveRunId = RunId.make(`run-1:${sourceThreadId}`);
+        const queuedRunId = RunId.make(`run-2:${sourceThreadId}`);
+        const queuedMsgId = MessageId.make(`qmsg:${sourceThreadId}`);
+
+        const layer = makeEndpointTestLayer({
+          environmentId: "env-queued-stop",
+          environmentLabel: "Queued Run Stop Env",
+          projects: [
+            { id: projectId, title: "Src", workspaceRoot: srcRepo },
+            { id: destProjectId, title: "Dst", workspaceRoot: dstRepo },
+          ],
+          providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+          recorder,
+          hooks: {
+            onThreadStop: ({ threadId, eventSink, projectionStore }) =>
+              Effect.gen(function* () {
+                // Simulate the race between initial snapshot and thread.stop:
+                // 1) initialActiveRunId completes cleanly
+                // 2) queuedRunId transitions queued -> running, emits a secret_request,
+                //    and then thread.stop interrupts queuedRunId and cancels that secret_request.
+                const records = yield* projectionStore.getThreadRecords(threadId, [
+                  "runs",
+                  "attempts",
+                ]);
+                const activeRun = records.runs.find((r) => r.id === initialActiveRunId)!;
+                const queuedRun = records.runs.find((r) => r.id === queuedRunId)!;
+                const queuedAttempts = records.attempts.filter((a) => a.runId === queuedRun.id);
+                const completedFirstAt = DateTime.makeUnsafe("2026-01-01T00:02:00.000Z");
+                const interruptedQueuedAt = DateTime.makeUnsafe("2026-01-01T00:02:05.000Z");
+
+                yield* eventSink.write({
+                  events: [
+                    {
+                      id: EventId.make(`complete-run1:${threadId}`),
+                      type: "run.updated",
+                      threadId,
+                      runId: activeRun.id,
+                      providerInstanceId: modelSelection.instanceId,
+                      occurredAt: completedFirstAt,
+                      payload: {
+                        ...activeRun,
+                        status: "completed",
+                        completedAt: completedFirstAt,
+                      },
+                    },
+                    {
+                      id: EventId.make(`start-then-stop-queued:${threadId}`),
+                      type: "run.updated",
+                      threadId,
+                      runId: queuedRun.id,
+                      providerInstanceId: modelSelection.instanceId,
+                      occurredAt: interruptedQueuedAt,
+                      payload: {
+                        ...queuedRun,
+                        status: "interrupted",
+                        queuePosition: null,
+                        startedAt: completedFirstAt,
+                        completedAt: interruptedQueuedAt,
+                      },
+                    },
+                    ...queuedAttempts.map((attempt) => ({
+                      id: EventId.make(`interrupt-queued-attempt:${attempt.id}`),
+                      type: "run-attempt.updated" as const,
+                      threadId,
+                      runId: queuedRun.id,
+                      runAttemptId: attempt.id,
+                      providerInstanceId: modelSelection.instanceId,
+                      occurredAt: interruptedQueuedAt,
+                      payload: {
+                        ...attempt,
+                        status: "interrupted" as const,
+                        startedAt: completedFirstAt,
+                        completedAt: interruptedQueuedAt,
+                      },
+                    })),
+                    {
+                      id: EventId.make(`cancel-queued-secret:${threadId}`),
+                      type: "turn-item.updated",
+                      threadId,
+                      runId: queuedRun.id,
+                      occurredAt: interruptedQueuedAt,
+                      payload: {
+                        id: TurnItemId.make(`ti-queued-secret:${threadId}`),
+                        threadId,
+                        runId: queuedRun.id,
+                        nodeId: null,
+                        providerThreadId: null,
+                        providerTurnId: null,
+                        nativeItemRef: null,
+                        parentItemId: null,
+                        ordinal: 20,
+                        status: "cancelled",
+                        title: null,
+                        startedAt: DateTime.makeUnsafe("2026-01-01T00:02:02.000Z"),
+                        completedAt: interruptedQueuedAt,
+                        updatedAt: interruptedQueuedAt,
+                        type: "secret_request",
+                        label: TrimmedNonEmptyString.make("DEPLOY_TOKEN"),
+                        reason: "Needed by newly-started queued run",
+                        secretStatus: "cancelled",
+                      },
+                    },
+                  ],
+                });
+              }).pipe(Effect.mapError((cause) => new TestHookError({ message: String(cause) }))),
+          },
+        });
+
+        try {
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const transferId = SessionTransferId.make("xfer-queued-stop");
+            const oldInterruptedAt = DateTime.makeUnsafe("2026-01-01T00:00:05.000Z");
+
+            const baseEvents = seedThreadEvents({
+              projectId,
+              threadId: sourceThreadId,
+              branch: "main",
+              worktreePath: srcRepo,
+              modelSelection,
+              running: true,
+              queuedText: "Follow-up run that starts right before thread.stop",
+            });
+
+            yield* eventSink.write({
+              events: [
+                ...baseEvents,
+                // Also include a historical interrupted run with an old cancelled secret_request
+                // to prove historical cancelled secrets are still ignored.
+                {
+                  id: EventId.make(`hist-run:${sourceThreadId}`),
+                  type: "run.created",
+                  threadId: sourceThreadId,
+                  runId: historicalRunId,
+                  providerInstanceId: modelSelection.instanceId,
+                  occurredAt: oldInterruptedAt,
+                  payload: {
+                    id: historicalRunId,
+                    threadId: sourceThreadId,
+                    ordinal: 3,
+                    providerInstanceId: modelSelection.instanceId,
+                    modelSelection,
+                    providerThreadId: ProviderThreadId.make(`pt:${sourceThreadId}`),
+                    userMessageId: queuedMsgId,
+                    rootNodeId: null,
+                    activeAttemptId: null,
+                    status: "interrupted",
+                    queuePosition: null,
+                    queueHeld: false,
+                    requestedAt: DateTime.makeUnsafe("2026-01-01T00:00:00.000Z"),
+                    startedAt: DateTime.makeUnsafe("2026-01-01T00:00:00.000Z"),
+                    completedAt: oldInterruptedAt,
+                    checkpointId: null,
+                    contextHandoffId: null,
+                  },
+                },
+                {
+                  id: EventId.make(`hist-secret:${sourceThreadId}`),
+                  type: "turn-item.updated",
+                  threadId: sourceThreadId,
+                  runId: historicalRunId,
+                  occurredAt: oldInterruptedAt,
+                  payload: {
+                    id: TurnItemId.make(`ti-old-secret:${sourceThreadId}`),
+                    threadId: sourceThreadId,
+                    runId: historicalRunId,
+                    nodeId: null,
+                    providerThreadId: null,
+                    providerTurnId: null,
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal: 5,
+                    status: "cancelled",
+                    title: null,
+                    startedAt: DateTime.makeUnsafe("2026-01-01T00:00:02.000Z"),
+                    completedAt: oldInterruptedAt,
+                    updatedAt: oldInterruptedAt,
+                    type: "secret_request",
+                    label: TrimmedNonEmptyString.make("HISTORICAL_SECRET"),
+                    reason: "Old secret from earlier interrupted run",
+                    secretStatus: "cancelled",
+                  },
+                },
+              ],
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: sourceThreadId,
+              direction: "local_to_boat",
+            });
+            expect(prep.manifest.sourceState.wasRunning).toBe(true);
+            expect(prep.manifest.sourceState.hadPendingRuntimeRequest).toBe(true);
+            expect(prep.manifest.sourceState.pendingRuntimeRequests).toHaveLength(1);
+            expect(prep.manifest.sourceState.pendingRuntimeRequests[0]?.summary).toContain(
+              "DEPLOY_TOKEN",
+            );
+            expect(prep.manifest.sourceState.pendingRuntimeRequests[0]?.userOnly).toBe(true);
+
+            const staged = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: destProjectId,
+            });
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferId, path)!,
+              resolveImportBundlePath(config.stateDir, transferId, path)!,
+            );
+
+            const committed = yield* svc.commitImport({
+              transferId,
+              destinationProjectId: staged.destinationProjectId,
+              destinationThreadId: staged.destinationThreadId,
+              manifest: prep.manifest,
+              autoResume: true,
+            });
+            expect(committed.resumed).toBe(false);
+            expect(recorder.sentMessages).toHaveLength(0);
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
 });

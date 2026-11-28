@@ -661,20 +661,41 @@ export const layerSessionTransferBundleDownloadRoute = HttpRouter.add(
       return HttpServerResponse.text("Not Found", { status: 404 });
     }
 
-    const bundle = yield* resolveExportBundleForDownload(claims);
-    if (!bundle.ok) {
-      return HttpServerResponse.text(bundle.detail, { status: bundle.status });
-    }
+    return yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const bundle = yield* restore(resolveExportBundleForDownload(claims));
+        if (!bundle.ok) {
+          return HttpServerResponse.text(bundle.detail, { status: bundle.status });
+        }
 
-    return HttpServerResponse.stream(bundle.stream, {
-      status: 200,
-      contentType: "application/octet-stream",
-      contentLength: bundle.sizeBytes,
-      headers: {
-        "cache-control": "private, no-store",
-        "x-content-type-options": "nosniff",
-      },
-    });
+        // Handle HEAD explicitly: Node/Web HTTP responders skip consuming a streamed body on HEAD,
+        // so returning HttpServerResponse.stream would leak the open bundle FileHandle.
+        return yield* Effect.gen(function* () {
+          if (request.method === "HEAD") {
+            yield* bundle.close;
+            return HttpServerResponse.empty({
+              status: 200,
+              headers: {
+                "content-type": "application/octet-stream",
+                "content-length": String(bundle.sizeBytes),
+                "cache-control": "private, no-store",
+                "x-content-type-options": "nosniff",
+              },
+            });
+          }
+
+          return HttpServerResponse.stream(bundle.stream, {
+            status: 200,
+            contentType: "application/octet-stream",
+            contentLength: bundle.sizeBytes,
+            headers: {
+              "cache-control": "private, no-store",
+              "x-content-type-options": "nosniff",
+            },
+          });
+        }).pipe(Effect.onError(() => bundle.close));
+      }),
+    );
   }),
   SIGNED_URL_ROUTE_OPTIONS,
 );
