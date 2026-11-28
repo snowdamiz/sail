@@ -1,0 +1,19 @@
+{
+  "fixture": "chat-turn",
+  "reference": "../served-chromium-macos/settled/a/receipt.json",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "controls": {
+    "pixel": {
+      "mutation": "flip low bit of top-left red channel",
+      "exitCode": 1,
+      "differentPixels": 1,
+      "changedSteps": []
+    },
+    "replay": {
+      "mutation": "set replyVisible to false",
+      "exitCode": 1,
+      "differentPixels": 0,
+      "changedSteps": [1]
+    }
+  }
+}

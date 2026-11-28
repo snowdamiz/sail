@@ -1,0 +1,30 @@
+# Published Sail launcher and server runtime
+
+[`v0.1.17-macos-arm64.json`](v0.1.17-macos-arm64.json) records the published macOS arm64 ZIP from Sail v0.1.17, source `18fd0e5d66291fc007163512d783d7268218db16`. The probe verifies the ZIP against the pinned release inventory and checks the entry types, file contents, and symlink targets of the installed app against the ZIP. See [release inventory](../release-inventory.json).
+
+## Reproduce the receipt
+
+Use macOS arm64 and Python 3.11 or newer. Point `fixture` to a directory containing the published ZIP, `installer-home/Applications/Sail.app`, and the installer-generated `installer-home/bin/sail`. The receipt path must be new and outside the fixture.
+
+```sh
+fixture=/tmp/sail-p01.sjS5Ni
+runtime=tests/migration/incumbent/runtime
+receipt_dir=$(mktemp -d)
+python3 "$runtime/check.py" "$fixture" \
+  --output "$receipt_dir/receipt.json" \
+  --expect "$runtime/v0.1.17-macos-arm64.json"
+```
+
+The probe reads the installed `sail` wrapper to verify its `open … --args "$@"` invocation. It calls the bundled server through Electron's Node mode. Each launch uses its own temporary `HOME`, XDG directories, working directory, and loopback listener. The probe checks the runtime record's PID, the database location, and the descriptor's identity against the file in the selected home. It sends SIGTERM to the child it started and checks that the listener and runtime record are gone. The release exited with code 130 on each successful shutdown.
+
+The receipt records `--base-dir` taking precedence over `SAIL_HOME` and `T3CODE_HOME`, `SAIL_HOME` taking precedence over `T3CODE_HOME`, and the legacy variable and `$HOME/.sail` fallbacks. The desktop backend selects the home delivered over fd 3. A readiness challenge verifies that the server received the envelope's secret. Removing the envelope's required mode causes startup to fail before publishing a runtime record.
+
+`serve` with startup pairing disabled prints readiness without a pairing URL. Explicit `pair` and control-plane startup pairing each issue a credential that can establish a browser session once. Desktop bootstrap also establishes a browser session. The receipt retains protocol 2 metadata, the HTTP 426 response to a protocol 1 request, and descriptor profiles with the observed capability values. Control-plane mode reports `localSessions: false` and omits `serverBrowser`. The desktop backend advertises `serverSelfUpdate: "desktop-managed"`. The machine class in the descriptor is part of the observed profile and may differ on another Mac.
+
+The probe compares JSON values and returns exit 1 for a mismatch. Two fresh runs produced identical receipt data. A third run rejected an expectation with the control-plane `localSessions` capability changed to `true`. Runtime state and captured CLI output are temporary. The receipt uses placeholders for ports and scratch paths and omits generated credentials, proof bytes, cookies, QR codes, PIDs, and environment IDs.
+
+## Main source and remaining coverage
+
+At the time of this check, remote `main` was `bf6b9482a27bdae8e1f723bee173cedfc3fcaa8e` and the server and desktop manifests named `0.1.18`. Source comparison found the same descriptor implementation, protocol constant, desktop bootstrap schema and backend launch configuration. Main adds a built-in skills state path and changes the WS settings handler for isolated provider homes. The focused source tests in `apps/server/src/ws.test.ts` and `packages/client-runtime/src/rpc/session.test.ts` passed 64 tests in the PR worktree at `94730fd425c8d0a2f0c341495d1b784e2d0c245b`. The packaged live receipt is for v0.1.17.
+
+The macOS desktop UI launch, telemetry and browser side channels, Windows and WSL, Linux CLI and desktop packages, OCI runtime, service launcher, and remote pairing still need their own observations where applicable. This receipt covers HTTP protocol rejection from the server. The client update interaction, the wider live matrix, and paired screenshot and trace timing remain open under P01.

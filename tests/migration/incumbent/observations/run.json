@@ -11,7 +11,11 @@
   },
   "installer": {
     "result": "pass",
-    "check": "The published install-desktop.sh verified the ZIP from a local mirror of the release assets and installed it into a scratch home. The installed app started its bundled backend and completed the seeded Replay turn."
+    "check": "The published install-desktop.sh verified the ZIP from a local mirror of the release assets and installed it into a scratch home. The installed app started its bundled backend and completed the seeded Replay turn.",
+    "copiedHome": {
+      "result": "pass",
+      "receipt": "electron-macos-arm64/copied-home/receipt.json"
+    }
   },
   "wire": {
     "result": "pass",
@@ -23,13 +27,19 @@
     "journalMode": "wal",
     "userVersion": 0,
     "appliedMigrations": 118,
-    "latestMigration": { "id": 118, "name": "PeerMutationIntents" },
+    "latestMigration": {
+      "id": 118,
+      "name": "PeerMutationIntents"
+    },
     "projects": 1,
     "threads": 1,
     "messages": 3
   },
   "captures": {
-    "electron": { "receipt": "electron-macos-arm64/receipt.json", "result": "observed" },
+    "electron": {
+      "receipt": "electron-macos-arm64/receipt.json",
+      "result": "observed"
+    },
     "chromium": {
       "receipts": [
         "served-chromium-macos/first/receipt.json",
@@ -39,6 +49,21 @@
       "changedSteps": [],
       "differentPixels": 169,
       "diff": "served-chromium-macos/diff.png"
+    },
+    "chromiumSettledRepeat": {
+      "result": "pass",
+      "observations": "served-chromium-macos/settled/capture-timings.json",
+      "differentPixels": 0,
+      "changedSteps": [],
+      "scope": "settled replay in the recorded Chromium profile"
     }
+  },
+  "launcherRuntime": {
+    "result": "pass",
+    "receipt": "../runtime/v0.1.17-macos-arm64.json"
+  },
+  "negativeControls": {
+    "result": "pass",
+    "receipt": "harness-controls/receipt.json"
   }
 }

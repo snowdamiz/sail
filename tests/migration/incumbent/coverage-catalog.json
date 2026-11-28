@@ -3,7 +3,7 @@
   "releaseInventory": "release-inventory.json",
   "incumbentSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
   "migrationBaseSha": "f29f09835c97386742075c6edf799d1669923b15",
-  "status": "missing",
+  "status": "incomplete",
   "coverageKey": ["caseId", "platformId", "state", "entrypoint", "configurationId"],
   "coverageRules": [
     "Expand each case into the product of its platform set and states at its declared entrypoint. A missing observation or unresolved applicability leaves that cell open.",
@@ -1073,7 +1073,123 @@
       "detail": "The catalog identifies workflow families and immediate chat slices. Fill in the remaining action, settings control, entrypoint, state and applicable configuration cells against the published app before full-platform qualification."
     }
   ],
-  "observations": [],
+  "observations": [
+    {
+      "caseId": "chat-turn",
+      "platformId": "served-chromium-macos",
+      "state": "settled",
+      "entrypoint": "chat",
+      "configurationId": "chromium-154-macos-en-light-640x600-2x",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-turn",
+          "environment": {
+            "osVersion": "27.0.1 (26A434)",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Chrome/154.0.0.0",
+            "installerAssetDigest": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+            "origin": "server-served loopback",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "fonts": [
+                "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ],
+              "motion": "standard"
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/served-chromium-macos/settled/a/capture.png",
+              "sha256": "9763f6cc9a19a8a94bfd5c81b70f501450b698cf96792441584dc5777f20dee8"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/served-chromium-macos/settled/a/receipt.json",
+              "sha256": "c69a7bbd8682c91bdac14b9806689549581199bb03b8386816999b3b93395c4c"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/served-chromium-macos/settled/capture-timings.json",
+              "sha256": "fd9db82ed53728680e24119069d05b854cfe024eeef94562186e77d7dc2ddb06"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-turn",
+          "environment": {
+            "osVersion": "27.0.1 (26A434)",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Chrome/154.0.0.0",
+            "installerAssetDigest": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+            "origin": "server-served loopback",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "fonts": [
+                "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ],
+              "motion": "standard"
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/served-chromium-macos/settled/b/capture.png",
+              "sha256": "9763f6cc9a19a8a94bfd5c81b70f501450b698cf96792441584dc5777f20dee8"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/served-chromium-macos/settled/b/receipt.json",
+              "sha256": "c69a7bbd8682c91bdac14b9806689549581199bb03b8386816999b3b93395c4c"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/served-chromium-macos/settled/capture-timings.json",
+              "sha256": "fd9db82ed53728680e24119069d05b854cfe024eeef94562186e77d7dc2ddb06"
+            }
+          ]
+        }
+      ],
+      "comparisonArtifacts": [
+        {
+          "kind": "pixel-diff",
+          "path": "observations/served-chromium-macos/settled/repeat-diff.png",
+          "sha256": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+        },
+        {
+          "kind": "action-and-state",
+          "path": "observations/served-chromium-macos/settled/capture-timings.json",
+          "sha256": "fd9db82ed53728680e24119069d05b854cfe024eeef94562186e77d7dc2ddb06"
+        }
+      ]
+    }
+  ],
   "platformScope": {
     "status": "proposed",
     "note": "The browser entries are planned capture hosts. Resolve remaining host, architecture and browser applicability against the published app. Windows and native mobile have no Sail v0.1.17 build in the GitHub release."
