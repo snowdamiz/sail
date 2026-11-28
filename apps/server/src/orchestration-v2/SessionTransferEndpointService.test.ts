@@ -8167,8 +8167,9 @@ describe("SessionTransferEndpointService", () => {
             model: "gpt-5.4",
           };
 
-          // Part 1: Live interruption probe — pause right after onWorktreeAllocated (before git worktree add),
-          // independently create the requested branch in dstRepo, then interrupt the transfer.
+          // Part 1: Live interruption probe — pause right after onWorktreeAllocated (before atomic
+          // branch ref creation / git worktree add), independently create the requested branch in
+          // dstRepo, then interrupt the transfer.
           const pauseAddEntered = yield* Deferred.make<void>();
           let pauseAdd = true;
 
@@ -8184,7 +8185,7 @@ describe("SessionTransferEndpointService", () => {
             recorder: { dispatches: [], forceStops: [], detachedSessions: [], sentMessages: [] },
             hooks: {
               onVcsRun: ({ input, next }) => {
-                if (input.operation === "WorkspaceBundle.addWorktree" && pauseAdd) {
+                if (input.operation === "WorkspaceBundle.createDestinationBranchRef" && pauseAdd) {
                   pauseAdd = false;
                   return Deferred.succeed(pauseAddEntered, undefined).pipe(
                     Effect.andThen(Effect.never),
