@@ -209,6 +209,53 @@ describe("new thread model fallback", () => {
       ).toEqual(usesFallback ? fallback : defaultSelection);
     },
   );
+  it("prefers a healthy second account of the same provider before pass-off rules or global fallback", () => {
+    const codex1 = provider({
+      instanceId: ProviderInstanceId.make("codex"),
+      driver: ProviderDriverKind.make("codex"),
+      auth: { status: "authenticated", email: "first@example.com" },
+      usageLimits: limited.usageLimits,
+    });
+    const codex2 = provider({
+      instanceId: ProviderInstanceId.make("codex_2"),
+      driver: ProviderDriverKind.make("codex"),
+      auth: { status: "authenticated", email: "second@example.com" },
+      usageLimits: {
+        checkedAt: limited.usageLimits!.checkedAt,
+        windows: [{ ...window, usedPercent: 15 }],
+      },
+    });
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      usageLimitPassOffRules: [
+        {
+          id: "codex-passoff",
+          sourceDriver: ProviderDriverKind.make("codex"),
+          sourceModel: null,
+          target: fallback,
+        },
+      ],
+    };
+
+    const tier1 = resolveNewThreadModelSelection({
+      defaultSelection: selection,
+      fallbackSelection: fallback,
+      providers: [codex1, codex2, available],
+      now,
+      settings,
+    });
+    expect(tier1.selection).toEqual({ instanceId: codex2.instanceId, model: selection.model });
+    expect(tier1.fallback?.provider.instanceId).toBe(codex1.instanceId);
+
+    const tier2 = resolveNewThreadModelSelection({
+      defaultSelection: selection,
+      fallbackSelection: null,
+      providers: [codex1, { ...codex2, usageLimits: limited.usageLimits }, available],
+      now,
+      settings,
+    });
+    expect(tier2.selection).toEqual(fallback);
+  });
 });
 
 describe("pace", () => {

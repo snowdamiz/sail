@@ -86,13 +86,46 @@ it.layer(NodeServices.layer)("build-cli-archive contents", (it) => {
       const server = path.join(root, "apps/server");
       const distExe = path.join(server, "dist-exe");
       const client = path.join(server, "dist/client");
+      const builtinPstackSkillDir = path.join(server, "builtin-skills/pstack/skills/poteto-mode");
+      const builtinPstackPluginDir = path.join(server, "builtin-skills/pstack/.claude-plugin");
+      const builtinPstackScriptDir = path.join(
+        server,
+        "builtin-skills/pstack/skills/statechart/scripts",
+      );
       const monitor = path.join(server, "dist/resource-monitor");
       const boatd = path.join(root, "boatd-input");
-      for (const directory of [distExe, client, monitor]) {
+      for (const directory of [
+        distExe,
+        client,
+        builtinPstackSkillDir,
+        builtinPstackPluginDir,
+        builtinPstackScriptDir,
+        monitor,
+      ]) {
         yield* fs.makeDirectory(directory, { recursive: true });
       }
       yield* fs.writeFileString(path.join(distExe, "t3-darwin-arm64"), "SEA fixture");
       yield* fs.writeFileString(path.join(client, "index.html"), "Client fixture");
+      yield* fs.writeFileString(
+        path.join(builtinPstackSkillDir, "SKILL.md"),
+        "---\nname: poteto-mode\ndescription: Poteto fixture\n---\n",
+      );
+      yield* fs.writeFileString(
+        path.join(builtinPstackPluginDir, "plugin.json"),
+        '{"name":"pstack"}\n',
+      );
+      yield* fs.writeFileString(
+        path.join(server, "builtin-skills/pstack/LICENSE"),
+        "MIT License\n",
+      );
+      const watchPrDir = path.join(builtinPstackSkillDir, "scripts/watch-pr");
+      yield* fs.makeDirectory(watchPrDir, { recursive: true });
+      const helperScript = path.join(builtinPstackScriptDir, "statechart");
+      yield* fs.writeFileString(helperScript, "#!/bin/sh\nexit 0\n");
+      yield* fs.chmod(helperScript, 0o755);
+      const watchPrScript = path.join(watchPrDir, "watch-pr");
+      yield* fs.writeFileString(watchPrScript, "#!/bin/sh\nexit 0\n");
+      yield* fs.chmod(watchPrScript, 0o755);
       yield* fs.writeFileString(path.join(monitor, "t3-resource-monitor"), "Monitor fixture");
       yield* fs.writeFileString(boatd, "Boat fixture");
       for (const entry of ["pnpm-workspace.yaml", "patches"]) {
@@ -127,6 +160,11 @@ it.layer(NodeServices.layer)("build-cli-archive contents", (it) => {
       assert.includeMembers(entries.trim().split("\n"), [
         `${stem}/t3`,
         `${stem}/sail-boatd`,
+        `${stem}/builtin-skills/pstack/skills/poteto-mode/SKILL.md`,
+        `${stem}/builtin-skills/pstack/.claude-plugin/plugin.json`,
+        `${stem}/builtin-skills/pstack/LICENSE`,
+        `${stem}/builtin-skills/pstack/skills/statechart/scripts/statechart`,
+        `${stem}/builtin-skills/pstack/skills/poteto-mode/scripts/watch-pr/watch-pr`,
         `${stem}/resource-monitor/t3-resource-monitor`,
       ]);
       const extracted = yield* realSpawner.exitCode(
@@ -137,6 +175,13 @@ it.layer(NodeServices.layer)("build-cli-archive contents", (it) => {
       assert.equal(yield* fs.readFileString(path.join(root, stem, ".sail-product")), "sail\n");
       assert.equal(yield* fs.readFileString(sidecar), "Boat fixture");
       assert.equal((yield* fs.stat(sidecar)).mode & 0o777, 0o755);
+      for (const relHelper of [
+        "builtin-skills/pstack/skills/statechart/scripts/statechart",
+        "builtin-skills/pstack/skills/poteto-mode/scripts/watch-pr/watch-pr",
+      ]) {
+        const extractedHelper = path.join(root, stem, relHelper);
+        assert.equal((yield* fs.stat(extractedHelper)).mode & 0o777, 0o755);
+      }
     }),
   );
 });

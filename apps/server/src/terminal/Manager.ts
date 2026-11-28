@@ -1759,6 +1759,7 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
   readonly deriveProviderInstanceConfigMap: typeof deriveProviderInstanceConfigMap;
   readonly serverSettings: ServerSettings.ServerSettingsService["Service"];
   readonly path: Path.Path;
+  readonly fileSystem?: FileSystem.FileSystem;
   readonly rawProviderInstanceId: string;
   readonly env: Record<string, string> | undefined;
 }) {
@@ -1772,14 +1773,17 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
   }
 
   let resolved = yield* mergeProviderInstanceEnvironment(instance.environment, input.env ?? {});
+  let isolatedDirectoryToEnsure: string | undefined;
   if (instance.driver === "codex") {
     const config = decodeCodexSettings(instance.config ?? {});
     if (Option.isSome(config)) {
       const layout = yield* resolveCodexHomeLayout(config.value).pipe(
         Effect.provideService(Path.Path, input.path),
       );
-      if (layout.effectiveHomePath)
+      if (layout.effectiveHomePath) {
         resolved = { ...resolved, CODEX_HOME: layout.effectiveHomePath };
+        isolatedDirectoryToEnsure = layout.effectiveHomePath;
+      }
     }
   } else if (instance.driver === "claudeAgent") {
     const config = decodeClaudeSettings(instance.config ?? {});
@@ -1787,7 +1791,29 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
       resolved = yield* makeClaudeEnvironment(config.value, resolved).pipe(
         Effect.provideService(Path.Path, input.path),
       );
+      if (config.value.homePath.trim().length > 0 && resolved.CLAUDE_CONFIG_DIR) {
+        isolatedDirectoryToEnsure = resolved.CLAUDE_CONFIG_DIR;
+      }
     }
+  } else if (instance.driver === "grok" && resolved.GROK_HOME?.trim()) {
+    isolatedDirectoryToEnsure = resolved.GROK_HOME.trim();
+  } else if (
+    (instance.driver === "opencode" || instance.driver === "muse") &&
+    resolved.XDG_DATA_HOME?.trim()
+  ) {
+    isolatedDirectoryToEnsure = resolved.XDG_DATA_HOME.trim();
+  } else if (instance.driver === "pi" && resolved.PI_CODING_AGENT_DIR?.trim()) {
+    isolatedDirectoryToEnsure = resolved.PI_CODING_AGENT_DIR.trim();
+  }
+
+  if (isolatedDirectoryToEnsure && input.fileSystem) {
+    yield* input.fileSystem
+      .makeDirectory(isolatedDirectoryToEnsure, { recursive: true })
+      .pipe(
+        Effect.mapError(
+          (cause) => new TerminalProviderEnvironmentError({ providerInstanceId, cause }),
+        ),
+      );
   }
 
   return Object.fromEntries(
@@ -1804,6 +1830,7 @@ export const make = Effect.fn("TerminalManager.make")(function* (
   const portDiscovery = yield* PortScanner.PortDiscovery;
   const nativeTelemetry = yield* NativeTelemetryClient.NativeTelemetryClient;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const projectCredentialsOption = yield* Effect.serviceOption(
     ProjectCredentials.ProjectCredentials,
@@ -1862,6 +1889,7 @@ export const make = Effect.fn("TerminalManager.make")(function* (
       deriveProviderInstanceConfigMap: deriveConfigMap,
       serverSettings,
       path,
+      fileSystem,
       rawProviderInstanceId,
       env,
     }),

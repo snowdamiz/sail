@@ -1,10 +1,19 @@
 import { withAdmission } from "../serverAdmission.ts";
-import { CommandId, MessageId, type OrchestrationV2Command } from "@t3tools/contracts";
+import {
+  CommandId,
+  MessageId,
+  type OrchestrationV2Command,
+  type OrchestrationV2DomainEvent,
+  type ProviderInstanceId,
+  type ServerProvider,
+} from "@t3tools/contracts";
+import { resolveUsageLimitFailoverTarget } from "@t3tools/shared/usageFailover";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -93,6 +102,7 @@ const makeSweep = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const settings = yield* ServerSettings.ServerSettingsService;
+  const providerRegistryOption = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
   const due = DueHint.make();
   yield* forkParked(
     Stream.runForEach(orchestrator.streamDomainEvents, (event) =>
@@ -111,6 +121,12 @@ const makeSweep = Effect.gen(function* () {
       autoResume: preferences.autoResumeLimitedThreads,
       snooze: preferences.snoozeLimitedThreads,
     });
+    const liveProviders: readonly ServerProvider[] | null =
+      candidates.length > 0 &&
+      preferences.autoFailoverOnUsageLimit &&
+      Option.isSome(providerRegistryOption)
+        ? yield* providerRegistryOption.value.getProviders.pipe(Effect.orElseSucceed(() => []))
+        : null;
     let acted = false;
     for (const thread of candidates) {
       const command = limitRecoveryCommand(
@@ -120,6 +136,36 @@ const makeSweep = Effect.gen(function* () {
         preferences.snoozeLimitedThreads,
       );
       if (command === null) continue;
+      if (liveProviders !== null && thread.latestRunId !== null) {
+        const projectionOption = yield* projections
+          .getThreadProjection(thread.id)
+          .pipe(Effect.option);
+        if (Option.isSome(projectionOption)) {
+          const projection = projectionOption.value;
+          const failedRun = projection.runs.find((run) => run.id === thread.latestRunId);
+          const alreadyFailedOver = projection.runs.some(
+            (run) => run.usageLimitFailoverOfRunId === thread.latestRunId,
+          );
+          if (alreadyFailedOver) continue;
+          if (failedRun !== undefined) {
+            const attemptedInstanceIds = new Set<ProviderInstanceId>([
+              ...(failedRun.failoverAttemptedInstanceIds ?? []),
+              failedRun.providerInstanceId,
+            ]);
+            const failoverTarget = resolveUsageLimitFailoverTarget({
+              currentSelection: failedRun.modelSelection,
+              providers: liveProviders,
+              settings: preferences,
+              projectId: projection.thread.projectId,
+              now: nowMs,
+              runtimeMode: projection.thread.runtimeMode,
+              attemptedInstanceIds,
+            });
+            // Defer wait-for-reset arming/snoozing until all failover targets are exhausted (Tier 3).
+            if (failoverTarget.kind !== "none") continue;
+          }
+        }
+      }
       acted = true;
       yield* Effect.gen(function* () {
         if (command.type === "thread.metadata.update" && command.limitRecovery != null) {

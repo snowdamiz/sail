@@ -29,6 +29,10 @@ import * as Stream from "effect/Stream";
 import { rpcInitialItems } from "./rpcInitialItems.ts";
 import { subscribeChatGptHandoff } from "./provider/CodexChatGptHandoff.ts";
 import {
+  withAutoIsolatedProviderInstanceMutation,
+  withAutoIsolatedProviderInstancesPatch,
+} from "./provider/ProviderIsolatedHomes.ts";
+import {
   AcpRegistryOperationError,
   CommandId,
   authScopeResponse,
@@ -3016,15 +3020,37 @@ export const layerWsRpc = (
         [WS_METHODS.serverUpdateSettings]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(function* ({ patch, providerInstanceMutation }) {
+            const path = yield* Path.Path;
             const deviceHosts = patch.deviceHosts
               ? yield* remoteSshDeviceHosts(patch.deviceHosts).pipe(
                   Effect.provide(deviceHostContext),
                 )
               : undefined;
-            const nextPatch = { ...patch, ...(deviceHosts ? { deviceHosts } : {}) };
-            const settings = yield* providerInstanceMutation === undefined
+            const existingInstances =
+              patch.providerInstances !== undefined || providerInstanceMutation !== undefined
+                ? (yield* serverSettings.getSettings).providerInstances
+                : undefined;
+            const platform = yield* HostProcess.Platform;
+            const nextPatch = withAutoIsolatedProviderInstancesPatch({
+              stateDir: config.stateDir,
+              patch: { ...patch, ...(deviceHosts ? { deviceHosts } : {}) },
+              existingInstances,
+              platform,
+              path,
+            });
+            const nextMutation =
+              providerInstanceMutation === undefined
+                ? undefined
+                : withAutoIsolatedProviderInstanceMutation({
+                    stateDir: config.stateDir,
+                    mutation: providerInstanceMutation,
+                    existingInstances,
+                    platform,
+                    path,
+                  });
+            const settings = yield* nextMutation === undefined
               ? serverSettings.updateSettings(nextPatch)
-              : serverSettings.updateProviderInstance(providerInstanceMutation, nextPatch);
+              : serverSettings.updateProviderInstance(nextMutation, nextPatch);
             return ServerSettings.redactServerSettingsForClient(settings, settingsClient);
           }),
         [WS_METHODS.serverDiscoverSourceControl]: (_input) => sourceControlDiscovery.discover,

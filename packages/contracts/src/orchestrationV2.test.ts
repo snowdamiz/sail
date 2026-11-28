@@ -16,7 +16,10 @@ import {
   OrchestrationV2CheckpointFileSummary,
   repositoryRewindCheckpoint,
   OrchestrationV2ProviderCapabilities,
+  OrchestrationV2Command,
   OrchestrationV2ProviderThread,
+  OrchestrationV2Run,
+  OrchestrationV2RunJson,
   OrchestrationV2ProviderThreadJson,
   OrchestrationV2RpcSchemas,
   OrchestrationV2Subagent,
@@ -743,5 +746,106 @@ describe("withMessageSenderNote", () => {
     [{ createdBy: "agent", creationSource: "server" }, "Hi", "Hi"],
   ] as const)("labels %j's message %j for the provider", (message, text, expected) => {
     expect(withMessageSenderNote(message, text)).toBe(expected);
+  });
+});
+
+const decodeRunJson = Schema.decodeUnknownSync(OrchestrationV2RunJson);
+const encodeRunJson = Schema.encodeSync(OrchestrationV2RunJson);
+const decodeRun = Schema.decodeUnknownSync(OrchestrationV2Run);
+const decodeDispatchCommand = Schema.decodeSync(OrchestrationV2Command);
+
+describe("usage limit failover run metadata", () => {
+  it("decodes legacy runs without failover metadata and round-trips new failover fields", () => {
+    const baseRun = {
+      id: "run-2",
+      threadId: "thread-1",
+      ordinal: 2,
+      providerInstanceId: "claudeAgent_2",
+      modelSelection: { instanceId: "claudeAgent_2", model: "claude-opus-4-6" },
+      providerThreadId: null,
+      userMessageId: "message-2",
+      rootNodeId: null,
+      activeAttemptId: null,
+      status: "queued",
+      requestedAt: DateTime.formatIso(now),
+      startedAt: null,
+      completedAt: null,
+      checkpointId: null,
+      contextHandoffId: null,
+    };
+
+    const legacy = decodeRunJson(baseRun);
+    expect(legacy.usageLimitFailoverOfRunId).toBeUndefined();
+    expect(legacy.failoverAttemptedInstanceIds).toBeUndefined();
+    expect(legacy.failoverNotice).toBeUndefined();
+
+    const withFailover = decodeRunJson({
+      ...baseRun,
+      usageLimitFailoverOfRunId: "run-1",
+      failoverAttemptedInstanceIds: ["claudeAgent"],
+      failoverNotice: {
+        kind: "same_provider_account",
+        fromInstanceId: "claudeAgent",
+        fromModel: "claude-opus-4-6",
+        toInstanceId: "claudeAgent_2",
+        toModel: "claude-opus-4-6",
+      },
+    });
+    expect(withFailover.usageLimitFailoverOfRunId).toBe("run-1");
+    expect(withFailover.failoverAttemptedInstanceIds).toEqual(["claudeAgent"]);
+    expect(withFailover.failoverNotice).toEqual({
+      kind: "same_provider_account",
+      fromInstanceId: "claudeAgent",
+      fromModel: "claude-opus-4-6",
+      toInstanceId: "claudeAgent_2",
+      toModel: "claude-opus-4-6",
+    });
+    expect(encodeRunJson(withFailover)).toMatchObject({
+      usageLimitFailoverOfRunId: "run-1",
+      failoverAttemptedInstanceIds: ["claudeAgent"],
+      failoverNotice: {
+        kind: "same_provider_account",
+        fromInstanceId: "claudeAgent",
+        fromModel: "claude-opus-4-6",
+        toInstanceId: "claudeAgent_2",
+        toModel: "claude-opus-4-6",
+      },
+    });
+    expect(
+      decodeRun({
+        ...baseRun,
+        requestedAt: now,
+        usageLimitFailoverOfRunId: "run-1",
+        failoverAttemptedInstanceIds: ["claudeAgent"],
+      }).failoverAttemptedInstanceIds,
+    ).toEqual(["claudeAgent"]);
+
+    const cmd = decodeDispatchCommand({
+      type: "message.dispatch",
+      createdBy: "agent",
+      creationSource: "server",
+      commandId: "limit-failover:thread-1:run-1",
+      threadId: "thread-1",
+      messageId: "message-2",
+      text: "Continue where you left off.",
+      attachments: [],
+      modelSelection: { instanceId: "claudeAgent_2", model: "claude-opus-4-6" },
+      usageLimitFailoverOfRunId: "run-1",
+      failoverAttemptedInstanceIds: ["claudeAgent"],
+      failoverNotice: {
+        kind: "cross_provider_handoff",
+        fromInstanceId: "claudeAgent",
+        fromModel: "claude-opus-4-6",
+        toInstanceId: "codex",
+        toModel: "gpt-5.4",
+      },
+      dispatchMode: { type: "start_immediately" },
+    });
+    expect(cmd.type).toBe("message.dispatch");
+    if (cmd.type === "message.dispatch") {
+      expect(cmd.usageLimitFailoverOfRunId).toBe("run-1");
+      expect(cmd.failoverAttemptedInstanceIds).toEqual(["claudeAgent"]);
+      expect(cmd.failoverNotice?.kind).toBe("cross_provider_handoff");
+    }
   });
 });

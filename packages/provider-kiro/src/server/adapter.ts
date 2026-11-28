@@ -527,11 +527,21 @@ function extractKiroSubagentUpdate(tool: AcpToolCallState): AcpAdapterV2Subagent
  * again. (Request ID: …)"). Show it instead of the generic failure text;
  * makeProviderFailure bounds and redacts it.
  */
+const KIRO_USAGE_LIMIT_PATTERN =
+  /\b(?:429|too many requests|rate[ _-]?limit(?:ed|s|ing)?|usage[ _-]?limit(?:s|ed)?|quota(?:[ _-]?exceeded)?|resource[ _-]?exhausted|insufficient[ _-]?quota|throttl(?:ed|ing))\b/i;
+
+function isKiroUsageLimitCause(cause: unknown): boolean {
+  if (isAcpRequestError(cause)) {
+    return cause.code === 429 || KIRO_USAGE_LIMIT_PATTERN.test(cause.errorMessage);
+  }
+  return cause instanceof Error && KIRO_USAGE_LIMIT_PATTERN.test(cause.message);
+}
+
 function kiroPromptFailure(cause: unknown) {
   return makeProviderFailure({
     cause,
     ...(isAcpRequestError(cause) ? { message: cause.errorMessage, code: String(cause.code) } : {}),
-    class: "provider_error",
+    class: isKiroUsageLimitCause(cause) ? "usage_limit" : "provider_error",
   });
 }
 

@@ -49,6 +49,7 @@
       "ignore": ["npm-launcher/**", ".knip-test-*/**"],
     },
     "apps/server": {
+      "ignore": ["builtin-skills/**"],
       // Vite+ pack entries and the launcher used by installed background services.
       "entry": [
         "src/bin.ts!",

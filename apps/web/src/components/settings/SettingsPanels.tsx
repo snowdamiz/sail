@@ -76,6 +76,7 @@ import { scopedIdleCompaction } from "./scopedSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { ThreadTitleInstructionsSettings } from "./ThreadTitleInstructionsSettings";
 import { SnoozePresetsRow } from "./SnoozePresetsSettings";
+import { UsageFailoverSettings } from "./UsageFailoverSettings";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import { usePrimaryManagedPolicy } from "../../state/managedPolicy";
 import {
@@ -562,6 +563,15 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.sidebarAutoSettleOnMerge !== DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge
       ? [gt("Auto-settle merged threads")]
       : []),
+    ...(settings.autoFailoverOnUsageLimit !== DEFAULT_UNIFIED_SETTINGS.autoFailoverOnUsageLimit
+      ? [gt("Automatic usage failover")]
+      : []),
+    ...(!Equal.equals(
+      settings.usageLimitPassOffRules,
+      DEFAULT_UNIFIED_SETTINGS.usageLimitPassOffRules,
+    )
+      ? [gt("Provider & model pass-off rules")]
+      : []),
     ...(settings.autoResumeLimitedThreads !== DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads
       ? [gt("Resume after usage limits")]
       : []),
@@ -747,6 +757,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
       sidebarAutoSettleKeepPullRequests: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleKeepPullRequests,
       sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
+      autoFailoverOnUsageLimit: DEFAULT_UNIFIED_SETTINGS.autoFailoverOnUsageLimit,
+      usageLimitPassOffRules: DEFAULT_UNIFIED_SETTINGS.usageLimitPassOffRules,
       autoResumeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads,
       snoozeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads,
       snoozePresets: DEFAULT_UNIFIED_SETTINGS.snoozePresets,
@@ -2109,6 +2121,7 @@ export function ThreadsSettingsPanel() {
       ) : null}
 
       <SettingsSection id="usage-limits" title={gt("Usage limits")}>
+        <UsageFailoverSettings />
         <SettingsRow
           serverScoped
           {...setting("auto-resume-limited-threads")}

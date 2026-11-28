@@ -22,6 +22,8 @@ import {
   type SyncedProviderStoreDriver,
 } from "@t3tools/contracts";
 import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStreamText";
+import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -48,6 +50,10 @@ import { claudeAccountConfigPath } from "./claudeResetCredits.ts";
 import { resolveClaudeHomePath } from "./Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "./Drivers/CodexHomeLayout.ts";
 import * as ProviderCredentialStore from "./ProviderCredentialStore.ts";
+import {
+  resolveIsolatedClaudeHomePath,
+  resolveIsolatedCodexShadowHomePath,
+} from "./ProviderIsolatedHomes.ts";
 import * as ProviderRegistry from "./ProviderRegistry.ts";
 
 const MAX_AUTH_FILE_BYTES = 512 * 1024;
@@ -516,24 +522,113 @@ const make = Effect.gen(function* () {
     env: NodeJS.ProcessEnv,
   ) {
     const home = yield* HostProcess.HomeDirectory;
-    const dataHome = env.XDG_DATA_HOME?.trim() || path.join(home, ".local", "share");
-    return path.join(dataHome, "opencode", "auth.json");
+    const configured = env.XDG_DATA_HOME?.trim();
+    const dataHome = configured
+      ? expandHomePath(configured, home)
+      : path.join(home, ".local", "share");
+    return path.resolve(path.join(dataHome, "opencode", "auth.json"));
   });
 
   const resolveGrokAuthPath = Effect.fn("ProviderAuthSync.resolveGrokAuthPath")(function* (
     env: NodeJS.ProcessEnv,
   ) {
     const home = yield* HostProcess.HomeDirectory;
-    const grokHome = env.GROK_HOME?.trim() || path.join(home, ".grok");
-    return path.join(grokHome, "auth.json");
+    const configured = env.GROK_HOME?.trim();
+    const grokHome = configured ? expandHomePath(configured, home) : path.join(home, ".grok");
+    return path.resolve(path.join(grokHome, "auth.json"));
   });
 
   const resolvePiAuthPath = Effect.fn("ProviderAuthSync.resolvePiAuthPath")(function* (
     env: NodeJS.ProcessEnv,
   ) {
     const home = yield* HostProcess.HomeDirectory;
-    const piDir = env.PI_CODING_AGENT_DIR?.trim() || path.join(home, ".pi", "agent");
-    return path.join(piDir, "auth.json");
+    const configured = env.PI_CODING_AGENT_DIR?.trim();
+    const piDir = configured ? expandHomePath(configured, home) : path.join(home, ".pi", "agent");
+    return path.resolve(path.join(piDir, "auth.json"));
+  });
+
+  const envVarMatchKey = (name: string, isWindows: boolean): string =>
+    isWindows ? name.trim().toUpperCase() : name.trim();
+
+  const hasInstanceEnvironmentVar = (
+    instance: ProviderInstanceConfig | undefined,
+    name: string,
+    isWindows: boolean,
+  ): boolean => {
+    const target = envVarMatchKey(name, isWindows);
+    return (
+      instance?.environment?.some(
+        (entry) =>
+          envVarMatchKey(entry.name, isWindows) === target &&
+          (typeof entry.value !== "string" || entry.value.trim().length > 0),
+      ) === true
+    );
+  };
+
+  const resolveInstanceEnvironmentForAuth = Effect.fn(
+    "ProviderAuthSync.resolveInstanceEnvironmentForAuth",
+  )(function* (
+    environment: ProviderInstanceConfig["environment"],
+    baseEnv: NodeJS.ProcessEnv,
+  ): Effect.fn.Return<{
+    readonly env: NodeJS.ProcessEnv;
+    readonly unresolvedKeys: ReadonlySet<string>;
+  }> {
+    const isWindows = (yield* HostProcess.Platform) === "win32";
+    const unresolvedKeys = new Set<string>();
+    if (!environment || environment.length === 0) {
+      return {
+        env: yield* mergeProviderInstanceEnvironment(environment, baseEnv),
+        unresolvedKeys,
+      };
+    }
+    const references: Array<SecretReference> = [];
+    const referenceIndexes: Array<number> = [];
+    for (let index = 0; index < environment.length; index += 1) {
+      const entry = environment[index];
+      if (entry !== undefined && isSecretReference(entry.value)) {
+        references.push(entry.value);
+        referenceIndexes.push(index);
+      }
+    }
+    const resolvedByIndex = new Map<number, string | undefined>();
+    if (references.length > 0 && Option.isSome(resolverOption)) {
+      const resolvedValues = yield* resolverOption.value
+        .read(references)
+        .pipe(
+          Effect.orElseSucceed((): ReadonlyArray<string | undefined> =>
+            references.map(() => undefined),
+          ),
+        );
+      for (let index = 0; index < referenceIndexes.length; index += 1) {
+        resolvedByIndex.set(referenceIndexes[index]!, resolvedValues[index]);
+      }
+    }
+    const resolvedEnvironment = environment.map((entry, index) => {
+      const key = envVarMatchKey(entry.name, isWindows);
+      if (isSecretReference(entry.value)) {
+        const literal = resolvedByIndex.get(index);
+        if (typeof literal === "string" && literal.length > 0 && literal !== SECRET_REDACTED) {
+          unresolvedKeys.delete(key);
+          return { ...entry, value: literal };
+        }
+        unresolvedKeys.add(key);
+        return entry;
+      }
+      if (typeof entry.value === "string" && entry.value.trim().length > 0) {
+        unresolvedKeys.delete(key);
+      }
+      return entry;
+    });
+    const merged = { ...(yield* mergeProviderInstanceEnvironment(resolvedEnvironment, baseEnv)) };
+    if (unresolvedKeys.size > 0) {
+      for (const existingKey of Object.keys(merged)) {
+        if (unresolvedKeys.has(envVarMatchKey(existingKey, isWindows))) {
+          delete merged[existingKey];
+        }
+      }
+    }
+    return { env: merged, unresolvedKeys };
   });
 
   const resolveClaudePathsForInstance = Effect.fn("ProviderAuthSync.resolveClaudePathsForInstance")(
@@ -543,26 +638,50 @@ const make = Effect.gen(function* () {
       createIsolatedIfNonDefault: boolean,
     ) {
       const env = yield* HostProcess.Environment;
+      const isWindows = (yield* HostProcess.Platform) === "win32";
+      const { env: instanceEnv, unresolvedKeys } = yield* resolveInstanceEnvironmentForAuth(
+        instance?.environment,
+        env,
+      );
       const configuredHome = getStringField(instance?.config, "homePath").trim();
+      const hasExplicitEnvHome = hasInstanceEnvironmentVar(
+        instance,
+        "CLAUDE_CONFIG_DIR",
+        isWindows,
+      );
+      const explicitEnvHome = hasExplicitEnvHome
+        ? (instanceEnv.CLAUDE_CONFIG_DIR?.trim() ?? "")
+        : "";
+      if (
+        !configuredHome &&
+        (unresolvedKeys.has(envVarMatchKey("CLAUDE_CONFIG_DIR", isWindows)) ||
+          (hasExplicitEnvHome && explicitEnvHome.length === 0))
+      ) {
+        return undefined;
+      }
       const isDefault =
         instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make("claudeAgent"));
       let effectiveHomePath = configuredHome;
-      if (!effectiveHomePath && !isDefault && createIsolatedIfNonDefault) {
-        const hash = yield* sha256Hex(instanceId);
-        effectiveHomePath = path.join(serverConfig.stateDir, "providers", "claude", hash);
+      const shouldIsolate =
+        !configuredHome && !hasExplicitEnvHome && !isDefault && createIsolatedIfNonDefault;
+      if (shouldIsolate) {
+        effectiveHomePath = resolveIsolatedClaudeHomePath({
+          stateDir: serverConfig.stateDir,
+          instanceId,
+          path,
+        });
       }
-      const configDir = yield* resolveClaudeHomePath({ homePath: effectiveHomePath }, env);
+      const configDir = yield* resolveClaudeHomePath({ homePath: effectiveHomePath }, instanceEnv);
       const accountPath = yield* claudeAccountConfigPath(
-        effectiveHomePath.length > 0 ? configDir : env.CLAUDE_CONFIG_DIR?.trim() || undefined,
+        effectiveHomePath.length > 0
+          ? configDir
+          : instanceEnv.CLAUDE_CONFIG_DIR?.trim() || undefined,
       );
       return {
         configDir,
         credentialsPath: path.join(configDir, ".credentials.json"),
         accountPath,
-        isolatedHomePath:
-          !configuredHome && !isDefault && createIsolatedIfNonDefault
-            ? effectiveHomePath
-            : undefined,
+        isolatedHomePath: shouldIsolate ? effectiveHomePath : undefined,
       };
     },
   );
@@ -574,12 +693,36 @@ const make = Effect.gen(function* () {
     instance: ProviderInstanceConfig | undefined,
     createIsolatedIfNonDefault: boolean,
   ) {
+    const env = yield* HostProcess.Environment;
+    const home = yield* HostProcess.HomeDirectory;
+    const isWindows = (yield* HostProcess.Platform) === "win32";
+    const { env: instanceEnv, unresolvedKeys } = yield* resolveInstanceEnvironmentForAuth(
+      instance?.environment,
+      env,
+    );
     const configuredHome = getStringField(instance?.config, "homePath").trim();
     const configuredShadow = getStringField(instance?.config, "shadowHomePath").trim();
+    const hasExplicitEnvHome = hasInstanceEnvironmentVar(instance, "CODEX_HOME", isWindows);
+    const explicitEnvHome = hasExplicitEnvHome ? (instanceEnv.CODEX_HOME?.trim() ?? "") : "";
     const isDefault = instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make("codex"));
+    if (!configuredHome && !configuredShadow && hasExplicitEnvHome) {
+      if (
+        unresolvedKeys.has(envVarMatchKey("CODEX_HOME", isWindows)) ||
+        explicitEnvHome.length === 0
+      ) {
+        return undefined;
+      }
+      return {
+        authPath: path.join(path.resolve(expandHomePath(explicitEnvHome, home)), "auth.json"),
+        isolatedShadowHomePath: undefined,
+      };
+    }
     if (!configuredHome && !configuredShadow && !isDefault && createIsolatedIfNonDefault) {
-      const hash = yield* sha256Hex(instanceId);
-      const isolatedShadow = path.join(serverConfig.stateDir, "providers", "codex", hash);
+      const isolatedShadow = resolveIsolatedCodexShadowHomePath({
+        stateDir: serverConfig.stateDir,
+        instanceId,
+        path,
+      });
       return {
         authPath: path.join(isolatedShadow, "auth.json"),
         isolatedShadowHomePath: isolatedShadow,
@@ -753,12 +896,14 @@ const make = Effect.gen(function* () {
     // Vendor CLI auth files (Claude, Codex, OpenCode, Grok, Pi).
     const cliAuth: Array<SyncedCliAuthEntry> = [];
 
+    const isWindows = (yield* HostProcess.Platform) === "win32";
     const seenClaudeDirs = new Set<string>();
     for (const { instanceId, instance } of collectInstancesForDriver(
       settings,
       ProviderDriverKind.make("claudeAgent"),
     )) {
       const paths = yield* resolveClaudePathsForInstance(instanceId, instance, false);
+      if (paths === undefined) continue;
       if (seenClaudeDirs.has(paths.configDir)) continue;
       seenClaudeDirs.add(paths.configDir);
 
@@ -784,7 +929,9 @@ const make = Effect.gen(function* () {
       settings,
       ProviderDriverKind.make("codex"),
     )) {
-      const { authPath } = yield* resolveCodexAuthPathForInstance(instanceId, instance, false);
+      const codexPaths = yield* resolveCodexAuthPathForInstance(instanceId, instance, false);
+      if (codexPaths === undefined) continue;
+      const { authPath } = codexPaths;
       if (seenCodexPaths.has(authPath)) continue;
       seenCodexPaths.add(authPath);
       const authJson = yield* readSmallTextFile(authPath);
@@ -793,39 +940,78 @@ const make = Effect.gen(function* () {
       }
     }
 
-    {
-      const authPath = yield* resolveOpenCodeAuthPath(env);
+    const seenOpenCodePaths = new Set<string>();
+    for (const { instanceId, instance } of collectInstancesForDriver(
+      settings,
+      ProviderDriverKind.make("opencode"),
+    )) {
+      const { env: instanceEnv, unresolvedKeys } = yield* resolveInstanceEnvironmentForAuth(
+        instance?.environment,
+        env,
+      );
+      if (
+        unresolvedKeys.has(envVarMatchKey("XDG_DATA_HOME", isWindows)) ||
+        (hasInstanceEnvironmentVar(instance, "XDG_DATA_HOME", isWindows) &&
+          !instanceEnv.XDG_DATA_HOME?.trim())
+      ) {
+        continue;
+      }
+      const authPath = yield* resolveOpenCodeAuthPath(instanceEnv);
+      if (seenOpenCodePaths.has(authPath)) continue;
+      seenOpenCodePaths.add(authPath);
       const authJson = yield* readSmallTextFile(authPath);
       if (authJson !== undefined && isNonEmptyAuthJsonObject(authJson)) {
-        cliAuth.push({
-          kind: "opencode",
-          instanceId: defaultInstanceIdForDriver(ProviderDriverKind.make("opencode")),
-          authJson,
-        });
+        cliAuth.push({ kind: "opencode", instanceId, authJson });
       }
     }
 
-    {
-      const authPath = yield* resolveGrokAuthPath(env);
+    const seenGrokPaths = new Set<string>();
+    for (const { instanceId, instance } of collectInstancesForDriver(
+      settings,
+      ProviderDriverKind.make("grok"),
+    )) {
+      const { env: instanceEnv, unresolvedKeys } = yield* resolveInstanceEnvironmentForAuth(
+        instance?.environment,
+        env,
+      );
+      if (
+        unresolvedKeys.has(envVarMatchKey("GROK_HOME", isWindows)) ||
+        (hasInstanceEnvironmentVar(instance, "GROK_HOME", isWindows) &&
+          !instanceEnv.GROK_HOME?.trim())
+      ) {
+        continue;
+      }
+      const authPath = yield* resolveGrokAuthPath(instanceEnv);
+      if (seenGrokPaths.has(authPath)) continue;
+      seenGrokPaths.add(authPath);
       const authJson = yield* readSmallTextFile(authPath);
       if (authJson !== undefined && isNonEmptyAuthJsonObject(authJson)) {
-        cliAuth.push({
-          kind: "grok",
-          instanceId: defaultInstanceIdForDriver(ProviderDriverKind.make("grok")),
-          authJson,
-        });
+        cliAuth.push({ kind: "grok", instanceId, authJson });
       }
     }
 
-    {
-      const authPath = yield* resolvePiAuthPath(env);
+    const seenPiPaths = new Set<string>();
+    for (const { instanceId, instance } of collectInstancesForDriver(
+      settings,
+      ProviderDriverKind.make("pi"),
+    )) {
+      const { env: instanceEnv, unresolvedKeys } = yield* resolveInstanceEnvironmentForAuth(
+        instance?.environment,
+        env,
+      );
+      if (
+        unresolvedKeys.has(envVarMatchKey("PI_CODING_AGENT_DIR", isWindows)) ||
+        (hasInstanceEnvironmentVar(instance, "PI_CODING_AGENT_DIR", isWindows) &&
+          !instanceEnv.PI_CODING_AGENT_DIR?.trim())
+      ) {
+        continue;
+      }
+      const authPath = yield* resolvePiAuthPath(instanceEnv);
+      if (seenPiPaths.has(authPath)) continue;
+      seenPiPaths.add(authPath);
       const authJson = yield* readSmallTextFile(authPath);
       if (authJson !== undefined && isNonEmptyAuthJsonObject(authJson)) {
-        cliAuth.push({
-          kind: "pi",
-          instanceId: defaultInstanceIdForDriver(ProviderDriverKind.make("pi")),
-          authJson,
-        });
+        cliAuth.push({ kind: "pi", instanceId, authJson });
       }
     }
 
@@ -852,6 +1038,7 @@ const make = Effect.gen(function* () {
       const preferExistingNewer = input.preferExistingNewer === true;
       const nowMs = yield* Clock.currentTimeMillis;
       const env = yield* HostProcess.Environment;
+      const isWindows = (yield* HostProcess.Platform) === "win32";
 
       const currentSettings = yield* settingsService.getSettings.pipe(
         Effect.mapError(
@@ -909,7 +1096,9 @@ const make = Effect.gen(function* () {
         }
 
         const existingEnvList = existing?.environment ?? [];
-        const envByName = new Map(existingEnvList.map((entry) => [entry.name, entry] as const));
+        const envByName = new Map(
+          existingEnvList.map((entry) => [envVarMatchKey(entry.name, isWindows), entry] as const),
+        );
         for (const incomingVar of incoming.environment ?? []) {
           if (
             typeof incomingVar.value === "string" &&
@@ -917,7 +1106,8 @@ const make = Effect.gen(function* () {
           ) {
             continue;
           }
-          const currentVar = envByName.get(incomingVar.name);
+          const matchKey = envVarMatchKey(incomingVar.name, isWindows);
+          const currentVar = envByName.get(matchKey);
           const currentHasValue =
             currentVar !== undefined &&
             (isSecretReference(currentVar.value) ||
@@ -927,7 +1117,7 @@ const make = Effect.gen(function* () {
           if (preferExistingNewer && currentHasValue) {
             continue;
           }
-          envByName.set(incomingVar.name, {
+          envByName.set(matchKey, {
             name: incomingVar.name,
             value: incomingVar.value,
             sensitive: incomingVar.sensitive,
@@ -1023,6 +1213,7 @@ const make = Effect.gen(function* () {
           if (!hasValidClaudeCredentials(entry.credentialsJson)) continue;
           const instance = nextInstances[entry.instanceId];
           const paths = yield* resolveClaudePathsForInstance(entry.instanceId, instance, true);
+          if (paths === undefined) continue;
           let existingCreds = yield* readSmallTextFile(paths.credentialsPath);
           if (!existingCreds || !hasValidClaudeCredentials(existingCreds)) {
             existingCreds = yield* readClaudeKeychainCredentials(paths.configDir);
@@ -1098,11 +1289,13 @@ const make = Effect.gen(function* () {
         if (entry.kind === "codex") {
           if (!hasValidCodexAuth(entry.authJson)) continue;
           const instance = nextInstances[entry.instanceId];
-          const { authPath, isolatedShadowHomePath } = yield* resolveCodexAuthPathForInstance(
+          const codexPaths = yield* resolveCodexAuthPathForInstance(
             entry.instanceId,
             instance,
             true,
           );
+          if (codexPaths === undefined) continue;
+          const { authPath, isolatedShadowHomePath } = codexPaths;
           const existing = yield* readSmallTextFile(authPath);
           if (existing !== entry.authJson) {
             const keepExisting =
@@ -1148,12 +1341,30 @@ const make = Effect.gen(function* () {
         }
 
         if (entry.kind === "opencode" || entry.kind === "grok" || entry.kind === "pi") {
+          const instance = nextInstances[entry.instanceId];
+          const { env: instanceEnv, unresolvedKeys } = yield* resolveInstanceEnvironmentForAuth(
+            instance?.environment,
+            env,
+          );
+          const envVarName =
+            entry.kind === "opencode"
+              ? "XDG_DATA_HOME"
+              : entry.kind === "grok"
+                ? "GROK_HOME"
+                : "PI_CODING_AGENT_DIR";
+          if (
+            unresolvedKeys.has(envVarMatchKey(envVarName, isWindows)) ||
+            (hasInstanceEnvironmentVar(instance, envVarName, isWindows) &&
+              !instanceEnv[envVarName]?.trim())
+          ) {
+            continue;
+          }
           const authPath =
             entry.kind === "opencode"
-              ? yield* resolveOpenCodeAuthPath(env)
+              ? yield* resolveOpenCodeAuthPath(instanceEnv)
               : entry.kind === "grok"
-                ? yield* resolveGrokAuthPath(env)
-                : yield* resolvePiAuthPath(env);
+                ? yield* resolveGrokAuthPath(instanceEnv)
+                : yield* resolvePiAuthPath(instanceEnv);
           const existingRaw = yield* readSmallTextFile(authPath);
           const { merged, changed: fileChanged } = mergeJsonKeyMaps({
             existingRaw,

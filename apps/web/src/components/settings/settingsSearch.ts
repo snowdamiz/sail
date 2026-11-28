@@ -326,7 +326,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Fallback model"),
     to: "/settings/threads",
     scope: "environment-defaults",
-    searchTerms: [msg("fallback agent provider out of usage new threads")],
+    searchTerms: [msg("fallback agent provider out of usage pass off failover new threads")],
     environmentOnly: true,
   },
   {
@@ -493,6 +493,18 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Snooze until limits reset"),
     to: "/settings/threads",
     searchTerms: [msg("usage quota rate limit reset wake recover continue")],
+  },
+  {
+    id: "auto-failover-usage-limit",
+    title: msg("Automatic usage failover"),
+    to: "/settings/threads",
+    searchTerms: [msg("usage quota rate limit account switch transfer failover continue")],
+  },
+  {
+    id: "usage-limit-pass-off-rules",
+    title: msg("Provider & model pass-off rules"),
+    to: "/settings/threads",
+    searchTerms: [msg("usage quota rate limit pass off handoff failover fallback model provider")],
   },
   {
     id: "auto-resume-limited-threads",

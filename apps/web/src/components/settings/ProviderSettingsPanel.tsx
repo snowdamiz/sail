@@ -20,6 +20,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import {
   defaultInstanceIdForDriver,
+  isManagedDriverAllowed,
   type EnvironmentId,
   type AcpRegistryUrlAuthAction,
   PROVIDER_DISPLAY_NAMES,
@@ -608,7 +609,14 @@ export function EnvironmentProviderSettings({
     reportFailure: false,
   });
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
-  const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
+  const [addDialogState, setAddDialogState] = useState<
+    | { readonly open: false }
+    | {
+        readonly open: true;
+        readonly initialDriver?: ProviderDriverKind;
+        readonly mode?: "provider" | "account";
+      }
+  >({ open: false });
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | null>(
     targetInstanceId ?? null,
   );
@@ -974,6 +982,8 @@ export function EnvironmentProviderSettings({
     updateModelPreferences: stableUpdateModelPreferences,
     toggleModelFavorite: stableToggleModelFavorite,
     selectInstance: setSelectedInstanceId,
+    openAddAccount: (driver: ProviderDriverKind) =>
+      setAddDialogState({ open: true, initialDriver: driver, mode: "account" }),
   };
   // resolveModelPreferences falls back to a fresh `[]`; keep it stable for the rows.
   const favorites = settings.favorites.length > 0 ? settings.favorites : NO_FAVORITES;
@@ -1017,6 +1027,11 @@ export function EnvironmentProviderSettings({
         }
         modelPreferences={settings.providerModelPreferences?.[row.instanceId]}
         favorites={favorites}
+        canAddAccount={
+          canAddProvider &&
+          row.driver !== "acpRegistry" &&
+          isManagedDriverAllowed(managedPolicy, row.driver)
+        }
         actions={actions}
       />
     );
@@ -1035,7 +1050,7 @@ export function EnvironmentProviderSettings({
                   <Button
                     size="icon-xs"
                     variant="ghost-muted"
-                    onClick={() => setIsAddInstanceDialogOpen(true)}
+                    onClick={() => setAddDialogState({ open: true })}
                     aria-label={gt("Add provider")}
                   >
                     <PlusIcon />
@@ -1116,7 +1131,7 @@ export function EnvironmentProviderSettings({
                   <button
                     type="button"
                     className="flex w-full cursor-pointer items-center gap-3 px-3 py-3 text-left text-sm text-muted-foreground transition-colors outline-none hover:bg-muted/25 hover:text-foreground focus-visible:bg-muted/25 focus-visible:text-foreground sm:px-4"
-                    onClick={() => setIsAddInstanceDialogOpen(true)}
+                    onClick={() => setAddDialogState({ open: true })}
                   >
                     <PlusIcon className="size-4 shrink-0" />
                     <T>Add provider</T>
@@ -1239,12 +1254,19 @@ export function EnvironmentProviderSettings({
         <CompactIdleThreadsRow />
       </SettingsSection>
 
-      {isAddInstanceDialogOpen && !readOnly ? (
+      {addDialogState.open && !readOnly ? (
         <AddProviderInstanceDialog
+          key={`${addDialogState.mode ?? "provider"}:${addDialogState.initialDriver ?? "any"}`}
           open
           environmentId={environmentId}
           environmentLabel={environmentLabel}
-          onOpenChange={setIsAddInstanceDialogOpen}
+          {...(addDialogState.initialDriver !== undefined
+            ? { initialDriver: addDialogState.initialDriver }
+            : {})}
+          {...(addDialogState.mode !== undefined ? { mode: addDialogState.mode } : {})}
+          onOpenChange={(open) => {
+            if (!open) setAddDialogState({ open: false });
+          }}
           onCreated={setSelectedInstanceId}
         />
       ) : null}
@@ -1282,6 +1304,7 @@ interface ProviderInstanceRowActions {
   readonly updateModelPreferences: ReturnType<typeof useUpdateEnvironmentModelPreferences>;
   readonly toggleModelFavorite: ReturnType<typeof useToggleEnvironmentModelFavorite>;
   readonly selectInstance: (instanceId: ProviderInstanceId) => void;
+  readonly openAddAccount: (driver: ProviderDriverKind) => void;
 }
 
 const NO_MODELS: ReadonlyArray<string> = [];
@@ -1306,6 +1329,7 @@ function ProviderInstanceRow({
   projectOverrideEffectiveEnabled,
   modelPreferences,
   favorites,
+  canAddAccount,
   actions,
 }: {
   readonly environmentId: EnvironmentId;
@@ -1328,6 +1352,7 @@ function ProviderInstanceRow({
     | { readonly hiddenModels: ReadonlyArray<string>; readonly modelOrder: ReadonlyArray<string> }
     | undefined;
   readonly favorites: UnifiedSettings["favorites"];
+  readonly canAddAccount: boolean;
   readonly actions: ProviderInstanceRowActions;
 }) {
   const gt = useGT();
@@ -1384,6 +1409,9 @@ function ProviderInstanceRow({
       mode={mode}
       selected={selected}
       onSelect={mode === "list" ? () => actions.selectInstance(instanceId) : undefined}
+      onAddAccount={
+        mode === "editor" && canAddAccount ? () => actions.openAddAccount(driver) : undefined
+      }
       readOnly={readOnly}
       runtime={
         mode === "editor" && codexSetupMode === "managed" ? (
