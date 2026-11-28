@@ -2,7 +2,7 @@ import type { BoatsView } from "@t3tools/client-runtime/state/boats";
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useRouter } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { readLocalApi } from "~/localApi";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
@@ -31,10 +31,8 @@ async function call<C extends CommandName>(
 
 export function useBoatCall() {
   const { environmentId } = useBoatAccess();
-  return useCallback(
-    <C extends CommandName>(command: C, args: CommandArgs<C>) => call(environmentId, command, args),
-    [environmentId],
-  );
+  return <C extends CommandName>(command: C, args: CommandArgs<C>) =>
+    call(environmentId, command, args);
 }
 
 export type BoatsPage =
@@ -100,14 +98,15 @@ export function useMachineDetails(
   version: unknown,
   onError: (text: string) => void,
 ): MachineDetails | null {
-  const call = useBoatCall();
+  const { environmentId } = useBoatAccess();
   const [details, setDetails] = useState<MachineDetails | null>(null);
   const failing = useRef(false);
   const latest = useRef(0);
+  const reportError = useEffectEvent(onError);
 
   useEffect(() => {
     const req = ++latest.current;
-    void call("get_machine_details", { id }).then(
+    void call(environmentId, "get_machine_details", { id }).then(
       ({ data }) => {
         if (req !== latest.current) return;
         failing.current = false;
@@ -116,10 +115,10 @@ export function useMachineDetails(
       (e) => {
         if (req !== latest.current || failing.current) return;
         failing.current = true;
-        onError(errorText(e));
+        reportError(errorText(e));
       },
     );
-  }, [call, id, version, onError]);
+  }, [environmentId, id, version]);
 
   return details?.id === id ? details : null;
 }

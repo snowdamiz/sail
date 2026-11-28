@@ -1,6 +1,14 @@
 import { useGT } from "gt-react";
 import { AlertTriangleIcon, CheckIcon, PlusIcon, SearchIcon } from "lucide-react";
-import { useEffect, useId, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
+import {
+  useEffect,
+  useEffectEvent,
+  useId,
+  useRef,
+  useState,
+  type HTMLAttributes,
+  type ReactNode,
+} from "react";
 
 import { cn } from "~/lib/utils";
 import { Alert, AlertAction, AlertDescription } from "../../ui/alert";
@@ -9,6 +17,7 @@ import { Button } from "../../ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../../ui/input-group";
 import { Popover, PopoverPopup, PopoverTrigger } from "../../ui/popover";
 import { Skeleton } from "../../ui/skeleton";
+import { useBoatAccess } from "../access";
 import { useBoatCall } from "../api";
 import { hasRepo, homePath } from "../machine";
 import { errorText } from "../reply";
@@ -166,14 +175,16 @@ export interface LocalProjects {
 }
 
 export function useLocalProjects(): LocalProjects {
+  const { environmentId } = useBoatAccess();
   const call = useBoatCall();
+  const loadLocalProjects = useEffectEvent(() => call("local_projects", undefined));
   const [list, setList] = useState<LocalProject[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let live = true;
-    void call("local_projects", undefined).then(
+    void loadLocalProjects().then(
       ({ data }) => {
         if (live) setList(data);
       },
@@ -184,7 +195,7 @@ export function useLocalProjects(): LocalProjects {
     return () => {
       live = false;
     };
-  }, [attempt, call]);
+  }, [attempt, environmentId]);
 
   return {
     list,

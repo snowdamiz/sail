@@ -1,6 +1,7 @@
+import type { BoatSignIn, BoatSignInPhase } from "@t3tools/contracts";
 import { useGT } from "gt-react";
 import { AlertTriangleIcon, CheckIcon, RefreshCwIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import { SettingsGroup } from "../../settings/SettingsGroup";
@@ -9,9 +10,97 @@ import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
 import { Spinner } from "../../ui/spinner";
 import { useBoatAccess } from "../access";
-import type { Setup, SetupAction } from "../types";
+import { useBoatCall, type useFollowBoatLink } from "../api";
+import { errorText } from "../reply";
+import type { Setup, SetupAction, UiState } from "../types";
+import { BoatsFrame, type Notice, type Notify, type ServerSelection } from "./BoatsFrame";
+import { SignInPanel } from "./SignInPanel";
 
-export function SetupView({
+type FollowLink = ReturnType<typeof useFollowBoatLink>;
+
+export function SetupBody({
+  state,
+  follow,
+  notify,
+  server,
+  notice,
+  dismissNotice,
+}: {
+  readonly state: UiState;
+  readonly follow: FollowLink;
+  readonly notify: Notify;
+  readonly server: ServerSelection;
+  readonly notice: Notice | null;
+  readonly dismissNotice: () => void;
+}) {
+  const gt = useGT();
+  const call = useBoatCall();
+  const [signIn, setSignIn] = useState<BoatSignIn | null>(null);
+  const [requesting, setRequesting] = useState(false);
+  const activeAttemptIdRef = useRef<string | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const finish = (attemptId: string, phase: BoatSignInPhase) => {
+    if (!mountedRef.current || activeAttemptIdRef.current !== attemptId) return;
+    activeAttemptIdRef.current = null;
+    setSignIn((current) => (current?.attemptId === attemptId ? null : current));
+    if (phase === "expired") notify(gt("The sign-in expired. Start again to get a new code."));
+    if (phase === "failed") notify(gt("Sign-in could not finish. Try again."));
+  };
+
+  const act = (action: SetupAction) => {
+    setRequesting(true);
+    void call("setup_action", { action })
+      .then(
+        (reply) => {
+          if (!mountedRef.current) return;
+          if (reply.signIn !== undefined) {
+            activeAttemptIdRef.current = reply.signIn.attemptId;
+            setSignIn(reply.signIn);
+            if (reply.signIn.onHost) follow(reply.signIn.prompt?.url);
+          } else {
+            follow(reply.openUrl);
+          }
+        },
+        (error) => {
+          if (mountedRef.current) notify(errorText(error));
+        },
+      )
+      .finally(() => {
+        if (mountedRef.current) setRequesting(false);
+      });
+  };
+
+  return (
+    <BoatsFrame back={null} server={server} notice={notice} dismissNotice={dismissNotice}>
+      <SetupView
+        setup={state.setup}
+        busy={state.setupBusy}
+        signIn={
+          signIn === null ? null : (
+            <SignInPanel
+              key={signIn.attemptId}
+              attempt={signIn}
+              command="manage_boat_sign_in"
+              onFinish={finish}
+            />
+          )
+        }
+        requesting={requesting}
+        onAction={act}
+      />
+    </BoatsFrame>
+  );
+}
+
+function SetupView({
   setup,
   busy,
   signIn,

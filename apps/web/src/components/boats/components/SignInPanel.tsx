@@ -1,7 +1,7 @@
 import type { BoatSignIn, BoatSignInAction, BoatSignInPhase } from "@t3tools/contracts";
 import { msg, useGT } from "gt-react";
 import { AlertTriangleIcon, CheckIcon, CopyIcon, ExternalLinkIcon } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useEffectEvent, useId, useRef, useState } from "react";
 
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { Alert, AlertDescription } from "../../ui/alert";
@@ -21,16 +21,18 @@ export function SignInPanel({
 }: {
   readonly attempt: BoatSignIn;
   readonly command: SignInCommand;
-  readonly onFinish: (phase: BoatSignInPhase) => void;
+  readonly onFinish: (attemptId: string, phase: BoatSignInPhase) => void;
 }) {
   const gt = useGT();
   const call = useBoatCall();
-  const canManage = useBoatAccess().can(command);
+  const access = useBoatAccess();
+  const canManage = access.can(command);
   const codeId = useId();
   const [code, setCode] = useState("");
   const [action, setAction] = useState<"submit" | "cancel" | null>(null);
   const [submitted, setSubmitted] = useState(false);
   const [failed, setFailed] = useState(false);
+  const mountedRef = useRef(true);
   const { copyToClipboard, isCopied } = useCopyToClipboard({
     timeout: 1500,
     target: {
@@ -40,6 +42,15 @@ export function SignInPanel({
     },
   });
   const { attemptId, prompt } = attempt;
+  const pollStatus = useEffectEvent(() => call(command, { action: "status", attemptId }));
+  const reportFinish = useEffectEvent((phase: BoatSignInPhase) => onFinish(attemptId, phase));
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!canManage) return;
@@ -47,10 +58,10 @@ export function SignInPanel({
     let timer: number | undefined;
     const poll = async () => {
       try {
-        const { data: phase } = await call(command, { action: "status", attemptId });
+        const { data: phase } = await pollStatus();
         if (stopped) return;
         if (phase !== "pending") {
-          onFinish(phase);
+          reportFinish(phase);
           return;
         }
       } catch {
@@ -63,7 +74,7 @@ export function SignInPanel({
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [attemptId, call, canManage, command, onFinish]);
+  }, [access.environmentId, attemptId, canManage, command]);
 
   const act = (input: BoatSignInAction) => {
     setAction(input.action === "submit" ? "submit" : "cancel");
@@ -71,13 +82,15 @@ export function SignInPanel({
     setFailed(false);
     void call(command, input).then(
       ({ data: phase }) => {
-        if (phase !== "pending") onFinish(phase);
+        if (!mountedRef.current) return;
+        if (phase !== "pending") onFinish(attemptId, phase);
         else if (input.action === "submit") {
           setSubmitted(true);
           setAction(null);
         }
       },
       () => {
+        if (!mountedRef.current) return;
         setAction(null);
         setFailed(true);
       },
