@@ -73,6 +73,14 @@ NODE
     const fs = require("fs"), f = process.argv[1];
     const s = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : {};
     s.linkedEnvironmentsEnabled = true;
+    const instances =
+      s.providerInstances && typeof s.providerInstances === "object" && !Array.isArray(s.providerInstances)
+        ? { ...s.providerInstances }
+        : {};
+    if (!Object.prototype.hasOwnProperty.call(instances, "antigravity")) {
+      instances.antigravity = { driver: "antigravity", enabled: true };
+    }
+    s.providerInstances = instances;
     fs.writeFileSync(f, JSON.stringify(s, null, 2));
   ' "$t3_home/userdata/settings.json"
 

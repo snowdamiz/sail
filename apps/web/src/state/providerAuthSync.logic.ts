@@ -1,6 +1,9 @@
 import {
+  defaultInstanceIdForDriver,
   isSecretReference,
+  isUnconfiguredDefaultInstanceEnabled,
   type EnvironmentId,
+  type ProviderInstanceId,
   type ServerProvider,
   type ServerSettings,
 } from "@t3tools/contracts";
@@ -112,7 +115,13 @@ export function summarizeProviderAuthEnvironment(
         hasValue: true,
         reference: isSecretReference(variable.value) ? variable.value : null,
       }));
+    const isDefaultInstance = instanceId === defaultInstanceIdForDriver(instance.driver);
+    const hasMeaningfulEnabled =
+      instance.enabled === true &&
+      !isUnconfiguredDefaultInstanceEnabled(instanceId as ProviderInstanceId);
     if (
+      isDefaultInstance &&
+      !hasMeaningfulEnabled &&
       portableConfig.length === 0 &&
       environment.length === 0 &&
       instance.displayName === undefined &&

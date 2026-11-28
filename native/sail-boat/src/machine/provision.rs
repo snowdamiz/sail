@@ -366,6 +366,10 @@ esac
         let settings = home.join(".t3/userdata/settings.json");
         let initial: serde_json::Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
         assert_eq!(initial["linkedEnvironmentsEnabled"], true);
+        assert_eq!(
+            initial["providerInstances"]["antigravity"],
+            serde_json::json!({ "driver": "antigravity", "enabled": true }),
+        );
         let live_settings = b"{\"linkedEnvironmentsEnabled\":false, \"example\":1}\n";
         fs::write(&settings, live_settings).unwrap();
         fs::write(home.join("calls"), "").unwrap();

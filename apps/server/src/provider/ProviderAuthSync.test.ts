@@ -13,6 +13,7 @@ import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretReso
 import { defineSecretProvider } from "@t3tools/secret-provider-core/shared/definition";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -25,6 +26,9 @@ import * as ServerConfig from "../config.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { resolveAntigravityInstanceDirectories } from "./antigravityAuthSupport.ts";
 import * as ProviderAuthSync from "./ProviderAuthSync.ts";
+import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
+import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
+import * as ProviderRegistry from "./ProviderRegistry.ts";
 import * as ProviderCredentialStore from "./ProviderCredentialStore.ts";
 import {
   resolveIsolatedClaudeHomePath,
@@ -118,7 +122,7 @@ function makeServerNode(options: {
 
   const fullLayer = ProviderAuthSync.layer.pipe(Layer.provideMerge(baseLayer));
 
-  return { fullLayer, secretStore };
+  return { baseLayer, fullLayer, secretStore };
 }
 
 describe("ProviderAuthSync", () => {
@@ -1173,5 +1177,142 @@ describe("ProviderAuthSync", () => {
           }).pipe(Effect.provide(dstNode.fullLayer));
         }).pipe(Effect.provide(Layer.merge(NodeCrypto.layer, NodeServices.layer))),
       ),
+  );
+
+  it.effect(
+    "exports enabled default Antigravity instances without extra config and skips default-enabled Codex",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = yield* fs.makeTempDirectoryScoped({ prefix: "sail-agy-enabled-export-" });
+
+          const agyNode = makeServerNode({
+            homeDir: path.join(root, "agy-home"),
+            stateDir: path.join(root, "agy-state"),
+            settingsOverrides: {
+              providerInstances: {
+                [ProviderInstanceId.make("antigravity")]: {
+                  driver: ProviderDriverKind.make("antigravity"),
+                  enabled: true,
+                },
+                [ProviderInstanceId.make("codex")]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  enabled: true,
+                },
+              },
+            },
+          });
+
+          const exported = yield* Effect.gen(function* () {
+            const sync = yield* ProviderAuthSync.ProviderAuthSync;
+            return yield* sync.exportBundle();
+          }).pipe(Effect.provide(agyNode.fullLayer));
+
+          assert.notStrictEqual(exported.fingerprint, "");
+          assert.deepStrictEqual(exported.bundle.instances, [
+            {
+              instanceId: ProviderInstanceId.make("antigravity"),
+              driver: ProviderDriverKind.make("antigravity"),
+              enabled: true,
+            },
+          ]);
+        }).pipe(Effect.provide(Layer.merge(NodeCrypto.layer, NodeServices.layer))),
+      ),
+  );
+
+  it.effect("refreshes Antigravity models after importing synced Antigravity OAuth tokens", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "sail-agy-refresh-import-" });
+        const antigravityId = ProviderInstanceId.make("antigravity");
+        const events: Array<string> = [];
+        const done = yield* Deferred.make<void>();
+
+        const dstNode = makeServerNode({
+          homeDir: path.join(root, "dst-home"),
+          stateDir: path.join(root, "dst-state"),
+        });
+
+        let antigravityEnabled = false;
+        const mockProviderLayers = Layer.mergeAll(
+          Layer.mock(ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator)({
+            reconcile: (configMap) =>
+              Effect.sync(() => {
+                antigravityEnabled = configMap[antigravityId]?.enabled === true;
+                events.push("reconcile");
+              }),
+          }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            reloadSecretsAndRefresh: () =>
+              Effect.sync(() => {
+                events.push("reloadSecretsAndRefresh");
+                return [];
+              }),
+            refreshInstance: (instanceId) =>
+              Effect.sync(() => {
+                events.push(`refreshInstance:${instanceId}`);
+              }).pipe(Effect.andThen(Deferred.succeed(done, undefined)), Effect.as([])),
+          }),
+          Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+            getInstance: (instanceId) =>
+              Effect.succeed(
+                instanceId === antigravityId
+                  ? ({
+                      instanceId: antigravityId,
+                      driverKind: ProviderDriverKind.make("antigravity"),
+                      enabled: antigravityEnabled,
+                      refreshModels: () =>
+                        Effect.sync(() => {
+                          events.push("refreshModels");
+                        }),
+                    } as never)
+                  : undefined,
+              ),
+          }),
+        );
+
+        const layer = ProviderAuthSync.layer.pipe(
+          Layer.provideMerge(Layer.merge(dstNode.baseLayer, mockProviderLayers)),
+        );
+
+        yield* Effect.gen(function* () {
+          const sync = yield* ProviderAuthSync.ProviderAuthSync;
+          const result = yield* sync.importBundle({
+            bundle: {
+              version: 1,
+              instances: [
+                {
+                  instanceId: antigravityId,
+                  driver: ProviderDriverKind.make("antigravity"),
+                  enabled: true,
+                },
+              ],
+              storeBlobs: [],
+              antigravityFiles: [
+                {
+                  instanceId: antigravityId,
+                  fileName: "antigravity-oauth-token",
+                  content: JSON.stringify({ access_token: "agy-synced-token" }),
+                },
+              ],
+              cliAuth: [],
+            },
+          });
+          assert.isTrue(result.changed);
+          yield* Deferred.await(done);
+        }).pipe(Effect.provide(layer));
+
+        assert.deepStrictEqual(events, [
+          "reconcile",
+          "reloadSecretsAndRefresh",
+          "refreshModels",
+          "refreshInstance:antigravity",
+        ]);
+      }).pipe(Effect.provide(Layer.merge(NodeCrypto.layer, NodeServices.layer))),
+    ),
   );
 });

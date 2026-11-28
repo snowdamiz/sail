@@ -95,6 +95,7 @@ import * as SourceControlSignIn from "./sourceControl/SourceControlSignIn.ts";
 import { BUILT_IN_SOURCE_CONTROL_DRIVER_LIST } from "./sourceControl/sourceControlDefinitions.ts";
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as SecretCheck from "./secrets/SecretCheck.ts";
+import * as BoatAntigravityBootstrap from "./boat/BoatAntigravityBootstrap.ts";
 import * as BoatCredentialSync from "./boat/BoatCredentialSync.ts";
 import * as BoatProviderSync from "./boat/BoatProviderSync.ts";
 import * as ProviderAuthSync from "./provider/ProviderAuthSync.ts";
@@ -823,7 +824,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ).pipe(Layer.provide(OrchestrationMilestones.layer), Layer.provide(ProjectionStoreV2.layer)),
   ProviderUsageLimitsIngestion.layer,
   layerProviderInstallationRefresh,
-  ProviderInstallation.layer,
+  BoatAntigravityBootstrap.layer.pipe(Layer.provideMerge(ProviderInstallation.layer)),
   ReplayMarkers.layer,
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
