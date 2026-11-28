@@ -48,6 +48,8 @@ function makeRecord(overrides: Partial<SessionTransferRecord> = {}): SessionTran
     hadPendingRuntimeRequest: false,
     destinationBranch: null,
     destinationWorktreePath: null,
+    modelSelectionOverride: null,
+    cloneDestinationPath: null,
     warnings: [],
     errorMessage: null,
     createdAt,
@@ -79,23 +81,49 @@ describe("SessionTransferRepository", () => {
       }).pipe(Effect.provide(memoryLayer)),
   );
 
-  it.effect("upserts, updates idempotently by transferId, and reads via getById", () =>
-    Effect.gen(function* () {
-      const repo = yield* SessionTransferRepository.SessionTransferRepository;
-      const initial = makeRecord();
+  it.effect(
+    "inserts if absent by transferId and never overwrites advanced or completed transfers",
+    () =>
+      Effect.gen(function* () {
+        const repo = yield* SessionTransferRepository.SessionTransferRepository;
+        const initial = makeRecord();
 
-      expect(yield* repo.getById(initial.transferId)).toEqual(Option.none());
-      expect(yield* repo.upsert(initial)).toEqual(initial);
-      expect(yield* repo.getById(initial.transferId)).toEqual(Option.some(initial));
+        expect(yield* repo.getById(initial.transferId)).toEqual(Option.none());
+        expect(yield* repo.upsert(initial)).toEqual(initial);
+        expect(yield* repo.getById(initial.transferId)).toEqual(Option.some(initial));
 
-      const updated = makeRecord({
-        phase: "waking_target",
-        phaseDetail: "Waking dev-boat",
-        updatedAt: IsoDateTime.make("2026-11-28T05:01:00.000Z"),
-      });
-      expect(yield* repo.upsert(updated)).toEqual(updated);
-      expect(yield* repo.getById(initial.transferId)).toEqual(Option.some(updated));
-    }).pipe(Effect.provide(memoryLayer)),
+        const exporting = yield* repo.transitionPhase({
+          transferId: initial.transferId,
+          phase: "exporting_source",
+          expectedPhases: ["queued"],
+          phaseDetail: "Exporting source session",
+          updatedAt: IsoDateTime.make("2026-11-28T05:01:00.000Z"),
+        });
+
+        const staleQueuedReplay = makeRecord({
+          phase: "queued",
+          phaseDetail: "Stale replay",
+          sourceThreadId: ThreadId.make("thread-tampered"),
+          updatedAt: IsoDateTime.make("2026-11-28T05:01:30.000Z"),
+        });
+        expect(yield* repo.upsert(staleQueuedReplay)).toEqual(exporting);
+        expect(yield* repo.getById(initial.transferId)).toEqual(Option.some(exporting));
+
+        const completed = yield* repo.transitionPhase({
+          transferId: initial.transferId,
+          phase: "completed",
+          expectedPhases: ["exporting_source"],
+          destinationProjectId: ProjectId.make("project-boat"),
+          destinationThreadId: ThreadId.make("thread-boat"),
+          phaseDetail: null,
+          updatedAt: IsoDateTime.make("2026-11-28T05:02:00.000Z"),
+        });
+        expect(yield* repo.listActive()).toEqual([]);
+
+        expect(yield* repo.upsert(initial)).toEqual(completed);
+        expect(yield* repo.getById(initial.transferId)).toEqual(Option.some(completed));
+        expect(yield* repo.listActive()).toEqual([]);
+      }).pipe(Effect.provide(memoryLayer)),
   );
 
   it.effect("rejects a second active transfer for the same source thread with conflict error", () =>
@@ -280,7 +308,7 @@ describe("SessionTransferRepository", () => {
     }).pipe(Effect.provide(memoryLayer)),
   );
 
-  it.effect("orders listRecent by updatedAt descending and respects limit", () =>
+  it.effect("orders listActive and listRecent by updatedAt descending and respects limit", () =>
     Effect.gen(function* () {
       const repo = yield* SessionTransferRepository.SessionTransferRepository;
       const t1 = makeRecord({
@@ -312,6 +340,7 @@ describe("SessionTransferRepository", () => {
         t2.transferId,
         t1.transferId,
       ]);
+      expect((yield* repo.listActive(1)).map((row) => row.transferId)).toEqual([t2.transferId]);
       expect((yield* repo.listRecent(2)).map((row) => row.transferId)).toEqual([
         t2.transferId,
         t3.transferId,

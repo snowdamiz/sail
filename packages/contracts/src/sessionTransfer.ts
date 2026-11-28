@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
@@ -195,6 +196,12 @@ export const SessionTransferRecord = Schema.Struct({
   hadPendingRuntimeRequest: Schema.Boolean,
   destinationBranch: Schema.NullOr(GitRefName),
   destinationWorktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  modelSelectionOverride: Schema.optional(Schema.NullOr(ModelSelection)).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  cloneDestinationPath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   warnings: Schema.Array(Schema.String),
   errorMessage: Schema.NullOr(Schema.String),
   createdAt: IsoDateTime,

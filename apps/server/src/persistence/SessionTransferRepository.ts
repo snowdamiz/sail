@@ -155,7 +155,9 @@ export class SessionTransferRepository extends Context.Service<
       Option.Option<SessionTransferRecord>,
       PersistenceSqlError | PersistenceDecodeError
     >;
-    readonly listActive: () => Effect.Effect<
+    readonly listActive: (
+      limit?: number,
+    ) => Effect.Effect<
       ReadonlyArray<SessionTransferRecord>,
       PersistenceSqlError | PersistenceDecodeError
     >;
@@ -203,6 +205,19 @@ const make = Effect.gen(function* () {
       `,
   });
 
+  const listActiveRowsWithLimit = SqlSchema.findAll({
+    Request: Schema.Int,
+    Result: RecordRow,
+    execute: (limit) =>
+      sql`
+        SELECT record_json AS "record"
+        FROM boat_session_transfers
+        WHERE phase NOT IN ('completed', 'failed', 'cancelled')
+        ORDER BY updated_at DESC, created_at DESC, transfer_id DESC
+        LIMIT ${limit}
+      `,
+  });
+
   const listRecentRows = SqlSchema.findAll({
     Request: Schema.Int,
     Result: RecordRow,
@@ -229,7 +244,19 @@ const make = Effect.gen(function* () {
       `,
   });
 
-  const writeRecord = (record: SessionTransferRecord, operation: string) =>
+  const toConflictOrSqlError =
+    (record: SessionTransferRecord, operation: string) => (cause: unknown) =>
+      isSqliteUniqueConstraintError(cause)
+        ? new SessionTransferConflictError({
+            transferId: record.transferId,
+            sourceEnvironmentId: record.sourceEnvironmentId,
+            sourceThreadId: record.sourceThreadId,
+            message: `An active session transfer already exists for thread ${record.sourceThreadId} in environment ${record.sourceEnvironmentId}.`,
+            cause,
+          })
+        : toPersistenceSqlError(operation)(cause);
+
+  const insertRecordIfAbsent = (record: SessionTransferRecord, operation: string) =>
     encodeRecord(record).pipe(
       Effect.mapError((cause) =>
         PersistenceDecodeError.fromSchemaError("SessionTransferRecord", cause),
@@ -278,45 +305,98 @@ const make = Effect.gen(function* () {
             ${record.updatedAt},
             ${record.completedAt}
           )
-          ON CONFLICT (transfer_id) DO UPDATE SET
-            direction = excluded.direction,
-            source_environment_id = excluded.source_environment_id,
-            source_machine_id = excluded.source_machine_id,
-            source_project_id = excluded.source_project_id,
-            source_thread_id = excluded.source_thread_id,
-            destination_environment_id = excluded.destination_environment_id,
-            destination_machine_id = excluded.destination_machine_id,
-            destination_project_id = excluded.destination_project_id,
-            destination_thread_id = excluded.destination_thread_id,
-            phase = excluded.phase,
-            phase_detail = excluded.phase_detail,
-            source_was_running = excluded.source_was_running,
-            auto_resume = excluded.auto_resume,
-            record_json = excluded.record_json,
-            error_message = excluded.error_message,
-            created_at = excluded.created_at,
-            updated_at = excluded.updated_at,
-            completed_at = excluded.completed_at
-        `.pipe(
-          Effect.mapError((cause) =>
-            isSqliteUniqueConstraintError(cause)
-              ? new SessionTransferConflictError({
-                  transferId: record.transferId,
-                  sourceEnvironmentId: record.sourceEnvironmentId,
-                  sourceThreadId: record.sourceThreadId,
-                  message: `An active session transfer already exists for thread ${record.sourceThreadId} in environment ${record.sourceEnvironmentId}.`,
-                  cause,
-                })
-              : toPersistenceSqlError(operation)(cause),
-          ),
-        ),
+          ON CONFLICT (transfer_id) DO NOTHING
+        `.pipe(Effect.mapError(toConflictOrSqlError(record, operation))),
+      ),
+      Effect.asVoid,
+    );
+
+  const updateRecord = (record: SessionTransferRecord, operation: string) =>
+    encodeRecord(record).pipe(
+      Effect.mapError((cause) =>
+        PersistenceDecodeError.fromSchemaError("SessionTransferRecord", cause),
+      ),
+      Effect.flatMap((recordJson) =>
+        sql`
+          UPDATE boat_session_transfers
+          SET
+            direction = ${record.direction},
+            source_environment_id = ${record.sourceEnvironmentId},
+            source_machine_id = ${record.sourceMachineId},
+            source_project_id = ${record.sourceProjectId},
+            source_thread_id = ${record.sourceThreadId},
+            destination_environment_id = ${record.destinationEnvironmentId},
+            destination_machine_id = ${record.destinationMachineId},
+            destination_project_id = ${record.destinationProjectId},
+            destination_thread_id = ${record.destinationThreadId},
+            phase = ${record.phase},
+            phase_detail = ${record.phaseDetail},
+            source_was_running = ${record.sourceWasRunning ? 1 : 0},
+            auto_resume = ${record.autoResume ? 1 : 0},
+            record_json = ${recordJson},
+            error_message = ${record.errorMessage},
+            created_at = ${record.createdAt},
+            updated_at = ${record.updatedAt},
+            completed_at = ${record.completedAt}
+          WHERE transfer_id = ${record.transferId}
+        `.pipe(Effect.mapError(toConflictOrSqlError(record, operation))),
       ),
       Effect.as(record),
     );
 
   return SessionTransferRepository.of({
-    upsert: Effect.fn("SessionTransferRepository.upsert")(function (record) {
-      return writeRecord(record, "upsertSessionTransfer");
+    upsert: Effect.fn("SessionTransferRepository.upsert")(function* (record) {
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            // Check transfer_id before inserting so replaying a stale queued record
+            // cannot trip the active-source unique index when another transfer is active.
+            const existingOption = yield* findByIdRow(record.transferId).pipe(
+              Effect.mapError(
+                toSqlOrDecodeError("upsertSessionTransfer.read", "SessionTransferRecord"),
+              ),
+            );
+            if (Option.isSome(existingOption)) {
+              return existingOption.value.record;
+            }
+            const racedExisting = yield* insertRecordIfAbsent(
+              record,
+              "upsertSessionTransfer.write",
+            ).pipe(
+              Effect.as(Option.none<SessionTransferRecord>()),
+              Effect.catchTags({
+                SessionTransferConflictError: (conflictError) =>
+                  findByIdRow(record.transferId).pipe(
+                    Effect.mapError(
+                      toSqlOrDecodeError(
+                        "upsertSessionTransfer.readAfterConflict",
+                        "SessionTransferRecord",
+                      ),
+                    ),
+                    Effect.flatMap((rowOption) =>
+                      Option.isSome(rowOption)
+                        ? Effect.succeedSome(rowOption.value.record)
+                        : Effect.fail(conflictError),
+                    ),
+                  ),
+              }),
+            );
+            if (Option.isSome(racedExisting)) {
+              return racedExisting.value;
+            }
+            const persistedOption = yield* findByIdRow(record.transferId).pipe(
+              Effect.mapError(
+                toSqlOrDecodeError("upsertSessionTransfer.readAfterWrite", "SessionTransferRecord"),
+              ),
+            );
+            return Option.isSome(persistedOption) ? persistedOption.value.record : record;
+          }),
+        )
+        .pipe(
+          Effect.catchTags({
+            SqlError: (cause) => Effect.fail(toPersistenceSqlError("upsertSessionTransfer")(cause)),
+          }),
+        );
     }),
     transitionPhase: Effect.fn("SessionTransferRepository.transitionPhase")(function* (input) {
       return yield* sql
@@ -412,7 +492,7 @@ const make = Effect.gen(function* () {
               completedAt: nextCompletedAt,
             };
 
-            return yield* writeRecord(updated, "transitionSessionTransferPhase.write");
+            return yield* updateRecord(updated, "transitionSessionTransferPhase.write");
           }),
         )
         .pipe(
@@ -429,8 +509,12 @@ const make = Effect.gen(function* () {
         Effect.mapError(toSqlOrDecodeError("getSessionTransferById", "SessionTransferRecord")),
       );
     }),
-    listActive: Effect.fn("SessionTransferRepository.listActive")(function () {
-      return listActiveRows(undefined).pipe(
+    listActive: Effect.fn("SessionTransferRepository.listActive")(function (limit) {
+      const query =
+        limit === undefined
+          ? listActiveRows(undefined)
+          : listActiveRowsWithLimit(Math.max(1, Math.trunc(limit)));
+      return query.pipe(
         NodeSqliteClient.readOnly,
         Effect.map((rows) => rows.map((row) => row.record)),
         Effect.mapError(toSqlOrDecodeError("listActiveSessionTransfers", "SessionTransferRecord")),

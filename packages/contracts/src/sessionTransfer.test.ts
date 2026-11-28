@@ -289,7 +289,30 @@ describe("session transfer contracts", () => {
   it("round-trips SessionTransferRecord, list, and progress stream schemas", () => {
     const decodedRecord = decodeRecord(makeSampleRecord());
     expect(decodedRecord.phase).toBe("transferring_workspace");
+    expect(decodedRecord.modelSelectionOverride).toBeNull();
+    expect(decodedRecord.cloneDestinationPath).toBeNull();
     expect(decodeRecord(encodeRecord(decodedRecord))).toEqual(decodedRecord);
+
+    const recordWithOverrides = decodeRecord({
+      ...makeSampleRecord(),
+      modelSelectionOverride: {
+        instanceId: "codex",
+        model: "gpt-5.4",
+      },
+      cloneDestinationPath: "/Users/dev/repos/sail",
+    });
+    expect(recordWithOverrides.modelSelectionOverride).toEqual({
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.4",
+    });
+    expect(recordWithOverrides.cloneDestinationPath).toBe("/Users/dev/repos/sail");
+    expect(decodeRecord(encodeRecord(recordWithOverrides))).toEqual(recordWithOverrides);
+    expect(() =>
+      decodeRecord({
+        ...makeSampleRecord(),
+        cloneDestinationPath: "   ",
+      }),
+    ).toThrow();
 
     const listInput = decodeListInput({
       activeOnly: true,

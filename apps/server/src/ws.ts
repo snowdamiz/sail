@@ -3710,7 +3710,7 @@ export const layerWsRpc = (
           Option.match(sessionTransfersOption, {
             onNone: () => Effect.succeed({ transfers: [] }),
             onSome: (repo) =>
-              (input.activeOnly ? repo.listActive() : repo.listRecent(input.limit)).pipe(
+              (input.activeOnly ? repo.listActive(input.limit) : repo.listRecent(input.limit)).pipe(
                 Effect.map((transfers) => ({ transfers })),
                 Effect.mapError(
                   (error) =>
