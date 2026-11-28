@@ -165,7 +165,9 @@ interface AllocatedWorkspaceWorktree {
   readonly gitCommonDirIdentity: GitCommonDirIdentity;
   readonly worktreePath: string;
   readonly branch: string;
+  readonly baseCommitSha: string;
   readonly branchHeadSha: string | null;
+  readonly allowedBranchHeadShas: ReadonlyArray<string>;
   readonly createdBranch: boolean;
 }
 
@@ -214,7 +216,9 @@ export interface ImportWorkspaceBundleResult {
   readonly gitCommonDir: string;
   readonly gitCommonDirIdentity: GitCommonDirIdentity;
   readonly headSha: string;
+  readonly baseCommitSha: string;
   readonly branchHeadSha: string;
+  readonly allowedBranchHeadShas: ReadonlyArray<string>;
   readonly branchRenamedFrom: string | null;
   readonly warnings: ReadonlyArray<string>;
 }
@@ -526,7 +530,7 @@ const make = Effect.gen(function* () {
     Effect.forEach(
       refs,
       (ref) =>
-        runGit("WorkspaceBundle.deleteRef", cwd, ["update-ref", "-d", ref], {
+        runGit("WorkspaceBundle.deleteRef", cwd, ["update-ref", "--no-deref", "-d", ref], {
           allowNonZeroExit: true,
         }).pipe(Effect.ignore),
       { discard: true },
@@ -1191,42 +1195,58 @@ const make = Effect.gen(function* () {
         }),
     });
 
+  const verifyExpectedGitCommonDir = Effect.fn("WorkspaceBundle.verifyExpectedGitCommonDir")(
+    function* (input: {
+      readonly repoCwd: string;
+      readonly expectedGitCommonDir: string;
+      readonly expectedGitCommonDirIdentity: GitCommonDirIdentity;
+    }): Effect.fn.Return<ResolvedGitCommonDir, WorkspaceBundleError> {
+      if (
+        typeof input.expectedGitCommonDir !== "string" ||
+        input.expectedGitCommonDir.trim().length === 0
+      ) {
+        return yield* new WorkspaceBundleError({
+          code: "git_error",
+          message: `Refusing to remove worktree/branch in '${input.repoCwd}' because expectedGitCommonDir is empty.`,
+        });
+      }
+      if (!isValidGitCommonDirIdentity(input.expectedGitCommonDirIdentity)) {
+        return yield* new WorkspaceBundleError({
+          code: "git_error",
+          message: `Refusing to remove worktree/branch in '${input.repoCwd}' because expectedGitCommonDirIdentity is missing or invalid.`,
+        });
+      }
+      const resolvedRepo = yield* resolveGitCommonDirIdentity(input.repoCwd);
+      const expectedNormalized = path.resolve(input.expectedGitCommonDir);
+      if (resolvedRepo === null || resolvedRepo.gitCommonDir !== expectedNormalized) {
+        return yield* new WorkspaceBundleError({
+          code: "git_error",
+          message: `Refusing to remove worktree/branch in '${input.repoCwd}' because git common dir '${resolvedRepo?.gitCommonDir ?? "(none)"}' does not match expected '${expectedNormalized}'.`,
+        });
+      }
+      if (!isSameGitCommonDirIdentity(input.expectedGitCommonDirIdentity, resolvedRepo.identity)) {
+        return yield* new WorkspaceBundleError({
+          code: "git_error",
+          message: `Refusing to remove worktree/branch in '${input.repoCwd}' because filesystem identity of git common dir '${resolvedRepo.gitCommonDir}' does not match expected repository identity.`,
+        });
+      }
+      return resolvedRepo;
+    },
+  );
+
   const removeWorktree: WorkspaceBundleShape["removeWorktree"] = Effect.fn(
     "WorkspaceBundle.removeWorktree",
   )(function* (input) {
-    if (
-      typeof input.expectedGitCommonDir !== "string" ||
-      input.expectedGitCommonDir.trim().length === 0
-    ) {
-      return yield* new WorkspaceBundleError({
-        code: "git_error",
-        message: `Refusing to remove worktree/branch in '${input.repoCwd}' because expectedGitCommonDir is empty.`,
-      });
-    }
-    if (!isValidGitCommonDirIdentity(input.expectedGitCommonDirIdentity)) {
-      return yield* new WorkspaceBundleError({
-        code: "git_error",
-        message: `Refusing to remove worktree/branch in '${input.repoCwd}' because expectedGitCommonDirIdentity is missing or invalid.`,
-      });
-    }
-    const resolvedRepo = yield* resolveGitCommonDirIdentity(input.repoCwd);
-    const expectedNormalized = path.resolve(input.expectedGitCommonDir);
-    if (resolvedRepo === null || resolvedRepo.gitCommonDir !== expectedNormalized) {
-      return yield* new WorkspaceBundleError({
-        code: "git_error",
-        message: `Refusing to remove worktree/branch in '${input.repoCwd}' because git common dir '${resolvedRepo?.gitCommonDir ?? "(none)"}' does not match expected '${expectedNormalized}'.`,
-      });
-    }
-    if (!isSameGitCommonDirIdentity(input.expectedGitCommonDirIdentity, resolvedRepo.identity)) {
-      return yield* new WorkspaceBundleError({
-        code: "git_error",
-        message: `Refusing to remove worktree/branch in '${input.repoCwd}' because filesystem identity of git common dir '${resolvedRepo.gitCommonDir}' does not match expected repository identity.`,
-      });
-    }
+    const verifiedRepo = yield* verifyExpectedGitCommonDir({
+      repoCwd: input.repoCwd,
+      expectedGitCommonDir: input.expectedGitCommonDir,
+      expectedGitCommonDirIdentity: input.expectedGitCommonDirIdentity,
+    });
+    const expectedNormalized = verifiedRepo.gitCommonDir;
 
     let worktreeError: WorkspaceBundleError | null = null;
     let branchError: WorkspaceBundleError | null = null;
-    let verifiedBranchHeadSha: string | null =
+    const verifiedBranchHeadSha: string | null =
       typeof input.expectedBranchHeadSha === "string" &&
       input.expectedBranchHeadSha.trim().length > 0
         ? input.expectedBranchHeadSha.trim()
@@ -1242,6 +1262,10 @@ const make = Effect.gen(function* () {
         worktreeError = beforeEntryResult.failure;
       } else if (beforeEntryResult.success !== null) {
         const registered = beforeEntryResult.success;
+        const registeredHeadSha =
+          registered.headSha !== null && registered.headSha.trim().length > 0
+            ? registered.headSha.trim()
+            : null;
         if (registered.isMain) {
           worktreeError = new WorkspaceBundleError({
             code: "git_error",
@@ -1256,6 +1280,11 @@ const make = Effect.gen(function* () {
             code: "git_error",
             message: `Refusing to remove worktree '${worktreePath}' in '${input.repoCwd}' because it is checked out on branch '${registered.branch ?? "(detached)"}' instead of expected '${input.expectedBranch}'.`,
           });
+        } else if (verifiedBranchHeadSha !== null && registeredHeadSha !== verifiedBranchHeadSha) {
+          worktreeError = new WorkspaceBundleError({
+            code: "git_error",
+            message: `Refusing to remove worktree '${worktreePath}' in '${input.repoCwd}' because its HEAD commit '${registeredHeadSha ?? "(unknown)"}' does not match expected '${verifiedBranchHeadSha}'.`,
+          });
         } else if (registered.locked) {
           const lockReason = registered.lockReason;
           worktreeError = new WorkspaceBundleError({
@@ -1266,18 +1295,6 @@ const make = Effect.gen(function* () {
                 : `Cannot remove locked worktree '${worktreePath}'. Unlock the worktree before retrying cleanup.`,
           });
         } else {
-          if (
-            verifiedBranchHeadSha === null &&
-            input.branch !== undefined &&
-            input.branch !== null &&
-            input.branch.length > 0 &&
-            registered.branch === input.branch &&
-            registered.headSha !== null &&
-            registered.headSha.trim().length > 0
-          ) {
-            verifiedBranchHeadSha = registered.headSha.trim();
-          }
-
           const gitRemoveResult = yield* Effect.result(
             runGit(
               "WorkspaceBundle.removeWorktree",
@@ -1393,70 +1410,162 @@ const make = Effect.gen(function* () {
             });
           } else {
             const refName = `refs/heads/${branch}`;
-            const deleteBranchResult = yield* Effect.result(
-              runGit(
-                "WorkspaceBundle.deleteUnusedBranch",
+            const symrefCheckBefore = yield* Effect.result(
+              runReadOnlyGit(
+                "WorkspaceBundle.checkBranchSymbolicRef",
                 input.repoCwd,
-                ["update-ref", "-d", refName, expectedBranchHeadSha],
+                ["--git-dir", expectedNormalized, "symbolic-ref", "-q", refName],
                 { allowNonZeroExit: true },
               ),
             );
-            let deleteBranchDetail: string | null = null;
-            if (Result.isFailure(deleteBranchResult)) {
-              deleteBranchDetail = deleteBranchResult.failure.message;
-            } else if (deleteBranchResult.success.exitCode !== 0) {
-              const stderr = deleteBranchResult.success.stderr.trim();
-              const stdout = deleteBranchResult.success.stdout.trim();
-              deleteBranchDetail =
-                stderr.length > 0
-                  ? stderr
-                  : stdout.length > 0
-                    ? stdout
-                    : `exit code ${deleteBranchResult.success.exitCode}`;
-            }
-
-            if (deleteBranchDetail !== null) {
-              const verifyBranchResult = yield* Effect.result(
-                runGit(
-                  "WorkspaceBundle.verifyBranchDeleted",
-                  input.repoCwd,
-                  ["rev-parse", "--verify", "--quiet", refName],
-                  { allowNonZeroExit: true },
-                ),
+            if (Result.isFailure(symrefCheckBefore)) {
+              branchError = symrefCheckBefore.failure;
+            } else if (symrefCheckBefore.success.exitCode === 0) {
+              // Ref is a symbolic ref, not a direct branch owned by this transfer:
+              // never delete the symref or its target.
+              yield* Effect.logWarning(
+                "Skipping branch deletion because ref is a symbolic ref rather than a direct branch.",
+                {
+                  repoCwd: input.repoCwd,
+                  expectedGitCommonDir: expectedNormalized,
+                  branch,
+                  targetRef: symrefCheckBefore.success.stdout.trim(),
+                },
               );
-              if (Result.isFailure(verifyBranchResult)) {
-                branchError = verifyBranchResult.failure;
-              } else if (verifyBranchResult.success.exitCode === 0) {
-                const actualSha = verifyBranchResult.success.stdout.trim();
-                if (actualSha.length > 0 && actualSha !== expectedBranchHeadSha) {
-                  // Branch now points to a different commit SHA — it is no longer our created
-                  // branch tip, so never force-delete it; return cleanly without touching it.
-                  yield* Effect.logWarning(
-                    "Skipping branch deletion because branch tip moved away from expected commit SHA.",
-                    {
-                      repoCwd: input.repoCwd,
-                      branch,
+            } else if (symrefCheckBefore.success.exitCode !== 1) {
+              const symrefDetail =
+                symrefCheckBefore.success.stderr.trim() ||
+                symrefCheckBefore.success.stdout.trim() ||
+                `exit code ${symrefCheckBefore.success.exitCode}`;
+              branchError = new WorkspaceBundleError({
+                code: "git_error",
+                message: `Failed to inspect symbolic-ref status for branch '${branch}' in '${input.repoCwd}': ${symrefDetail}`,
+              });
+            } else {
+              // Re-verify expectedGitCommonDir + filesystem identity immediately before
+              // deleting the ref with explicit `--git-dir` and `--no-deref`.
+              const reverifyRepoResult = yield* Effect.result(
+                verifyExpectedGitCommonDir({
+                  repoCwd: input.repoCwd,
+                  expectedGitCommonDir: input.expectedGitCommonDir,
+                  expectedGitCommonDirIdentity: input.expectedGitCommonDirIdentity,
+                }),
+              );
+              if (Result.isFailure(reverifyRepoResult)) {
+                branchError = reverifyRepoResult.failure;
+              } else {
+                const deleteBranchResult = yield* Effect.result(
+                  runGit(
+                    "WorkspaceBundle.deleteUnusedBranch",
+                    input.repoCwd,
+                    [
+                      "--git-dir",
+                      expectedNormalized,
+                      "update-ref",
+                      "--no-deref",
+                      "-d",
+                      refName,
                       expectedBranchHeadSha,
-                      actualSha,
-                    },
-                  );
-                } else {
-                  // Ref still points to expectedBranchHeadSha (e.g., transient .lock file):
-                  // fail with retryable git_error so cleanup retries once the lock clears.
-                  branchError = new WorkspaceBundleError({
-                    code: "git_error",
-                    message: `Failed to delete branch '${branch}' in '${input.repoCwd}': ${deleteBranchDetail}`,
-                  });
+                    ],
+                    { allowNonZeroExit: true },
+                  ),
+                );
+                let deleteBranchDetail: string | null = null;
+                if (Result.isFailure(deleteBranchResult)) {
+                  deleteBranchDetail = deleteBranchResult.failure.message;
+                } else if (deleteBranchResult.success.exitCode !== 0) {
+                  const stderr = deleteBranchResult.success.stderr.trim();
+                  const stdout = deleteBranchResult.success.stdout.trim();
+                  deleteBranchDetail =
+                    stderr.length > 0
+                      ? stderr
+                      : stdout.length > 0
+                        ? stdout
+                        : `exit code ${deleteBranchResult.success.exitCode}`;
                 }
-              } else if (verifyBranchResult.success.exitCode !== 1) {
-                const verifyDetail =
-                  verifyBranchResult.success.stderr.trim() ||
-                  verifyBranchResult.success.stdout.trim() ||
-                  `exit code ${verifyBranchResult.success.exitCode}`;
-                branchError = new WorkspaceBundleError({
-                  code: "git_error",
-                  message: `Failed to verify deletion of branch '${branch}' in '${input.repoCwd}': ${verifyDetail}`,
-                });
+
+                if (deleteBranchDetail !== null) {
+                  const symrefCheckAfter = yield* Effect.result(
+                    runReadOnlyGit(
+                      "WorkspaceBundle.verifyBranchNotSymbolicRef",
+                      input.repoCwd,
+                      ["--git-dir", expectedNormalized, "symbolic-ref", "-q", refName],
+                      { allowNonZeroExit: true },
+                    ),
+                  );
+                  if (Result.isFailure(symrefCheckAfter)) {
+                    branchError = symrefCheckAfter.failure;
+                  } else if (symrefCheckAfter.success.exitCode === 0) {
+                    yield* Effect.logWarning(
+                      "Skipping branch deletion because ref became a symbolic ref.",
+                      {
+                        repoCwd: input.repoCwd,
+                        expectedGitCommonDir: expectedNormalized,
+                        branch,
+                        targetRef: symrefCheckAfter.success.stdout.trim(),
+                      },
+                    );
+                  } else if (symrefCheckAfter.success.exitCode !== 1) {
+                    const symrefAfterDetail =
+                      symrefCheckAfter.success.stderr.trim() ||
+                      symrefCheckAfter.success.stdout.trim() ||
+                      `exit code ${symrefCheckAfter.success.exitCode}`;
+                    branchError = new WorkspaceBundleError({
+                      code: "git_error",
+                      message: `Failed to verify symbolic-ref status for branch '${branch}' in '${input.repoCwd}': ${symrefAfterDetail}`,
+                    });
+                  } else {
+                    const verifyBranchResult = yield* Effect.result(
+                      runReadOnlyGit(
+                        "WorkspaceBundle.verifyBranchDeleted",
+                        input.repoCwd,
+                        [
+                          "--git-dir",
+                          expectedNormalized,
+                          "rev-parse",
+                          "--verify",
+                          "--quiet",
+                          refName,
+                        ],
+                        { allowNonZeroExit: true },
+                      ),
+                    );
+                    if (Result.isFailure(verifyBranchResult)) {
+                      branchError = verifyBranchResult.failure;
+                    } else if (verifyBranchResult.success.exitCode === 0) {
+                      const actualSha = verifyBranchResult.success.stdout.trim();
+                      if (actualSha.length > 0 && actualSha !== expectedBranchHeadSha) {
+                        // Branch now points to a different commit SHA — it is no longer our created
+                        // branch tip, so never force-delete it; return cleanly without touching it.
+                        yield* Effect.logWarning(
+                          "Skipping branch deletion because branch tip moved away from expected commit SHA.",
+                          {
+                            repoCwd: input.repoCwd,
+                            branch,
+                            expectedBranchHeadSha,
+                            actualSha,
+                          },
+                        );
+                      } else {
+                        // Ref still points to expectedBranchHeadSha (e.g., transient .lock file):
+                        // fail with retryable git_error so cleanup retries once the lock clears.
+                        branchError = new WorkspaceBundleError({
+                          code: "git_error",
+                          message: `Failed to delete branch '${branch}' in '${input.repoCwd}': ${deleteBranchDetail}`,
+                        });
+                      }
+                    } else if (verifyBranchResult.success.exitCode !== 1) {
+                      const verifyDetail =
+                        verifyBranchResult.success.stderr.trim() ||
+                        verifyBranchResult.success.stdout.trim() ||
+                        `exit code ${verifyBranchResult.success.exitCode}`;
+                      branchError = new WorkspaceBundleError({
+                        code: "git_error",
+                        message: `Failed to verify deletion of branch '${branch}' in '${input.repoCwd}': ${verifyDetail}`,
+                      });
+                    }
+                  }
+                }
               }
             }
           }
@@ -1615,19 +1724,27 @@ const make = Effect.gen(function* () {
         }
         const registeredEntry = registeredEntryResult.success;
         const expectedBranch = allocation.branch.length > 0 ? allocation.branch : null;
+        const registeredHeadSha =
+          registeredEntry?.headSha !== null &&
+          registeredEntry?.headSha !== undefined &&
+          registeredEntry.headSha.trim().length > 0
+            ? registeredEntry.headSha.trim()
+            : null;
+        const headShaMatchesAllowed =
+          registeredHeadSha !== null &&
+          allocation.allowedBranchHeadShas.includes(registeredHeadSha);
         const matchesOwnedWorktree =
           registeredEntry !== null &&
           !registeredEntry.isMain &&
+          headShaMatchesAllowed &&
           (expectedBranch !== null
             ? registeredEntry.branch === expectedBranch
-            : registeredEntry.branch === null &&
-              headSha.length > 0 &&
-              registeredEntry.headSha === headSha);
+            : registeredEntry.branch === null);
 
         // NEVER call recursive rm -rf on an unregistered directory and NEVER remove a worktree or
-        // branch checked out on a different branch. Only remove worktreePath (and createdBranch)
-        // when findRegisteredWorktree confirms worktreePath is registered as a non-main worktree
-        // matching this transfer's branch (or detached HEAD commit).
+        // branch checked out on a different branch or commit SHA. Only remove worktreePath (and
+        // createdBranch) when findRegisteredWorktree confirms worktreePath is registered as a
+        // non-main worktree matching this transfer's branch and transfer-authored commit SHA.
         if (!matchesOwnedWorktree) {
           yield* clearOwnership;
           return;
@@ -1646,7 +1763,7 @@ const make = Effect.gen(function* () {
             worktreePath: allocation.worktreePath,
             branch: shouldDeleteBranch ? allocation.branch : null,
             expectedBranch,
-            expectedBranchHeadSha: registeredEntry.headSha,
+            expectedBranchHeadSha: registeredHeadSha,
           }),
         );
         if (Result.isSuccess(cleanupPartialResult)) {
@@ -1768,7 +1885,9 @@ const make = Effect.gen(function* () {
               gitCommonDirIdentity,
               worktreePath,
               branch: branchAllocation.branch,
-              branchHeadSha: null,
+              baseCommitSha: headSha,
+              branchHeadSha: headSha,
+              allowedBranchHeadShas: [headSha],
               createdBranch: !branchAllocation.useExistingBranch,
             };
 
@@ -1819,23 +1938,15 @@ const make = Effect.gen(function* () {
               return yield* addResult.failure;
             }
 
-            const createdHeadResult = yield* runReadOnlyGit(
-              "WorkspaceBundle.resolveCreatedBranchHead",
-              input.repoCwd,
-              ["rev-parse", "--verify", "--quiet", `refs/heads/${branchAllocation.branch}`],
-              { allowNonZeroExit: true },
-            );
-            const resolvedBranchHeadSha =
-              createdHeadResult.exitCode === 0 && createdHeadResult.stdout.trim().length > 0
-                ? createdHeadResult.stdout.trim()
-                : headSha;
             const createdAllocation: AllocatedWorkspaceWorktree = {
               ...allocation,
-              branchHeadSha: resolvedBranchHeadSha,
+              baseCommitSha: headSha,
+              branchHeadSha: headSha,
+              allowedBranchHeadShas: [headSha],
             };
             gitWorktreeAddSucceeded = true;
             createdWorktreePath = worktreePath;
-            createdBranchHeadSha = resolvedBranchHeadSha;
+            createdBranchHeadSha = headSha;
             if (!branchAllocation.useExistingBranch) {
               createdBranchName = branchAllocation.branch;
             }
@@ -1918,16 +2029,7 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const finalHeadResult = yield* runReadOnlyGit(
-        "WorkspaceBundle.resolveFinalBranchHead",
-        input.repoCwd,
-        ["rev-parse", "--verify", "--quiet", `refs/heads/${branchAllocation.branch}`],
-        { allowNonZeroExit: true },
-      );
-      const finalBranchHeadSha =
-        finalHeadResult.exitCode === 0 && finalHeadResult.stdout.trim().length > 0
-          ? finalHeadResult.stdout.trim()
-          : (createdBranchHeadSha ?? headSha);
+      const authoredBranchHeadSha = createdBranchHeadSha ?? headSha;
       committed = true;
       return {
         branch: branchAllocation.branch,
@@ -1936,7 +2038,9 @@ const make = Effect.gen(function* () {
         gitCommonDir,
         gitCommonDirIdentity,
         headSha,
-        branchHeadSha: finalBranchHeadSha,
+        baseCommitSha: headSha,
+        branchHeadSha: authoredBranchHeadSha,
+        allowedBranchHeadShas: [headSha],
         branchRenamedFrom: branchAllocation.branchRenamedFrom,
         warnings: branchAllocation.warning !== null ? [branchAllocation.warning] : [],
       } satisfies ImportWorkspaceBundleResult;

@@ -1958,4 +1958,129 @@ describe("WorkspaceBundle", () => {
         });
       }).pipe(Effect.provide(makeTestLayer())),
   );
+
+  it.effect(
+    "never dereferences or deletes symbolic branch refs, verifies worktree HEAD SHA before removal, and uses --git-dir + --no-deref with pre-delete identity re-verification",
+    () =>
+      Effect.gen(function* () {
+        const baseFs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseVcsProcess = yield* VcsProcess.VcsProcess;
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+
+        const root = yield* baseFs.makeTempDirectoryScoped({
+          prefix: "t3-wb-symref-and-head-cas-",
+        });
+        const repoPath = path.join(root, "repo");
+        yield* baseFs.makeDirectory(repoPath, { recursive: true });
+        yield* git(repoPath, ["init", "-b", "main"]);
+        yield* baseFs.writeFileString(path.join(repoPath, "file.txt"), "base\n");
+        yield* git(repoPath, ["add", "-A"]);
+        yield* git(repoPath, ["commit", "-m", "init"]);
+
+        const repoInfo = (yield* bundleService.resolveGitCommonDirIdentity(repoPath))!;
+        const baseSha = (yield* git(repoPath, ["rev-parse", "HEAD"])).trim();
+
+        // 1. Symbolic branch ref pointing to refs/heads/other-branch at <expectedSha>:
+        //    removeWorktree MUST refuse to dereference or delete EITHER refs/heads/other-branch
+        //    OR refs/heads/<branch>!
+        const targetBranch = "other-branch";
+        const symrefBranch = "feat/symref-branch";
+        yield* git(repoPath, ["branch", targetBranch, baseSha]);
+        yield* git(repoPath, [
+          "symbolic-ref",
+          `refs/heads/${symrefBranch}`,
+          `refs/heads/${targetBranch}`,
+        ]);
+
+        yield* bundleService.removeWorktree({
+          repoCwd: repoPath,
+          expectedGitCommonDir: repoInfo.gitCommonDir,
+          expectedGitCommonDirIdentity: repoInfo.identity,
+          branch: symrefBranch,
+          expectedBranchHeadSha: baseSha,
+        });
+
+        expect((yield* git(repoPath, ["rev-parse", `refs/heads/${targetBranch}`])).trim()).toBe(
+          baseSha,
+        );
+        expect((yield* git(repoPath, ["symbolic-ref", `refs/heads/${symrefBranch}`])).trim()).toBe(
+          `refs/heads/${targetBranch}`,
+        );
+
+        // 2. Registered worktree whose HEAD moved to a newer commit than expectedBranchHeadSha:
+        //    removeWorktree MUST refuse with git_error and preserve BOTH worktree and branch!
+        const userCommitBranch = "feat/user-commit-in-wt";
+        const userCommitWt = path.join(root, "user-commit-wt");
+        yield* git(repoPath, ["worktree", "add", "-b", userCommitBranch, userCommitWt, baseSha]);
+        yield* baseFs.writeFileString(path.join(userCommitWt, "user.txt"), "user commit\n");
+        yield* git(userCommitWt, ["add", "user.txt"]);
+        yield* git(userCommitWt, ["commit", "-m", "user work inside worktree"]);
+        const userNewSha = (yield* git(userCommitWt, ["rev-parse", "HEAD"])).trim();
+        expect(userNewSha).not.toBe(baseSha);
+
+        const refusedWorktreeRes = yield* Effect.result(
+          bundleService.removeWorktree({
+            repoCwd: repoPath,
+            expectedGitCommonDir: repoInfo.gitCommonDir,
+            expectedGitCommonDirIdentity: repoInfo.identity,
+            worktreePath: userCommitWt,
+            branch: userCommitBranch,
+            expectedBranch: userCommitBranch,
+            expectedBranchHeadSha: baseSha,
+          }),
+        );
+        expect(Result.isFailure(refusedWorktreeRes)).toBe(true);
+        if (Result.isFailure(refusedWorktreeRes)) {
+          expect(refusedWorktreeRes.failure.code).toBe("git_error");
+        }
+        expect(yield* baseFs.exists(userCommitWt)).toBe(true);
+        expect(yield* baseFs.readFileString(path.join(userCommitWt, "user.txt"))).toBe(
+          "user commit\n",
+        );
+        expect((yield* git(repoPath, ["rev-parse", `refs/heads/${userCommitBranch}`])).trim()).toBe(
+          userNewSha,
+        );
+
+        // Clean up userCommitWt for subsequent check.
+        yield* git(repoPath, ["worktree", "remove", "--force", userCommitWt]);
+
+        // 3. Normal direct branch deletion invokes git with `--git-dir <expectedGitCommonDir>`
+        //    and `update-ref --no-deref -d <ref> <expectedSha>`!
+        const observedDeleteArgs: Array<ReadonlyArray<string>> = [];
+        const spyVcsLayer = Layer.succeed(VcsProcess.VcsProcess, {
+          run: (runInput) => {
+            if (runInput.operation === "WorkspaceBundle.deleteUnusedBranch") {
+              observedDeleteArgs.push(runInput.args);
+            }
+            return baseVcsProcess.run(runInput);
+          },
+        });
+        const spyBundleLayer = Layer.fresh(WorkspaceBundle.layer).pipe(Layer.provide(spyVcsLayer));
+
+        yield* Effect.gen(function* () {
+          const svc = yield* WorkspaceBundle.WorkspaceBundle;
+          yield* svc.removeWorktree({
+            repoCwd: repoPath,
+            expectedGitCommonDir: repoInfo.gitCommonDir,
+            expectedGitCommonDirIdentity: repoInfo.identity,
+            branch: userCommitBranch,
+            expectedBranchHeadSha: userNewSha,
+          });
+        }).pipe(Effect.provide(spyBundleLayer));
+
+        expect(observedDeleteArgs).toEqual([
+          [
+            "--git-dir",
+            repoInfo.gitCommonDir,
+            "update-ref",
+            "--no-deref",
+            "-d",
+            `refs/heads/${userCommitBranch}`,
+            userNewSha,
+          ],
+        ]);
+        expect((yield* git(repoPath, ["branch", "--list", userCommitBranch])).trim()).toBe("");
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
 });
