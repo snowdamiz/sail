@@ -1,32 +1,15 @@
-import type { ReactNode } from "react";
 import { useGT } from "gt-react";
+import { AlertTriangleIcon, CheckIcon, RefreshCwIcon } from "lucide-react";
+import type { ReactNode } from "react";
+
+import { cn } from "~/lib/utils";
+import { SettingsGroup } from "../../settings/SettingsGroup";
+import { Alert, AlertDescription } from "../../ui/alert";
+import { Badge } from "../../ui/badge";
+import { Button } from "../../ui/button";
+import { Spinner } from "../../ui/spinner";
 import { useBoatAccess } from "../access";
 import type { Setup, SetupAction } from "../types";
-import { Icon } from "./Icons";
-import { Dots } from "./common";
-
-const STEPS: {
-  id: Exclude<Setup, "starting" | "ready">;
-  title: string;
-  body: string;
-  button: string;
-  busy: string;
-}[] = [
-  {
-    id: "installBoat",
-    title: "Install the Boat CLI",
-    body: "Sail uses the Boat CLI on this server to run cloud machines on your Boat account.",
-    button: "Install Boat CLI",
-    busy: "Installing",
-  },
-  {
-    id: "signInBoat",
-    title: "Sign in to Boat",
-    body: "",
-    button: "Sign in to Boat",
-    busy: "Waiting for sign-in",
-  },
-];
 
 export function SetupView({
   setup,
@@ -35,96 +18,152 @@ export function SetupView({
   requesting,
   onAction,
 }: {
-  setup: Setup;
-  busy: boolean;
-  signIn: ReactNode;
-  requesting: boolean;
-  onAction: (a: SetupAction) => void;
+  readonly setup: Setup;
+  readonly busy: boolean;
+  readonly signIn: ReactNode;
+  readonly requesting: boolean;
+  readonly onAction: (action: SetupAction) => void;
 }) {
   const gt = useGT();
   const canAct = useBoatAccess().can("setup_action");
   const locked = busy || requesting || !canAct || signIn !== null;
+
   if (setup === "starting" || setup === "ready") {
     return (
-      <div className="view center">
-        <p className="caption">
-          <Dots /> checking your setup
-        </p>
-      </div>
+      <SettingsGroup divided={false}>
+        <div
+          role="status"
+          className="flex items-center justify-center gap-2.5 px-4 py-12 text-sm text-muted-foreground"
+        >
+          <Spinner aria-hidden="true" size="sm" tone="muted" />
+          <span>{gt("Checking your setup…")}</span>
+        </div>
+      </SettingsGroup>
     );
   }
-  const current = setup === "installT3" ? STEPS.length : STEPS.findIndex((s) => s.id === setup);
+
+  const steps: ReadonlyArray<{
+    readonly id: "installBoat" | "signInBoat";
+    readonly title: string;
+    readonly body: string;
+    readonly button: string;
+    readonly busyLabel: string;
+  }> = [
+    {
+      id: "installBoat",
+      title: gt("Install the Boat CLI"),
+      body: gt("Sail uses the Boat CLI on this server to run cloud machines on your Boat account."),
+      button: gt("Install Boat CLI"),
+      busyLabel: gt("Installing…"),
+    },
+    {
+      id: "signInBoat",
+      title: gt("Sign in to Boat"),
+      body: gt("Machines bill to your Boat plan."),
+      button: gt("Sign in to Boat"),
+      busyLabel: gt("Waiting for sign-in…"),
+    },
+  ];
+
+  const current = setup === "installT3" ? steps.length : steps.findIndex((s) => s.id === setup);
 
   return (
-    <div className="view">
-      <div className="view-body">
-        <h1 className="display">Set sail in two steps</h1>
-        <p className="lede">
-          Launch cloud machines inside Sail that sleep for free when no agent is working.
+    <SettingsGroup>
+      <div className="px-4 py-4 sm:px-5 sm:py-5">
+        <h2 className="text-base font-semibold text-foreground">{gt("Set sail in two steps")}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {gt("Launch cloud machines inside Sail that sleep for free when no agent is working.")}
         </p>
-        <ol className="steps">
-          {STEPS.map((s, i) => {
-            const status = i < current ? "done" : i === current ? "current" : "todo";
-            return (
-              <li
-                key={s.id}
-                className={`step is-${status}`}
-                aria-current={status === "current" ? "step" : undefined}
+      </div>
+
+      <ol className="divide-y divide-border/50">
+        {steps.map((step, index) => {
+          const status = index < current ? "done" : index === current ? "current" : "todo";
+          return (
+            <li
+              key={step.id}
+              aria-current={status === "current" ? "step" : undefined}
+              className={cn(
+                "flex items-start gap-3.5 px-4 py-4 sm:px-5",
+                status === "todo" && "opacity-60",
+              )}
+            >
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full font-mono text-xs font-medium",
+                  status === "done"
+                    ? "bg-success/15 text-success-foreground"
+                    : status === "current"
+                      ? "bg-primary text-primary-foreground"
+                      : "border border-border bg-muted/50 text-muted-foreground",
+                )}
               >
-                <span className="step-num">
-                  {status === "done" ? <Icon name="check" size={12} /> : `0${i + 1}`}
-                </span>
-                <div className="step-text">
-                  <span className="step-title">
-                    {s.id === "signInBoat" ? gt("Sign in to Boat") : s.title}
-                  </span>
-                  {status === "current" ? (
-                    <span className="step-body">
-                      {s.id === "signInBoat" ? gt("Machines bill to your Boat plan.") : s.body}
-                    </span>
+                {status === "done" ? <CheckIcon className="size-3.5" /> : index + 1}
+              </span>
+              <div className="min-w-0 flex-1 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-foreground">{step.title}</span>
+                  {status === "done" ? (
+                    <Badge variant="success" size="sm">
+                      {gt("Done")}
+                    </Badge>
                   ) : null}
-                  {status === "current" && signIn === null ? (
-                    <button
-                      type="button"
-                      className="btn btn-solid btn-lg"
+                </div>
+                {status === "current" ? (
+                  <p className="text-xs leading-relaxed text-muted-foreground">{step.body}</p>
+                ) : null}
+                {status === "current" && signIn === null ? (
+                  <div>
+                    <Button
+                      size="sm"
+                      variant="default"
                       disabled={locked}
                       aria-busy={busy}
-                      onClick={() => onAction(s.id)}
+                      onClick={() => onAction(step.id)}
                     >
                       {busy ? (
                         <>
-                          <Dots /> {s.id === "signInBoat" ? gt("Waiting for sign-in…") : s.busy}
+                          <Spinner aria-hidden="true" />
+                          {step.busyLabel}
                         </>
-                      ) : s.id === "signInBoat" ? (
-                        gt("Sign in to Boat")
                       ) : (
-                        s.button
+                        step.button
                       )}
-                    </button>
-                  ) : null}
-                  {status === "current" ? signIn : null}
-                </div>
-              </li>
-            );
-          })}
-        </ol>
-        {setup === "installT3" ? (
-          <p className="lede" style={{ marginTop: 12 }}>
-            This server could not run its own <code>t3</code> command. Restart the server, then
-            check again.
-          </p>
-        ) : null}
-      </div>
-      <div className="view-foot">
-        <button
-          type="button"
-          className="btn btn-link"
+                    </Button>
+                  </div>
+                ) : null}
+                {status === "current" ? signIn : null}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+
+      {setup === "installT3" ? (
+        <div className="px-4 py-3.5 sm:px-5">
+          <Alert variant="warning">
+            <AlertTriangleIcon aria-hidden="true" />
+            <AlertDescription>
+              {gt(
+                "This server could not run its own t3 command. Restart the server, then check again.",
+              )}
+            </AlertDescription>
+          </Alert>
+        </div>
+      ) : null}
+
+      <div className="flex items-center justify-end bg-muted/20 px-4 py-2.5 sm:px-5">
+        <Button
+          size="xs"
+          variant="ghost-muted"
           disabled={locked}
           onClick={() => onAction("recheck")}
         >
-          Done it already? Check again
-        </button>
+          <RefreshCwIcon aria-hidden="true" className="size-3.5" />
+          {gt("Done it already? Check again")}
+        </Button>
       </div>
-    </div>
+    </SettingsGroup>
   );
 }

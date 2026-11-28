@@ -1,292 +1,185 @@
-import { useGT } from "gt-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useBoatAccess } from "../access";
-import type { MachineView, Size } from "../types";
-import {
-  ACTIONS,
-  machineKey,
-  menuActions,
-  needsProject,
-  primaryAction,
-  seedOf,
-  signInTo,
-  useMachineActionLabel,
-  type Action,
-  type MenuItem,
-} from "../machine";
-import { AgentName, AgentNames } from "./AgentLogos";
-import { BoatIcon } from "./BoatIcon";
-import { DeleteErrorNote, Dots, useArmed, useDetail } from "./common";
-import { Icon } from "./Icons";
+import { useGT, useMessages } from "gt-react";
+import { FolderPlusIcon, ServerIcon } from "lucide-react";
 
-interface Props {
-  machine: MachineView;
-  sizes: Size[];
-  /** label of the command currently running for this machine */
-  pending: string | null;
-  signingIn: boolean;
-  /** why the last delete was refused (work still running) */
-  deleteError: string | null;
-  onAction: (a: Action) => void;
-  onDismissDeleteError: () => void;
-  onHover: (key: string | null) => void;
-  /** open this machine's details (`pickProject`: with the project picker open); omitted while it can't have any */
-  onOpen?: (pickProject?: boolean) => void;
-}
+import { cn } from "~/lib/utils";
+import { ConnectionStatusDot } from "../../ConnectionStatusDot";
+import { ITEM_ROW_CLASSNAME } from "../../settings/itemRows";
+import { Badge } from "../../ui/badge";
+import { Button } from "../../ui/button";
+import { Spinner } from "../../ui/spinner";
+import { MACHINE_STATUS, hourly, machineKey } from "../machine";
+import type { MachineView, Size } from "../types";
+import { AgentName, AgentNames } from "./AgentLogos";
+import {
+  DeleteErrorAlert,
+  MachineActionButton,
+  MachineMenu,
+  type MachineControls,
+} from "./MachineActions";
+import { useDetail } from "./common";
 
 export function MachineRow({
-  machine: m,
-  sizes,
-  pending,
-  signingIn,
-  deleteError,
-  onAction,
-  onDismissDeleteError,
-  onHover,
+  machine,
+  size,
+  controls,
   onOpen,
-}: Props) {
+  onPickProject,
+}: {
+  readonly machine: MachineView;
+  readonly size: Size | undefined;
+  readonly controls: MachineControls;
+  readonly onOpen: () => void;
+  readonly onPickProject: () => void;
+}) {
   const gt = useGT();
-  const key = machineKey(m);
-  const access = useBoatAccess();
-  const actionLabel = useMachineActionLabel();
-  const paired = access.isPaired(m.environmentId);
-  const primary: Action | null =
-    !access.onHost && paired && m.state === "asleep" ? ACTIONS.wake : primaryAction(m, paired);
-  const detail = useDetail(m);
-  const extra = menuActions(m, sizes, paired).filter((a) => a !== primary);
-  const [armed, arm] = useArmed(); // two-step confirm for the primary "Remove"
-  // "Add a project…" picks from Sail's projects in the details view
-  const menuAction = (a: MenuItem) => ("kind" in a ? onOpen?.(true) : onAction(a));
-
-  const runPrimary = () => {
-    if (!primary) return;
-    if (primary.cmd === "delete_machine") arm(() => onAction(primary));
-    else onAction(primary);
-  };
+  const messages = useMessages();
+  const key = machineKey(machine);
+  const status = MACHINE_STATUS[machine.state];
+  const detail = useDetail(machine);
+  const cloning = machine.projects.filter((project) => project.status);
+  const showSignedOut = Boolean(machine.id && machine.signedOut.length > 0);
+  const showNeedsProject = !showSignedOut && controls.needsProject;
+  const hasSubRows =
+    controls.deleteRefusal !== null || showSignedOut || showNeedsProject || cloning.length > 0;
 
   return (
     <li
-      className={`row state-${m.state}${onOpen ? " is-openable" : ""}`}
-      onClick={(e) => {
-        // anywhere on the row except its own controls (buttons, menu)
-        if (onOpen && !(e.target as Element).closest("button:not(.row-name), [role=menu]"))
-          onOpen();
-      }}
-      onMouseEnter={() => onHover(key)}
-      onMouseLeave={() => onHover(null)}
-      onFocus={() => onHover(key)}
-      onBlur={() => onHover(null)}
+      className={cn(
+        ITEM_ROW_CLASSNAME,
+        "space-y-2.5 transition-colors",
+        controls.canOpen && "hover:bg-accent/25",
+      )}
     >
-      <BoatIcon state={m.state} seed={seedOf(key)} />
-      <div className="row-text">
-        <div className="row-title">
-          {onOpen ? (
-            <button className="row-name" aria-label={`Details for ${m.name}`}>
-              {m.name}
-            </button>
-          ) : (
-            <span className="row-name">{m.name}</span>
-          )}
-          <span className="chip">{m.size}</span>
-        </div>
-        <div className="row-detail" title={detail}>
-          {detail}
-        </div>
-      </div>
-      <div className="row-actions">
-        {pending ? (
-          <span className="row-busy">
-            <Dots /> {pending}
-          </span>
-        ) : primary ? (
-          <button
-            className={`btn btn-sm ${armed ? "btn-danger" : primary.solid ? "btn-solid" : "btn-outline"}`}
-            disabled={!access.can(primary.cmd)}
-            onClick={runPrimary}
-          >
-            {armed ? "Confirm" : actionLabel(primary)}
-          </button>
-        ) : null}
-        {m.id && !pending ? <RowMenu machine={m} actions={extra} onAction={menuAction} /> : null}
-      </div>
-      {deleteError ? (
-        <DeleteErrorNote
-          error={deleteError}
-          busy={!!pending}
-          onDeleteAnyway={() => onAction(ACTIONS.deleteAnyway)}
-          onKeep={onDismissDeleteError}
-        />
-      ) : null}
-      {m.id && m.signedOut.length ? (
-        <div className="row-note">
-          <span className="row-note-text">
-            <AgentNames names={m.signedOut} /> {m.signedOut.length === 1 ? "needs" : "need"} a
-            sign-in
-          </span>
-          {m.signedOut.map((agent) => (
-            <button
-              key={agent}
-              className="btn btn-link"
-              disabled={signingIn || !!pending || !access.can("sign_in_agent")}
-              onClick={() => onAction(signInTo(agent))}
-            >
-              {m.signedOut.length > 1 ? <AgentName name={agent} /> : gt("Sign in")}
-            </button>
-          ))}
-        </div>
-      ) : needsProject(m, paired) && onOpen ? (
-        <div className="row-note">
-          <span className="row-note-text">No projects yet</span>
-          <button
-            className="btn btn-link"
-            disabled={!access.can("add_project")}
-            onClick={() => onOpen(true)}
-          >
-            Add one
-          </button>
-        </div>
-      ) : null}
-      {m.projects
-        .filter((p) => p.status)
-        .map((p) => (
-          <div key={p.id} className="row-note">
-            <Dots />
-            <span className="row-note-text" title={`${p.title} · ${p.status}`}>
-              {p.title} · {p.status}
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 sm:flex-nowrap">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <div className="relative flex size-9 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">
+            <ServerIcon aria-hidden="true" className="size-4 text-muted-foreground" />
+            <span className="absolute -right-1 -bottom-1 rounded-full bg-card p-0.5">
+              <ConnectionStatusDot dotClassName={status.dotClassName} />
             </span>
           </div>
-        ))}
-    </li>
-  );
-}
 
-const MENU_GAP = 4; // between button and menu
-const MENU_MARGIN = 8; // menu ↔ window edge
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {controls.canOpen ? (
+                <button
+                  type="button"
+                  aria-label={gt("Details for {name}", { name: machine.name })}
+                  onClick={onOpen}
+                  className="max-w-full cursor-pointer truncate rounded-xs text-left text-sm font-medium text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                >
+                  {machine.name}
+                </button>
+              ) : (
+                <span className="max-w-full truncate text-sm font-medium text-foreground">
+                  {machine.name}
+                </span>
+              )}
+              <Badge size="sm" variant={status.badgeVariant}>
+                {messages(status.label)}
+              </Badge>
+              <Badge size="sm" variant="secondary">
+                <span className="font-mono">{machine.size}</span>
+              </Badge>
+              {size ? (
+                <span className="font-mono text-xs text-muted-foreground tabular-nums">
+                  {hourly(size.hourly)}
+                </span>
+              ) : null}
+            </div>
+            <p className="truncate text-xs text-muted-foreground" title={detail}>
+              {detail}
+            </p>
+          </div>
+        </div>
 
-function RowMenu({
-  machine,
-  actions,
-  onAction,
-}: {
-  machine: MachineView;
-  actions: MenuItem[];
-  onAction: (a: MenuItem) => void;
-}) {
-  const access = useBoatAccess();
-  const actionLabel = useMachineActionLabel();
-  const [open, setOpen] = useState(false);
-  const [confirm, setConfirm] = useState(false);
-  // anchored to the button's edge, opening toward the side with more room; scrolls if neither fits
-  const [pos, setPos] = useState<{
-    up: boolean;
-    edge: number;
-    right: number;
-    maxHeight: number;
-  } | null>(null);
-  const button = useRef<HTMLButtonElement>(null);
-  const menu = useRef<HTMLDivElement>(null);
+        <div className="flex shrink-0 items-center gap-1.5">
+          {controls.pendingLabel !== null ? (
+            <Button size="xs" variant="outline" disabled aria-busy={true}>
+              <Spinner aria-hidden="true" />
+              {controls.pendingLabel}
+            </Button>
+          ) : controls.rowPrimary !== null ? (
+            <MachineActionButton
+              targetKey={key}
+              control={controls.rowPrimary}
+              onRequest={controls.request}
+              size="xs"
+            />
+          ) : null}
+          {machine.id && !controls.busy ? (
+            <MachineMenu
+              targetKey={key}
+              machineName={machine.name}
+              controls={controls}
+              onPickProject={onPickProject}
+            />
+          ) : null}
+        </div>
+      </div>
 
-  useLayoutEffect(() => {
-    if (!open || !button.current || !menu.current) return;
-    const r = button.current.getBoundingClientRect();
-    const below = window.innerHeight - r.bottom - MENU_GAP - MENU_MARGIN;
-    const above = r.top - MENU_GAP - MENU_MARGIN;
-    const up = menu.current.offsetHeight > below && above > below;
-    setPos({
-      up,
-      edge: up ? window.innerHeight - r.top + MENU_GAP : r.bottom + MENU_GAP,
-      right: window.innerWidth - r.right,
-      maxHeight: up ? above : below,
-    });
-  }, [open]);
+      {hasSubRows ? (
+        <div className="space-y-2 sm:pl-12">
+          <DeleteErrorAlert controls={controls} />
 
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: Event) => {
-      if (e instanceof KeyboardEvent && e.key !== "Escape") return;
-      if (
-        e.type !== "resize" &&
-        e.type !== "keydown" &&
-        (menu.current?.contains(e.target as Node) || button.current?.contains(e.target as Node))
-      )
-        return;
-      setOpen(false);
-      setConfirm(false);
-      if (e instanceof KeyboardEvent) button.current?.focus();
-    };
-    // the menu is fixed-position: scrolling the list or resizing would leave it detached
-    document.addEventListener("pointerdown", close);
-    document.addEventListener("keydown", close);
-    document.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
-    return () => {
-      document.removeEventListener("pointerdown", close);
-      document.removeEventListener("keydown", close);
-      document.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
-    };
-  }, [open]);
+          {showSignedOut ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning/30 bg-warning-surface/70 px-3 py-2 text-xs">
+              <span className="text-warning-foreground">
+                <AgentNames names={machine.signedOut} />{" "}
+                {machine.signedOut.length === 1 ? gt("needs a sign-in") : gt("need a sign-in")}
+              </span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {machine.signedOut.map((agent) => {
+                  const signInControl = controls.signInAgentControl(agent);
+                  return (
+                    <Button
+                      key={agent}
+                      size="xs"
+                      variant="outline"
+                      disabled={signInControl.disabled}
+                      onClick={() => {
+                        if (signInControl.kind === "ordinary") {
+                          controls.request({ kind: "run", action: signInControl.action });
+                        }
+                      }}
+                    >
+                      {machine.signedOut.length > 1 ? <AgentName name={agent} /> : gt("Sign in")}
+                    </Button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : showNeedsProject ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground">
+              <span className="inline-flex items-center gap-1.5">
+                <FolderPlusIcon aria-hidden="true" className="size-3.5" />
+                {gt("No projects yet")}
+              </span>
+              <Button
+                size="xs"
+                variant="ghost"
+                disabled={!controls.canAddProject}
+                onClick={onPickProject}
+              >
+                {gt("Add one")}
+              </Button>
+            </div>
+          ) : null}
 
-  useEffect(() => {
-    if (open && pos) menu.current?.querySelector("button")?.focus();
-  }, [open, pos]);
-
-  const choose = (a: MenuItem) => {
-    setOpen(false);
-    setConfirm(false);
-    onAction(a);
-  };
-
-  return (
-    <>
-      <button
-        ref={button}
-        className={`btn btn-icon${open ? " is-open" : ""}`}
-        aria-label={`More for ${machine.name}`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
-      >
-        <Icon name="more" />
-      </button>
-      {open ? (
-        <div
-          ref={menu}
-          role="menu"
-          className={`menu${pos?.up ? " is-up" : ""}`}
-          style={
-            pos
-              ? {
-                  [pos.up ? "bottom" : "top"]: pos.edge,
-                  right: pos.right,
-                  maxHeight: pos.maxHeight,
-                }
-              : { visibility: "hidden" }
-          }
-        >
-          <div className="menu-label">{machine.name}</div>
-          {actions.map((a) => (
-            <button
-              key={a.label}
-              role="menuitem"
-              className="menu-item"
-              disabled={!access.can("kind" in a ? "add_project" : a.cmd)}
-              onClick={() => choose(a)}
+          {cloning.map((project) => (
+            <div
+              key={project.id}
+              className="flex items-center gap-2 text-xs text-muted-foreground"
+              title={`${project.title} · ${project.status}`}
             >
-              {actionLabel(a)}
-            </button>
+              <Spinner aria-hidden="true" size="xs" tone="muted" />
+              <span className="truncate">
+                {project.title} · {project.status}
+              </span>
+            </div>
           ))}
-          <div className="menu-sep" />
-          <button
-            role="menuitem"
-            className={`menu-item danger${confirm ? " is-armed" : ""}`}
-            disabled={!access.can("delete_machine")}
-            onClick={() => (confirm ? choose(ACTIONS.del) : setConfirm(true))}
-          >
-            {confirm ? "Click again to delete forever" : "Delete machine…"}
-          </button>
         </div>
       ) : null}
-    </>
+    </li>
   );
 }

@@ -1,185 +1,155 @@
-import { useAtomValue } from "@effect/atom-react";
-import { environmentSupportsLocalSessions } from "@t3tools/contracts";
-import { useGT } from "gt-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { serverEnvironment } from "~/state/server";
-import { useBoatAccess } from "../access";
+import { useGT, useMessages } from "gt-react";
+import { CheckIcon, ChevronDownIcon, ClockIcon, ServerIcon } from "lucide-react";
+import { useState, type ReactNode } from "react";
+
+import { cn } from "~/lib/utils";
+import { ConnectionStatusDot } from "../../ConnectionStatusDot";
+import { SettingsGroup } from "../../settings/SettingsGroup";
+import { ITEM_ROW_CLASSNAME } from "../../settings/itemRows";
+import { Badge } from "../../ui/badge";
+import { Button } from "../../ui/button";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../../ui/collapsible";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../../ui/menu";
+import { Skeleton } from "../../ui/skeleton";
+import { Spinner } from "../../ui/spinner";
+import { Switch } from "../../ui/switch";
 import { useMachineDetails } from "../api";
-import type { MachineDetails as Details, LocalProject, MachineView, Size } from "../types";
 import {
   ACTIONS,
-  autoSleep,
+  MACHINE_STATUS,
   duration,
   hourly,
-  STAY_AWAKE,
-  keepAwake,
   machineKey,
   money,
-  powerAction,
-  primaryAction,
   resizeHint,
-  resizeTo,
-  seedOf,
   shortDate,
   signInTo,
   sizeOf,
   timeLeft,
   useMachineActionLabel,
-  type Action,
 } from "../machine";
+import type { MachineDetails as Details, MachineView, Size } from "../types";
 import { AgentName } from "./AgentLogos";
-import { BoatIcon } from "./BoatIcon";
-import { DeleteErrorNote, Dots, useArmed, useDetail, useEscape, useSecsLeft } from "./common";
-import { Icon } from "./Icons";
+import {
+  DeleteErrorAlert,
+  MachineActionButton,
+  type MachineControls,
+  type PowerControls,
+} from "./MachineActions";
 import { ProjectPicker } from "./ProjectPicker";
-import { SubHeader } from "./SubHeader";
-
-interface Props {
-  machine: MachineView;
-  sizes: Size[];
-  /** latest UiState; every new one triggers a details refetch */
-  version: unknown;
-  pending: string | null;
-  deleteError: string | null;
-  /** opened from the row's "Add a project…" or "Add one": start with the project picker open */
-  pickProject: boolean;
-  signIn: ReactNode;
-  signingIn: boolean;
-  onAction: (a: Action) => void;
-  onAddProject: (p: LocalProject) => void;
-  onDismissDeleteError: () => void;
-  onError: (text: string) => void;
-  onBack: () => void;
-}
+import { useDetail, useSecsLeft } from "./common";
 
 export function MachineDetails({
-  machine: m,
+  machine,
   sizes,
   version,
-  pending,
-  deleteError,
-  pickProject,
+  controls,
+  supportsLocalProjects,
+  openProjectPicker,
   signIn,
-  signingIn,
-  onAction,
-  onAddProject,
-  onDismissDeleteError,
   onError,
-  onBack,
-}: Props) {
-  const d = useMachineDetails(m.id, version, onError);
-  const busy = !!pending;
-  const gone = m.state === "missing";
-  const access = useBoatAccess();
-  const actionLabel = useMachineActionLabel();
-  const paired = access.isPaired(m.environmentId);
-  const primary: Action = primaryAction(m, paired) ?? (paired ? ACTIONS.open : ACTIONS.pair);
-  const [primaryArmed, armPrimary] = useArmed();
-
-  const runPrimary = () => {
-    if (primary.cmd === "delete_machine") armPrimary(() => onAction(primary));
-    else onAction(primary);
-  };
+}: {
+  readonly machine: MachineView;
+  readonly sizes: readonly Size[];
+  readonly version: unknown;
+  readonly controls: MachineControls;
+  readonly supportsLocalProjects: boolean;
+  readonly openProjectPicker: boolean;
+  readonly signIn: ReactNode;
+  readonly onError: (text: string) => void;
+}) {
+  const gt = useGT();
+  const messages = useMessages();
+  const details = useMachineDetails(machine.id, version, onError);
+  const status = MACHINE_STATUS[machine.state];
+  const size = sizeOf(sizes, machine.size);
+  const detail = useDetail(machine);
+  const key = machineKey(machine);
+  const gone = machine.state === "missing";
 
   return (
-    <div className={`view details state-${m.state}`}>
-      <SubHeader title={m.name} onBack={onBack} />
-      <div className="view-body details-body">
-        <Glance m={m} size={sizeOf(sizes, m.size)} d={d} />
-        {gone ? null : <Power m={m} busy={busy} onAction={onAction} />}
-        <Agents m={m} d={d} pending={pending} signingIn={signingIn} onAction={onAction} />
-        {signIn}
-        <Connect m={m} d={d} pending={pending} signingIn={signingIn} onAction={onAction} />
-        <Projects m={m} pickProject={pickProject} onAddProject={onAddProject} />
-        <MachineMore
-          m={m}
-          sizes={sizes}
-          busy={busy}
-          deleteError={deleteError}
-          onAction={onAction}
-          onDismissDeleteError={onDismissDeleteError}
+    <div className="space-y-6">
+      <SettingsGroup>
+        <div className="flex flex-wrap items-start justify-between gap-4 px-4 py-4 sm:px-5">
+          <div className="flex min-w-0 flex-1 items-start gap-3">
+            <div className="relative mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">
+              <ServerIcon aria-hidden="true" className="size-4.5 text-muted-foreground" />
+              <span className="absolute -right-1 -bottom-1 rounded-full bg-card p-0.5">
+                <ConnectionStatusDot dotClassName={status.dotClassName} />
+              </span>
+            </div>
+            <div className="min-w-0 flex-1 space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="truncate text-base font-semibold text-foreground">{machine.name}</h2>
+                <Badge size="sm" variant={status.badgeVariant}>
+                  {messages(status.label)}
+                </Badge>
+                <Badge size="sm" variant="secondary">
+                  <span className="font-mono">{machine.size}</span>
+                </Badge>
+              </div>
+              <p className="text-xs text-muted-foreground">{detail}</p>
+              {size ? (
+                <p className="font-mono text-xs text-muted-foreground tabular-nums">
+                  {size.spec} · {hourly(size.hourly)}
+                </p>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="shrink-0">
+            <MachineActionButton
+              targetKey={key}
+              control={controls.detailsPrimary}
+              onRequest={controls.request}
+              size="sm"
+              pendingLabel={controls.pendingLabel}
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 divide-y divide-border/50 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+          <StatCell label={gt("Today")} value={details ? money(details.costToday) : null} />
+          <StatCell label={gt("This month")} value={details ? money(details.costMonth) : null} />
+          <StatCell
+            label={gt("Awake today")}
+            value={details ? duration(details.awakeSecsToday) : null}
+          />
+        </div>
+      </SettingsGroup>
+
+      {controls.power !== null ? (
+        <PowerSection machine={machine} power={controls.power} controls={controls} />
+      ) : null}
+
+      <AgentsSection machine={machine} details={details} controls={controls} signIn={signIn} />
+
+      <ConnectSection details={details} controls={controls} />
+
+      {gone && !machine.projects.length ? null : (
+        <ProjectsSection
+          machine={machine}
+          controls={controls}
+          supportsLocalProjects={supportsLocalProjects}
+          openProjectPicker={openProjectPicker}
         />
-        <p className="details-meta">
-          {d ? (
-            <>
-              <span>Sail {d.t3Version}</span>
-              <span className="sep">·</span>
-              <span>created {shortDate(d.createdAt)}</span>
-              <span className="sep">·</span>
-              <span className="selectable details-id">{m.id}</span>
-            </>
-          ) : (
-            <span className="skel skel-meta" />
-          )}
-        </p>
-      </div>
-      <div className="view-foot details-foot">
-        <button
-          className={`btn btn-lg ${primaryArmed ? "btn-danger" : primary.solid ? "btn-solid" : "btn-outline"}`}
-          disabled={busy || !access.can(primary.cmd)}
-          aria-busy={busy}
-          onClick={runPrimary}
-        >
-          {pending ? (
-            <>
-              <Dots /> {pending}
-            </>
-          ) : primaryArmed ? (
-            "Confirm"
-          ) : (
-            <>
-              {actionLabel(primary)}
-              {primary.cmd === "open_machine" ? <Icon name="open" size={10} /> : null}
-            </>
-          )}
-        </button>
-      </div>
-    </div>
-  );
-}
+      )}
 
-/** What a user scans for first: is it working, what is it, what does it cost. */
-function Glance({ m, size, d }: { m: MachineView; size: Size | undefined; d: Details | null }) {
-  // "Working · 2 threads · 3 subagents" → headline "Working", the rest underneath
-  const detail = useDetail(m);
-  const [headline, ...rest] = detail.split(" · ");
-  return (
-    <section className="glance" aria-label={`${m.name}: ${detail}`}>
-      <div className="glance-top">
-        <div className="glance-boat">
-          <BoatIcon state={m.state} seed={seedOf(machineKey(m))} />
-        </div>
-        <div className="glance-text">
-          <span className="glance-state">
-            <i className="state-dot" aria-hidden />
-            {headline}
-          </span>
-          {rest.length ? <span className="glance-detail">{rest.join(" · ")}</span> : null}
-          <span className="glance-spec">
-            <span className="chip">{m.size}</span>
-            {size ? (
-              <>
-                <span>{size.spec}</span>
-                <span className="glance-rate">{hourly(size.hourly)}</span>
-              </>
-            ) : null}
-          </span>
-        </div>
-      </div>
-      <div className="glance-costs">
-        <Stat label="today" value={d && money(d.costToday)} />
-        <Stat label="this month" value={d && money(d.costMonth)} />
-        <Stat label="awake today" value={d && duration(d.awakeSecsToday)} />
-      </div>
-    </section>
-  );
-}
+      <MachineDangerSection machine={machine} size={size} controls={controls} />
 
-function Stat({ label, value }: { label: string; value: string | null }) {
-  return (
-    <div className="cost">
-      <span className="caption">{label}</span>
-      <span className="cost-value">{value ?? <span className="skel skel-value" />}</span>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-1 font-mono text-xs text-muted-foreground">
+        {details ? (
+          <>
+            <span>Sail {details.t3Version}</span>
+            <span aria-hidden="true">·</span>
+            <span>{gt("created {date}", { date: shortDate(details.createdAt) })}</span>
+            <span aria-hidden="true">·</span>
+            <span className="select-all">{machine.id}</span>
+          </>
+        ) : (
+          <Skeleton className="h-4 w-56" />
+        )}
+      </div>
     </div>
   );
 }
@@ -187,402 +157,464 @@ function Stat({ label, value }: { label: string; value: string | null }) {
 function Section({
   title,
   count,
-  extra,
   children,
 }: {
-  title: string;
-  count?: number;
-  extra?: ReactNode;
-  children: ReactNode;
+  readonly title: string;
+  readonly count?: number;
+  readonly children: ReactNode;
 }) {
   return (
-    <section className="section">
-      <div className="section-head">
-        <span className="caption">
-          {title}
-          {count ? <span className="count">{count}</span> : null}
-        </span>
-        <span className="section-rule" />
-        {extra}
+    <section className="space-y-2.5">
+      <div className="flex items-center gap-2 px-1">
+        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+        {count !== undefined && count > 0 ? (
+          <Badge size="sm" variant="secondary">
+            <span className="font-mono tabular-nums">{count}</span>
+          </Badge>
+        ) : null}
       </div>
       {children}
     </section>
   );
 }
 
-function Power({
-  m,
-  busy,
-  onAction,
-}: {
-  m: MachineView;
-  busy: boolean;
-  onAction: (a: Action) => void;
-}) {
-  const power = powerAction(m);
-  const actionLabel = useMachineActionLabel();
-  const access = useBoatAccess();
-  const canKeepAwake = access.can("keep_awake");
-  // optimistic, so the switch moves on click; the next state is the source of truth
-  const [want, setWant] = useState<boolean | null>(null);
-  useEffect(() => {
-    if (!busy) setWant(null);
-  }, [busy]);
-  const on = want ?? !m.keepAwakeForever;
-
+function StatCell({ label, value }: { readonly label: string; readonly value: string | null }) {
   return (
-    <Section title="power">
-      <label className="toggle">
-        <span className="toggle-text">
-          <span className="toggle-name">Auto sleep</span>
-          <span className="hint">
-            {on
-              ? "Sleeps 3 min after agents finish; asleep is free"
-              : "Stays up and bills until you turn this back on"}
-          </span>
-        </span>
-        <input
-          type="checkbox"
-          role="switch"
-          className="switch"
-          checked={on}
-          disabled={busy || !canKeepAwake}
-          onChange={(e) => {
-            setWant(e.target.checked);
-            onAction(autoSleep(e.target.checked));
-          }}
-        />
-      </label>
-      <div className="power-row">
-        <button
-          className="btn btn-sm btn-quiet"
-          disabled={busy || !power || !access.can(power.cmd)}
-          onClick={() => power && onAction(power)}
-        >
-          {actionLabel(power ?? ACTIONS.sleep)}
-        </button>
-        {on ? <StayAwake m={m} busy={busy} onAction={onAction} /> : null}
-      </div>
-    </Section>
-  );
-}
-
-/** Like caffeinate: a one-time "stay up at least this long", which simply runs out. */
-function StayAwake({
-  m,
-  busy,
-  onAction,
-}: {
-  m: MachineView;
-  busy: boolean;
-  onAction: (a: Action) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const close = useCallback(() => setOpen(false), []);
-  useEscape(open, close);
-  const left = useSecsLeft(m.keepAwakeUntil);
-  const canKeepAwake = useBoatAccess().can("keep_awake");
-  const locked = busy || !canKeepAwake;
-
-  if (m.keepAwakeUntil !== null) {
-    return (
-      <div className="stay-awake is-on" role="status">
-        <i className="state-dot" aria-hidden />
-        <span className="stay-awake-left">Awake · {timeLeft(left)} left</span>
-        <button className="btn btn-link" disabled={locked} onClick={() => onAction(keepAwake(0))}>
-          Stop
-        </button>
-      </div>
-    );
-  }
-  return (
-    <div className="stay-awake">
-      <button
-        className={`btn btn-sm btn-quiet stay-awake-btn${open ? " is-open" : ""}`}
-        aria-expanded={open}
-        disabled={locked}
-        onClick={() => setOpen((o) => !o)}
-      >
-        Stay awake for…
-        <Icon name="chevron" size={8} />
-      </button>
-      {open ? (
-        <div className="segmented stay-awake-options" role="menu">
-          {STAY_AWAKE.map((min) => (
-            <button
-              key={min}
-              role="menuitem"
-              onClick={() => {
-                setOpen(false);
-                onAction(keepAwake(min));
-              }}
-            >
-              {duration(min * 60)}
-            </button>
-          ))}
-        </div>
-      ) : null}
+    <div className="flex flex-col gap-0.5 px-4 py-3 sm:px-5">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      {value !== null ? (
+        <span className="font-mono text-sm font-medium text-foreground tabular-nums">{value}</span>
+      ) : (
+        <Skeleton className="mt-0.5 h-4 w-16" />
+      )}
     </div>
   );
 }
 
-function Agents({
-  m,
-  d,
-  pending,
-  signingIn,
-  onAction,
+function PowerSection({
+  machine,
+  power,
+  controls,
 }: {
-  m: MachineView;
-  d: Details | null;
-  pending: string | null;
-  signingIn: boolean;
-  onAction: (a: Action) => void;
+  readonly machine: MachineView;
+  readonly power: PowerControls;
+  readonly controls: MachineControls;
 }) {
   const gt = useGT();
-  const canSignIn = useBoatAccess().can("sign_in_agent");
-  return (
-    <Section title="agents">
-      <ul className="lines">
-        {d ? (
-          d.agents.map((a) => {
-            const running = pending === signInTo(a.name).busy;
-            return (
-              <li key={a.name} className="line">
-                <span className="line-main">
-                  <AgentName name={a.name} />
-                </span>
-                {a.signedIn ? (
-                  <span className="line-ok">
-                    <Icon name="check" size={10} /> signed in
-                  </span>
-                ) : m.signedOut.includes(a.name) ? (
-                  <button
-                    className="btn btn-sm btn-outline"
-                    disabled={signingIn || !!pending || m.state === "missing" || !canSignIn}
-                    aria-busy={running}
-                    onClick={() => onAction(signInTo(a.name))}
-                  >
-                    {running ? (
-                      <>
-                        <Dots /> {gt("Signing in…")}
-                      </>
-                    ) : (
-                      gt("Sign in")
-                    )}
-                  </button>
-                ) : (
-                  <span className="caption">signed out</span>
-                )}
-              </li>
-            );
-          })
-        ) : (
-          <Skeleton rows={2} />
-        )}
-      </ul>
-    </Section>
-  );
-}
+  const actionLabel = useMachineActionLabel();
+  const [optimisticAutoSleep, setOptimisticAutoSleep] = useState<{
+    readonly baseline: boolean;
+    readonly value: boolean;
+  } | null>(null);
 
-/** T3 Connect: the user's phone or a browser reach the machine with their T3 account. */
-function Connect({
-  m,
-  d,
-  pending,
-  signingIn,
-  onAction,
-}: {
-  m: MachineView;
-  d: Details | null;
-  pending: string | null;
-  signingIn: boolean;
-  onAction: (a: Action) => void;
-}) {
-  const running = pending === ACTIONS.connect.busy;
-  const canConnect = useBoatAccess().can("turn_on_connect");
-  return (
-    <Section title="other devices">
-      <ul className="lines">
-        {d ? (
-          <>
-            <li className="line">
-              <span className="line-main">T3 Connect</span>
-              {d.connect ? (
-                <span className="line-ok">
-                  <Icon name="check" size={10} /> on
-                </span>
-              ) : (
-                <button
-                  className="btn btn-sm btn-outline"
-                  disabled={signingIn || !!pending || m.state === "missing" || !canConnect}
-                  aria-busy={running}
-                  onClick={() => onAction(ACTIONS.connect)}
-                >
-                  {running ? (
-                    <>
-                      <Dots /> {ACTIONS.connect.busy}
-                    </>
-                  ) : (
-                    ACTIONS.connect.label
-                  )}
-                </button>
-              )}
-            </li>
-            {d.connect ? null : (
-              <li className="line">
-                <span className="line-main line-dim">
-                  Sail on your phone or in a browser, with your Sail account
-                </span>
-              </li>
-            )}
-          </>
-        ) : (
-          <Skeleton rows={1} />
-        )}
-      </ul>
-    </Section>
-  );
-}
+  const autoSleepOn =
+    optimisticAutoSleep !== null &&
+    optimisticAutoSleep.baseline === power.autoSleep.checked &&
+    controls.busy
+      ? optimisticAutoSleep.value
+      : power.autoSleep.checked;
 
-/** Its T3 projects, and adding one the way Sail's "Add to another machine" does. */
-function Projects({
-  m,
-  pickProject,
-  onAddProject,
-}: {
-  m: MachineView;
-  pickProject: boolean;
-  onAddProject: (p: LocalProject) => void;
-}) {
-  const access = useBoatAccess();
-  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(access.environmentId));
-  const supportsLocalProjects = environmentSupportsLocalSessions(serverConfig);
-  const gone = m.state === "missing";
-  if (gone && !m.projects.length) return null;
-  return (
-    <Section title="projects" count={m.projects.length}>
-      <ul className="lines">
-        {m.projects.map((p) => (
-          <li key={p.id} className="line">
-            <span className="line-main" title={p.title}>
-              {p.title}
-            </span>
-            {p.status ? (
-              <span className="line-status caption" title={p.status}>
-                <Dots /> {p.status}
-              </span>
-            ) : null}
-          </li>
-        ))}
-        {!m.projects.length && !gone ? (
-          <li className="line">
-            <span className="line-main line-dim">
-              {supportsLocalProjects
-                ? "Cloned from its git remote, .env files included"
-                : "Add projects after connecting to this Boat"}
-            </span>
-          </li>
-        ) : null}
-        {gone || !supportsLocalProjects ? null : (
-          <li className="line line-send">
-            <ProjectPicker m={m} initialOpen={pickProject} onAdd={onAddProject} />
-          </li>
-        )}
-      </ul>
-    </Section>
-  );
-}
-
-/** The rare stuff: size and delete, folded away. */
-function MachineMore({
-  m,
-  sizes,
-  busy,
-  deleteError,
-  onAction,
-  onDismissDeleteError,
-}: {
-  m: MachineView;
-  sizes: Size[];
-  busy: boolean;
-  deleteError: string | null;
-  onAction: (a: Action) => void;
-  onDismissDeleteError: () => void;
-}) {
-  const ref = useRef<HTMLDetailsElement>(null);
-  const [deleteArmed, armDelete] = useArmed();
-  const access = useBoatAccess();
-  const size = sizeOf(sizes, m.size);
-  const gone = m.state === "missing";
-
-  // a refused delete (from here or the list) must be visible
-  useEffect(() => {
-    if (deleteError && ref.current) ref.current.open = true;
-  }, [deleteError]);
+  const powerControl = power.power;
 
   return (
-    <details ref={ref} className="section more">
-      <summary className="section-head">
-        <span className="caption">machine</span>
-        <span className="section-rule" />
-        <span className="caption more-peek">
-          {gone ? "gone" : size ? `${m.size} · ${hourly(size.hourly)}` : m.size}
-        </span>
-        <Icon name="chevron" size={8} />
-      </summary>
-      <div className="more-body">
-        {gone ? null : (
-          <div className="more-group">
-            <span className="toggle-name">Size</span>
-            <div className="segmented" role="radiogroup" aria-label="Size">
-              {sizes.map((s) => (
-                <button
-                  key={s.id}
-                  role="radio"
-                  aria-checked={s.id === m.size}
-                  className={s.id === m.size ? "is-on" : undefined}
-                  disabled={busy || !access.can("resize_machine")}
-                  onClick={() => s.id !== m.size && onAction(resizeTo(s.id))}
-                >
-                  {s.id}
-                  <small>{s.spec}</small>
-                  <small>{hourly(s.hourly)}</small>
-                </button>
-              ))}
-            </div>
-            <span className="hint">{resizeHint(m)}</span>
+    <Section title={gt("Power")}>
+      <SettingsGroup>
+        <div className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-4")}>
+          <div className="min-w-0 space-y-0.5">
+            <div className="text-sm font-medium text-foreground">{gt("Auto sleep")}</div>
+            <p className="text-xs text-muted-foreground">
+              {autoSleepOn
+                ? gt("Sleeps 3 min after agents finish; asleep is free")
+                : gt("Stays up and bills until you turn this back on")}
+            </p>
           </div>
-        )}
-        <div className="more-group">
-          <button
-            className={`btn btn-sm ${deleteArmed ? "btn-danger" : "btn-quiet is-danger"} delete-btn`}
-            disabled={busy || !access.can("delete_machine")}
-            onClick={() => armDelete(() => onAction(ACTIONS.del))}
+          <Switch
+            aria-label={gt("Auto sleep")}
+            checked={autoSleepOn}
+            disabled={power.autoSleep.disabled}
+            onCheckedChange={(checked) => {
+              setOptimisticAutoSleep({ baseline: power.autoSleep.checked, value: checked });
+              controls.request({ kind: "run", action: power.autoSleep.actionFor(checked) });
+            }}
+          />
+        </div>
+
+        <div className={cn(ITEM_ROW_CLASSNAME, "flex flex-wrap items-center gap-2")}>
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={powerControl === null || powerControl.disabled}
+            onClick={() => {
+              if (powerControl?.kind === "ordinary") {
+                controls.request({ kind: "run", action: powerControl.action });
+              }
+            }}
           >
-            {deleteArmed ? "Click again to delete forever" : "Delete machine…"}
-          </button>
-          {deleteError ? (
-            <DeleteErrorNote
-              error={deleteError}
-              busy={busy}
-              onDeleteAnyway={() => onAction(ACTIONS.deleteAnyway)}
-              onKeep={onDismissDeleteError}
-            />
+            {actionLabel(powerControl?.kind === "ordinary" ? powerControl.action : ACTIONS.sleep)}
+          </Button>
+          {autoSleepOn ? (
+            <StayAwakeControl machine={machine} power={power} controls={controls} />
           ) : null}
         </div>
-      </div>
-    </details>
+      </SettingsGroup>
+    </Section>
   );
 }
 
-function Skeleton({ rows }: { rows: number }) {
+function StayAwakeControl({
+  machine,
+  power,
+  controls,
+}: {
+  readonly machine: MachineView;
+  readonly power: PowerControls;
+  readonly controls: MachineControls;
+}) {
+  const gt = useGT();
+  const left = useSecsLeft(machine.keepAwakeUntil);
+
+  if (machine.keepAwakeUntil !== null) {
+    return (
+      <div className="flex items-center gap-1.5" role="status">
+        <Badge variant="warning" size="control">
+          <ClockIcon aria-hidden="true" className="size-3" />
+          <span className="font-mono tabular-nums">
+            {gt("Awake · {left} left", { left: timeLeft(left) })}
+          </span>
+        </Badge>
+        <Button
+          size="xs"
+          variant="ghost"
+          disabled={power.stopStayingAwake.disabled}
+          onClick={() => {
+            if (power.stopStayingAwake.kind === "ordinary") {
+              controls.request({ kind: "run", action: power.stopStayingAwake.action });
+            }
+          }}
+        >
+          {gt("Stop")}
+        </Button>
+      </div>
+    );
+  }
+
+  const allDisabled = power.temporaryAwake.every((item) => item.disabled);
+
+  return (
+    <Menu>
+      <MenuTrigger render={<Button size="xs" variant="outline" disabled={allDisabled} />}>
+        {gt("Stay awake for…")}
+        <ChevronDownIcon aria-hidden="true" className="size-3.5" />
+      </MenuTrigger>
+      <MenuPopup align="start" width="content">
+        {power.temporaryAwake.map((item) => {
+          if (item.kind !== "ordinary" || item.action.cmd !== "keep_awake") return null;
+          const minutes = item.action.minutes ?? 0;
+          return (
+            <MenuItem
+              key={minutes}
+              disabled={item.disabled}
+              onClick={() => controls.request({ kind: "run", action: item.action })}
+            >
+              {duration(minutes * 60)}
+            </MenuItem>
+          );
+        })}
+      </MenuPopup>
+    </Menu>
+  );
+}
+
+function AgentsSection({
+  machine,
+  details,
+  controls,
+  signIn,
+}: {
+  readonly machine: MachineView;
+  readonly details: Details | null;
+  readonly controls: MachineControls;
+  readonly signIn: ReactNode;
+}) {
+  const gt = useGT();
+
+  return (
+    <Section title={gt("Agents")}>
+      <SettingsGroup>
+        {details ? (
+          details.agents.length > 0 ? (
+            details.agents.map((agent) => {
+              const control = controls.signInAgentControl(agent.name);
+              const running = controls.pendingLabel === signInTo(agent.name).busy;
+              return (
+                <div
+                  key={agent.name}
+                  className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-3")}
+                >
+                  <AgentName name={agent.name} />
+                  {agent.signedIn ? (
+                    <Badge size="sm" variant="success">
+                      <CheckIcon aria-hidden="true" className="size-3" />
+                      {gt("Signed in")}
+                    </Badge>
+                  ) : machine.signedOut.includes(agent.name) ? (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={control.disabled}
+                      aria-busy={running}
+                      onClick={() => {
+                        if (control.kind === "ordinary") {
+                          controls.request({ kind: "run", action: control.action });
+                        }
+                      }}
+                    >
+                      {running ? (
+                        <>
+                          <Spinner aria-hidden="true" />
+                          {gt("Signing in…")}
+                        </>
+                      ) : (
+                        gt("Sign in")
+                      )}
+                    </Button>
+                  ) : (
+                    <Badge size="sm" variant="secondary">
+                      {gt("Signed out")}
+                    </Badge>
+                  )}
+                </div>
+              );
+            })
+          ) : (
+            <div className={cn(ITEM_ROW_CLASSNAME, "text-xs text-muted-foreground")}>
+              {gt("No agents reported on this machine.")}
+            </div>
+          )
+        ) : (
+          <RowsSkeleton count={2} />
+        )}
+      </SettingsGroup>
+      {signIn ? <div className="pt-1">{signIn}</div> : null}
+    </Section>
+  );
+}
+
+function ConnectSection({
+  details,
+  controls,
+}: {
+  readonly details: Details | null;
+  readonly controls: MachineControls;
+}) {
+  const gt = useGT();
+  const running = controls.pendingLabel === ACTIONS.connect.busy;
+
+  return (
+    <Section title={gt("Other devices")}>
+      <SettingsGroup>
+        {details ? (
+          <div className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-4")}>
+            <div className="min-w-0 space-y-0.5">
+              <div className="text-sm font-medium text-foreground">T3 Connect</div>
+              {details.connect ? null : (
+                <p className="text-xs text-muted-foreground">
+                  {gt("Sail on your phone or in a browser, with your Sail account")}
+                </p>
+              )}
+            </div>
+            {details.connect ? (
+              <Badge size="sm" variant="success">
+                <CheckIcon aria-hidden="true" className="size-3" />
+                {gt("On")}
+              </Badge>
+            ) : (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={controls.connectControl.disabled}
+                aria-busy={running}
+                onClick={() => {
+                  if (controls.connectControl.kind === "ordinary") {
+                    controls.request({ kind: "run", action: controls.connectControl.action });
+                  }
+                }}
+              >
+                {running ? (
+                  <>
+                    <Spinner aria-hidden="true" />
+                    {gt("Approve in browser…")}
+                  </>
+                ) : (
+                  gt("Turn on")
+                )}
+              </Button>
+            )}
+          </div>
+        ) : (
+          <RowsSkeleton count={1} />
+        )}
+      </SettingsGroup>
+    </Section>
+  );
+}
+
+function ProjectsSection({
+  machine,
+  controls,
+  supportsLocalProjects,
+  openProjectPicker,
+}: {
+  readonly machine: MachineView;
+  readonly controls: MachineControls;
+  readonly supportsLocalProjects: boolean;
+  readonly openProjectPicker: boolean;
+}) {
+  const gt = useGT();
+  const gone = machine.state === "missing";
+
+  return (
+    <Section title={gt("Projects")} count={machine.projects.length}>
+      <SettingsGroup>
+        {machine.projects.map((project) => (
+          <div
+            key={project.id}
+            className={cn(ITEM_ROW_CLASSNAME, "flex items-center justify-between gap-3")}
+          >
+            <span className="truncate text-sm font-medium text-foreground" title={project.title}>
+              {project.title}
+            </span>
+            {project.status ? (
+              <span
+                className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground"
+                title={project.status}
+              >
+                <Spinner aria-hidden="true" size="xs" tone="muted" />
+                <span className="max-w-48 truncate">{project.status}</span>
+              </span>
+            ) : null}
+          </div>
+        ))}
+
+        {!machine.projects.length && !gone ? (
+          <div className={cn(ITEM_ROW_CLASSNAME, "text-xs text-muted-foreground")}>
+            {supportsLocalProjects
+              ? gt("Cloned from its git remote, .env files included")
+              : gt("Add projects after connecting to this Boat")}
+          </div>
+        ) : null}
+
+        {supportsLocalProjects && !gone ? (
+          <div className={ITEM_ROW_CLASSNAME}>
+            <ProjectPicker
+              m={machine}
+              initialOpen={openProjectPicker}
+              disabled={!controls.canAddProject}
+              onAdd={controls.onAddProject}
+            />
+          </div>
+        ) : null}
+      </SettingsGroup>
+    </Section>
+  );
+}
+
+function MachineDangerSection({
+  machine,
+  size,
+  controls,
+}: {
+  readonly machine: MachineView;
+  readonly size: Size | undefined;
+  readonly controls: MachineControls;
+}) {
+  const gt = useGT();
+  const [expanded, setExpanded] = useState(false);
+  const open = expanded || controls.deleteRefusal !== null;
+  const gone = machine.state === "missing";
+  const key = machineKey(machine);
+
+  return (
+    <SettingsGroup divided={false}>
+      <Collapsible open={open} onOpenChange={setExpanded}>
+        <CollapsibleTrigger className="flex w-full items-center justify-between gap-3 rounded-xl px-4 py-3 text-left transition-colors hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-5">
+          <span className="text-sm font-medium text-foreground">{gt("Machine")}</span>
+          <span className="flex items-center gap-2 font-mono text-xs text-muted-foreground tabular-nums">
+            <span>
+              {gone ? gt("gone") : size ? `${machine.size} · ${hourly(size.hourly)}` : machine.size}
+            </span>
+            <ChevronDownIcon
+              aria-hidden="true"
+              className={cn("size-4 transition-transform duration-150", open && "rotate-180")}
+            />
+          </span>
+        </CollapsibleTrigger>
+
+        <CollapsiblePanel>
+          <div className="space-y-4 border-t border-border/50 px-4 py-4 sm:px-5">
+            {gone ? null : (
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-muted-foreground">{gt("Size")}</div>
+                <div
+                  role="radiogroup"
+                  aria-label={gt("Size")}
+                  className="grid grid-cols-1 gap-2 sm:grid-cols-3"
+                >
+                  {controls.resizeChoices.map(({ size: choice, current, control }) => (
+                    <button
+                      key={choice.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={current}
+                      disabled={!current && control.disabled}
+                      onClick={() => {
+                        if (!current && control.kind === "ordinary") {
+                          controls.request({ kind: "run", action: control.action });
+                        }
+                      }}
+                      className={cn(
+                        "flex flex-col items-start gap-0.5 rounded-lg border px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                        current
+                          ? "border-ring bg-accent/60 text-foreground"
+                          : "cursor-pointer border-border/70 bg-background/60 text-foreground hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-55",
+                      )}
+                    >
+                      <span className="font-mono text-sm font-medium">{choice.id}</span>
+                      <span className="text-xs text-muted-foreground">{choice.spec}</span>
+                      <span className="font-mono text-xs text-muted-foreground tabular-nums">
+                        {hourly(choice.hourly)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">{resizeHint(machine)}</p>
+              </div>
+            )}
+
+            <div className={cn("space-y-3", !gone && "border-t border-border/50 pt-4")}>
+              <MachineActionButton
+                targetKey={key}
+                control={controls.deleteControl}
+                onRequest={controls.request}
+                size="sm"
+                surface="danger"
+              />
+              <DeleteErrorAlert controls={controls} />
+            </div>
+          </div>
+        </CollapsiblePanel>
+      </Collapsible>
+    </SettingsGroup>
+  );
+}
+
+function RowsSkeleton({ count }: { readonly count: number }) {
   return (
     <>
-      {Array.from({ length: rows }, (_, i) => (
-        <li key={i} className="line" aria-hidden>
-          <span className="skel" style={{ width: `${40 - i * 10}%` }} />
-        </li>
+      {Array.from({ length: count }, (_, index) => (
+        <div key={index} className={ITEM_ROW_CLASSNAME} aria-hidden="true">
+          <Skeleton className="h-4 w-32" />
+        </div>
       ))}
     </>
   );

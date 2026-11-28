@@ -1,191 +1,191 @@
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type HTMLAttributes,
-  type ReactNode,
-} from "react";
-import { useBoatAccess } from "../access";
+import { useGT } from "gt-react";
+import { AlertTriangleIcon, CheckIcon, PlusIcon, SearchIcon } from "lucide-react";
+import { useEffect, useId, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
+
+import { cn } from "~/lib/utils";
+import { Alert, AlertAction, AlertDescription } from "../../ui/alert";
+import { Badge } from "../../ui/badge";
+import { Button } from "../../ui/button";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "../../ui/input-group";
+import { Popover, PopoverPopup, PopoverTrigger } from "../../ui/popover";
+import { Skeleton } from "../../ui/skeleton";
 import { useBoatCall } from "../api";
+import { hasRepo, homePath } from "../machine";
 import { errorText } from "../reply";
 import type { LocalProject, MachineView } from "../types";
-import { PICK_PROJECT, hasRepo, homePath } from "../machine";
-import { useEscape } from "./common";
-import { Icon } from "./Icons";
 
-/** "+ Add a project…": one of Sail's projects, added to the machine the way Sail does it. */
 export function ProjectPicker({
   m,
   initialOpen,
+  disabled,
   onAdd,
 }: {
-  m: MachineView;
-  initialOpen: boolean;
-  onAdd: (p: LocalProject) => void;
+  readonly m: MachineView;
+  readonly initialOpen: boolean;
+  readonly disabled: boolean;
+  readonly onAdd: (project: LocalProject) => void;
 }) {
-  const canAdd = useBoatAccess().can("add_project");
+  const gt = useGT();
   const [open, setOpen] = useState(initialOpen);
-  const button = useRef<HTMLButtonElement>(null);
-  const close = useCallback(() => {
-    setOpen(false);
-    button.current?.focus();
-  }, []);
 
   return (
-    <>
-      <button
-        ref={button}
-        type="button"
-        className="line-add"
-        aria-expanded={open}
-        disabled={!canAdd}
-        onClick={() => setOpen((o) => !o)}
-      >
-        <Icon name="plus" size={10} />
-        {PICK_PROJECT.label}
-      </button>
-      {open ? (
-        <Picker
-          m={m}
-          onClose={close}
-          onPick={(p) => {
-            close();
-            onAdd(p);
-          }}
-        />
-      ) : null}
-    </>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger render={<Button size="xs" variant="outline" disabled={disabled} />}>
+        <PlusIcon aria-hidden="true" className="size-3.5" />
+        {gt("Add a project…")}
+      </PopoverTrigger>
+      <PopoverPopup align="start" width="md" padding="compact">
+        {open ? (
+          <PickerBody
+            m={m}
+            onPick={(project) => {
+              setOpen(false);
+              onAdd(project);
+            }}
+          />
+        ) : null}
+      </PopoverPopup>
+    </Popover>
   );
 }
 
-/** Mounted while open: every open fetches the list fresh and starts with an empty filter. */
-function Picker({
+function PickerBody({
   m,
-  onClose,
   onPick,
 }: {
-  m: MachineView;
-  onClose: () => void;
-  onPick: (p: LocalProject) => void;
+  readonly m: MachineView;
+  readonly onPick: (project: LocalProject) => void;
 }) {
-  const id = useId();
-  const box = useRef<HTMLDivElement>(null);
+  const gt = useGT();
+  const listboxId = useId();
+  const listRef = useRef<HTMLDivElement>(null);
   const projects = useLocalProjects();
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
 
-  useEscape(true, onClose);
-
-  // opened from further down (or from the row's ⋯ menu): bring the whole picker into view
-  useEffect(() => {
-    box.current?.scrollIntoView({ block: "nearest" });
-  }, []);
-
   const q = query.trim().toLowerCase();
-  // Matches what the row shows (name and ~-path), so the home folder never matches everything.
   const shown = (projects.list ?? []).filter(
     (p) => !q || `${p.title}\n${homePath(p.path)}`.toLowerCase().includes(q),
   );
   const current = Math.min(active, Math.max(shown.length - 1, 0));
-  const choose = (i: number) => {
-    const p = shown[i];
-    if (p && !hasRepo(m, p.repoKey)) onPick(p);
+
+  const choose = (index: number) => {
+    const project = shown[index];
+    if (project && !hasRepo(m, project.repoKey)) onPick(project);
   };
 
   useEffect(() => {
-    box.current?.querySelector(".pick-option.is-active")?.scrollIntoView({ block: "nearest" });
+    listRef.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: "nearest" });
   }, [current]);
 
   return (
-    <div ref={box} className="pick">
-      <label className="pick-filter">
-        <span className="pick-sign" aria-hidden>
-          $
-        </span>
-        <input
+    <div className="space-y-2">
+      <InputGroup>
+        <InputGroupAddon>
+          <SearchIcon aria-hidden="true" className="size-3.5 text-muted-foreground" />
+        </InputGroupAddon>
+        <InputGroupInput
           autoFocus
+          size="sm"
+          font="mono"
           role="combobox"
-          aria-label="Filter projects"
-          aria-expanded
-          aria-controls={id}
-          aria-activedescendant={shown.length ? `${id}-${current}` : undefined}
-          placeholder="filter projects"
+          aria-label={gt("Filter projects")}
+          aria-expanded={true}
+          aria-controls={listboxId}
+          aria-activedescendant={shown.length ? `${listboxId}-${current}` : undefined}
+          placeholder={gt("Filter projects…")}
           spellCheck={false}
           value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
+          onChange={(event) => {
+            setQuery(event.target.value);
             setActive(0);
           }}
-          onKeyDown={(e) => {
-            if ((e.key === "ArrowDown" || e.key === "ArrowUp") && shown.length) {
-              e.preventDefault();
-              setActive((current + (e.key === "ArrowDown" ? 1 : shown.length - 1)) % shown.length);
-            } else if (e.key === "Enter") {
-              e.preventDefault();
+          onKeyDown={(event) => {
+            if ((event.key === "ArrowDown" || event.key === "ArrowUp") && shown.length) {
+              event.preventDefault();
+              setActive(
+                (current + (event.key === "ArrowDown" ? 1 : shown.length - 1)) % shown.length,
+              );
+            } else if (event.key === "Enter") {
+              event.preventDefault();
               choose(current);
             }
           }}
         />
-      </label>
+      </InputGroup>
+
       <div
-        id={id}
+        ref={listRef}
+        id={listboxId}
         role="listbox"
-        aria-label="Projects in Sail"
+        aria-label={gt("Projects in Sail")}
         aria-busy={!projects.list && !projects.error}
+        className="max-h-60 space-y-0.5 overflow-y-auto"
       >
-        <div className="pick-scroll" role="presentation">
-          <ProjectList
-            projects={projects}
-            shown={shown}
-            query={query}
-            option={(p, i) => {
-              const there = hasRepo(m, p.repoKey);
-              return {
-                id: `${id}-${i}`,
-                role: "option",
-                "aria-selected": i === current,
-                "aria-disabled": there,
-                className: `pick-option${i === current ? " is-active" : ""}${there ? " is-done" : ""}`,
-                onMouseMove: () => setActive(i),
-                onClick: () => choose(i),
-                badge: there ? (
-                  <span className="line-ok">
-                    <Icon name="check" size={10} /> on {m.name}
-                  </span>
-                ) : null,
-              };
-            }}
-          />
-        </div>
+        <ProjectList
+          projects={projects}
+          shown={shown}
+          query={query}
+          option={(project, index) => {
+            const attached = hasRepo(m, project.repoKey);
+            const isActive = index === current;
+            return {
+              id: `${listboxId}-${index}`,
+              role: "option",
+              "aria-selected": isActive,
+              "aria-disabled": attached,
+              "data-active": isActive ? "true" : undefined,
+              className: cn(
+                "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors",
+                attached
+                  ? "cursor-default opacity-60"
+                  : isActive
+                    ? "cursor-pointer bg-accent text-accent-foreground"
+                    : "cursor-pointer hover:bg-accent/60",
+              ),
+              onMouseMove: () => setActive(index),
+              onClick: () => choose(index),
+              badge: attached ? (
+                <Badge size="sm" variant="success">
+                  <CheckIcon aria-hidden="true" className="size-3" />
+                  {gt("on {name}", { name: m.name })}
+                </Badge>
+              ) : null,
+            };
+          }}
+        />
       </div>
     </div>
   );
 }
 
 export interface LocalProjects {
-  list: LocalProject[] | null;
-  error: string | null;
-  retry: () => void;
+  readonly list: LocalProject[] | null;
+  readonly error: string | null;
+  readonly retry: () => void;
 }
 
-/** Sail's projects that can go to a machine, fetched once per mount. */
 export function useLocalProjects(): LocalProjects {
   const call = useBoatCall();
   const [list, setList] = useState<LocalProject[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+
   useEffect(() => {
     let live = true;
-    call("local_projects", undefined).then(
-      ({ data }) => live && setList(data),
-      (e) => live && setError(errorText(e)),
+    void call("local_projects", undefined).then(
+      ({ data }) => {
+        if (live) setList(data);
+      },
+      (err) => {
+        if (live) setError(errorText(err));
+      },
     );
     return () => {
       live = false;
     };
   }, [attempt, call]);
+
   return {
     list,
     error,
@@ -196,68 +196,87 @@ export function useLocalProjects(): LocalProjects {
   };
 }
 
-type OptionProps = HTMLAttributes<HTMLDivElement> & { badge?: ReactNode };
+type OptionProps = HTMLAttributes<HTMLDivElement> & {
+  badge?: ReactNode;
+  leading?: ReactNode;
+  "data-active"?: string;
+};
 
-/** The list body: projects, an empty or error note, or skeleton rows while loading. */
 export function ProjectList({
   projects,
   shown,
   query,
   option,
 }: {
-  projects: LocalProjects;
-  shown: LocalProject[];
-  query: string;
-  option: (p: LocalProject, i: number) => OptionProps;
+  readonly projects: LocalProjects;
+  readonly shown: readonly LocalProject[];
+  readonly query: string;
+  readonly option: (project: LocalProject, index: number) => OptionProps;
 }) {
+  const gt = useGT();
+
   if (projects.error) {
     return (
-      <p className="pick-note caption is-error">
-        Couldn't list Sail's projects: {projects.error}
-        <button type="button" className="btn btn-link" onClick={projects.retry}>
-          Try again
-        </button>
-      </p>
+      <Alert variant="error" className="my-1">
+        <AlertTriangleIcon aria-hidden="true" />
+        <AlertDescription>
+          {gt("Couldn't list Sail's projects: {error}", { error: projects.error })}
+        </AlertDescription>
+        <AlertAction>
+          <Button size="xs" variant="outline" onClick={projects.retry}>
+            {gt("Try again")}
+          </Button>
+        </AlertAction>
+      </Alert>
     );
   }
+
   if (!projects.list) {
     return (
-      <>
-        {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="pick-option" aria-hidden>
-            <span className="pick-icon skel" />
-            <span className="pick-text">
-              <span className="skel" style={{ width: `${46 - i * 8}%` }} />
-              <span className="skel skel-path" style={{ width: `${70 - i * 6}%` }} />
-            </span>
+      <div className="space-y-2 p-1" aria-hidden="true">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="flex items-center gap-2.5 px-1 py-1">
+            <Skeleton shape="card" className="size-6 shrink-0" />
+            <div className="min-w-0 flex-1 space-y-1">
+              <Skeleton className="h-3.5 w-28" />
+              <Skeleton className="h-3 w-44" />
+            </div>
           </div>
         ))}
-      </>
+      </div>
     );
   }
+
   if (!shown.length) {
     return (
-      <p className="pick-note caption">
+      <p className="px-2 py-4 text-center text-xs text-muted-foreground">
         {query.trim()
-          ? `No project matches “${query.trim()}”`
-          : "No project in Sail has a git remote yet"}
+          ? gt("No project matches “{query}”", { query: query.trim() })
+          : gt("No project in Sail has a git remote yet")}
       </p>
     );
   }
+
   return (
     <>
-      {shown.map((p, i) => {
-        const { badge, ...props } = option(p, i);
+      {shown.map((project, index) => {
+        const { badge, leading, ...props } = option(project, index);
         return (
-          <div key={p.id} {...props}>
-            <ProjectIcon project={p} />
-            <span className="pick-text">
-              <span className="pick-title">
-                <span className="pick-name">{p.title}</span>
+          <div key={project.id} {...props}>
+            {leading}
+            <ProjectIcon project={project} />
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-1.5">
+                <span className="truncate text-sm font-medium text-foreground">
+                  {project.title}
+                </span>
                 {badge}
               </span>
-              <span className="pick-path" title={p.path}>
-                <bdi>{homePath(p.path)}</bdi>
+              <span
+                className="block truncate font-mono text-xs text-muted-foreground"
+                title={project.path}
+              >
+                <bdi>{homePath(project.path)}</bdi>
               </span>
             </span>
           </div>
@@ -267,13 +286,20 @@ export function ProjectList({
   );
 }
 
-/** The project's favicon from Sail, else its initial on a tile. */
-function ProjectIcon({ project }: { project: LocalProject }) {
+function ProjectIcon({ project }: { readonly project: LocalProject }) {
   const [broken, setBroken] = useState(false);
   return (
-    <span className="pick-icon" aria-hidden>
+    <span
+      aria-hidden="true"
+      className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border/60 bg-muted/50 text-xs font-medium text-muted-foreground"
+    >
       {project.icon && !broken ? (
-        <img src={project.icon} alt="" onError={() => setBroken(true)} />
+        <img
+          src={project.icon}
+          alt=""
+          className="size-full object-cover"
+          onError={() => setBroken(true)}
+        />
       ) : (
         project.title.trim().charAt(0).toUpperCase() || "?"
       )}

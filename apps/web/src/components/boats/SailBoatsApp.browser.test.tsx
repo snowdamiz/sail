@@ -514,7 +514,7 @@ it("lets a remote client add, wake, and open Boat machines", async () => {
   );
   await vi.waitFor(() => expect(state.retryNow).toHaveBeenCalledWith(DORY_ENVIRONMENT));
   await userEvent.click(screen.getByRole("button", { name: "More for dory" }));
-  await expect.element(screen.getByRole("menuitem", { name: "Add to Sail again" })).toBeVisible();
+  await expect.element(page.getByRole("menuitem", { name: "Add to Sail again" })).toBeVisible();
   await userEvent.keyboard("{Escape}");
 
   await userEvent.click(screen.getByRole("button", { name: "Details for dory" }));

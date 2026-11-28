@@ -104,7 +104,7 @@ export type Action = {
   | { cmd: "delete_machine"; discard: boolean }
 );
 
-export const PICK_PROJECT = { kind: "pickProject", label: "Add a project…" } as const;
+const PICK_PROJECT = { kind: "pickProject", label: "Add a project…" } as const;
 
 export type MenuItem = Action | typeof PICK_PROJECT;
 

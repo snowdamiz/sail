@@ -1,10 +1,8 @@
-// Coding agents' names, each led by its logo as if part of the word. Claude Code keeps its brand colour;
-// Codex takes the text colour. Sail is not affiliated with either.
 import { Fragment, type ComponentType } from "react";
 
 function ClaudeCodeLogo() {
   return (
-    <svg viewBox="0 0 24 24" aria-hidden>
+    <svg viewBox="0 0 24 24" className="size-3.5 shrink-0" aria-hidden="true">
       <path
         fill="#D97757"
         fillRule="evenodd"
@@ -17,7 +15,7 @@ function ClaudeCodeLogo() {
 
 function CodexLogo() {
   return (
-    <svg viewBox="0 0 24 24" aria-hidden>
+    <svg viewBox="0 0 24 24" className="size-3.5 shrink-0 text-foreground" aria-hidden="true">
       <path
         fill="currentColor"
         fillRule="evenodd"
@@ -28,25 +26,23 @@ function CodexLogo() {
   );
 }
 
-/** Keyed by the names the UI shows: Settings' "Claude Code", the backend's "Claude" and "Codex". */
 const LOGOS: Record<string, ComponentType> = {
   Claude: ClaudeCodeLogo,
   "Claude Code": ClaudeCodeLogo,
   Codex: CodexLogo,
 };
 
-export function AgentName({ name }: { name: string }) {
+export function AgentName({ name }: { readonly name: string }) {
   const Logo = LOGOS[name];
   return (
-    <span className="agent-name">
+    <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
       {Logo ? <Logo /> : null}
-      {name}
+      <span>{name}</span>
     </span>
   );
 }
 
-/** "Claude", "Claude and Codex", "A, B and C" */
-export function AgentNames({ names }: { names: string[] }) {
+export function AgentNames({ names }: { readonly names: readonly string[] }) {
   return names.map((n, i) => (
     <Fragment key={n}>
       {i === 0 ? "" : i === names.length - 1 ? " and " : ", "}
