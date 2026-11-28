@@ -13,16 +13,16 @@ import {
   type RuntimeRequestId,
   type ServerProvider,
   type SessionTransferAbortInput,
-  type SessionTransferAbortResult,
+  SessionTransferAbortResult,
   type SessionTransferAvailableModel,
   type SessionTransferCancelInput,
   type SessionTransferCandidateProject,
   type SessionTransferCommitImportInput,
-  type SessionTransferCommitImportResult,
+  SessionTransferCommitImportResult,
   type SessionTransferDirection,
   SessionTransferError,
   type SessionTransferFinalizeSourceInput,
-  type SessionTransferFinalizeSourceResult,
+  SessionTransferFinalizeSourceResult,
   SessionTransferId,
   type SessionTransferListInput,
   type SessionTransferListResult,
@@ -31,13 +31,13 @@ import {
   type SessionTransferPreflightInput,
   type SessionTransferPreflightResult,
   type SessionTransferPrepareSourceInput,
-  type SessionTransferPrepareSourceResult,
+  SessionTransferPrepareSourceResult,
   type SessionTransferProgressEvent,
   type SessionTransferRecord,
   type SessionTransferRetryInput,
   type SessionTransferSourceState,
   type SessionTransferStageImportInput,
-  type SessionTransferStageImportResult,
+  SessionTransferStageImportResult,
   type SessionTransferStartInput,
   ThreadId,
   TrimmedNonEmptyString,
@@ -235,6 +235,12 @@ function bytesToHex(bytes: Uint8Array): string {
 function nowIso(): Effect.Effect<IsoDateTime> {
   return Effect.map(DateTime.now, (now) => IsoDateTime.make(DateTime.formatIso(now)));
 }
+
+const decodePrepareSourceResult = Schema.decodeUnknownEffect(SessionTransferPrepareSourceResult);
+const decodeStageImportResult = Schema.decodeUnknownEffect(SessionTransferStageImportResult);
+const decodeCommitImportResult = Schema.decodeUnknownEffect(SessionTransferCommitImportResult);
+const decodeFinalizeSourceResult = Schema.decodeUnknownEffect(SessionTransferFinalizeSourceResult);
+const decodeAbortResult = Schema.decodeUnknownEffect(SessionTransferAbortResult);
 
 function toSessionTransferError(
   code: SessionTransferError["code"],
@@ -637,53 +643,102 @@ function makeLiveBoatRemoteClient(
 
     createRemoteProject: (endpoint, input) =>
       callWsRpc<{
+        readonly projectId?: ProjectId;
+        readonly workspaceRoot?: string;
         readonly project?: { readonly id: ProjectId; readonly workspaceRoot: string };
       }>(endpoint, WS_METHODS.projectsCreateNew, {
         name: input.name,
-        initGit: input.initGit ?? true,
       }).pipe(
-        Effect.flatMap((result) =>
-          result.project
-            ? Effect.succeed({
-                projectId: result.project.id,
-                workspaceRoot: result.project.workspaceRoot,
-              })
+        Effect.flatMap((result) => {
+          const projectId = result.projectId ?? result.project?.id;
+          const workspaceRoot = result.workspaceRoot ?? result.project?.workspaceRoot;
+          return projectId && workspaceRoot
+            ? Effect.succeed({ projectId, workspaceRoot })
             : Effect.fail(
                 toSessionTransferError("internal", "Boat did not return a created project."),
-              ),
-        ),
+              );
+        }),
       ),
 
     prepareSource: (endpoint, input) =>
-      callWsRpc<SessionTransferPrepareSourceResult>(
-        endpoint,
-        WS_METHODS.sessionTransferPrepareSource,
-        input,
+      callWsRpc<unknown>(endpoint, WS_METHODS.sessionTransferPrepareSource, input).pipe(
+        Effect.flatMap((raw) =>
+          decodePrepareSourceResult(raw).pipe(
+            Effect.mapError((cause) =>
+              toSessionTransferError(
+                "internal",
+                "Failed to decode prepareSource response from Boat.",
+                input.transferId,
+                cause,
+              ),
+            ),
+          ),
+        ),
       ),
 
     stageImport: (endpoint, input) =>
-      callWsRpc<SessionTransferStageImportResult>(
-        endpoint,
-        WS_METHODS.sessionTransferStageImport,
-        input,
+      callWsRpc<unknown>(endpoint, WS_METHODS.sessionTransferStageImport, input).pipe(
+        Effect.flatMap((raw) =>
+          decodeStageImportResult(raw).pipe(
+            Effect.mapError((cause) =>
+              toSessionTransferError(
+                "internal",
+                "Failed to decode stageImport response from Boat.",
+                input.transferId,
+                cause,
+              ),
+            ),
+          ),
+        ),
       ),
 
     commitImport: (endpoint, input) =>
-      callWsRpc<SessionTransferCommitImportResult>(
-        endpoint,
-        WS_METHODS.sessionTransferCommitImport,
-        input,
+      callWsRpc<unknown>(endpoint, WS_METHODS.sessionTransferCommitImport, input).pipe(
+        Effect.flatMap((raw) =>
+          decodeCommitImportResult(raw).pipe(
+            Effect.mapError((cause) =>
+              toSessionTransferError(
+                "internal",
+                "Failed to decode commitImport response from Boat.",
+                input.transferId,
+                cause,
+              ),
+            ),
+          ),
+        ),
       ),
 
     finalizeSource: (endpoint, input) =>
-      callWsRpc<SessionTransferFinalizeSourceResult>(
-        endpoint,
-        WS_METHODS.sessionTransferFinalizeSource,
-        input,
+      callWsRpc<unknown>(endpoint, WS_METHODS.sessionTransferFinalizeSource, input).pipe(
+        Effect.flatMap((raw) =>
+          decodeFinalizeSourceResult(raw).pipe(
+            Effect.mapError((cause) =>
+              toSessionTransferError(
+                "internal",
+                "Failed to decode finalizeSource response from Boat.",
+                input.transferId,
+                cause,
+              ),
+            ),
+          ),
+        ),
       ),
 
     abort: (endpoint, input) =>
-      callWsRpc<SessionTransferAbortResult>(endpoint, WS_METHODS.sessionTransferAbort, input),
+      callWsRpc<unknown>(endpoint, WS_METHODS.sessionTransferAbort, input).pipe(
+        Effect.flatMap((raw) =>
+          decodeAbortResult(raw).pipe(
+            Effect.mapError((cause) =>
+              toSessionTransferError(
+                "internal",
+                "Failed to decode abort response from Boat.",
+                input.transferId,
+                cause,
+              ),
+            ),
+          ),
+        ),
+      ),
 
     streamHttpTransfer: (input) =>
       Effect.scoped(
