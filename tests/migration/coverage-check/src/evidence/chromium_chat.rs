@@ -1,9 +1,9 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
-use serde_json::json;
+use serde_json::{Value, json};
 
-use super::{Capture, Evidence, capture_witness};
+use super::{Capture, Evidence, capture_witness, is_hex};
 use crate::catalog::{Observation, Run};
 
 pub(super) fn verify(
@@ -15,9 +15,14 @@ pub(super) fn verify(
 ) -> Result<()> {
     let state = capture_witness::observed_state(evidence, observation, run, capture)?;
     let name = observation.cell.state.as_str();
-    let record = &state["chatStates"][name];
+    let reconnect = observation.cell.case_id == "disconnect-recover";
+    let records = &state[if reconnect {
+        "reconnectStates"
+    } else {
+        "chatStates"
+    }];
+    let record = &records[name];
     let profile = &record["profile"];
-    let observed = &record["observed"];
     ensure!(
         state["browser"] == "Google Chrome for Testing 158.0.8127.88"
             && state["browser"].as_str() == run.environment.browser_version.as_deref()
@@ -42,6 +47,21 @@ pub(super) fn verify(
             "chat state profile disagrees on {field}"
         );
     }
+    if reconnect {
+        ensure!(
+            profile["fonts"]
+                .as_array()
+                .is_some_and(|fonts| fonts.len() == 2),
+            "reconnect capture must record both body and code fonts"
+        );
+        verify_reconnect(&state, records, name, capture)?;
+    } else {
+        verify_chat_view(&state, &record["observed"], name, capture)?;
+    }
+    capture_witness::verify_png(image, 1280, 1200)
+}
+
+fn verify_chat_view(state: &Value, observed: &Value, name: &str, capture: &Capture) -> Result<()> {
     ensure!(
         observed["replayReply"] == false && observed["focusedElement"] == "BODY",
         "chat state already shows the saved reply or capture focus was not cleared"
@@ -120,5 +140,89 @@ pub(super) fn verify(
             "unexpected extra browser chat state trace step"
         );
     }
-    capture_witness::verify_png(image, 1280, 1200)
+    Ok(())
+}
+
+fn verify_reconnect(state: &Value, records: &Value, name: &str, capture: &Capture) -> Result<()> {
+    let host = &state["host"];
+    let owners = [&host["initialOwnerSha256"], &host["restartedOwnerSha256"]];
+    ensure!(
+        owners
+            .iter()
+            .all(|owner| owner.as_str().is_some_and(|digest| is_hex(digest, 64)))
+            && owners[0] != owners[1]
+            && host["sameEnvironment"] == true
+            && host["protocol"] == 2
+            && host["version"] == "0.1.17"
+            && host["databaseMigration"] == 118,
+        "reconnect does not bind two packaged host launches from the same home"
+    );
+    let shutdown = &host["shutdown"];
+    ensure!(
+        shutdown["signal"] == "SIGINT"
+            && shutdown["exitStatus"] == 130
+            && shutdown["listener"] == "connection refused"
+            && shutdown["runtimeRecordRemoved"] == true
+            && shutdown["listenerStillRefusedAfterRetry"] == true,
+        "reconnect does not prove the packaged listener stopped"
+    );
+    ensure!(
+        state["session"]
+            == json!({"sameBrowserDocument": true, "sameBrowserCookieSession": true,
+                                    "webSocketReconnected": true}),
+        "reconnect did not reopen the socket on the same browser document and cookie session"
+    );
+    let seed: Value = serde_json::from_str(include_str!(
+        "../../../incumbent/runtime/cli-lifecycle-seed.json"
+    ))?;
+    ensure!(
+        state["database"]
+            == json!({"seedSha256": seed["seedDatabaseSha256"],
+            "before": seed["fingerprint"], "after": seed["fingerprint"]}),
+        "reconnect did not preserve the pinned Replay message and run payloads"
+    );
+    let steps = [
+        ("online", "typeDraft"),
+        ("offline", "stopHost"),
+        ("reconnecting", "retryWhileStopped"),
+        ("recovered", "restartHostAndRestore"),
+    ];
+    let index = steps
+        .iter()
+        .position(|(state_name, _)| *state_name == name)
+        .context("unknown Linux Chromium reconnect state")?;
+    ensure!(
+        capture.trace.len() == index + 1,
+        "unexpected reconnect action trace length"
+    );
+    ensure!(
+        records["offline"]["screenshotSha256"] != records["recovered"]["screenshotSha256"],
+        "offline and recovered screenshot pixels must differ"
+    );
+    for ((state_name, action), step) in steps.iter().zip(&capture.trace) {
+        let connected = matches!(*state_name, "online" | "recovered");
+        let banners = if !connected {
+            json!(["Compatibility fixture is reconnecting", "Retry now"])
+        } else {
+            json!([])
+        };
+        let expected = json!({
+            "title": "Compatibility replay",
+            "reply": true,
+            "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+            "table": [["Step", "Tool", "Result"], ["Read", "read", "1 file"],
+                ["Edit", "edit", "+4 lines"], ["Test", "execute", "12 passed"]],
+            "draft": "P01 draft survives reconnect",
+            "sendAvailable": connected,
+            "focusedElement": "BODY",
+            "banner": banners,
+        });
+        ensure!(
+            records[state_name]["observed"] == expected
+                && step.action == *action
+                && serde_json::to_value(&step.observed)? == expected,
+            "reconnect trace disagrees with the observed {state_name} state"
+        );
+    }
+    Ok(())
 }

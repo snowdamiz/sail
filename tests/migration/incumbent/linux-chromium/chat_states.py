@@ -1,14 +1,14 @@
 from contextlib import contextmanager
-from hashlib import file_digest, sha256
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
 import re
-import shutil
-import struct
 import subprocess
 import time
 from uuid import uuid4
+
+from browser_capture import PROFILE, SETTLE, snapshot
 
 
 UNPAIRED = "00000000-0000-4000-8000-000000000000"
@@ -24,14 +24,7 @@ OBSERVE = """(() => {
   );
   const recovery = [...document.querySelectorAll("a")].find(link => link.textContent.trim() === "Open Environments");
   return {
-    profile: {
-      browser: navigator.userAgent.match(/Chrome\\/[^ ]+/)?.[0],
-      locale: document.documentElement.lang,
-      theme: document.documentElement.classList.contains("dark") ? "dark" : "light",
-      motion: matchMedia("(prefers-reduced-motion: reduce)").matches ? "reduce" : "standard",
-      fonts: [getComputedStyle(document.body).fontFamily],
-      viewport: {width: innerWidth, height: innerHeight, scale: devicePixelRatio, zoom: visualViewport.scale},
-    },
+    profile: """ + PROFILE + """,
     observed: {
       heading: main?.querySelector("h2")?.textContent ?? null,
       composer: composer?.getAttribute("aria-label") ?? null,
@@ -49,17 +42,6 @@ OBSERVE = """(() => {
     },
   };
 })()"""
-SETTLE = """(async () => {
-  document.activeElement?.blur();
-  await document.fonts.ready;
-  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  const animations = document.getAnimations().filter(animation =>
-    animation.playState === "running" && Number.isFinite(animation.effect?.getComputedTiming().endTime)
-  );
-  await Promise.allSettled(animations.map(animation => animation.finished));
-  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-})()"""
-
 
 @contextmanager
 def gate(root):
@@ -111,18 +93,6 @@ def observe(call, tab, state):
         assert actual["composer"] is None and actual["recoveryHref"] == "/settings/connections"
     return value
 
-
-def snapshot(root, call, tab, state, observation):
-    directory = root / state
-    directory.mkdir()
-    path = directory / "capture.png"
-    screenshot = call("preview_snapshot", **tab, save=True)
-    shutil.copyfile(screenshot["screenshotPath"], path)
-    with path.open("rb") as source:
-        assert struct.unpack(">II", source.read(24)[16:24]) == (1280, 1200)
-        source.seek(0)
-        observation["screenshotSha256"] = file_digest(source, "sha256").hexdigest()
-    return observation
 
 
 def capture_states(root, source, call, prepare):

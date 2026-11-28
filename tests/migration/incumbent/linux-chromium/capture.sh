@@ -7,6 +7,7 @@ umask 077
 mkdir "$root"
 case "${2:-}" in
   --chat-states) touch "$root/chat-states" ;;
+  --reconnect) touch "$root/reconnect" ;;
   "") ;;
   *) exit 2 ;;
 esac
@@ -105,6 +106,10 @@ test -s "$root/descriptor.private.json"
 test -s "$root/state.json"
 if [ -f "$root/chat-states" ]; then
   for state in empty initial-loading error; do
+    test -s "$root/$state/capture.png"
+  done
+elif [ -f "$root/reconnect" ]; then
+  for state in online offline reconnecting recovered; do
     test -s "$root/$state/capture.png"
   done
 else

@@ -1,0 +1,20 @@
+{
+  "fixtureId": "disconnect-recover",
+  "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "changedSteps": [],
+  "pixels": {
+    "baseline": "tests/migration/incumbent/observations/served-chromium-linux/disconnect-recover/a/online/capture.png",
+    "candidate": "tests/migration/incumbent/observations/served-chromium-linux/disconnect-recover/b/online/capture.png",
+    "diff": "tests/migration/incumbent/observations/served-chromium-linux/disconnect-recover/online-diff.png",
+    "baselineSize": [1280, 1200],
+    "candidateSize": [1280, 1200],
+    "differentPixels": 0,
+    "bounds": null
+  },
+  "artifactSha256": {
+    "baselineReceipt": "702c23729c5ad1286ed049953347d8185165a115f5ecc12080044d8eaa038ff0",
+    "candidateReceipt": "208ca14a849db0d8a4959e5211b271a934a54d7ec77eb3f2e6af30a0ceba9de6",
+    "diff": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+  }
+}

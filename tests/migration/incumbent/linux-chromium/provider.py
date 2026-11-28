@@ -127,8 +127,8 @@ def preview_session():
             bridge.stdout.close()
 
 
-def pair(call, tab, origin=ORIGIN):
-    output = command([ROOT / "runtime/t3", "pair", "--base-dir", ROOT / "state"])
+def pair(call, tab, origin=ORIGIN, base=ROOT / "state"):
+    output = command([ROOT / "runtime/t3", "pair", "--base-dir", base])
     link = urlsplit(re.search(r"^Pairing URL: (.+)$", output, re.MULTILINE)[1])
     assert link.path == "/pair" and link.fragment.startswith("token=")
     call("preview_navigate", **tab, url=f"{origin}/pair#{link.fragment}")
@@ -209,8 +209,9 @@ def record_capture(profile, trace, state, source):
     (ROOT / "state.json").write_text(json.dumps(state, indent=2) + "\n")
 
 
-def prepare(call, source, origin=ORIGIN):
-    descriptor = json.loads((ROOT / "descriptor.private.json").read_text())
+def prepare(call, source, origin=ORIGIN, *, base=ROOT / "state", descriptor=None):
+    if descriptor is None:
+        descriptor = json.loads((ROOT / "descriptor.private.json").read_text())
     assert descriptor["serverVersion"] == source["version"]
     assert descriptor["orchestrationProtocolVersion"] == 2
     assert descriptor["databaseMigration"] == source["databaseMigration"]
@@ -222,7 +223,7 @@ def prepare(call, source, origin=ORIGIN):
     tab = {"tabId": opened["tabId"]}
     call("preview_resize", **tab, mode="freeform", width=640, height=600)
     call("preview_set_appearance", **tab, colorScheme="light")
-    pair(call, tab, origin)
+    pair(call, tab, origin, base)
     return tab, path, {
         "platform": descriptor["platform"],
         "version": descriptor["serverVersion"],
@@ -361,6 +362,12 @@ def capture():
 
         with preview_session() as call:
             capture_states(ROOT, source, call, prepare)
+        return
+    if (ROOT / "reconnect").is_file():
+        from reconnect import capture_reconnect
+
+        with preview_session() as call:
+            capture_reconnect(ROOT, source, call, prepare)
         return
     probe = Path("/fixture/settled-replay-browser.js").read_text().strip()
     if "captureRounds" in source:

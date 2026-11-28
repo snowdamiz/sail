@@ -225,6 +225,8 @@ Capture the empty draft, then open the seeded thread. The gate holds the thread 
 
 For reconnect, keep the gate open and leave an unsent draft in the loaded thread. Stop only the isolated packaged server. Capture the reconnect banner and use **Retry now**. Restart the same server and confirm the warning clears and the transcript and draft are present in that tab. [Reconnect receipt](observations/served-chromium-macos/disconnect-recover/receipt.json)
 
+Append `--reconnect` to the [Linux Chromium capture command](#linux) for two new output directories. The Browser panel runs on a separate packaged server from the thread host. The probe stops the thread host with SIGINT and confirms its listener refuses connections before and after **Retry now**. It restarts the same home and confirms the saved cookie session opens a new WebSocket. The original tab, draft, and saved Replay payloads must survive. Each run writes online, offline, reconnecting, and recovered screenshots beside its state receipt. [Linux Chromium reconnect](observations/served-chromium-linux/disconnect-recover)
+
 ## Capture the Browser panel fixture
 
 Serve the page from [the title-change scenario](../../../scripts/scenarios/browser-tab-follows-page-title.e2e.ts) on loopback. Open it in the seeded thread's **Browser** panel and click the page canvas. Wait for the tab to display **Updated title** at the same address. Select **Release control** and use the thread provider's `preview_status` to locate the tab. Call `preview_evaluate` on that tab with the expression in the [Browser panel receipt](observations/served-chromium-macos/browser-panel/receipt.json). The receipt includes the packaged v0.1.17 screenshots and the tool's returned value.

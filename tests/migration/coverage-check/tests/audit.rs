@@ -463,6 +463,30 @@ fn rejects_a_rehashed_loading_trace_with_a_different_restored_table() {
 }
 
 #[test]
+fn verifies_the_published_linux_chromium_reconnect_sequence() {
+    for state in ["online", "offline", "reconnecting", "recovered"] {
+        let fixture = Fixture::visual("disconnect-recover", state, "served-chromium-linux");
+        let output = fixture.run();
+        assert!(
+            output.status.success(),
+            "{state}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["verifiedVisualReferenceObservations"], 1);
+    }
+}
+
+#[test]
+fn rejects_a_rehashed_reconnect_trace_that_loses_the_draft() {
+    let mut fixture = Fixture::visual("disconnect-recover", "recovered", "served-chromium-linux");
+    fixture.edit_process_json(0, "capture-receipt", |capture| {
+        capture["trace"][3]["observed"]["draft"] = json!("");
+    });
+    fixture.rejects("reconnect trace disagrees with the observed recovered state");
+}
+
+#[test]
 fn uses_generic_visual_checks_for_non_linux_display_references() {
     let mut fixture = Fixture::visual("chat-turn", "settled", "electron-macos-arm64");
     fixture.catalog["cases"][0]["id"] = json!("chat-display");

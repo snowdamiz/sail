@@ -11,7 +11,7 @@ use std::{
 use crate::catalog::{Artifact, Cell, Observation, Run};
 
 mod capture_witness;
-mod chat_states;
+mod chromium_chat;
 mod display;
 mod linux_cli;
 mod navigation;
@@ -287,10 +287,13 @@ fn load_capture(
             _ => {}
         }
     }
-    if observation.cell.case_id == "chat-view-states"
-        && observation.cell.platform_id == "served-chromium-linux"
+    if observation.cell.platform_id == "served-chromium-linux"
+        && matches!(
+            observation.cell.case_id.as_str(),
+            "chat-view-states" | "disconnect-recover"
+        )
     {
-        chat_states::verify(evidence, observation, run, &capture, &image_path)?;
+        chromium_chat::verify(evidence, observation, run, &capture, &image_path)?;
     }
     Ok((capture, image_path, receipt_path))
 }

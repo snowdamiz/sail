@@ -477,5 +477,31 @@
       }
     },
     "scope": "Two isolated published v0.1.17 installations and Browser panel sessions on Debian 12.15 arm64. Captures show the empty draft after Git resolves main, a held thread subscription, and the unavailable thread on an unpaired environment. Both runs verified cleared focus, the saved Replay reply and all four table rows after release, and the Environments recovery link. Candidate comparisons and timing remain open."
+  },
+  "linuxChromiumReconnect": {
+    "directory": "served-chromium-linux/disconnect-recover",
+    "comparisons": {
+      "online": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "offline": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "reconnecting": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "recovered": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      }
+    },
+    "scope": "Two isolated published v0.1.17 target homes and Browser panel sessions on Debian 12.15 arm64. Each run terminated the real thread host, confirmed its listener refused connections, clicked Retry now while it was stopped, and restarted the same home. The original authenticated cookie session reconnected its WebSocket. The same tab kept the draft and restored Send, and the saved Replay message and run payloads matched the pinned seed. Candidate comparisons and timing remain open."
   }
 }
