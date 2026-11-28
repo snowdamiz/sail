@@ -63,7 +63,7 @@ Use `T3CODE_DESKTOP_MOCK_UPDATES=true` and `T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PO
 
 Restore the published manifest, check for updates, and download again. Click **Install** and **Confirm**. Wait for the updater to relaunch Sail. Check that the server answers on the original port with the same environment ID and protocol. Open the saved thread with its `sail://threads/…` link and check the reply, highlighted code, and table. The next update check removes the previous bundle and staging files.
 
-Use a separate scratch installation with the packaged GitHub feed to repeat the successful upgrade path while v0.1.18 is the latest stable release. Both runs installed the exact v0.1.18 bundle and preserved the saved payloads. [Update receipt](../observations/electron-macos-arm64/archive-update/receipt.json)
+Use a separate scratch installation with the packaged GitHub feed to repeat the successful upgrade path while v0.1.18 is the latest stable release. Both installed trees matched all 327 entries inside the v0.1.18 ZIP bundle and preserved the saved payloads. The installer creates the outer app directory with mode `0700`. [Update receipt](../observations/electron-macos-arm64/archive-update/receipt.json)
 
 ## Published arm64 AppImage update
 

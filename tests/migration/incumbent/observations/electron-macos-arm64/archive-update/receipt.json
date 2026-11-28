@@ -187,6 +187,8 @@
     "protocol": 2,
     "sqliteMigration": 118,
     "bundleEntriesMatched": 327,
+    "zipBundleDirectoryMode": "0755",
+    "installedBundleDirectoryMode": "0700",
     "installRecord": "pending cleanup on next update check",
     "reopened": {
       "action": "Send the saved Sail thread link to the relaunched app with Launch Services",
@@ -251,6 +253,8 @@
       "protocol": 2,
       "sqliteMigration": 118,
       "bundleEntriesMatched": 327,
+      "zipBundleDirectoryMode": "0755",
+      "installedBundleDirectoryMode": "0700",
       "installRecord": "pending cleanup on next update check"
     },
     "state": {
