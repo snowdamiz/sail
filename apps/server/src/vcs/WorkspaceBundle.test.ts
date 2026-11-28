@@ -836,4 +836,93 @@ describe("WorkspaceBundle", () => {
         });
       }).pipe(Effect.provide(makeTestLayer())),
   );
+
+  it.effect(
+    "refuses to delete a locked worktree directory, fails with git_error while keeping registration, and removes cleanly after unlock",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-wb-locked-wt-" });
+        const srcRepo = path.join(root, "src");
+        const dstRepo = path.join(root, "dst");
+        const bundlePath = path.join(root, "locked-wt.bundle");
+
+        yield* fs.makeDirectory(srcRepo, { recursive: true });
+        yield* git(srcRepo, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(srcRepo, "file.txt"), "base\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "init"]);
+        yield* git(root, ["clone", srcRepo, dstRepo]);
+
+        yield* git(srcRepo, ["checkout", "-b", "feat/locked-wt"]);
+        yield* fs.writeFileString(path.join(srcRepo, "file.txt"), "feature\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "feature"]);
+
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const exported = yield* bundleService.exportWorkspaceBundle({
+          transferId: "xfer-locked-wt",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+        const imported = yield* bundleService.importWorkspaceBundle({
+          transferId: "xfer-locked-wt",
+          repoCwd: dstRepo,
+          bundlePath,
+          sourceBranch: exported.branch,
+          targetLabel: "boat",
+        });
+
+        expect(imported.branch).toBe("feat/locked-wt");
+        expect(imported.createdBranch).toBe(true);
+        expect(yield* fs.exists(imported.worktreePath)).toBe(true);
+
+        yield* git(dstRepo, ["worktree", "lock", "--reason", "in use", imported.worktreePath]);
+        let unlocked = false;
+        try {
+          const lockedResult = yield* Effect.result(
+            bundleService.removeWorktree({
+              repoCwd: dstRepo,
+              worktreePath: imported.worktreePath,
+              branch: imported.branch,
+            }),
+          );
+          expect(Result.isFailure(lockedResult)).toBe(true);
+          if (Result.isFailure(lockedResult)) {
+            expect(lockedResult.failure.code).toBe("git_error");
+          }
+
+          // Locked worktree directory must NOT be rm -rf'd and must remain registered with its branch.
+          expect(yield* fs.exists(imported.worktreePath)).toBe(true);
+          expect(yield* fs.readFileString(path.join(imported.worktreePath, "file.txt"))).toBe(
+            "feature\n",
+          );
+          const lockedPorcelain = yield* git(dstRepo, ["worktree", "list", "--porcelain"]);
+          const realWorktreePath = yield* fs.realPath(imported.worktreePath);
+          expect(lockedPorcelain).toContain(`worktree ${realWorktreePath}`);
+          expect(lockedPorcelain).toContain("locked in use");
+          expect((yield* git(dstRepo, ["branch", "--list", "feat/locked-wt"])).trim()).not.toBe("");
+
+          // Unlock and retry: must delete worktree, unregister it from git worktree list, and delete branch.
+          yield* git(dstRepo, ["worktree", "unlock", imported.worktreePath]);
+          unlocked = true;
+
+          yield* bundleService.removeWorktree({
+            repoCwd: dstRepo,
+            worktreePath: imported.worktreePath,
+            branch: imported.branch,
+          });
+          expect(yield* fs.exists(imported.worktreePath)).toBe(false);
+          const afterPorcelain = yield* git(dstRepo, ["worktree", "list", "--porcelain"]);
+          expect(afterPorcelain).not.toContain(realWorktreePath);
+          expect((yield* git(dstRepo, ["branch", "--list", "feat/locked-wt"])).trim()).toBe("");
+        } finally {
+          if (!unlocked) {
+            yield* git(dstRepo, ["worktree", "unlock", imported.worktreePath]).pipe(Effect.ignore);
+          }
+        }
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
 });

@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   ChatAttachmentId,
   ComposerContextId,
@@ -5516,6 +5517,446 @@ describe("SessionTransferEndpointService", () => {
               role: "destination",
             });
             expect(abort4.cleanedUp).toBe(false);
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "cleans orphaned pending .txt sidecar on destination abort retry after primary deletion and .txt PermissionDenied",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-dst-abort-sidecar-"),
+        );
+        const srcRepo = NodePath.join(tmpRoot, "src");
+        const dstRepo = NodePath.join(tmpRoot, "dst");
+        initGitRepo(srcRepo);
+        git(tmpRoot, ["clone", srcRepo, dstRepo]);
+        git(srcRepo, ["checkout", "-b", "feat/dst-abort-sidecar"]);
+        NodeFS.writeFileSync(NodePath.join(srcRepo, "feature.txt"), "feature change\n");
+        git(srcRepo, ["add", "feature.txt"]);
+        git(srcRepo, ["commit", "-m", "feature commit"]);
+
+        const srcProjectId = ProjectId.make("proj-dst-abort-sidecar-src");
+        const dstProjectId = ProjectId.make("proj-dst-abort-sidecar-dst");
+        const modelSelection: ModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+        const recorder: MockRecorder = {
+          dispatches: [],
+          forceStops: [],
+          detachedSessions: [],
+          sentMessages: [],
+        };
+
+        let blockedSidecarPath = "";
+        let blockSidecar = false;
+
+        const layer = makeEndpointTestLayer({
+          environmentId: "env-dst-abort-sidecar",
+          environmentLabel: "Destination Abort Sidecar Env",
+          projects: [
+            { id: srcProjectId, title: "Src", workspaceRoot: srcRepo },
+            { id: dstProjectId, title: "Dst", workspaceRoot: dstRepo },
+          ],
+          providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+          recorder,
+          hooks: {
+            onFileSystemRemove: ({ targetPath, next }) =>
+              blockSidecar && blockedSidecarPath.length > 0 && targetPath === blockedSidecarPath
+                ? Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "PermissionDenied",
+                      module: "FileSystem",
+                      method: "remove",
+                      pathOrDescriptor: targetPath,
+                    }),
+                  )
+                : next,
+          },
+        });
+
+        try {
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const srcThreadId = ThreadId.make("thread-dst-abort-sidecar");
+            const transferId = SessionTransferId.make("xfer-dst-abort-sidecar");
+            const srcAttachmentId = ChatAttachmentId.make(createAttachmentId(srcThreadId)!);
+            const attachmentBytes = new Uint8Array([
+              0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+            ]);
+            NodeFS.mkdirSync(config.attachmentsDir, { recursive: true });
+            NodeFS.writeFileSync(
+              NodePath.join(config.attachmentsDir, `${srcAttachmentId}.png`),
+              attachmentBytes,
+            );
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: "feat/dst-abort-sidecar",
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+                presentAttachmentId: srcAttachmentId,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: srcThreadId,
+              direction: "local_to_boat",
+            });
+            const staged = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            expect(staged.attachmentUploads).toHaveLength(1);
+
+            const pendingDestId = staged.attachmentUploads[0]!.destinationAttachmentId;
+            const pendingPrimaryPath = NodePath.join(config.attachmentsDir, `${pendingDestId}.png`);
+            const pendingSidecarPath = `${pendingPrimaryPath}.txt`;
+            const unrelatedPath = NodePath.join(
+              config.attachmentsDir,
+              "pending-00000000-0000-4000-8000-0000000000f9.png",
+            );
+            NodeFS.writeFileSync(pendingPrimaryPath, attachmentBytes);
+            NodeFS.writeFileSync(pendingSidecarPath, "extracted sidecar text");
+            NodeFS.writeFileSync(unrelatedPath, attachmentBytes);
+
+            blockedSidecarPath = pendingSidecarPath;
+            blockSidecar = true;
+
+            // Attempt 1: primary file is deleted, .txt sidecar fails with PermissionDenied.
+            const abort1 = yield* Effect.result(
+              svc.abort({
+                transferId,
+                role: "destination",
+              }),
+            );
+            expect(Result.isFailure(abort1)).toBe(true);
+            if (Result.isFailure(abort1)) {
+              expect(abort1.failure.code).toBe("internal");
+            }
+            expect(NodeFS.existsSync(pendingPrimaryPath)).toBe(false);
+            expect(NodeFS.existsSync(pendingSidecarPath)).toBe(true);
+            expect(NodeFS.existsSync(unrelatedPath)).toBe(true);
+
+            // Attempt 2: after permission restore, retry must find and remove the orphaned .txt sidecar.
+            blockSidecar = false;
+            const abort2 = yield* svc.abort({
+              transferId,
+              role: "destination",
+            });
+            expect(abort2.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(pendingSidecarPath)).toBe(false);
+            expect(NodeFS.existsSync(unrelatedPath)).toBe(true);
+
+            const abort3 = yield* svc.abort({
+              transferId,
+              role: "destination",
+            });
+            expect(abort3.cleanedUp).toBe(false);
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "fails destination abort when attachmentsDir is chmod 000, retains pending attachment, and cleans up after chmod 700",
+    () =>
+      Effect.gen(function* () {
+        if ((yield* HostProcess.Platform) === "win32" || process.getuid?.() === 0) {
+          return;
+        }
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-dst-abort-chmod000-"),
+        );
+        const srcRepo = NodePath.join(tmpRoot, "src");
+        const dstRepo = NodePath.join(tmpRoot, "dst");
+        initGitRepo(srcRepo);
+        git(tmpRoot, ["clone", srcRepo, dstRepo]);
+        git(srcRepo, ["checkout", "-b", "feat/dst-abort-chmod000"]);
+        NodeFS.writeFileSync(NodePath.join(srcRepo, "feature.txt"), "feature change\n");
+        git(srcRepo, ["add", "feature.txt"]);
+        git(srcRepo, ["commit", "-m", "feature commit"]);
+
+        const srcProjectId = ProjectId.make("proj-dst-abort-chmod000-src");
+        const dstProjectId = ProjectId.make("proj-dst-abort-chmod000-dst");
+        const modelSelection: ModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+        const recorder: MockRecorder = {
+          dispatches: [],
+          forceStops: [],
+          detachedSessions: [],
+          sentMessages: [],
+        };
+
+        const layer = makeEndpointTestLayer({
+          environmentId: "env-dst-abort-chmod000",
+          environmentLabel: "Destination Abort Chmod 000 Env",
+          projects: [
+            { id: srcProjectId, title: "Src", workspaceRoot: srcRepo },
+            { id: dstProjectId, title: "Dst", workspaceRoot: dstRepo },
+          ],
+          providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+          recorder,
+        });
+
+        try {
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const srcThreadId = ThreadId.make("thread-dst-abort-chmod000");
+            const transferId = SessionTransferId.make("xfer-dst-abort-chmod000");
+            const srcAttachmentId = ChatAttachmentId.make(createAttachmentId(srcThreadId)!);
+            const attachmentBytes = new Uint8Array([
+              0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+            ]);
+            NodeFS.mkdirSync(config.attachmentsDir, { recursive: true });
+            NodeFS.writeFileSync(
+              NodePath.join(config.attachmentsDir, `${srcAttachmentId}.png`),
+              attachmentBytes,
+            );
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: "feat/dst-abort-chmod000",
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+                presentAttachmentId: srcAttachmentId,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: srcThreadId,
+              direction: "local_to_boat",
+            });
+            const staged = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            expect(staged.attachmentUploads).toHaveLength(1);
+
+            const pendingDestId = staged.attachmentUploads[0]!.destinationAttachmentId;
+            const pendingPath = NodePath.join(config.attachmentsDir, `${pendingDestId}.png`);
+            NodeFS.writeFileSync(pendingPath, attachmentBytes);
+
+            try {
+              NodeFS.chmodSync(config.attachmentsDir, 0o000);
+              const abort1 = yield* Effect.result(
+                svc.abort({
+                  transferId,
+                  role: "destination",
+                }),
+              );
+              expect(Result.isFailure(abort1)).toBe(true);
+              if (Result.isFailure(abort1)) {
+                expect(abort1.failure.code).toBe("internal");
+              }
+            } finally {
+              NodeFS.chmodSync(config.attachmentsDir, 0o700);
+            }
+
+            // Attachment must still be present on disk, and retry after restoring 0700 deletes it.
+            expect(NodeFS.existsSync(pendingPath)).toBe(true);
+            const abort2 = yield* svc.abort({
+              transferId,
+              role: "destination",
+            });
+            expect(abort2.cleanedUp).toBe(true);
+            expect(NodeFS.existsSync(pendingPath)).toBe(false);
+
+            const abort3 = yield* svc.abort({
+              transferId,
+              role: "destination",
+            });
+            expect(abort3.cleanedUp).toBe(false);
+          }).pipe(Effect.provide(layer));
+        } finally {
+          NodeFS.rmSync(tmpRoot, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.effect(
+    "fails destination abort without deleting a locked worktree, retains staged state, and cleans up after git worktree unlock",
+    () =>
+      Effect.gen(function* () {
+        const tmpRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-xfer-dst-abort-locked-wt-"),
+        );
+        const srcRepo = NodePath.join(tmpRoot, "src");
+        const dstRepo = NodePath.join(tmpRoot, "dst");
+        initGitRepo(srcRepo);
+        git(tmpRoot, ["clone", srcRepo, dstRepo]);
+        git(srcRepo, ["checkout", "-b", "feat/dst-abort-locked-wt"]);
+        NodeFS.writeFileSync(NodePath.join(srcRepo, "feature.txt"), "feature change\n");
+        git(srcRepo, ["add", "feature.txt"]);
+        git(srcRepo, ["commit", "-m", "feature commit"]);
+
+        const srcProjectId = ProjectId.make("proj-dst-abort-locked-wt-src");
+        const dstProjectId = ProjectId.make("proj-dst-abort-locked-wt-dst");
+        const modelSelection: ModelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        };
+        const recorder: MockRecorder = {
+          dispatches: [],
+          forceStops: [],
+          detachedSessions: [],
+          sentMessages: [],
+        };
+
+        let failNextCommitEventWrite = false;
+        const layer = makeEndpointTestLayer({
+          environmentId: "env-dst-abort-locked-wt",
+          environmentLabel: "Destination Abort Locked Worktree Env",
+          projects: [
+            { id: srcProjectId, title: "Src", workspaceRoot: srcRepo },
+            { id: dstProjectId, title: "Dst", workspaceRoot: dstRepo },
+          ],
+          providers: [{ instanceId: ProviderInstanceId.make("codex"), driver: "codex" }],
+          recorder,
+          hooks: {
+            onEventSinkWrite: (events) => {
+              if (failNextCommitEventWrite && events.some((e) => e.type === "thread.created")) {
+                failNextCommitEventWrite = false;
+                return Effect.fail(new TestHookError({ message: "fail commit after worktree" }));
+              }
+              return Effect.void;
+            },
+          },
+        });
+
+        try {
+          yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const svc = yield* SessionTransferEndpointService.SessionTransferEndpointService;
+
+            const srcThreadId = ThreadId.make("thread-dst-abort-locked-wt");
+            const transferId = SessionTransferId.make("xfer-dst-abort-locked-wt");
+
+            yield* eventSink.write({
+              events: seedThreadEvents({
+                projectId: srcProjectId,
+                threadId: srcThreadId,
+                branch: "feat/dst-abort-locked-wt",
+                worktreePath: srcRepo,
+                modelSelection,
+                running: false,
+              }),
+            });
+
+            const prep = yield* svc.prepareSource({
+              transferId,
+              threadId: srcThreadId,
+              direction: "local_to_boat",
+            });
+            const initialStaged = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            NodeFS.copyFileSync(
+              resolveExportBundlePath(config.stateDir, transferId, path)!,
+              resolveImportBundlePath(config.stateDir, transferId, path)!,
+            );
+
+            failNextCommitEventWrite = true;
+            const commitRes = yield* Effect.result(
+              svc.commitImport({
+                transferId,
+                destinationProjectId: initialStaged.destinationProjectId,
+                destinationThreadId: initialStaged.destinationThreadId,
+                manifest: prep.manifest,
+                autoResume: false,
+              }),
+            );
+            expect(Result.isFailure(commitRes)).toBe(true);
+
+            const stagedWithWorktree = yield* svc.stageImport({
+              transferId,
+              manifest: prep.manifest,
+              targetProjectId: dstProjectId,
+            });
+            const worktreePath = stagedWithWorktree.destinationWorktreePath!;
+            expect(NodeFS.existsSync(worktreePath)).toBe(true);
+            const realWorktreePath = NodeFS.realpathSync(worktreePath);
+
+            git(dstRepo, ["worktree", "lock", worktreePath]);
+            let unlocked = false;
+            try {
+              // Attempt 1: locked worktree must fail abort without deleting directory or dropping state.
+              const abort1 = yield* Effect.result(
+                svc.abort({
+                  transferId,
+                  role: "destination",
+                }),
+              );
+              expect(Result.isFailure(abort1)).toBe(true);
+              if (Result.isFailure(abort1)) {
+                expect(abort1.failure.code).toBe("workspace_error");
+              }
+              expect(NodeFS.existsSync(worktreePath)).toBe(true);
+              const lockedPorcelain = git(dstRepo, ["worktree", "list", "--porcelain"]);
+              expect(lockedPorcelain).toContain(`worktree ${realWorktreePath}`);
+              expect(lockedPorcelain).toContain("locked");
+              expect(
+                git(dstRepo, ["branch", "--list", "feat/dst-abort-locked-wt"]).trim(),
+              ).not.toBe("");
+
+              // Unlock and retry abort: removes worktree, unregisters from git, deletes created branch.
+              git(dstRepo, ["worktree", "unlock", worktreePath]);
+              unlocked = true;
+
+              const abort2 = yield* svc.abort({
+                transferId,
+                role: "destination",
+              });
+              expect(abort2.cleanedUp).toBe(true);
+              expect(NodeFS.existsSync(worktreePath)).toBe(false);
+              const afterPorcelain = git(dstRepo, ["worktree", "list", "--porcelain"]);
+              expect(afterPorcelain).not.toContain(realWorktreePath);
+              expect(git(dstRepo, ["branch", "--list", "feat/dst-abort-locked-wt"]).trim()).toBe(
+                "",
+              );
+
+              const abort3 = yield* svc.abort({
+                transferId,
+                role: "destination",
+              });
+              expect(abort3.cleanedUp).toBe(false);
+            } finally {
+              if (!unlocked) {
+                yield* Effect.try({
+                  try: () => git(dstRepo, ["worktree", "unlock", worktreePath]),
+                  catch: (cause) => new TestHookError({ message: String(cause) }),
+                }).pipe(Effect.ignore);
+              }
+            }
           }).pipe(Effect.provide(layer));
         } finally {
           NodeFS.rmSync(tmpRoot, { recursive: true, force: true });

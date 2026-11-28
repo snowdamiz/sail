@@ -13,6 +13,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { ChatAttachmentId } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -20,6 +21,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -33,6 +35,7 @@ import {
 import {
   ATTACHMENT_UPLOAD_ROUTE_PREFIX,
   deletePendingAttachment,
+  deletePendingAttachmentStrict,
   issueAttachmentUploadUrl,
   storeAttachmentUpload,
   validateAttachmentUploadToken,
@@ -437,5 +440,91 @@ describe("AttachmentUpload", () => {
       expect(NodeFS.existsSync(pendingPath)).toBe(false);
       expect(NodeFS.existsSync(claimedPath)).toBe(true);
     }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect(
+    "deletePendingAttachmentStrict cleans orphaned .txt sidecars on retry after primary deletion and leaves unrelated attachments intact",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const baseFs = yield* FileSystem.FileSystem;
+        const uuid = "00000000-0000-4000-8000-0000000000e1";
+        const otherUuid = "00000000-0000-4000-8000-0000000000e2";
+        const attachmentId = `pending-${uuid}-docx`;
+        const primaryPath = NodePath.join(config.attachmentsDir, `${attachmentId}.docx`);
+        const sidecarPath = `${primaryPath}.txt`;
+        const unrelatedPendingPath = NodePath.join(
+          config.attachmentsDir,
+          `pending-${otherUuid}-docx.docx`,
+        );
+        const unrelatedSidecarPath = `${unrelatedPendingPath}.txt`;
+        NodeFS.mkdirSync(config.attachmentsDir, { recursive: true });
+        NodeFS.writeFileSync(primaryPath, Buffer.from("docx-bytes"));
+        NodeFS.writeFileSync(sidecarPath, "extracted text");
+        NodeFS.writeFileSync(unrelatedPendingPath, Buffer.from("other-docx"));
+        NodeFS.writeFileSync(unrelatedSidecarPath, "other text");
+
+        let blockSidecar = true;
+        const wrappedFs = Layer.succeed(FileSystem.FileSystem, {
+          ...baseFs,
+          remove: (targetPath, options) =>
+            blockSidecar && targetPath === sidecarPath
+              ? Effect.fail(
+                  PlatformError.systemError({
+                    _tag: "PermissionDenied",
+                    module: "FileSystem",
+                    method: "remove",
+                    pathOrDescriptor: targetPath,
+                  }),
+                )
+              : baseFs.remove(targetPath, options),
+        });
+
+        // Attempt 1: primary deletes cleanly, sidecar fails with PermissionDenied.
+        const firstAttempt = yield* Effect.result(deletePendingAttachmentStrict(attachmentId)).pipe(
+          Effect.provide(wrappedFs),
+        );
+        expect(Result.isFailure(firstAttempt)).toBe(true);
+        expect(NodeFS.existsSync(primaryPath)).toBe(false);
+        expect(NodeFS.existsSync(sidecarPath)).toBe(true);
+        expect(NodeFS.existsSync(unrelatedPendingPath)).toBe(true);
+        expect(NodeFS.existsSync(unrelatedSidecarPath)).toBe(true);
+
+        // Attempt 2: even though primary is already gone, retry discovers and deletes the orphaned .txt sidecar.
+        blockSidecar = false;
+        yield* deletePendingAttachmentStrict(attachmentId).pipe(Effect.provide(wrappedFs));
+        expect(NodeFS.existsSync(sidecarPath)).toBe(false);
+        expect(NodeFS.existsSync(unrelatedPendingPath)).toBe(true);
+        expect(NodeFS.existsSync(unrelatedSidecarPath)).toBe(true);
+      }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect(
+    "deletePendingAttachmentStrict fails when attachmentsDir has no read/search permission and recovers after chmod restore",
+    () =>
+      Effect.gen(function* () {
+        if ((yield* HostProcess.Platform) === "win32" || process.getuid?.() === 0) {
+          return;
+        }
+        const config = yield* ServerConfig.ServerConfig;
+        const uuid = "00000000-0000-4000-8000-0000000000e3";
+        const attachmentId = `pending-${uuid}`;
+        const primaryPath = NodePath.join(config.attachmentsDir, `${attachmentId}.png`);
+        NodeFS.mkdirSync(config.attachmentsDir, { recursive: true });
+        NodeFS.writeFileSync(primaryPath, Buffer.from("pixels"));
+
+        try {
+          NodeFS.chmodSync(config.attachmentsDir, 0o000);
+          const blocked = yield* Effect.result(deletePendingAttachmentStrict(attachmentId));
+          expect(Result.isFailure(blocked)).toBe(true);
+        } finally {
+          NodeFS.chmodSync(config.attachmentsDir, 0o700);
+        }
+
+        // File must still exist after failed deletion, then be deleted cleanly on retry.
+        expect(NodeFS.existsSync(primaryPath)).toBe(true);
+        yield* deletePendingAttachmentStrict(attachmentId);
+        expect(NodeFS.existsSync(primaryPath)).toBe(false);
+      }).pipe(Effect.provide(layerTest)),
   );
 });

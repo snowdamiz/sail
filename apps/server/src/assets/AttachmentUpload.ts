@@ -24,6 +24,7 @@ import type * as HttpServerRequest from "effect/http/HttpServerRequest";
 import {
   attachmentFileExtension,
   createPendingAttachmentId,
+  listAttachmentFileAndSidecarRelativePaths,
   parseThreadSegmentFromAttachmentId,
   PENDING_ATTACHMENT_THREAD_SEGMENT,
   resolveAttachmentPathById,
@@ -320,28 +321,54 @@ export const deletePendingAttachmentStrict = Effect.fn("AttachmentUpload.deleteP
       return;
     }
 
-    const config = yield* ServerConfig.ServerConfig;
-    const attachmentPath = resolveAttachmentPathById({
-      attachmentsDir: config.attachmentsDir,
-      attachmentId,
-    });
-    if (!attachmentPath) {
+    const candidateNames = new Set(listAttachmentFileAndSidecarRelativePaths(attachmentId));
+    if (candidateNames.size === 0) {
       return;
     }
 
+    const config = yield* ServerConfig.ServerConfig;
     const fileSystem = yield* FileSystem.FileSystem;
-    const removeIgnoringNotFound = (targetPath: string) =>
-      fileSystem
-        .remove(targetPath, { force: true })
-        .pipe(Effect.catchIf(isNotFoundPlatformError, () => Effect.void));
+    const entries = yield* fileSystem
+      .readDirectory(config.attachmentsDir)
+      .pipe(
+        Effect.catchIf(isNotFoundPlatformError, () => Effect.succeed<ReadonlyArray<string>>([])),
+      );
 
-    const primaryResult = yield* Effect.result(removeIgnoringNotFound(attachmentPath));
-    const sidecarResult = yield* Effect.result(removeIgnoringNotFound(`${attachmentPath}.txt`));
-    if (Result.isFailure(primaryResult)) {
-      return yield* primaryResult.failure;
+    const matchingPaths: Array<string> = [];
+    for (const entry of entries) {
+      if (!candidateNames.has(entry)) {
+        continue;
+      }
+      const resolvedPath = resolveAttachmentRelativePath({
+        attachmentsDir: config.attachmentsDir,
+        relativePath: entry,
+      });
+      if (resolvedPath !== null) {
+        matchingPaths.push(resolvedPath);
+      }
     }
-    if (Result.isFailure(sidecarResult)) {
-      return yield* sidecarResult.failure;
+    matchingPaths.sort();
+
+    const failures: Array<PlatformError.PlatformError> = [];
+    for (const targetPath of matchingPaths) {
+      const removeResult = yield* Effect.result(
+        fileSystem
+          .remove(targetPath)
+          .pipe(Effect.catchIf(isNotFoundPlatformError, () => Effect.void)),
+      );
+      if (Result.isFailure(removeResult)) {
+        failures.push(removeResult.failure);
+      }
+    }
+    if (failures.length > 0) {
+      const [firstFailure, ...restFailures] = failures;
+      for (const extraFailure of restFailures) {
+        yield* Effect.logWarning("Additional pending attachment deletion failure.", {
+          attachmentId,
+          cause: extraFailure,
+        });
+      }
+      return yield* firstFailure!;
     }
   },
   withAdmission("root"),

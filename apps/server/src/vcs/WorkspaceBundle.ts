@@ -179,6 +179,56 @@ function formatByteSize(bytes: number): string {
   return `${bytes} B`;
 }
 
+interface ParsedWorktreeEntry {
+  readonly path: string;
+  readonly isMain: boolean;
+  readonly locked: boolean;
+  readonly lockReason: string | null;
+}
+
+function parseWorktreeListPorcelain(stdout: string): ReadonlyArray<ParsedWorktreeEntry> {
+  const entries: Array<ParsedWorktreeEntry> = [];
+  let currentPath: string | null = null;
+  let currentLocked = false;
+  let currentLockReason: string | null = null;
+
+  const flush = () => {
+    if (currentPath !== null) {
+      entries.push({
+        path: currentPath,
+        isMain: entries.length === 0,
+        locked: currentLocked,
+        lockReason: currentLockReason,
+      });
+    }
+    currentPath = null;
+    currentLocked = false;
+    currentLockReason = null;
+  };
+
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    if (rawLine.length === 0) {
+      flush();
+      continue;
+    }
+    if (rawLine.startsWith("worktree ")) {
+      flush();
+      currentPath = rawLine.slice("worktree ".length);
+      continue;
+    }
+    if (currentPath !== null) {
+      if (rawLine === "locked") {
+        currentLocked = true;
+      } else if (rawLine.startsWith("locked ")) {
+        currentLocked = true;
+        currentLockReason = rawLine.slice("locked ".length).trim() || null;
+      }
+    }
+  }
+  flush();
+  return entries;
+}
+
 function parseWorktreeCheckedOutBranches(stdout: string): ReadonlySet<string> {
   const branches = new Set<string>();
   for (const rawLine of stdout.split(/\r?\n/)) {
@@ -851,6 +901,47 @@ const make = Effect.gen(function* () {
     return candidate;
   });
 
+  const normalizePathForComparison = Effect.fn("WorkspaceBundle.normalizePathForComparison")(
+    function* (targetPath: string) {
+      let current = path.resolve(targetPath);
+      const trailingSegments: Array<string> = [];
+      while (true) {
+        const realResult = yield* Effect.result(fileSystem.realPath(current));
+        if (Result.isSuccess(realResult)) {
+          const base = path.normalize(realResult.success);
+          return trailingSegments.length === 0
+            ? base
+            : path.normalize(path.join(base, ...trailingSegments.reverse()));
+        }
+        const parent = path.dirname(current);
+        if (parent === current) {
+          return path.normalize(path.resolve(targetPath));
+        }
+        trailingSegments.push(path.basename(current));
+        current = parent;
+      }
+    },
+  );
+
+  const findRegisteredWorktree = Effect.fn("WorkspaceBundle.findRegisteredWorktree")(function* (
+    repoCwd: string,
+    worktreePath: string,
+  ) {
+    const listResult = yield* runGit("WorkspaceBundle.listWorktrees", repoCwd, [
+      "worktree",
+      "list",
+      "--porcelain",
+    ]);
+    const normalizedTarget = yield* normalizePathForComparison(path.resolve(repoCwd, worktreePath));
+    for (const entry of parseWorktreeListPorcelain(listResult.stdout)) {
+      const normalizedEntry = yield* normalizePathForComparison(path.resolve(repoCwd, entry.path));
+      if (normalizedEntry === normalizedTarget) {
+        return entry;
+      }
+    }
+    return null;
+  });
+
   const removeWorktree: WorkspaceBundleShape["removeWorktree"] = Effect.fn(
     "WorkspaceBundle.removeWorktree",
   )(function* (input) {
@@ -859,93 +950,159 @@ const make = Effect.gen(function* () {
 
     if (input.worktreePath !== undefined && input.worktreePath !== null) {
       const worktreePath = input.worktreePath;
-      const gitRemoveResult = yield* Effect.result(
-        runGit(
-          "WorkspaceBundle.removeWorktree",
-          input.repoCwd,
-          ["worktree", "remove", "--force", worktreePath],
-          { allowNonZeroExit: true },
-        ),
+      const beforeEntryResult = yield* Effect.result(
+        findRegisteredWorktree(input.repoCwd, worktreePath),
       );
       let gitRemoveDetail: string | null = null;
-      if (Result.isFailure(gitRemoveResult)) {
-        gitRemoveDetail = gitRemoveResult.failure.message;
-      } else if (gitRemoveResult.success.exitCode !== 0) {
-        const stderr = gitRemoveResult.success.stderr.trim();
-        const stdout = gitRemoveResult.success.stdout.trim();
-        gitRemoveDetail =
-          stderr.length > 0
-            ? stderr
-            : stdout.length > 0
-              ? stdout
-              : `exit code ${gitRemoveResult.success.exitCode}`;
+      let allowFilesystemFallback = false;
+
+      if (Result.isFailure(beforeEntryResult)) {
+        worktreeError = beforeEntryResult.failure;
+      } else if (beforeEntryResult.success?.isMain) {
+        worktreeError = new WorkspaceBundleError({
+          code: "git_error",
+          message: `Refusing to remove main worktree '${worktreePath}' in '${input.repoCwd}'.`,
+        });
+      } else if (beforeEntryResult.success?.locked) {
+        const lockReason = beforeEntryResult.success.lockReason;
+        worktreeError = new WorkspaceBundleError({
+          code: "git_error",
+          message:
+            lockReason !== null
+              ? `Cannot remove locked worktree '${worktreePath}': ${lockReason}`
+              : `Cannot remove locked worktree '${worktreePath}'. Unlock the worktree before retrying cleanup.`,
+        });
+      } else {
+        allowFilesystemFallback = true;
+        if (beforeEntryResult.success !== null) {
+          const gitRemoveResult = yield* Effect.result(
+            runGit(
+              "WorkspaceBundle.removeWorktree",
+              input.repoCwd,
+              ["worktree", "remove", "--force", worktreePath],
+              { allowNonZeroExit: true },
+            ),
+          );
+          if (Result.isFailure(gitRemoveResult)) {
+            gitRemoveDetail = gitRemoveResult.failure.message;
+          } else if (gitRemoveResult.success.exitCode !== 0) {
+            const stderr = gitRemoveResult.success.stderr.trim();
+            const stdout = gitRemoveResult.success.stdout.trim();
+            gitRemoveDetail =
+              stderr.length > 0
+                ? stderr
+                : stdout.length > 0
+                  ? stdout
+                  : `exit code ${gitRemoveResult.success.exitCode}`;
+          }
+
+          if (gitRemoveDetail !== null) {
+            const postRemoveCheck = yield* Effect.result(
+              findRegisteredWorktree(input.repoCwd, worktreePath),
+            );
+            if (Result.isFailure(postRemoveCheck)) {
+              allowFilesystemFallback = false;
+              worktreeError = postRemoveCheck.failure;
+            } else if (postRemoveCheck.success?.locked) {
+              allowFilesystemFallback = false;
+              const lockReason = postRemoveCheck.success.lockReason;
+              worktreeError = new WorkspaceBundleError({
+                code: "git_error",
+                message:
+                  lockReason !== null
+                    ? `Cannot remove locked worktree '${worktreePath}': ${lockReason}`
+                    : `Cannot remove locked worktree '${worktreePath}'. Unlock the worktree before retrying cleanup.`,
+              });
+            }
+          }
+        }
       }
 
-      const fsRemoveResult = yield* Effect.result(
-        fileSystem.remove(worktreePath, { recursive: true }).pipe(
-          Effect.catchIf(
-            (error) => error.reason._tag === "NotFound",
-            () => Effect.void,
-          ),
-          Effect.mapError(
-            (cause) =>
-              new WorkspaceBundleError({
-                code: "io_error",
-                message: `Failed to remove worktree directory '${worktreePath}': ${cause.message}`,
-                cause,
-              }),
-          ),
-        ),
-      );
-      if (Result.isFailure(fsRemoveResult)) {
-        worktreeError = fsRemoveResult.failure;
-      } else {
-        const stillExistsResult = yield* Effect.result(
-          fileSystem.exists(worktreePath).pipe(
+      if (allowFilesystemFallback) {
+        const fsRemoveResult = yield* Effect.result(
+          fileSystem.remove(worktreePath, { recursive: true }).pipe(
             Effect.catchIf(
               (error) => error.reason._tag === "NotFound",
-              () => Effect.succeed(false),
+              () => Effect.void,
             ),
             Effect.mapError(
               (cause) =>
                 new WorkspaceBundleError({
                   code: "io_error",
-                  message: `Failed to verify removal of worktree directory '${worktreePath}': ${cause.message}`,
+                  message: `Failed to remove worktree directory '${worktreePath}': ${cause.message}`,
                   cause,
                 }),
             ),
           ),
         );
-        if (Result.isFailure(stillExistsResult)) {
-          worktreeError = stillExistsResult.failure;
-        } else if (stillExistsResult.success) {
-          worktreeError = new WorkspaceBundleError({
-            code: "io_error",
-            message:
-              gitRemoveDetail !== null
-                ? `Worktree directory '${worktreePath}' still exists after removal (${gitRemoveDetail}).`
-                : `Worktree directory '${worktreePath}' still exists after removal.`,
-          });
+        if (Result.isFailure(fsRemoveResult)) {
+          worktreeError = fsRemoveResult.failure;
+        } else {
+          const stillExistsResult = yield* Effect.result(
+            fileSystem.exists(worktreePath).pipe(
+              Effect.catchIf(
+                (error) => error.reason._tag === "NotFound",
+                () => Effect.succeed(false),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new WorkspaceBundleError({
+                    code: "io_error",
+                    message: `Failed to verify removal of worktree directory '${worktreePath}': ${cause.message}`,
+                    cause,
+                  }),
+              ),
+            ),
+          );
+          if (Result.isFailure(stillExistsResult)) {
+            worktreeError = stillExistsResult.failure;
+          } else if (stillExistsResult.success) {
+            worktreeError = new WorkspaceBundleError({
+              code: "io_error",
+              message:
+                gitRemoveDetail !== null
+                  ? `Worktree directory '${worktreePath}' still exists after removal (${gitRemoveDetail}).`
+                  : `Worktree directory '${worktreePath}' still exists after removal.`,
+            });
+          }
         }
-      }
 
-      const pruneResult = yield* Effect.result(
-        runGit("WorkspaceBundle.pruneWorktrees", input.repoCwd, ["worktree", "prune"], {
-          allowNonZeroExit: true,
-        }),
-      );
-      if (worktreeError === null) {
-        if (Result.isFailure(pruneResult)) {
-          worktreeError = pruneResult.failure;
-        } else if (pruneResult.success.exitCode !== 0) {
-          const detail =
-            pruneResult.success.stderr.trim() ||
-            pruneResult.success.stdout.trim() ||
-            `exit code ${pruneResult.success.exitCode}`;
-          worktreeError = new WorkspaceBundleError({
-            code: "git_error",
-            message: `Failed to prune worktrees in '${input.repoCwd}': ${detail}`,
-          });
+        const pruneResult = yield* Effect.result(
+          runGit("WorkspaceBundle.pruneWorktrees", input.repoCwd, ["worktree", "prune"], {
+            allowNonZeroExit: true,
+          }),
+        );
+        if (worktreeError === null) {
+          if (Result.isFailure(pruneResult)) {
+            worktreeError = pruneResult.failure;
+          } else if (pruneResult.success.exitCode !== 0) {
+            const detail =
+              pruneResult.success.stderr.trim() ||
+              pruneResult.success.stdout.trim() ||
+              `exit code ${pruneResult.success.exitCode}`;
+            worktreeError = new WorkspaceBundleError({
+              code: "git_error",
+              message: `Failed to prune worktrees in '${input.repoCwd}': ${detail}`,
+            });
+          }
+        }
+
+        if (worktreeError === null) {
+          const verifyUnregisteredResult = yield* Effect.result(
+            findRegisteredWorktree(input.repoCwd, worktreePath),
+          );
+          if (Result.isFailure(verifyUnregisteredResult)) {
+            worktreeError = verifyUnregisteredResult.failure;
+          } else if (verifyUnregisteredResult.success !== null) {
+            worktreeError = new WorkspaceBundleError({
+              code: "git_error",
+              message: verifyUnregisteredResult.success.locked
+                ? `Worktree '${worktreePath}' is locked and still registered in '${input.repoCwd}'.`
+                : gitRemoveDetail !== null
+                  ? `Worktree '${worktreePath}' is still registered in '${input.repoCwd}' after removal (${gitRemoveDetail}).`
+                  : `Worktree '${worktreePath}' is still registered in '${input.repoCwd}' after removal.`,
+            });
+          }
         }
       }
     }
