@@ -1,0 +1,194 @@
+{
+  "schemaVersion": 1,
+  "scope": "Linux arm64 .deb in a disposable Debian 13.8 container under Xvfb",
+  "fixture": {
+    "databaseSha256": "84b10b976c546179059ed6200c7e6e5ef2c883ee9cbf6795c0c85c2995f1adbd",
+    "title": "Compatibility replay",
+    "amd64Emulation": false,
+    "window": {
+      "width": 1100,
+      "height": 780,
+      "scale": 1
+    },
+    "electronSandbox": "disabled with --no-sandbox"
+  },
+  "packages": {
+    "before": {
+      "name": "Sail-0.1.17-arm64.deb",
+      "sha256": "586f462a77a7973d51bea119712dcc3bc1245753cff986f32d6568040fa20f91",
+      "sha512": "Rh9CGFXx2IJtlZl+G8TaIhOnoCuCk0Nb3Dvs7STAYNdzOALB9rckHNxxmJ7iXQm+f3akgmb0ifnNNCWYeR3iTg==",
+      "size": 197995236,
+      "manifestSha256": "09549f5abac8acb095bde12908f7c5879a7866eef78185f245604b95ed4d229e",
+      "release": "v0.1.17",
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16"
+    },
+    "after": {
+      "name": "Sail-0.1.18-arm64.deb",
+      "sha256": "d01379cbe010d9fdfe96f7025fd0918c9ecc3f3a917b179ade5a0ff84082ba9f",
+      "sha512": "WRb+N1Mzi/KZUX0tYfxd0T5kmdwQ6llN7LWQG9CLxECDW5a7bPZJSMJNFpPxTrP+psFLC9uLvvJ/lxpBoswkng==",
+      "size": 198299616,
+      "manifestSha256": "e92a1596b1bad044765ad787e8e204a3f120710c74c6a08a18ae3d0f99409e22",
+      "release": "v0.1.18",
+      "sourceSha": "8337252d5112501cc06bae39921b84c807c662fc"
+    }
+  },
+  "packageInstall": {
+    "before": {
+      "status": "installed",
+      "version": "0.1.17",
+      "architecture": "arm64",
+      "appAsarSha256": "0b629516785a47c9768f043ad22dfe2c2fe8c4856e805bbe5d6f042efb6393f8",
+      "dpkgVerify": "clean"
+    },
+    "after": {
+      "status": "installed",
+      "version": "0.1.18",
+      "architecture": "arm64",
+      "appAsarSha256": "d02269e097e6674da35284509a7fa413a979d7b8048c2f5116228357dcb82628",
+      "dpkgVerify": "clean"
+    },
+    "appUid": 1501,
+    "privilegeCommand": "sudo",
+    "packageManager": "dpkg",
+    "passwordlessSudoInFixture": true,
+    "dpkgUpgradeEntryVerified": true
+  },
+  "feed": {
+    "mode": "packaged test-feed override to a loopback mirror",
+    "checksumControlManifestSha256": "943b465672d2f4efc80aeebcfe603a03e286fa89f3c903c0ff2902049bae0ccf",
+    "requestLog": [
+      {
+        "path": "/latest-linux-arm64.yml",
+        "status": 200,
+        "manifest": "bad-sha512"
+      },
+      {
+        "path": "/latest-linux-arm64.yml",
+        "status": 200,
+        "manifest": "bad-sha512"
+      },
+      {
+        "path": "/Sail-0.1.18-arm64.deb",
+        "status": 200,
+        "manifest": "bad-sha512"
+      },
+      {
+        "path": "/latest-linux-arm64.yml",
+        "status": 200,
+        "manifest": "published"
+      },
+      {
+        "path": "/latest-linux-arm64.yml",
+        "status": 200,
+        "manifest": "published"
+      },
+      {
+        "path": "/Sail-0.1.18-arm64.deb",
+        "status": 200,
+        "manifest": "published"
+      },
+      {
+        "path": "/latest-linux-arm64.yml",
+        "status": 200,
+        "manifest": "published"
+      }
+    ]
+  },
+  "before": {
+    "version": "0.1.17",
+    "migration": 118
+  },
+  "reportedStates": {
+    "offered": {
+      "status": "available",
+      "currentVersion": "0.1.17",
+      "availableVersion": "0.1.18",
+      "downloadedVersion": null,
+      "errorContext": null,
+      "canRetry": false
+    },
+    "failed": {
+      "status": "available",
+      "currentVersion": "0.1.17",
+      "availableVersion": "0.1.18",
+      "downloadedVersion": null,
+      "errorContext": "download",
+      "canRetry": true
+    },
+    "recovered": {
+      "status": "available",
+      "currentVersion": "0.1.17",
+      "availableVersion": "0.1.18",
+      "downloadedVersion": null,
+      "errorContext": "download",
+      "canRetry": true
+    },
+    "ready": {
+      "status": "downloaded",
+      "currentVersion": "0.1.17",
+      "availableVersion": "0.1.18",
+      "downloadedVersion": "0.1.18",
+      "errorContext": null,
+      "canRetry": true
+    }
+  },
+  "checksumRejection": {
+    "code": "ERR_CHECKSUM_MISMATCH",
+    "predecessorPackageVerified": true,
+    "predecessorBackendKeptRunning": true
+  },
+  "stateFingerprints": {
+    "before": {
+      "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+      "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+    },
+    "afterChecksumRejection": {
+      "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+      "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+    },
+    "afterInstall": {
+      "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+      "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+    }
+  },
+  "confirmationText": "Install update 0.1.18 and restart T3 Code?",
+  "after": {
+    "version": "0.1.18",
+    "migration": 118,
+    "protocol": 2,
+    "environmentIdentityPreserved": true,
+    "sameRunAndMessages": true,
+    "runs": 1,
+    "messages": 3,
+    "automaticRelaunch": true,
+    "visibleTitle": "Compatibility replay",
+    "visibleReplayReply": true,
+    "highlightedCodeAndTableVisible": true
+  },
+  "screenshots": [
+    {
+      "file": "update-available.png",
+      "sha256": "cf96d143be724ef03d203cf8c8d745d2b2e2a00d164513a87a382337d8ebe6ea",
+      "pixels": [1100, 780],
+      "scope": "X11 window"
+    },
+    {
+      "file": "update-rejected.png",
+      "sha256": "b4515169b84a1e0ad6aed1f51aa4241d39cba25aa2db24b6a1ca0972ccdfa307",
+      "pixels": [1100, 780],
+      "scope": "X11 window"
+    },
+    {
+      "file": "update-confirm.png",
+      "sha256": "91815d9bfb050edd54318d36143f149ec71a10c406c94967e2dd8509f97814a0",
+      "pixels": [1100, 780],
+      "scope": "X11 window"
+    },
+    {
+      "file": "update-reopened.png",
+      "sha256": "15720f238c1f1b371096eedf607704c7718778b36b8f612811d8feafab30e1c0",
+      "pixels": [1100, 780],
+      "scope": "X11 window"
+    }
+  ]
+}

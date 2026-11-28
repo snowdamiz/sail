@@ -186,5 +186,34 @@
       "scope": "X11 window",
       "title": "Sail (Beta)"
     }
-  ]
+  ],
+  "payloadRecheck": {
+    "scope": "Repeated the same upgrade with full message and run payload comparison at each checkpoint. The screenshots above are from the original capture.",
+    "fingerprints": {
+      "before": {
+        "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+        "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+      },
+      "afterChecksumRejection": {
+        "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+        "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+      },
+      "afterInstall": {
+        "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+        "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+      }
+    },
+    "messageEditControl": {
+      "baseline": {
+        "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+        "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+      },
+      "mutant": {
+        "messages": "c438501b9597287291c698c57657bf1e5f7968a81397fba3d7167f1632cd8890",
+        "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+      },
+      "oldIdRoleSearchProjectionEqual": true,
+      "fullPayloadComparisonRejected": true
+    }
+  }
 }

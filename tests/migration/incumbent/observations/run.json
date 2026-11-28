@@ -187,6 +187,12 @@
     "receipt": "electron-linux-arm64/appimage-update/receipt.json",
     "scope": "Published v0.1.17 to v0.1.18 on Debian 13.8 arm64 under Xvfb. The packaged updater rejected an invalid SHA-512, retried with the published manifest, and relaunched automatically with the same environment and Replay run. The mirror served full downloads on loopback."
   },
+  "linuxDebUpdates": {
+    "result": "observed",
+    "arm64Receipt": "electron-linux-arm64/deb-update/receipt.json",
+    "x64Receipt": "electron-linux-x64/deb-update/receipt.json",
+    "scope": "Published v0.1.17 to v0.1.18 on Debian 13.8 arm64 and emulated amd64 under Xvfb. Both packaged updaters rejected the bad SHA-512, then installed and relaunched through sudo and dpkg with the published manifest. The same environment and Replay payloads survived. The fixture used a loopback feed and passwordless sudo."
+  },
   "negativeControls": {
     "result": "pass",
     "receipt": "harness-controls/receipt.json"

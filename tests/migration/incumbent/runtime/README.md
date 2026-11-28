@@ -51,7 +51,17 @@ Use writable copies of the released AppImage and the Replay database in a dispos
 
 Replace both AppImage SHA-512 entries in a scratch copy of the manifest. In **Settings → About**, check for updates and click **Download**. Verify the checksum error and compare the installed AppImage and saved thread with their pre-update state. Restore the published manifest and check again. Click **Download**, then **Install** and **Confirm**. Verify that the app relaunches, the bundled server reports v0.1.18, and the saved Replay thread opens from the sidebar.
 
-The [AppImage update receipt](../observations/electron-linux-arm64/appimage-update/receipt.json) records both archive digests, the failed and successful downloads, and the restarted app. This run covers the loopback full-download path. The public network feed, differential downloads, Debian updater, and other desktop architectures need separate runs.
+The [AppImage update receipt](../observations/electron-linux-arm64/appimage-update/receipt.json) records both archive digests, the failed and successful downloads, and the restarted app. This run covers the loopback full-download path. The public network feed, differential downloads, and the x64 AppImage updater need separate runs.
+
+## Published Debian package update
+
+Install the architecture's v0.1.17 Debian package in a disposable Debian 13.8 container. Include `/usr/share/doc/sail/*` in dpkg's path filters. Launch the installed desktop as an unprivileged fixture user under Xvfb with `--no-sandbox`. Give the fixture user passwordless sudo within the container for the install command. Verify the package with `dpkg --verify sail` as root.
+
+Use the same loopback feed override and update controls as the AppImage test. Serve `latest-linux-arm64.yml` for arm64 or `latest-linux.yml` for x64, along with the matching v0.1.18 Debian package. Replace the Debian package's SHA-512 in the first manifest. Check the original package and backend after the failure, then restore the published manifest. After confirming the update, check the dpkg upgrade entry, the relaunched application, and the reopened Replay thread.
+
+Run [the saved-thread fingerprint check](upgrade_state.py) against the fixture database and thread ID before updating, after checksum rejection, and after installation. Compare the persisted message and run fingerprints at all three points.
+
+The [arm64 receipt](../observations/electron-linux-arm64/deb-update/receipt.json) and [x64 receipt](../observations/electron-linux-x64/deb-update/receipt.json) record the checks for the packaged updater through sudo and dpkg. The x64 run used amd64 emulation. Interactive privilege prompts and the public network feed need separate runs.
 
 ## Published OCI runtime
 
