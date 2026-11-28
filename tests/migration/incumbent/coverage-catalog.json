@@ -1376,6 +1376,126 @@
     },
     {
       "caseId": "chat-turn",
+      "platformId": "served-firefox-macos",
+      "state": "settled",
+      "entrypoint": "chat",
+      "configurationId": "firefox-161.0-macos-arm64-en-light-640x600-2x-headless-non-overlay",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-turn",
+          "environment": {
+            "osVersion": "27.0.1 (26A434)",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Firefox 161.0",
+            "installerAssetDigest": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+            "origin": "server-served loopback",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, Inter Variable, Segoe UI, system-ui, sans-serif",
+                "ui-monospace, SF Mono, SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace"
+              ],
+              "motion": "standard"
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/served-firefox-macos/settled/a/capture.png",
+              "sha256": "4fda33aeea82f9924e37fa8fbe41c24930556c741cfb0bc09296257de838a167"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/served-firefox-macos/settled/a/receipt.json",
+              "sha256": "6a82a16d46e463bba9193aae9efbbb198ed593f3382e1c8725dcdab7c310a524"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/served-firefox-macos/settled/capture-timings.json",
+              "sha256": "e0f1abb63342cacb118e2d9ddbe26c90cb8697763dc47f388e7ec9962a8e7336"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-turn",
+          "environment": {
+            "osVersion": "27.0.1 (26A434)",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Firefox 161.0",
+            "installerAssetDigest": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+            "origin": "server-served loopback",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, Inter Variable, Segoe UI, system-ui, sans-serif",
+                "ui-monospace, SF Mono, SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace"
+              ],
+              "motion": "standard"
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/served-firefox-macos/settled/b/capture.png",
+              "sha256": "4fda33aeea82f9924e37fa8fbe41c24930556c741cfb0bc09296257de838a167"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/served-firefox-macos/settled/b/receipt.json",
+              "sha256": "6a82a16d46e463bba9193aae9efbbb198ed593f3382e1c8725dcdab7c310a524"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/served-firefox-macos/settled/capture-timings.json",
+              "sha256": "e0f1abb63342cacb118e2d9ddbe26c90cb8697763dc47f388e7ec9962a8e7336"
+            }
+          ]
+        }
+      ],
+      "comparisonArtifacts": [
+        {
+          "kind": "pixel-diff",
+          "path": "observations/served-firefox-macos/settled/a-b-diff.png",
+          "sha256": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+        },
+        {
+          "kind": "action-and-state",
+          "path": "observations/served-firefox-macos/settled/comparisons.json",
+          "sha256": "1fd0bb5e2e5d1cd5e2c09c1f47fc6bcfe7f7ae49fe486e32b7763a672d2c6b64"
+        },
+        {
+          "kind": "action-traces",
+          "path": "observations/served-firefox-macos/settled/capture-samples.ndjson",
+          "sha256": "52f1ca259fec06444f7feecb5df026e94615d620babd6b3dc357526d887d0788"
+        }
+      ]
+    },
+    {
+      "caseId": "chat-turn",
       "platformId": "served-firefox-linux",
       "state": "settled",
       "entrypoint": "chat",

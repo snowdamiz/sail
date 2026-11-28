@@ -1,5 +1,5 @@
 export default function observeThreadSync(threadId) {
-  if (window.top !== window || !/^127\.0\.0\.1[1-4]$/.test(location.hostname)) return;
+  if (window.top !== window || !/^127\.0\.0\.1(?:[1-4])?$/.test(location.hostname)) return;
   const state = { requested: 0, snapshots: 0, synchronized: 0, active: false };
   Object.defineProperty(window, "__sailCaptureSync", { value: state });
   const Socket = window.WebSocket;

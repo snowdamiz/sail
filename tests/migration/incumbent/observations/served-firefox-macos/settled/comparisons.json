@@ -1,0 +1,98 @@
+{
+  "a-b": {
+    "result": "pass",
+    "fixtureId": "chat-turn",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "changedSteps": [],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/served-firefox-macos/settled/a/capture.png",
+      "candidate": "tests/migration/incumbent/observations/served-firefox-macos/settled/b/capture.png",
+      "diff": "tests/migration/incumbent/observations/served-firefox-macos/settled/a-b-diff.png",
+      "baselineSize": [1280, 1200],
+      "candidateSize": [1280, 1200],
+      "differentPixels": 0,
+      "bounds": null
+    }
+  },
+  "head-a-head-b": {
+    "result": "pass",
+    "fixtureId": "chat-turn",
+    "baselineSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+    "candidateSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+    "changedSteps": [],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/served-firefox-macos/settled/head-a/capture.png",
+      "candidate": "tests/migration/incumbent/observations/served-firefox-macos/settled/head-b/capture.png",
+      "diff": "tests/migration/incumbent/observations/served-firefox-macos/settled/head-a-head-b-diff.png",
+      "baselineSize": [1280, 1200],
+      "candidateSize": [1280, 1200],
+      "differentPixels": 0,
+      "bounds": null
+    }
+  },
+  "a-head-a": {
+    "result": "fail",
+    "fixtureId": "chat-turn",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+    "changedSteps": [4],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/served-firefox-macos/settled/a/capture.png",
+      "candidate": "tests/migration/incumbent/observations/served-firefox-macos/settled/head-a/capture.png",
+      "diff": "tests/migration/incumbent/observations/served-firefox-macos/settled/a-head-a-diff.png",
+      "baselineSize": [1280, 1200],
+      "candidateSize": [1280, 1200],
+      "differentPixels": 3460,
+      "bounds": [647, 1096, 995, 1124]
+    }
+  },
+  "a-head-b": {
+    "result": "fail",
+    "fixtureId": "chat-turn",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+    "changedSteps": [4],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/served-firefox-macos/settled/a/capture.png",
+      "candidate": "tests/migration/incumbent/observations/served-firefox-macos/settled/head-b/capture.png",
+      "diff": "tests/migration/incumbent/observations/served-firefox-macos/settled/a-head-b-diff.png",
+      "baselineSize": [1280, 1200],
+      "candidateSize": [1280, 1200],
+      "differentPixels": 3460,
+      "bounds": [647, 1096, 995, 1124]
+    }
+  },
+  "b-head-a": {
+    "result": "fail",
+    "fixtureId": "chat-turn",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+    "changedSteps": [4],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/served-firefox-macos/settled/b/capture.png",
+      "candidate": "tests/migration/incumbent/observations/served-firefox-macos/settled/head-a/capture.png",
+      "diff": "tests/migration/incumbent/observations/served-firefox-macos/settled/b-head-a-diff.png",
+      "baselineSize": [1280, 1200],
+      "candidateSize": [1280, 1200],
+      "differentPixels": 3460,
+      "bounds": [647, 1096, 995, 1124]
+    }
+  },
+  "b-head-b": {
+    "result": "fail",
+    "fixtureId": "chat-turn",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+    "changedSteps": [4],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/served-firefox-macos/settled/b/capture.png",
+      "candidate": "tests/migration/incumbent/observations/served-firefox-macos/settled/head-b/capture.png",
+      "diff": "tests/migration/incumbent/observations/served-firefox-macos/settled/b-head-b-diff.png",
+      "baselineSize": [1280, 1200],
+      "candidateSize": [1280, 1200],
+      "differentPixels": 3460,
+      "bounds": [647, 1096, 995, 1124]
+    }
+  }
+}

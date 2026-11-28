@@ -5,9 +5,11 @@ import base64
 import hashlib
 import json
 import os
+import plistlib
 import re
 import runpy
 import shutil
+import socket
 import subprocess
 import time
 from contextlib import ExitStack, closing, contextmanager
@@ -67,6 +69,12 @@ def execute(args, env=None, cwd=None):
     return subprocess.check_output(args, env=env, cwd=cwd, text=True, timeout=55)
 
 
+def loopback_port():
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        return listener.getsockname()[1]
+
+
 @contextmanager
 def process(args, log, env=None):
     with (
@@ -104,32 +112,61 @@ def wait_page(driver, script):
 
 
 @contextmanager
-def firefox(out, thread_id):
-    endpoint = "http://127.0.0.1:4444"
-    with process(
-        ["geckodriver", "--host", "127.0.0.1", "--port", "4444", "--log", "error"],
-        out / "driver.log",
-    ) as gecko:
+def firefox(args, logfile, browser_root=None):
+    port = loopback_port()
+    endpoint = f"http://127.0.0.1:{port}"
+    command = [
+        "geckodriver",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--websocket-port",
+        "0",
+        "--log",
+        "error",
+    ]
+    options = {
+        "prefs": {
+            "intl.accept_languages": "en",
+            "layout.css.devPixelsPerPx": "2.0",
+            "accessibility.tabfocus": 7,
+            "browser.newtabpage.enabled": False,
+            "ui.systemUsesDarkTheme": 0,
+            "ui.prefersReducedMotion": 0,
+        }
+    }
+    env = None
+    if browser_root is not None:
+        for name in ("profiles", "app-data", "home"):
+            (browser_root / name).mkdir(parents=True)
+        command.extend(["--profile-root", browser_root / "profiles"])
+        options.update({"binary": str(args.browser_binary), "args": ["-headless"]})
+        options["prefs"]["ui.useOverlayScrollbars"] = 0
+        # macOS 27 protects the default Firefox data directory from direct launches.
+        env = os.environ | {
+            "MOZ_APP_DATA": str(browser_root / "app-data"),
+            "HOME": str(browser_root / "home"),
+        }
+    with process(command, logfile, env) as gecko:
         wait_http(endpoint + "/status", gecko)
         driver = WebDriver(endpoint)
         caps = driver.start(
             {
                 "browserName": "firefox",
                 "webSocketUrl": True,
-                "moz:firefoxOptions": {
-                    "prefs": {
-                        "intl.accept_languages": "en",
-                        "layout.css.devPixelsPerPx": "2.0",
-                        "accessibility.tabfocus": 7,
-                        "browser.newtabpage.enabled": False,
-                        "ui.systemUsesDarkTheme": 0,
-                        "ui.prefersReducedMotion": 0,
-                    }
-                },
+                "moz:firefoxOptions": options,
             }
         )
         try:
-            assert caps["browserVersion"] == BROWSER
+            assert caps["browserVersion"] == args.browser_version
+            if browser_root is not None:
+                assert caps["moz:headless"] and caps["platformName"] == "mac"
+                assert (
+                    Path(caps["moz:profile"])
+                    .resolve()
+                    .is_relative_to((browser_root / "profiles").resolve())
+                )
             driver.request(
                 "POST",
                 "/timeouts",
@@ -156,7 +193,7 @@ def firefox(out, thread_id):
                     .strip()
                     .removeprefix("export default ")
                 )
-                function = f"() => ({observer})({json.dumps(thread_id)})"
+                function = f"() => ({observer})({json.dumps(args.thread_id)})"
                 bidi.send(
                     json.dumps(
                         {
@@ -170,7 +207,7 @@ def firefox(out, thread_id):
                 )
                 result = json.loads(bidi.recv())
                 assert "script" in result.get("result", {}), result
-                yield driver
+                yield driver, caps["moz:geckodriverVersion"]
         finally:
             driver.request("DELETE", "")
 
@@ -193,10 +230,6 @@ def installed_host(driver, name, index, state, args):
         (root / folder).mkdir(parents=True, exist_ok=True)
     shutil.copyfile(args.seed, root / "state/userdata/statev2.sqlite")
     shutil.copyfile(args.settings, root / "state/userdata/settings.json")
-    archive = args.incumbent_archive if released else args.candidate_archive
-    execute(["tar", "-xzf", archive, "-C", root / "runtime"])
-    (runtime,) = (root / "runtime").glob("t3-*")
-    cli = runtime / "t3"
     env = os.environ | {
         "HOME": str(root / "home"),
         "TMPDIR": str(root / "tmp"),
@@ -208,12 +241,31 @@ def installed_host(driver, name, index, state, args):
         "T3CODE_DISABLE_AUTO_UPDATE": "true",
         "T3CODE_TELEMETRY_ENABLED": "false",
     }
-    assert execute([cli, "--version"], env).strip() == f"t3 v{expected_version}"
-    server_port = 47670 + index
-    address = f"127.0.0.{11 + index}"
+    if args.macos:
+        app = args.incumbent_bundle if released else args.candidate_bundle
+        contents = app / "Contents"
+        info = plistlib.loads((contents / "Info.plist").read_bytes())
+        assert info["CFBundleShortVersionString"] == expected_version
+        cli = [
+            contents / "MacOS" / info["CFBundleExecutable"],
+            contents / "Resources/app.asar/apps/server/dist/bin.mjs",
+        ]
+        env["ELECTRON_RUN_AS_NODE"] = "1"
+        address = "127.0.0.1"
+        server_port = loopback_port()
+        expected_os = "darwin"
+    else:
+        archive = args.incumbent_archive if released else args.candidate_archive
+        execute(["tar", "-xzf", archive, "-C", root / "runtime"])
+        (runtime,) = (root / "runtime").glob("t3-*")
+        cli = [runtime / "t3"]
+        address = f"127.0.0.{11 + index}"
+        server_port = 47670 + index
+        expected_os = "linux"
+    assert execute([*cli, "--version"], env).strip() == f"t3 v{expected_version}"
     origin = f"http://{address}:{server_port}"
     server_args = [
-        cli,
+        *cli,
         "serve",
         "--host",
         address,
@@ -227,11 +279,12 @@ def installed_host(driver, name, index, state, args):
         assert descriptor["serverVersion"] == expected_version
         assert descriptor["orchestrationProtocolVersion"] == 2
         assert descriptor["databaseMigration"] == expected_migration
-        assert descriptor["platform"] == {"os": "linux", "arch": "arm64"}
+        assert descriptor["platform"]["os"] == expected_os
+        assert descriptor["platform"]["arch"] == "arm64"
         assert execute(
-            [cli, "thread", "show", "--json", "--messages", "10", args.thread_id], env
+            [*cli, "thread", "show", "--json", "--messages", "10", args.thread_id], env
         )
-        output = execute([cli, "pair", "--base-dir", root / "state"], env)
+        output = execute([*cli, "pair", "--base-dir", root / "state"], env)
         pair = urlsplit(re.search(r"^Pairing URL: (.+)$", output, re.MULTILINE)[1])
         assert pair.scheme == "http" and pair.path == "/pair" and pair.fragment
         try:
@@ -271,7 +324,7 @@ def installed_host(driver, name, index, state, args):
         url = f"{origin}/{descriptor['environmentId']}/{quote(args.thread_id, safe='')}"
         result = {
             "name": name,
-            "browser": BROWSER,
+            "browser": args.browser_version,
             "serverVersion": expected_version,
             "migration": expected_migration,
             "sourceSha": args.incumbent_sha if released else args.candidate_sha,
@@ -279,8 +332,9 @@ def installed_host(driver, name, index, state, args):
         yield url, result
 
 
-def sampled(driver, url, label, iteration, out):
-    execute(["xdotool", "mousemove", "1919", "1399"])
+def sampled(driver, url, label, iteration, out, headless=False):
+    if not headless:
+        execute(["xdotool", "mousemove", "1919", "1399"])
     before = time.monotonic_ns()
     driver.request("POST", "/url", {"url": url})
     navigated = time.monotonic_ns()
@@ -427,10 +481,16 @@ def controls(driver):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Capture the paired Linux arm64 Firefox Replay fixture"
+        description="Capture the paired arm64 Firefox Replay fixture"
     )
-    parser.add_argument("--incumbent-archive", required=True, type=Path)
-    parser.add_argument("--candidate-archive", required=True, type=Path)
+    incumbent = parser.add_mutually_exclusive_group(required=True)
+    incumbent.add_argument("--incumbent-archive", type=Path)
+    incumbent.add_argument("--incumbent-bundle", type=Path)
+    candidate = parser.add_mutually_exclusive_group(required=True)
+    candidate.add_argument("--candidate-archive", type=Path)
+    candidate.add_argument("--candidate-bundle", type=Path)
+    parser.add_argument("--browser-binary", type=Path)
+    parser.add_argument("--browser-version")
     parser.add_argument("--candidate-sha", required=True)
     parser.add_argument("--seed", required=True, type=Path)
     parser.add_argument("--settings", required=True, type=Path)
@@ -438,6 +498,16 @@ def main():
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--rounds", type=int, default=24)
     args = parser.parse_args()
+    args.macos = args.incumbent_bundle is not None
+    if args.macos != (args.candidate_bundle is not None):
+        parser.error("Use either two Linux CLI archives or two macOS app bundles")
+    if args.macos and not (args.browser_binary and args.browser_version):
+        parser.error(
+            "--browser-binary and --browser-version are required with macOS bundles"
+        )
+    if not args.macos and args.browser_binary:
+        parser.error("--browser-binary requires macOS bundles")
+    args.browser_version = args.browser_version or BROWSER
     if args.rounds < 1:
         parser.error("--rounds must be positive")
     if not re.fullmatch(r"[0-9a-f]{40}", args.candidate_sha):
@@ -450,10 +520,24 @@ def main():
         TemporaryDirectory(prefix="sail-firefox-capture-") as root,
         ExitStack() as stack,
     ):
-        driver = stack.enter_context(firefox(args.out, args.thread_id))
+        state = Path(root)
+        if args.macos:
+            browsers = {
+                label: stack.enter_context(
+                    firefox(
+                        args,
+                        args.out / f"{label}-driver.log",
+                        state / label / "browser",
+                    )
+                )
+                for label in HOSTS
+            }
+        else:
+            browser = stack.enter_context(firefox(args, args.out / "driver.log"))
+            browsers = dict.fromkeys(HOSTS, browser)
         hosts = {
             label: stack.enter_context(
-                installed_host(driver, label, index, Path(root), args)
+                installed_host(browsers[label][0], label, index, state, args)
             )
             for index, label in enumerate(HOSTS)
         }
@@ -463,8 +547,14 @@ def main():
                 rotation = (iteration - 2 if iteration >= 2 else iteration) % len(HOSTS)
                 for label in HOSTS[rotation:] + HOSTS[:rotation]:
                     url, identity = hosts[label]
-                    capture = sampled(driver, url, label, iteration, args.out)
-                    profiles[label] = identity | {"controls": controls(driver)}
+                    driver, driver_version = browsers[label]
+                    capture = sampled(
+                        driver, url, label, iteration, args.out, headless=args.macos
+                    )
+                    profiles[label] = identity | {
+                        "geckodriver": driver_version,
+                        "controls": controls(driver),
+                    }
                     samples.write(json.dumps(capture, separators=(",", ":")) + "\n")
                     samples.flush()
                     print(label, iteration, round(capture["totalMs"], 2), flush=True)

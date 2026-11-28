@@ -33,7 +33,9 @@ Capture timing includes Browser panel calls and rendering waits. In this run, wa
 
 The [packaged migration-head comparison](observations/served-chromium-macos/migration-head-4807bdae) uses Chromium headless shell 156.0.8078.4 in three isolated Playwright profiles. Both v0.1.17 copies matched. The web client built at `4807bdae` differed by 3,478 pixels in the composer and exposed the Poteto control. Its capture p95 was 572 ms against 1,137 and 1,696 ms for the incumbent copies, within the budget for this fixture.
 
-## Capture the settled Firefox replay on Linux
+## Capture the settled Firefox replay
+
+### Linux
 
 Run the published Linux arm64 CLI archive twice under separate scratch homes with copies of the seeded database. Pair a fresh Firefox ESR profile to each server under Xvfb. Use the same viewport, Tab action, and pointer position as the Chromium capture. Record the installed Firefox version from GeckoDriver. The [Linux Firefox receipts](observations/served-firefox-linux/settled) contain both matching captures and the installed package versions.
 
@@ -52,6 +54,20 @@ xvfb-run -a --server-args="-screen 0 1920x1400x24" \
 The runner waits for the thread's v2 synchronization marker and highlighted transcript, then focuses **Attach files** and settles the transcript at the end of its scroll range. It checks synchronization and geometry again after rendering and after the screenshot. The timer starts at WebDriver navigation and ends when the screenshot arrives. Setup, pairing, and the recorded composer control check run outside that interval. Each install has two warmups and 24 measured rounds by default.
 
 The synchronized run captured 104 identical PNGs and action traces across the two published and two candidate installs. Incumbent p95 was 2.886 and 3.248 seconds. Candidate p95 was 2.910 and 2.655 seconds, within both limits against each incumbent. The four copies shared the light English 640 × 600 CSS-pixel profile at scale 2 and a saved conversation with no configured provider. [Comparisons and raw timing samples](observations/served-firefox-linux/migration-head-03c866c2/synchronized)
+
+### macOS
+
+Use stock Firefox 161.0 and GeckoDriver 0.36.0 with Pillow and Python's `websocket-client`. Pass the two installed macOS arm64 bundles and the seed database and settings from a scratch fixture. The runner starts four packaged servers and four headless Firefox instances. Each has its own home, cookie session, and profile. On macOS 27, the runner uses `MOZ_APP_DATA` to keep Firefox's application data in the scratch directory. It selects non-overlay scrollbars so fading scrollbars do not change the capture.
+
+```sh
+python3 tests/migration/incumbent/firefox-capture.py \
+  --incumbent-bundle "$published_app" --candidate-bundle "$candidate_app" \
+  --browser-binary "$firefox_app/Contents/MacOS/firefox" --browser-version 161.0 \
+  --candidate-sha "$candidate_commit" --seed "$seed_database" --settings "$seed_settings" \
+  --thread-id "$seed_thread_id" --out "$new_capture_dir"
+```
+
+The [macOS Firefox captures](observations/served-firefox-macos/settled) use the light English 640 × 600 CSS-pixel profile at scale 2, with Replay configured. The timer and rotation use the same boundaries as Linux.
 
 ## Capture the settled Electron replay on macOS
 
