@@ -40,7 +40,14 @@ python3 tests/migration/compare.py compare "$reference" "$candidate" \
 
 The command reports pixel differences and the positions of changed, added, or missing trace steps. Exit code `1` means a difference. Exit code `2` means the inputs could not be compared. The diff path must be new, so each check can retain its result. Compare a capture against its own surface and display profile.
 
-Run the negative controls with `python3 -m unittest discover -s tests/migration -p 'test_*.py'`.
+Run the unit controls with `python3 -m unittest discover -s tests/migration -p 'test_*.py'`.
+To reproduce the [archived Replay controls](incumbent/observations/harness-controls/replay/comparisons.json), use Pillow 10.1 or newer and pass a new output directory.
+
+```sh
+python3 tests/migration/record-harness-controls.py "$scratch/controls"
+```
+
+The script compares the two archived Chromium captures twice, then changes one input in each scratch copy. It records the mutation, the comparator result, and a PNG rendered from the five results.
 
 ## Reuse the macOS capture process
 

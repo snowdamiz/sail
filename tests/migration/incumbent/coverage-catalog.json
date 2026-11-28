@@ -1618,6 +1618,177 @@
           "sha256": "483ce0a0b7123fa4763e743d899e1dd310b38694d22a2232246360751b747e44"
         }
       ]
+    },
+    {
+      "caseId": "compare-negative",
+      "platformId": "comparison-runner",
+      "state": "pixel-changed",
+      "entrypoint": "harness",
+      "configurationId": "published-chromium-settled-replay",
+      "stage": "p01-harness-control",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "scratch-negative",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node (recorded fixture)",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-turn",
+          "environment": {
+            "osVersion": "27.0.1 (26A434)",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Chrome/154.0.0.0",
+            "installerAssetDigest": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+            "origin": "archived server-served loopback",
+            "connectionMode": "offline comparison",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "fonts": [
+                "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ],
+              "motion": "standard"
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/harness-controls/replay/ref-negative.png",
+              "sha256": "542b3dcc358636f280db9c35f97e5dc77ee96f25d4db073fe8f1f2e8c4e77e82"
+            },
+            {
+              "kind": "mutation-receipt",
+              "path": "observations/harness-controls/replay/receipt.json",
+              "sha256": "3883a0ba6407215d224ba53404c163702d1c44bf7726d49be108a7dfef2c5eb6"
+            },
+            {
+              "kind": "comparison-result",
+              "path": "observations/harness-controls/replay/comparisons.json",
+              "sha256": "8cd18d8fac5158549a52f90f63d1fc27e54e07b50aabdab6dae4b938fb36f191"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "compare-negative",
+      "platformId": "comparison-runner",
+      "state": "replay-result-changed",
+      "entrypoint": "harness",
+      "configurationId": "published-chromium-settled-replay",
+      "stage": "p01-harness-control",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "scratch-negative",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node (recorded fixture)",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-turn",
+          "environment": {
+            "osVersion": "27.0.1 (26A434)",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Chrome/154.0.0.0",
+            "installerAssetDigest": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+            "origin": "archived server-served loopback",
+            "connectionMode": "offline comparison",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "fonts": [
+                "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ],
+              "motion": "standard"
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/harness-controls/replay/ref-negative.png",
+              "sha256": "542b3dcc358636f280db9c35f97e5dc77ee96f25d4db073fe8f1f2e8c4e77e82"
+            },
+            {
+              "kind": "mutation-receipt",
+              "path": "observations/harness-controls/replay/receipt.json",
+              "sha256": "3883a0ba6407215d224ba53404c163702d1c44bf7726d49be108a7dfef2c5eb6"
+            },
+            {
+              "kind": "comparison-result",
+              "path": "observations/harness-controls/replay/comparisons.json",
+              "sha256": "8cd18d8fac5158549a52f90f63d1fc27e54e07b50aabdab6dae4b938fb36f191"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "caseId": "compare-missing-state",
+      "platformId": "comparison-runner",
+      "state": "widget-state-missing",
+      "entrypoint": "harness",
+      "configurationId": "published-chromium-settled-replay",
+      "stage": "p01-harness-control",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "scratch-negative",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node (recorded fixture)",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-turn",
+          "environment": {
+            "osVersion": "27.0.1 (26A434)",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Chrome/154.0.0.0",
+            "installerAssetDigest": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+            "origin": "archived server-served loopback",
+            "connectionMode": "offline comparison",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "fonts": [
+                "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+              ],
+              "motion": "standard"
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "terminal-screenshot",
+              "path": "observations/harness-controls/replay/ref-negative.png",
+              "sha256": "542b3dcc358636f280db9c35f97e5dc77ee96f25d4db073fe8f1f2e8c4e77e82"
+            },
+            {
+              "kind": "mutation-receipt",
+              "path": "observations/harness-controls/replay/receipt.json",
+              "sha256": "3883a0ba6407215d224ba53404c163702d1c44bf7726d49be108a7dfef2c5eb6"
+            },
+            {
+              "kind": "comparison-result",
+              "path": "observations/harness-controls/replay/comparisons.json",
+              "sha256": "8cd18d8fac5158549a52f90f63d1fc27e54e07b50aabdab6dae4b938fb36f191"
+            }
+          ]
+        }
+      ]
     }
   ],
   "platformScope": {

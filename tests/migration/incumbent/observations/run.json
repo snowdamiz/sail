@@ -221,7 +221,9 @@
   },
   "negativeControls": {
     "result": "pass",
-    "receipt": "harness-controls/receipt.json"
+    "receipt": "harness-controls/replay/receipt.json",
+    "comparisonResult": "harness-controls/replay/comparisons.json",
+    "scope": "Offline comparison of the archived published Chromium pair. Both unchanged comparisons passed. A changed pixel, a changed Replay result, and a missing Stop state each caused a failure. The accompanying PNG renders the comparator results."
   },
   "navigation": {
     "result": "pass",
