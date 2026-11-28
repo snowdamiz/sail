@@ -213,6 +213,7 @@ import * as ServerSettings from "./serverSettings.ts";
 import { invalidateSettingsSecrets } from "./sourceControl/sourceControlHostSecrets.ts";
 import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
 import * as SessionTransferRepository from "./persistence/SessionTransferRepository.ts";
+import * as SessionTransferEndpointService from "./orchestration-v2/SessionTransferEndpointService.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import { makePrepareTerminalLaunch } from "./workspace/restoreMissingWorktree.ts";
@@ -1448,6 +1449,9 @@ export const layerWsRpc = (
       const boatProviderSyncOption = yield* Effect.serviceOption(BoatProviderSync.BoatProviderSync);
       const sessionTransfersOption = yield* Effect.serviceOption(
         SessionTransferRepository.SessionTransferRepository,
+      );
+      const sessionTransferEndpointsOption = yield* Effect.serviceOption(
+        SessionTransferEndpointService.SessionTransferEndpointService,
       );
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -3724,45 +3728,65 @@ export const layerWsRpc = (
           }),
         [WS_METHODS.subscribeSessionTransfers]: (_input) => Stream.empty,
         [WS_METHODS.sessionTransferPrepareSource]: (input) =>
-          Effect.fail(
-            new SessionTransferError({
-              code: "not_implemented",
-              transferId: input.transferId,
-              message: "Session transfer prepareSource is not implemented yet.",
-            }),
-          ),
+          Option.match(sessionTransferEndpointsOption, {
+            onNone: () =>
+              Effect.fail(
+                new SessionTransferError({
+                  code: "not_implemented",
+                  transferId: input.transferId,
+                  message: "Session transfer endpoint service is not configured.",
+                }),
+              ),
+            onSome: (endpoints) => endpoints.prepareSource(input),
+          }),
         [WS_METHODS.sessionTransferStageImport]: (input) =>
-          Effect.fail(
-            new SessionTransferError({
-              code: "not_implemented",
-              transferId: input.transferId,
-              message: "Session transfer stageImport is not implemented yet.",
-            }),
-          ),
+          Option.match(sessionTransferEndpointsOption, {
+            onNone: () =>
+              Effect.fail(
+                new SessionTransferError({
+                  code: "not_implemented",
+                  transferId: input.transferId,
+                  message: "Session transfer endpoint service is not configured.",
+                }),
+              ),
+            onSome: (endpoints) => endpoints.stageImport(input),
+          }),
         [WS_METHODS.sessionTransferCommitImport]: (input) =>
-          Effect.fail(
-            new SessionTransferError({
-              code: "not_implemented",
-              transferId: input.transferId,
-              message: "Session transfer commitImport is not implemented yet.",
-            }),
-          ),
+          Option.match(sessionTransferEndpointsOption, {
+            onNone: () =>
+              Effect.fail(
+                new SessionTransferError({
+                  code: "not_implemented",
+                  transferId: input.transferId,
+                  message: "Session transfer endpoint service is not configured.",
+                }),
+              ),
+            onSome: (endpoints) => endpoints.commitImport(input),
+          }),
         [WS_METHODS.sessionTransferFinalizeSource]: (input) =>
-          Effect.fail(
-            new SessionTransferError({
-              code: "not_implemented",
-              transferId: input.transferId,
-              message: "Session transfer finalizeSource is not implemented yet.",
-            }),
-          ),
+          Option.match(sessionTransferEndpointsOption, {
+            onNone: () =>
+              Effect.fail(
+                new SessionTransferError({
+                  code: "not_implemented",
+                  transferId: input.transferId,
+                  message: "Session transfer endpoint service is not configured.",
+                }),
+              ),
+            onSome: (endpoints) => endpoints.finalizeSource(input),
+          }),
         [WS_METHODS.sessionTransferAbort]: (input) =>
-          Effect.fail(
-            new SessionTransferError({
-              code: "not_implemented",
-              transferId: input.transferId,
-              message: "Session transfer abort is not implemented yet.",
-            }),
-          ),
+          Option.match(sessionTransferEndpointsOption, {
+            onNone: () =>
+              Effect.fail(
+                new SessionTransferError({
+                  code: "not_implemented",
+                  transferId: input.transferId,
+                  message: "Session transfer endpoint service is not configured.",
+                }),
+              ),
+            onSome: (endpoints) => endpoints.abort(input),
+          }),
         [WS_METHODS.previewStopLocalServer]: (input) => portDiscovery.stopServer(input),
         [WS_METHODS.subscribeDiscoveredLocalServers]: (input) =>
           Stream.callback<DiscoveredLocalServerList>((queue) =>

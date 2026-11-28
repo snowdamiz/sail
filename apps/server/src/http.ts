@@ -52,6 +52,13 @@ import {
   storeAttachmentUpload,
   validateAttachmentUploadToken,
 } from "./assets/AttachmentUpload.ts";
+import {
+  resolveExportBundleForDownload,
+  SESSION_TRANSFER_BUNDLE_ROUTE_PREFIX,
+  SESSION_TRANSFER_MAX_BUNDLE_BYTES,
+  storeSessionTransferBundleUpload,
+  validateSessionTransferBundleToken,
+} from "./assets/SessionTransferToken.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import {
@@ -615,6 +622,134 @@ export const layerAttachmentUploadRoute = HttpRouter.add(
     // Keep the request stream in the route scope until the response is sent.
     const bodyPull = yield* Stream.toPull(request.stream);
     const stored = yield* storeAttachmentUpload(claims, Stream.fromPull(Effect.succeed(bodyPull)));
+    return stored.ok
+      ? HttpServerResponse.empty({ status: 204 })
+      : HttpServerResponse.text(stored.detail, {
+          status: stored.status,
+          ...(stored.status === 503 ? { headers: { "retry-after": "1" } } : {}),
+        });
+  }),
+  SIGNED_URL_ROUTE_OPTIONS,
+);
+
+const extractSessionTransferBundleToken = (pathname: string): string | null => {
+  const prefix = `${SESSION_TRANSFER_BUNDLE_ROUTE_PREFIX}/`;
+  const suffix = "/bundle";
+  if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) {
+    return null;
+  }
+  const token = pathname.slice(prefix.length, pathname.length - suffix.length);
+  return token.length > 0 && !token.includes("/") ? token : null;
+};
+
+export const layerSessionTransferBundleDownloadRoute = HttpRouter.add(
+  "GET",
+  `${SESSION_TRANSFER_BUNDLE_ROUTE_PREFIX}/*`,
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const url = requestUrl(request);
+    if (Option.isNone(url)) {
+      return HttpServerResponse.text("Bad Request", { status: 400 });
+    }
+
+    const token = extractSessionTransferBundleToken(url.value.pathname);
+    if (!token) {
+      return HttpServerResponse.text("Not Found", { status: 404 });
+    }
+    const claims = yield* validateSessionTransferBundleToken(token, "download");
+    if (!claims) {
+      return HttpServerResponse.text("Not Found", { status: 404 });
+    }
+
+    // Keep checksum verification interruptible so client disconnects abort hashing immediately,
+    // then uninterruptibly bind the verified FileHandle to the request Scope so pre-stream
+    // disconnects, HEAD requests, and responder errors always close it.
+    const bundle = yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const resolved = yield* restore(resolveExportBundleForDownload(claims));
+        if (resolved.ok) {
+          yield* Effect.addFinalizer(() => resolved.close);
+        }
+        return resolved;
+      }),
+    );
+    if (!bundle.ok) {
+      return HttpServerResponse.text(bundle.detail, { status: bundle.status });
+    }
+
+    if (request.method === "HEAD") {
+      yield* bundle.close;
+      return HttpServerResponse.empty({
+        status: 200,
+        headers: {
+          "content-type": "application/octet-stream",
+          "content-length": String(bundle.sizeBytes),
+          "cache-control": "private, no-store",
+          "x-content-type-options": "nosniff",
+        },
+      });
+    }
+
+    return HttpServerResponse.stream(bundle.stream, {
+      status: 200,
+      contentType: "application/octet-stream",
+      contentLength: bundle.sizeBytes,
+      headers: {
+        "cache-control": "private, no-store",
+        "x-content-type-options": "nosniff",
+      },
+    });
+  }),
+  SIGNED_URL_ROUTE_OPTIONS,
+);
+
+export const layerSessionTransferBundleUploadRoute = HttpRouter.add(
+  "POST",
+  `${SESSION_TRANSFER_BUNDLE_ROUTE_PREFIX}/*`,
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const url = requestUrl(request);
+    if (Option.isNone(url)) {
+      return HttpServerResponse.text("Bad Request", { status: 400 });
+    }
+
+    const token = extractSessionTransferBundleToken(url.value.pathname);
+    if (!token) {
+      return HttpServerResponse.text("Not Found", { status: 404 });
+    }
+    const claims = yield* validateSessionTransferBundleToken(token, "upload");
+    if (!claims) {
+      return HttpServerResponse.text("Not Found", { status: 404 });
+    }
+
+    const maxBytes = Math.min(claims.maxBytes, SESSION_TRANSFER_MAX_BUNDLE_BYTES);
+    let expectedContentLength: number | undefined;
+    const contentLengthHeader = request.headers["content-length"];
+    if (contentLengthHeader !== undefined) {
+      const trimmedLength = contentLengthHeader.trim();
+      if (!/^\d+$/.test(trimmedLength)) {
+        return HttpServerResponse.text("Invalid Content-Length header.", { status: 400 });
+      }
+      const parsedLength = Number(trimmedLength);
+      if (!Number.isSafeInteger(parsedLength) || parsedLength < 0) {
+        return HttpServerResponse.text("Invalid Content-Length header.", { status: 400 });
+      }
+      if (parsedLength > maxBytes) {
+        return HttpServerResponse.text(
+          `Bundle size ${parsedLength} bytes exceeds the ${maxBytes}-byte limit.`,
+          { status: 413 },
+        );
+      }
+      expectedContentLength = parsedLength;
+    }
+
+    // Keep the request stream in the route scope until the response is sent.
+    const bodyPull = yield* Stream.toPull(request.stream);
+    const stored = yield* storeSessionTransferBundleUpload(
+      claims,
+      Stream.fromPull(Effect.succeed(bodyPull)),
+      expectedContentLength !== undefined ? { expectedContentLength } : undefined,
+    );
     return stored.ok
       ? HttpServerResponse.empty({ status: 204 })
       : HttpServerResponse.text(stored.detail, {
