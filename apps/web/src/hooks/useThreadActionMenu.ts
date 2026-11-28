@@ -28,6 +28,11 @@ import {
 import { titleRegenerationToast } from "../components/threadTitleRegenerationToast";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { copyThreadReference } from "../lib/copyThreadReference";
+import {
+  dispatchSessionTransferMenuAction,
+  isSessionTransferMenuAction,
+  resolveSessionTransferMenuContext,
+} from "../lib/sessionTransferMenu";
 import { m } from "../i18n/messages";
 import { threadChipCopyTarget } from "@t3tools/client-runtime/thread-reference";
 import { threadEnvironment } from "../state/threads";
@@ -140,6 +145,11 @@ export function useThreadActionMenu(input: {
       };
       const isRegeneratingTitle = thread.titleRegeneration != null;
       const snoozePresets = resolveSnoozePresets(now, timestampFormat, threadRef.environmentId);
+      const maybeSessionTransferContext = resolveSessionTransferMenuContext(threadRef);
+      const sessionTransferContext =
+        maybeSessionTransferContext instanceof Promise
+          ? await maybeSessionTransferContext
+          : maybeSessionTransferContext;
       const items = buildThreadActionMenuItems({
         canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
         canTriage: threadTriagePermitted(threadRef.environmentId),
@@ -158,6 +168,7 @@ export function useThreadActionMenu(input: {
         snoozePresets,
         canShareWithGuest,
         canTurnIntoProject: canTurnThreadIntoProject(threadRef),
+        sessionTransfer: sessionTransferContext?.menuState ?? null,
       });
       const clicked = await settlePromise(() => api.contextMenu.show(items, position, source));
       if (clicked._tag === "Failure" || clicked.value === null) return;
@@ -172,6 +183,15 @@ export function useThreadActionMenu(input: {
           m(msg("Thread action unavailable")),
           new Error(m(msg("This connection cannot change threads."))),
         );
+        return;
+      }
+      if (isSessionTransferMenuAction(action)) {
+        await dispatchSessionTransferMenuAction({
+          action,
+          context: sessionTransferContext,
+          threadRef,
+          threadTitle: thread.title,
+        });
         return;
       }
       if (action.startsWith("snooze:")) {

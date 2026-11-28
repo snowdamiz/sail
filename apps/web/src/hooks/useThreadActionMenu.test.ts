@@ -8,6 +8,7 @@ import { AsyncResult } from "effect/reactivity";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { ThreadActionMenuId } from "../components/threadActionMenu.logic";
+import type { ResolvedSessionTransferMenuContext } from "../lib/sessionTransferMenu";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -21,12 +22,22 @@ const state = vi.hoisted(() => ({
   granted: new Set<string>(),
   effects: [] as string[],
   completed: deferred<void>(),
+  sessionTransferContext: null as ResolvedSessionTransferMenuContext | null,
   show: vi.fn<
     (
       items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>,
       position: { x: number; y: number },
     ) => Promise<ThreadActionMenuId | null>
   >(),
+  dispatchTransfer:
+    vi.fn<
+      (input: {
+        readonly action: ThreadActionMenuId;
+        readonly context: ResolvedSessionTransferMenuContext | null;
+        readonly threadRef: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId };
+        readonly threadTitle: string;
+      }) => Promise<boolean>
+    >(),
 }));
 
 function recordEffect(action: string) {
@@ -35,6 +46,17 @@ function recordEffect(action: string) {
 }
 
 vi.mock("../components/CustomSnoozeDialog", () => ({ requestCustomSnooze: vi.fn() }));
+vi.mock("../lib/sessionTransferMenu", () => ({
+  resolveSessionTransferMenuContext: () => state.sessionTransferContext,
+  isSessionTransferMenuAction: (action: string) =>
+    action === "move-to-local" || action.startsWith("move-to-boat:"),
+  dispatchSessionTransferMenuAction: (input: {
+    readonly action: ThreadActionMenuId;
+    readonly context: ResolvedSessionTransferMenuContext | null;
+    readonly threadRef: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId };
+    readonly threadTitle: string;
+  }) => state.dispatchTransfer(input),
+}));
 vi.mock("react", () => ({
   useCallback: (callback: unknown) => callback,
   useMemo: (factory: () => unknown) => factory(),
@@ -163,23 +185,34 @@ beforeEach(() => {
   state.granted = new Set(["primary"]);
   state.effects = [];
   state.completed = deferred<void>();
+  state.sessionTransferContext = null;
   state.show.mockReset().mockResolvedValue(null);
+  state.dispatchTransfer.mockReset().mockImplementation(async (input) => {
+    recordEffect(input.action);
+    return true;
+  });
 });
 
 describe("thread menu permissions", () => {
-  it.each(["rename", "regenerate-title", "delete", "pin", "settle", "archive"] as const)(
-    "%s rechecks after the native menu closes",
-    async (action) => {
-      state.granted.add("secondary");
-      const choice = deferred<ThreadActionMenuId | null>();
-      state.show.mockReturnValue(choice.promise);
-      createMenu().openMenu(position);
-      state.granted.delete("secondary");
-      choice.resolve(action);
-      await state.completed.promise;
-      expect(state.effects).toEqual([]);
-    },
-  );
+  it.each([
+    "rename",
+    "regenerate-title",
+    "delete",
+    "pin",
+    "settle",
+    "archive",
+    "move-to-local",
+    "move-to-boat:skiff",
+  ] as const)("%s rechecks after the native menu closes", async (action) => {
+    state.granted.add("secondary");
+    const choice = deferred<ThreadActionMenuId | null>();
+    state.show.mockReturnValue(choice.promise);
+    createMenu().openMenu(position);
+    state.granted.delete("secondary");
+    choice.resolve(action);
+    await state.completed.promise;
+    expect(state.effects).toEqual([]);
+  });
 
   it("offers find only to a header that can open it, without task permission", async () => {
     createMenu().openMenu(position);
@@ -193,5 +226,31 @@ describe("thread menu permissions", () => {
     expect(items[0]?.disabled).not.toBe(true);
     expect(state.effects).toEqual(["find"]);
     expect(onFind).toHaveBeenCalledExactlyOnceWith(target);
+  });
+
+  it("includes Move to Boat targets from sessionTransferContext and dispatches selection", async () => {
+    state.granted.add("secondary");
+    state.sessionTransferContext = {
+      coordinatorId: EnvironmentId.make("primary"),
+      menuState: {
+        sourceIsBoat: false,
+        isTransferring: false,
+        canMoveToLocal: false,
+        boatTargets: [{ machineId: "skiff", name: "skiff", state: "idle" }],
+      },
+    };
+    state.show.mockResolvedValue("move-to-boat:skiff");
+    createMenu().openMenu(position);
+    await state.completed.promise;
+    const items = state.show.mock.calls[0]![0];
+    expect(items.find((item) => item.id === "move-session")?.children).toEqual([
+      { id: "move-to-boat:skiff", label: "skiff", icon: "ship", detail: "Idle", disabled: false },
+    ]);
+    expect(state.dispatchTransfer).toHaveBeenCalledWith({
+      action: "move-to-boat:skiff",
+      context: state.sessionTransferContext,
+      threadRef: target,
+      threadTitle: "Thread",
+    });
   });
 });

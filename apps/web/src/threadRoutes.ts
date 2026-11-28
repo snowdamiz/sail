@@ -55,7 +55,8 @@ export function resolveThreadRouteRenderState(input: {
   if (projection === null) {
     return "loading";
   }
-  return projection.thread.deletedAt !== null || projection.thread.archivedAt !== null
+  return projection.thread.deletedAt !== null ||
+    (projection.thread.archivedAt !== null && projection.thread.transferredTo == null)
     ? "missing"
     : "ready";
 }

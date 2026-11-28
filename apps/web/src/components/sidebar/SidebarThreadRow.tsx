@@ -129,6 +129,8 @@ import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { getTriggerDisplayModelName } from "../chat/providerIconUtils";
 import { shouldShowInstanceBadge, type ProviderInstanceEntry } from "../../providerInstances";
 import { useThreadRunningTerminalIds } from "../../state/terminalSessions";
+import { useActiveSessionTransfer } from "../../state/sessionTransfers";
+import { sessionTransferPhaseLabel } from "../SessionTransferToasts";
 import { InlineButton } from "../ui/button";
 import { Kbd } from "../ui/kbd";
 import { Menu, MenuItem, MenuItemDetail, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
@@ -737,6 +739,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     threadEnvironment.pendingSyncAtom(thread.environmentId),
     (threads) => threads.has(thread.id),
   );
+  const activeTransfer = useActiveSessionTransfer(threadRef);
   const { leaseLiveStatus, rowRef: leaseRowRef } = useSidebarRowSubscriptionLease(props.isActive);
   const { revealRef } = props;
   const rowRef = (row: HTMLElement | null) => {
@@ -1091,9 +1094,35 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       </span>
     ) : null;
 
+  const transferringBadge =
+    activeTransfer !== null ? (
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span
+              role="status"
+              data-testid={`sidebar-transferring-badge-${thread.id}`}
+              className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground"
+            />
+          }
+        >
+          <ArrowRightLeftIcon aria-hidden className="size-3 shrink-0 animate-pulse" />
+          <T context="session transfer in progress">Moving</T>
+        </TooltipTrigger>
+        <TooltipPopup side="top">
+          {sessionTransferPhaseLabel(activeTransfer.phase, messages)}
+        </TooltipPopup>
+      </Tooltip>
+    ) : null;
+
   const accessibility = resolveSidebarRowAccessibility({
     title: thread.title,
-    statusLabel: pendingSync ? gt("Pending") : (topStatus?.label ?? null),
+    statusLabel:
+      activeTransfer !== null
+        ? gt("Moving", { $context: "session transfer in progress" })
+        : pendingSync
+          ? gt("Pending")
+          : (topStatus?.label ?? null),
     projectDisplayName: props.projectDisplayName,
     isActive: props.isActive,
   });
@@ -1381,6 +1410,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               )}
               {draftIndicator}
               {title}
+              {transferringBadge}
               {multiline ? titleLineIcons : null}
               {pinIndicator}
               {multiline ? null : terminalStatusIcon}
@@ -1734,6 +1764,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             </div>
             <div className="mt-1 flex min-w-0 items-center gap-1.5">
               {title}
+              {transferringBadge}
               {isRegeneratingTitle ? (
                 <span role="status" className="sr-only">
                   <T>Regenerating title</T>

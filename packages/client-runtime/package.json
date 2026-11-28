@@ -299,6 +299,10 @@
       "types": "./src/state/boats.ts",
       "default": "./src/state/boats.ts"
     },
+    "./state/sessionTransfers": {
+      "types": "./src/state/sessionTransfers.ts",
+      "default": "./src/state/sessionTransfers.ts"
+    },
     "./state/device": {
       "types": "./src/state/device.ts",
       "default": "./src/state/device.ts"

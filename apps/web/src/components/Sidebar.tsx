@@ -182,6 +182,11 @@ import {
   threadActionRequiresOperate,
 } from "./threadActionMenu.logic";
 import {
+  dispatchSessionTransferMenuAction,
+  isSessionTransferMenuAction,
+  resolveSessionTransferMenuContext,
+} from "../lib/sessionTransferMenu";
+import {
   applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
   groupSidebarThreadsByProject,
@@ -2716,6 +2721,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 projectRef.projectId === thread.projectId,
             ),
           ) ?? null;
+        const maybeSessionTransferContext = resolveSessionTransferMenuContext(threadRef);
+        const sessionTransferContext =
+          maybeSessionTransferContext instanceof Promise
+            ? await maybeSessionTransferContext
+            : maybeSessionTransferContext;
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             buildThreadActionMenuItems({
@@ -2754,6 +2764,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 titleRegeneration: configLoaded,
               },
               snoozePresets,
+              sessionTransfer: sessionTransferContext?.menuState ?? null,
             }),
             position,
             source,
@@ -2765,6 +2776,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           !checkThreadOperations([thread], isThreadTriageAction(clicked.value))
         )
           return;
+        if (isSessionTransferMenuAction(clicked.value)) {
+          await dispatchSessionTransferMenuAction({
+            action: clicked.value,
+            context: sessionTransferContext,
+            threadRef,
+            threadTitle: thread.title,
+          });
+          return;
+        }
         if (clicked.value?.startsWith("snooze:")) {
           const preset =
             clicked.value === "snooze:custom"

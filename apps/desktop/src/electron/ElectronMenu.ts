@@ -75,12 +75,15 @@ function normalizeContextMenuItems(source: readonly ContextMenuItem[]): ContextM
       continue;
     }
 
+    const detail =
+      typeof sourceItem.detail === "string" && sourceItem.detail.trim().length > 0
+        ? sourceItem.detail.trim()
+        : undefined;
+
     const normalizedItem: ContextMenuItem = {
       id: sourceItem.id,
-      label:
-        typeof sourceItem.detail === "string" && sourceItem.detail.length > 0
-          ? `${sourceItem.label} (${sourceItem.detail})`
-          : sourceItem.label,
+      label: sourceItem.label,
+      ...(detail !== undefined ? { detail } : {}),
       destructive: sourceItem.destructive === true,
       disabled: sourceItem.disabled === true,
       ...(sourceItem.separatorBefore === true ? { separatorBefore: true } : {}),
@@ -180,9 +183,13 @@ export const make = Effect.gen(function* () {
         hasInsertedDestructiveSeparator = true;
       }
 
+      const detail = item.detail;
+      const formattedLabel =
+        detail !== undefined && platform !== "darwin" ? `${item.label} (${detail})` : item.label;
       const itemOption: Electron.MenuItemConstructorOptions = {
         // Electron reads a single & as a mnemonic marker and drops it.
-        label: item.label.replaceAll("&", "&&"),
+        label: formattedLabel.replaceAll("&", "&&"),
+        ...(detail !== undefined && platform === "darwin" ? { sublabel: detail } : {}),
         enabled: !item.disabled,
         ...(typeof item.checked === "boolean" ? { type: "checkbox", checked: item.checked } : {}),
       };

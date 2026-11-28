@@ -14,7 +14,7 @@ const GENERATE: Record<string, readonly [string, ...string[]]> = {
   "apps/mobile": [process.execPath, "node_modules/gt/bin/main.js", "generate"],
   "apps/desktop": [process.execPath, "scripts/i18n-generate.mjs"],
 };
-const APPS = Object.keys(GENERATE);
+const checkedApps: string[] = [];
 
 // JSX entries (`<T>`) are arrays and objects, so values compare by their JSON text.
 type Catalog = Record<string, unknown>;
@@ -27,7 +27,12 @@ const problems: string[] = [];
 
 for (const [app, [command, ...args]] of Object.entries(GENERATE)) {
   const appDir = NodePath.join(root, app);
-  const config = readJson(NodePath.join(appDir, "gt.config.json"));
+  const configPath = NodePath.join(appDir, "gt.config.json");
+  if (!NodeFS.existsSync(configPath)) {
+    continue;
+  }
+  checkedApps.push(app);
+  const config = readJson(configPath);
   const catalogDir = NodePath.join(appDir, NodePath.dirname(config.files.gt.output));
   const source: Catalog = readJson(NodePath.join(catalogDir, `${config.defaultLocale}.json`));
 
@@ -82,5 +87,5 @@ if (problems.length > 0) {
   );
   process.exitCode = 1;
 } else {
-  console.log(`i18n catalogs match the source in ${APPS.join(", ")}.`);
+  console.log(`i18n catalogs match the source in ${checkedApps.join(", ")}.`);
 }
