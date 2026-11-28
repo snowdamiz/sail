@@ -101,6 +101,16 @@
       "timingQualification": "fail",
       "scope": "Saved Replay thread in separate Linux arm64 Chromium profiles, with two warmups and 12 measured captures per install in each series. The Poteto control and shifted Showcase account for the visual difference. The candidate met both limits in the paired run and exceeded them against the earlier incumbent-only series."
     },
+    "chromiumLinuxFullTrace": {
+      "sourceSha": "87ca7814f721cfa04540fd76ead915745ffd064f",
+      "runnerSourceSha": "635b4157c3b331537cb77f5137e0011b13351bfb",
+      "receipt": "served-chromium-linux/full-trace-635b4157/receipt.json",
+      "visualResult": "fail",
+      "differentPixels": 5560,
+      "changedSteps": [3],
+      "timingQualification": "pass",
+      "scope": "Saved Replay thread in separate Linux arm64 Chromium profiles, with two warmups and 12 measured captures per install in each series. The timed interval includes the composer-control read. The candidate met both limits against each published install in both series."
+    },
     "electronSettledHover": {
       "result": "pass",
       "observations": "electron-macos-arm64/settled-hover/capture-timings.json",

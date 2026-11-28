@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "caseId": "chat-turn",
+  "platformId": "served-chromium-linux",
+  "runnerSourceSha": "635b4157c3b331537cb77f5137e0011b13351bfb",
+  "incumbentPackage": {
+    "version": "0.1.17",
+    "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "archiveSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+    "databaseMigration": 118,
+    "runtimeSha256": "7da1cd42672d5e4fbb83c50179cf694441e3eef2d1cf6cf2e98f359c94bdec8e"
+  },
+  "candidatePackage": {
+    "version": "0.1.18",
+    "sourceSha": "87ca7814f721cfa04540fd76ead915745ffd064f",
+    "archiveSha256": "3270b86e24343d47c9c0cb39e91e918a5acfb1f797811305c49dd5dbc1576392",
+    "runtimeSha256": "79b858e41155d7cd8a446eb042365e77b3b5e9588b503ce239a377f677e7180a",
+    "sourceTarSha256": "f5f997639ee87eb112148fe2e048b7f126146f08596fcecbf2ce7ff85ca20151",
+    "databaseMigration": 119
+  },
+  "candidateBuildReceipt": "../migration-head-87ca7814/receipt.json",
+  "fixtureImageId": "sha256:a8368dd63cde856e0c123e4376e8c0d76ce9a5935b8287f4cf4a8ff60bb69c62",
+  "host": "macOS 27.0.1 arm64 with Docker Linux arm64, 15 guest CPUs and 8,318,844,928 bytes of guest memory",
+  "sharedMachineLoad": {
+    "incumbentSeries": [
+      {
+        "utc": "2026-11-28T14:38:03Z",
+        "loadAverages": [16.91, 17.29, 18.68]
+      },
+      {
+        "utc": "2026-11-28T14:39:59Z",
+        "loadAverages": [18.44, 17.96, 18.77]
+      }
+    ],
+    "pairedSeries": [
+      {
+        "utc": "2026-11-28T14:39:59Z",
+        "loadAverages": [18.44, 17.96, 18.77]
+      },
+      {
+        "utc": "2026-11-28T14:43:18Z",
+        "loadAverages": [19.54, 18.45, 18.78]
+      }
+    ],
+    "duringPairedSetup": {
+      "utc": "2026-11-28T14:40:33Z",
+      "loadAverages": [20.02, 18.37, 18.88]
+    }
+  },
+  "visualComparison": {
+    "result": "fail",
+    "comparisons": "comparisons.json",
+    "incumbentDifferentPixels": 0,
+    "differentPixelsByIncumbent": {
+      "a": 5560,
+      "b": 5560
+    },
+    "changedTraceStepsByIncumbent": {
+      "a": [3],
+      "b": [3]
+    }
+  },
+  "timing": {
+    "incumbentSeries": "incumbent-timings.json",
+    "pairedSeries": "capture-timings.json",
+    "incumbentRawReportSha256": "d5b322359bd6421d9599e6c039caea1ffa3093953ac442212c71385728868c72",
+    "incumbentRawReportEncoding": "Serialize the archived JSON with lexicographically ordered object keys, two-space indentation, UTF-8, and a final newline to recover the runner bytes.",
+    "scope": "Direct navigation, highlighted transcript, composer focus and controls, and Browser panel screenshot return for one saved Replay thread. Setup, pairing and copying the returned image are outside timing.",
+    "warmupRounds": 2,
+    "measuredRounds": 12,
+    "result": "pass",
+    "incumbentP95Ns": {
+      "a": 3054874168,
+      "b": 2995738419
+    },
+    "pairedP95Ns": {
+      "a": 5810619211,
+      "b": 3730129252,
+      "head": 3416265835
+    },
+    "composerNs": {
+      "incumbentFirst": {
+        "min": 6132625,
+        "max": 301847667
+      },
+      "paired": {
+        "min": 5481917,
+        "max": 87513209
+      }
+    },
+    "closestRelativeMarginNs": 28833346,
+    "p95Observation": "With 12 samples per install, nearest-rank p95 selects the largest sample. The highlight wait was the largest stage in each incumbent p95 sample. Navigation was the largest stage in the candidate p95 sample."
+  },
+  "result": "fail",
+  "state": {
+    "matchingSeedInstalls": {
+      "incumbentFirst": ["a", "b"],
+      "paired": ["a", "b", "head"]
+    },
+    "messagesSha256": "575ae62e5027b648775dcb0ab7eada7005d996a4c71223daff6948d104b6d4d6",
+    "runsSha256": "a543ae94a7af7d28ce23d8149c516a62fd9fb4e1da3ce6ebfe152550aac6ef47"
+  }
+}

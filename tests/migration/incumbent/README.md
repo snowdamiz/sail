@@ -68,7 +68,9 @@ bash "$fixture/linux-chromium/run-timings.sh" "$inputs" "$scratch/paired" sail-m
 
 The Rust runner rotates which host starts each round and allows one capture at a time. Timing starts at direct navigation and includes all trace steps through screenshot return. Each sample records the time for the final composer-control read separately. Startup and pairing happen before timing. Keep `timings.json` beside its `runs/` directory. The candidate run checks the earlier report against its samples and screenshots. Qualification requires warmups and at least 12 measured rounds per install. The candidate must meet both the 15% and 2 s limits against each published install in both series.
 
-The [comparison for `87ca7814`](observations/served-chromium-linux/migration-head-87ca7814/receipt.json) records 5,560 changed composer pixels from the Poteto control and the Showcase shift. Both published installs matched each other. The historical runner read the final composer controls after timing. The candidate passed the paired timing comparisons and exceeded both limits against the earlier incumbent-only series. All three paired p95s came from the same round, so timing qualification remains open for this profile.
+The [full-trace rerun](observations/served-chromium-linux/full-trace-635b4157/receipt.json) measures all three trace steps. The candidate p95 of 3.416 s met both timing limits against both published installs in both series. It finished 29 ms inside the closest limit. The published captures matched each other. Exact candidate parity failed on the Poteto control and Showcase shift, which changed 5,560 composer pixels and the final trace step.
+
+The [earlier comparison for `87ca7814`](observations/served-chromium-linux/migration-head-87ca7814/receipt.json) preserves the run that read the composer controls after timing. Its candidate passed the paired comparisons and exceeded both limits against the earlier incumbent-only series.
 
 ## Capture the settled Firefox replay
 
