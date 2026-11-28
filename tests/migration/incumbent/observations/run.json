@@ -217,7 +217,7 @@
   "chatSendOnce": {
     "result": "observed",
     "receipt": "served-chromium-macos/send-once/receipt.json",
-    "scope": "Published v0.1.17 in the macOS Chromium Browser panel. Two separate Replay threads each received one Submit click. The client retried the same command after the gate dropped the accepted response. Both wire receipts and the stored receipt agreed within each run, with one completed run and the full ordered transcript."
+    "scope": "Published v0.1.17 in the macOS Chromium Browser panel. Two separate Replay threads each received one Submit click. Both runs recorded matching command IDs and receipts after reconnect, with one completed run and the full ordered transcript. The repeat also retained matching full-payload digests."
   },
   "negativeControls": {
     "result": "pass",

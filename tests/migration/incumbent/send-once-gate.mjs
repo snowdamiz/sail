@@ -27,8 +27,8 @@ startLoopbackWireProxy({
         if (
           frame?._tag === "Request" &&
           frame.tag === "orchestration.dispatchCommand" &&
-          frame.payload?.type === "message.dispatch" &&
-          frame.payload.threadId === threadId
+          ((original && frame.payload?.commandId === original.command.commandId) ||
+            (frame.payload?.type === "message.dispatch" && frame.payload.threadId === threadId))
         ) {
           NodeAssert.ok(
             typeof frame.id === "string" || typeof frame.id === "number",
