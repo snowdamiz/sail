@@ -1496,16 +1496,31 @@ describe("WorkspaceBundle", () => {
           "other repo\n",
         );
 
-        // (c) Orphaned worktree directory whose `.git` gitfile points strictly inside
-        //     `<dstRepo gitCommonDir>/worktrees/` -> allowed when fallback is enabled (default),
-        //     refused when allowUnregisteredGitWorktreeFallback is false.
+        // (c) Orphaned worktree directory must have a matching `<adminDir>/gitdir` backlink
+        //     pointing to `<orphanDir>/.git`; even then, removal is refused when
+        //     allowUnregisteredGitWorktreeFallback is false and allowed when true (default).
         const orphanDir = path.join(root, "orphan-wt-dir");
+        const orphanAdminDir = path.join(dstRepo, ".git", "worktrees", "orphan-wt");
         yield* baseFs.makeDirectory(orphanDir, { recursive: true });
-        yield* baseFs.writeFileString(
-          path.join(orphanDir, ".git"),
-          `gitdir: ${path.join(dstRepo, ".git", "worktrees", "orphan-wt")}\n`,
-        );
+        yield* baseFs.writeFileString(path.join(orphanDir, ".git"), `gitdir: ${orphanAdminDir}\n`);
         yield* baseFs.writeFileString(path.join(orphanDir, "orphan.txt"), "stale\n");
+
+        // Without <adminDir>/gitdir backlink: MUST be refused even with fallback enabled.
+        const missingBacklinkResult = yield* Effect.result(
+          baseBundleService.removeWorktree({
+            repoCwd: dstRepo,
+            worktreePath: orphanDir,
+          }),
+        );
+        expect(Result.isFailure(missingBacklinkResult)).toBe(true);
+        expect(yield* baseFs.exists(orphanDir)).toBe(true);
+
+        // Create matching bidirectional admin backlink pointing back to <orphanDir>/.git.
+        yield* baseFs.makeDirectory(orphanAdminDir, { recursive: true });
+        yield* baseFs.writeFileString(
+          path.join(orphanAdminDir, "gitdir"),
+          `${path.join(orphanDir, ".git")}\n`,
+        );
 
         const disallowedOrphan = yield* Effect.result(
           baseBundleService.removeWorktree({
@@ -1522,6 +1537,207 @@ describe("WorkspaceBundle", () => {
           worktreePath: orphanDir,
         });
         expect(yield* baseFs.exists(orphanDir)).toBe(false);
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect(
+    "never calls recursive fs.remove on worktreePath after git worktree remove succeeds (for both allowUnregisteredGitWorktreeFallback false and true)",
+    () =>
+      Effect.gen(function* () {
+        const baseFs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseVcsProcess = yield* VcsProcess.VcsProcess;
+
+        const root = yield* baseFs.makeTempDirectoryScoped({
+          prefix: "t3-wb-post-success-no-rm-",
+        });
+        const srcRepo = path.join(root, "src");
+        const dstRepo = path.join(root, "dst");
+        const bundlePath = path.join(root, "post-success.bundle");
+
+        yield* baseFs.makeDirectory(srcRepo, { recursive: true });
+        yield* git(srcRepo, ["init", "-b", "main"]);
+        yield* baseFs.writeFileString(path.join(srcRepo, "file.txt"), "base\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "init"]);
+        yield* git(root, ["clone", srcRepo, dstRepo]);
+
+        yield* git(srcRepo, ["checkout", "-b", "feat/post-success-no-rm"]);
+        yield* baseFs.writeFileString(path.join(srcRepo, "file.txt"), "feature\n");
+        yield* git(srcRepo, ["add", "-A"]);
+        yield* git(srcRepo, ["commit", "-m", "feature"]);
+
+        const baseBundleService = yield* WorkspaceBundle.WorkspaceBundle;
+        const exported = yield* baseBundleService.exportWorkspaceBundle({
+          transferId: "xfer-post-success-no-rm",
+          cwd: srcRepo,
+          outputPath: bundlePath,
+        });
+
+        for (const allowFallback of [false, true]) {
+          const imported = yield* baseBundleService.importWorkspaceBundle({
+            transferId: "xfer-post-success-no-rm",
+            repoCwd: dstRepo,
+            bundlePath,
+            sourceBranch: exported.branch,
+            targetLabel: "boat",
+          });
+          expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
+
+          const fsRemoveTargets: Array<string> = [];
+          const wrappedFsLayer = Layer.succeed(FileSystem.FileSystem, {
+            ...baseFs,
+            remove: (targetPath, removeOptions) =>
+              Effect.sync(() => {
+                fsRemoveTargets.push(targetPath);
+              }).pipe(Effect.andThen(baseFs.remove(targetPath, removeOptions))),
+          });
+          const wrappedVcsLayer = Layer.succeed(VcsProcess.VcsProcess, {
+            run: (runInput) => {
+              if (runInput.operation === "WorkspaceBundle.removeWorktree") {
+                return baseVcsProcess.run(runInput).pipe(
+                  Effect.tap((output) =>
+                    output.exitCode === 0
+                      ? Effect.sync(() => {
+                          // Simulate a new unrelated directory being created at worktreePath
+                          // immediately after `git worktree remove --force` succeeds.
+                          NodeFS.mkdirSync(imported.worktreePath, { recursive: true });
+                          NodeFS.writeFileSync(
+                            path.join(imported.worktreePath, "fresh-independent.txt"),
+                            `recreated-${String(allowFallback)}\n`,
+                          );
+                        })
+                      : Effect.void,
+                  ),
+                );
+              }
+              return baseVcsProcess.run(runInput);
+            },
+          });
+          const spyBundleLayer = Layer.fresh(WorkspaceBundle.layer).pipe(
+            Layer.provide(Layer.merge(wrappedFsLayer, wrappedVcsLayer)),
+          );
+
+          yield* Effect.gen(function* () {
+            const svc = yield* WorkspaceBundle.WorkspaceBundle;
+            yield* svc.removeWorktree({
+              repoCwd: dstRepo,
+              expectedGitCommonDir: imported.gitCommonDir,
+              worktreePath: imported.worktreePath,
+              branch: imported.branch,
+              expectedBranch: imported.branch,
+              allowUnregisteredGitWorktreeFallback: allowFallback,
+            });
+          }).pipe(Effect.provide(spyBundleLayer));
+
+          // Recursive fs.remove MUST NEVER be invoked on worktreePath after git worktree remove succeeded!
+          expect(fsRemoveTargets).not.toContain(imported.worktreePath);
+          expect(yield* baseFs.exists(imported.worktreePath)).toBe(true);
+          expect(
+            yield* baseFs.readFileString(path.join(imported.worktreePath, "fresh-independent.txt")),
+          ).toBe(`recreated-${String(allowFallback)}\n`);
+          // Branch was still deleted cleanly.
+          expect((yield* git(dstRepo, ["branch", "--list", imported.branch])).trim()).toBe("");
+        }
+      }).pipe(Effect.provide(makeTestLayer())),
+  );
+
+  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "refuses unregistered fallback when .git is a symlink to another worktree, when .git points to another worktree admin dir with mismatched gitdir backlink, or when worktreePath is a symlink",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-wb-unreg-symlink-backlink-",
+        });
+        const dstRepo = path.join(root, "dst");
+        yield* fs.makeDirectory(dstRepo, { recursive: true });
+        yield* git(dstRepo, ["init", "-b", "main"]);
+        yield* fs.writeFileString(path.join(dstRepo, "file.txt"), "base\n");
+        yield* git(dstRepo, ["add", "-A"]);
+        yield* git(dstRepo, ["commit", "-m", "init"]);
+
+        // Create a real sibling worktree in dstRepo whose admin dir lives in <dstRepo>/.git/worktrees/.
+        const realSiblingWt = path.join(root, "real-sibling-wt");
+        yield* git(dstRepo, ["worktree", "add", "-b", "feat/real-sibling", realSiblingWt, "HEAD"]);
+        const realSiblingGitFile = path.join(realSiblingWt, ".git");
+        const realSiblingGitFileContent = yield* fs.readFileString(realSiblingGitFile);
+        expect(realSiblingGitFileContent.trim().startsWith("gitdir:")).toBe(true);
+
+        const bundleService = yield* WorkspaceBundle.WorkspaceBundle;
+
+        // Attack 1: Unregistered directory whose `.git` is a SYMLINK to another real worktree's `.git` file.
+        const symlinkGitDir = path.join(root, "unreg-symlink-dotgit");
+        yield* fs.makeDirectory(symlinkGitDir, { recursive: true });
+        yield* fs.writeFileString(path.join(symlinkGitDir, "precious-1.txt"), "keep 1\n");
+        NodeFS.symlinkSync(realSiblingGitFile, path.join(symlinkGitDir, ".git"));
+
+        const symlinkGitResult = yield* Effect.result(
+          bundleService.removeWorktree({
+            repoCwd: dstRepo,
+            worktreePath: symlinkGitDir,
+            allowUnregisteredGitWorktreeFallback: true,
+          }),
+        );
+        expect(Result.isFailure(symlinkGitResult)).toBe(true);
+        if (Result.isFailure(symlinkGitResult)) {
+          expect(symlinkGitResult.failure.code).toBe("git_error");
+        }
+        expect(yield* fs.exists(symlinkGitDir)).toBe(true);
+        expect(yield* fs.readFileString(path.join(symlinkGitDir, "precious-1.txt"))).toBe(
+          "keep 1\n",
+        );
+        expect(yield* fs.exists(realSiblingWt)).toBe(true);
+
+        // Attack 2: Unregistered directory whose `.git` is a REGULAR FILE containing `gitdir:`
+        // pointing to the other real worktree's `<gitCommonDir>/worktrees/<sibling>` admin dir
+        // (whose `gitdir` backlink points to `realSiblingWt/.git`, NOT this directory).
+        const copiedGitFileDir = path.join(root, "unreg-copied-dotgit");
+        yield* fs.makeDirectory(copiedGitFileDir, { recursive: true });
+        yield* fs.writeFileString(path.join(copiedGitFileDir, "precious-2.txt"), "keep 2\n");
+        yield* fs.writeFileString(path.join(copiedGitFileDir, ".git"), realSiblingGitFileContent);
+
+        const copiedGitFileResult = yield* Effect.result(
+          bundleService.removeWorktree({
+            repoCwd: dstRepo,
+            worktreePath: copiedGitFileDir,
+            allowUnregisteredGitWorktreeFallback: true,
+          }),
+        );
+        expect(Result.isFailure(copiedGitFileResult)).toBe(true);
+        if (Result.isFailure(copiedGitFileResult)) {
+          expect(copiedGitFileResult.failure.code).toBe("git_error");
+        }
+        expect(yield* fs.exists(copiedGitFileDir)).toBe(true);
+        expect(yield* fs.readFileString(path.join(copiedGitFileDir, "precious-2.txt"))).toBe(
+          "keep 2\n",
+        );
+        expect(yield* fs.exists(realSiblingWt)).toBe(true);
+
+        // Attack 3: Symlinked worktreePath pointing to an unrelated directory (or real worktree).
+        const symlinkTargetDir = path.join(root, "symlink-target-dir");
+        yield* fs.makeDirectory(symlinkTargetDir, { recursive: true });
+        yield* fs.writeFileString(path.join(symlinkTargetDir, "precious-3.txt"), "keep 3\n");
+        const symlinkWtPath = path.join(root, "unreg-symlink-wtpath");
+        NodeFS.symlinkSync(symlinkTargetDir, symlinkWtPath);
+
+        const symlinkWtResult = yield* Effect.result(
+          bundleService.removeWorktree({
+            repoCwd: dstRepo,
+            worktreePath: symlinkWtPath,
+            allowUnregisteredGitWorktreeFallback: true,
+          }),
+        );
+        expect(Result.isFailure(symlinkWtResult)).toBe(true);
+        if (Result.isFailure(symlinkWtResult)) {
+          expect(symlinkWtResult.failure.code).toBe("git_error");
+        }
+        expect(NodeFS.lstatSync(symlinkWtPath).isSymbolicLink()).toBe(true);
+        expect(yield* fs.readFileString(path.join(symlinkTargetDir, "precious-3.txt"))).toBe(
+          "keep 3\n",
+        );
       }).pipe(Effect.provide(makeTestLayer())),
   );
 });
