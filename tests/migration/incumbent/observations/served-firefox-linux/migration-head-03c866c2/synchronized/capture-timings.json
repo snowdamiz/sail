@@ -1,0 +1,180 @@
+{
+  "sourceSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+  "scope": "One served Replay thread with no configured provider",
+  "host": {
+    "os": "Debian 12.15",
+    "architecture": "arm64",
+    "browser": "Firefox ESR 153.8.0",
+    "driver": "GeckoDriver 0.36.0",
+    "screen": [1920, 1400, 24],
+    "image": "sha256:08d9e25fd7ddb8f1a54fe9ba1c18a0ed0e6541c93e612db86c02fc7bf5f6abda",
+    "session": "Single Firefox profile with four isolated loopback origins"
+  },
+  "profile": {
+    "browser": "Firefox/153.0",
+    "fonts": [
+      "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+      "ui-monospace, \"SF Mono\", \"SFMono-Regular\", Menlo, Consolas, \"Liberation Mono\", monospace"
+    ],
+    "locale": "en",
+    "motion": "standard",
+    "theme": "light",
+    "viewport": {
+      "height": 600,
+      "scale": 2,
+      "width": 640,
+      "zoom": 1
+    }
+  },
+  "method": {
+    "start": "WebDriver navigation to the saved thread",
+    "end": "WebDriver screenshot returned",
+    "outsideTimedInterval": [
+      "server setup",
+      "pairing",
+      "X11 pointer parking",
+      "composer control observation"
+    ],
+    "p95": "Nearest rank across 24 measured samples per installation",
+    "rotation": ["a", "head-a", "b", "head-b"],
+    "warmupRounds": 2,
+    "scope": "Local workstation with other activity. All completed samples are retained."
+  },
+  "limits": {
+    "extraPercent": 15,
+    "extraMs": 2000
+  },
+  "samples": {
+    "path": "capture-samples.ndjson",
+    "sha256": "860fc57038d2229f72a1613cd1a1dcd2410dcf38ea37baa2d82a2101f5acf5c8",
+    "count": 104
+  },
+  "representative": {
+    "round": 2,
+    "pngSha256": "138c8d3a09d8e2b7391c11a99a6e93b60b0829e4f0c46bf7d2107200f8811ecb",
+    "rgbaSha256": "0afe130436f0fd7b9fa75b0dff49441d93a43900d56c1b5003a33826f714cbeb",
+    "traceSha256": "543f2b7b80fb3293f9780f58d530b39d3f5c660043ee70f0c7e4815aa1693866"
+  },
+  "pilot": {
+    "samples": 16,
+    "distinctPixels": 1,
+    "distinctTraces": 1
+  },
+  "summary": {
+    "a": {
+      "warmup": 2,
+      "measured": 24,
+      "medianMs": 1388.558,
+      "p95Ms": 2885.794,
+      "p95Round": 14,
+      "p95StagesMs": {
+        "navigation": 1640.704,
+        "highlighting": 932.642,
+        "focusAndPointer": 63.18,
+        "stabilization": 50.73,
+        "trace": 67.367,
+        "screenshot": 131.172
+      }
+    },
+    "head-a": {
+      "warmup": 2,
+      "measured": 24,
+      "medianMs": 1376.483,
+      "p95Ms": 2910.08,
+      "p95Round": 5,
+      "p95StagesMs": {
+        "navigation": 396.866,
+        "highlighting": 2237.058,
+        "focusAndPointer": 69.209,
+        "stabilization": 47.642,
+        "trace": 71.344,
+        "screenshot": 87.961
+      }
+    },
+    "b": {
+      "warmup": 2,
+      "measured": 24,
+      "medianMs": 1383.464,
+      "p95Ms": 3248.219,
+      "p95Round": 18,
+      "p95StagesMs": {
+        "navigation": 1787.187,
+        "highlighting": 1219.305,
+        "focusAndPointer": 32.563,
+        "stabilization": 53.862,
+        "trace": 86.779,
+        "screenshot": 68.522
+      }
+    },
+    "head-b": {
+      "warmup": 2,
+      "measured": 24,
+      "medianMs": 1317.116,
+      "p95Ms": 2654.881,
+      "p95Round": 16,
+      "p95StagesMs": {
+        "navigation": 1346.46,
+        "highlighting": 1060.244,
+        "focusAndPointer": 44.773,
+        "stabilization": 41.664,
+        "trace": 82.525,
+        "screenshot": 79.216
+      }
+    }
+  },
+  "comparisons": [
+    {
+      "baseline": "a",
+      "candidate": "head-a",
+      "baselineP95Ms": 2885.794,
+      "candidateP95Ms": 2910.08,
+      "extraMs": 24.286,
+      "extraPercent": 0.842,
+      "ceilingMs": 3318.663,
+      "result": "pass"
+    },
+    {
+      "baseline": "a",
+      "candidate": "head-b",
+      "baselineP95Ms": 2885.794,
+      "candidateP95Ms": 2654.881,
+      "extraMs": -230.913,
+      "extraPercent": -8.002,
+      "ceilingMs": 3318.663,
+      "result": "pass"
+    },
+    {
+      "baseline": "b",
+      "candidate": "head-a",
+      "baselineP95Ms": 3248.219,
+      "candidateP95Ms": 2910.08,
+      "extraMs": -338.139,
+      "extraPercent": -10.41,
+      "ceilingMs": 3735.451,
+      "result": "pass"
+    },
+    {
+      "baseline": "b",
+      "candidate": "head-b",
+      "baselineP95Ms": 3248.219,
+      "candidateP95Ms": 2654.881,
+      "extraMs": -593.337,
+      "extraPercent": -18.267,
+      "ceilingMs": 3735.451,
+      "result": "pass"
+    }
+  ],
+  "result": "pass",
+  "reproducerSmoke": {
+    "samples": 12,
+    "warmupPerInstall": 2,
+    "measuredPerInstall": 1,
+    "pixelAndTraceMatch": true,
+    "runner": "tests/migration/incumbent/firefox-capture.py"
+  },
+  "guardedRunnerSmoke": {
+    "samples": 12,
+    "pixelAndTraceMatch": true,
+    "checks": "The paired document is ready before navigation. Synchronization and layout match before and after the final capture."
+  }
+}

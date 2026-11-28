@@ -1,0 +1,39 @@
+{
+  "version": "0.1.17",
+  "platform": "macOS 27.0.1 (26A434) arm64",
+  "browser": "Chrome/154.0.0.0",
+  "fixture": "The packaged host ran the pinned Replay agent with a test recording that returned a link to the saved replay thread.",
+  "entries": [
+    {
+      "fixtureId": "chat-link",
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "actions": ["Open the source thread", "Click the replay link chip"],
+      "observed": {
+        "path": "/<fixture-environment>/<saved-replay-thread>",
+        "title": "Compatibility replay",
+        "focus": "Message Compatibility replay",
+        "reply": true
+      },
+      "image": "ref-entry.png",
+      "screenshotSha256": "461d6b7b547f53258325b48ec969dd25b0b09800e8fa4e7717f01a874daf94e6"
+    },
+    {
+      "fixtureId": "palette-link",
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "actions": [
+        "Open the source thread",
+        "Press Command-K",
+        "Search Compatibility replay",
+        "Press Enter"
+      ],
+      "observed": {
+        "path": "/<fixture-environment>/<saved-replay-thread>",
+        "title": "Compatibility replay",
+        "focus": "Message Compatibility replay",
+        "reply": true
+      },
+      "image": "palette-entry.png",
+      "screenshotSha256": "fd46010a92166dc89751da7c193f3e6ff167a84821dba9bbb3840853b884ce2c"
+    }
+  ]
+}

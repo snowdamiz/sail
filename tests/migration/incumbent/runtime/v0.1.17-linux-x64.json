@@ -1,0 +1,224 @@
+{
+  "release": "v0.1.17",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "platform": {
+    "linuxArch": "x64",
+    "unameMachine": "x86_64",
+    "execution": "emulated amd64 in local arm64 Docker"
+  },
+  "copiedHome": {
+    "database": "userdata/statev2.sqlite",
+    "sha256": "729b1b31578df8ea0c48f3ab0b834c9d259451e32ad15cc1dc110aac9b9ef27a",
+    "threadTitle": "Compatibility replay",
+    "sqlitePreservedByDesktopInstallers": {
+      "before": "729b1b31578df8ea0c48f3ab0b834c9d259451e32ad15cc1dc110aac9b9ef27a",
+      "afterAppImageInstaller": "729b1b31578df8ea0c48f3ab0b834c9d259451e32ad15cc1dc110aac9b9ef27a",
+      "afterDebInstaller": "729b1b31578df8ea0c48f3ab0b834c9d259451e32ad15cc1dc110aac9b9ef27a"
+    }
+  },
+  "releaseMetadata": {
+    "install.sh": {
+      "sha256": "d20fc7f97d2e61e72750ffddb798a9368e4d7b68ae191aec3875792e6a600270",
+      "bytes": 23483,
+      "inPublishedChecksums": true
+    },
+    "install-desktop.sh": {
+      "sha256": "6a2eab143c758494468b67d89c3607da63c1e8d7e5cc149fba4b97745b7d3147",
+      "bytes": 3743,
+      "inPublishedChecksums": false
+    },
+    "SHA256SUMS": {
+      "sha256": "c298f6aab51e71845cbbe3c8e08807cb095e04bcccbefb0df1bd6c55f5be99cc",
+      "bytes": 960,
+      "inPublishedChecksums": false
+    },
+    "latest-linux.yml": {
+      "sha256": "c78966884ae7c789f7a1098829fa881536b726b432440b5aac5b809a5380e2f3",
+      "bytes": 513,
+      "inPublishedChecksums": false
+    }
+  },
+  "cli": {
+    "artifact": "t3-0.1.17-linux-x64.tar.gz",
+    "integrity": {
+      "sha256": "71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+      "bytes": 189062659,
+      "inPublishedChecksums": true
+    },
+    "runner": "Debian 12.15",
+    "installation": "Published install.sh with T3CODE_VERSION set, using a loopback mirror of the published release",
+    "command": "t3 serve --host 127.0.0.1 --port <port> --startup-pairing off",
+    "serverDescriptor": {
+      "platform": {
+        "os": "linux",
+        "arch": "x64"
+      },
+      "serverVersion": "0.1.17",
+      "orchestrationProtocolVersion": 2,
+      "databaseMigration": 118,
+      "serverBrowser": true,
+      "serverInstallation": {
+        "kind": "t3-launcher",
+        "launcher": "bin/t3",
+        "baseDir": "state"
+      }
+    },
+    "cases": {
+      "fresh": {
+        "cliVersion": "t3 v0.1.17",
+        "listenerClosedOnShutdown": true
+      },
+      "copied": {
+        "cliVersion": "t3 v0.1.17",
+        "databaseUnchangedByInstaller": true,
+        "threadTitle": "Compatibility replay",
+        "messageCount": 3,
+        "replayTextPresent": true,
+        "listenerClosedOnShutdown": true
+      }
+    },
+    "unpackedArchiveWireCheck": {
+      "result": "pass",
+      "fixture": "../../wire/incumbent-v2.json",
+      "checkerOutput": "Incumbent v2 wire checks passed.",
+      "scope": "Separate run of the published archive, started directly from the unpacked payload."
+    }
+  },
+  "desktop": {
+    "appimage": {
+      "artifact": "Sail-x86_64.AppImage",
+      "installation": {
+        "method": "published install-desktop.sh via loopback release mirror",
+        "appImageBytesMatch": true,
+        "launcherTarget": "Sail.AppImage",
+        "desktopEntryTargetMatches": true,
+        "fusePresent": false,
+        "runtimeVersionProbe": {
+          "exitCode": 127
+        }
+      },
+      "runner": {
+        "os": "13.8",
+        "session": "Xvfb",
+        "electronSandbox": "disabled with --no-sandbox",
+        "appImageExecution": "extracted AppRun"
+      },
+      "cases": {
+        "fresh": {
+          "onboardingVisible": true,
+          "startWithoutAgentVisible": true,
+          "desktopBridge": true,
+          "visibleReplay": false,
+          "rendererUserAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) SailBeta/0.1.17 Chrome/152.0.7977.169 Electron/44.10.1 Safari/537.36",
+          "backendClosedOnShutdown": true
+        },
+        "copied": {
+          "title": "Compatibility replay",
+          "replayTextPresent": true,
+          "highlightedCode": true,
+          "tableRows": 4,
+          "viewport": [1100, 780],
+          "deviceScaleFactor": 1,
+          "documentLanguage": "en",
+          "darkMode": false,
+          "windowCapture": {
+            "file": "../observations/electron-linux-x64/copied-home-appimage/ref-install.png",
+            "sha256": "2839cc099be7a71336f59abd84748643c67bd9af375c492873df9e01dba7004e",
+            "pixels": [1100, 780],
+            "scope": "X11 window",
+            "title": "Compatibility demo / Compatibility replay"
+          },
+          "copiedDatabaseSha256": "729b1b31578df8ea0c48f3ab0b834c9d259451e32ad15cc1dc110aac9b9ef27a",
+          "rendererUserAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) SailBeta/0.1.17 Chrome/152.0.7977.169 Electron/44.10.1 Safari/537.36",
+          "backendClosedOnShutdown": true
+        }
+      },
+      "integrity": {
+        "sha256": "ba3f5ea7dfb431111248ad1b624a2e1183ed7457c455512f4824fa772d1ca710",
+        "bytes": 257278137,
+        "inPublishedChecksums": true,
+        "updaterManifest": "latest-linux.yml",
+        "sha512Base64": "7r5/0OXLY7L8ELV0RPL/LqTdit7iJaKKLU3bvQtp/up4qdpkSdtKWjSsVlU/O9m18VYiNRDyiJw+Qrx8qFqm+g=="
+      },
+      "serverDescriptor": {
+        "platform": {
+          "os": "linux",
+          "arch": "x64"
+        },
+        "serverVersion": "0.1.17",
+        "orchestrationProtocolVersion": 2,
+        "databaseMigration": 118,
+        "serverBrowser": true,
+        "serverSelfUpdate": "desktop-managed"
+      }
+    },
+    "deb": {
+      "artifact": "Sail-0.1.17-x64.deb",
+      "installation": {
+        "method": "dpkg -i",
+        "dpkgStatus": "installed",
+        "package": "sail",
+        "packageVersion": "0.1.17",
+        "dpkgArchitecture": "amd64",
+        "desktopEntry": "/usr/share/applications/sail.desktop",
+        "launcherTarget": "/opt/Sail (Beta)/sail",
+        "dpkgVerify": "clean",
+        "containerPostInstallDiagnostic": "unshare: unshare failed: Operation not permitted"
+      },
+      "runner": {
+        "os": "13.8",
+        "session": "Xvfb",
+        "electronSandbox": "disabled with --no-sandbox",
+        "appImageExecution": null
+      },
+      "cases": {
+        "fresh": {
+          "onboardingVisible": true,
+          "startWithoutAgentVisible": true,
+          "desktopBridge": true,
+          "visibleReplay": false,
+          "rendererUserAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) SailBeta/0.1.17 Chrome/152.0.7977.169 Electron/44.10.1 Safari/537.36",
+          "backendClosedOnShutdown": true
+        },
+        "copied": {
+          "title": "Compatibility replay",
+          "replayTextPresent": true,
+          "highlightedCode": true,
+          "tableRows": 4,
+          "viewport": [1100, 780],
+          "deviceScaleFactor": 1,
+          "documentLanguage": "en",
+          "darkMode": false,
+          "windowCapture": {
+            "file": "../observations/electron-linux-x64/copied-home-deb/ref-install.png",
+            "sha256": "3c6113c90f866365ff44da6ea3cb99b5c5412b3d635a82940014129f0b0abb15",
+            "pixels": [1100, 780],
+            "scope": "X11 window",
+            "title": "Compatibility demo / Compatibility replay"
+          },
+          "copiedDatabaseSha256": "729b1b31578df8ea0c48f3ab0b834c9d259451e32ad15cc1dc110aac9b9ef27a",
+          "rendererUserAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) SailBeta/0.1.17 Chrome/152.0.7977.169 Electron/44.10.1 Safari/537.36",
+          "backendClosedOnShutdown": true
+        }
+      },
+      "integrity": {
+        "sha256": "31ecd16a6cc3b63bce892aa8f37d24fd8e569acf0461260b3755366890ed59cf",
+        "bytes": 211402028,
+        "inPublishedChecksums": true,
+        "updaterManifest": "latest-linux.yml",
+        "sha512Base64": "VRclu/T7EdvOEI10UvV6nMIe/sjYRC9MTZZ64qrnm6b4BqGmZVcTChUIiuCS3P+GCvlHeH2P3RvqB5NIsfsYyw=="
+      },
+      "serverDescriptor": {
+        "platform": {
+          "os": "linux",
+          "arch": "x64"
+        },
+        "serverVersion": "0.1.17",
+        "orchestrationProtocolVersion": 2,
+        "databaseMigration": 118,
+        "serverBrowser": true,
+        "serverSelfUpdate": "desktop-managed"
+      }
+    }
+  }
+}

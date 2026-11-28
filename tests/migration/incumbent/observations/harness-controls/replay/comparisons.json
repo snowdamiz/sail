@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "pixelPathScope": "Temporary comparison directory",
+  "controls": [
+    {
+      "name": "unchanged-first",
+      "exitCode": 0,
+      "comparison": {
+        "fixtureId": "chat-turn",
+        "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+        "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+        "changedSteps": [],
+        "pixels": {
+          "baseline": "baseline/capture.png",
+          "candidate": "repeat/capture.png",
+          "diff": "unchanged-first.png",
+          "baselineSize": [1280, 1200],
+          "candidateSize": [1280, 1200],
+          "differentPixels": 0,
+          "bounds": null
+        },
+        "artifactSha256": {
+          "baselineReceipt": "d0630b9594aefbf2b358b8cf0399b2b5c8f31fbd16c1b08a6c6929d5cdf14857",
+          "candidateReceipt": "b56e17542d224745df5d2ed511f6a63ad9b58221c98bda00dc52033920a4ae6c",
+          "diff": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+        }
+      }
+    },
+    {
+      "name": "unchanged-repeat",
+      "exitCode": 0,
+      "comparison": {
+        "fixtureId": "chat-turn",
+        "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+        "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+        "changedSteps": [],
+        "pixels": {
+          "baseline": "baseline/capture.png",
+          "candidate": "repeat/capture.png",
+          "diff": "unchanged-repeat.png",
+          "baselineSize": [1280, 1200],
+          "candidateSize": [1280, 1200],
+          "differentPixels": 0,
+          "bounds": null
+        },
+        "artifactSha256": {
+          "baselineReceipt": "d0630b9594aefbf2b358b8cf0399b2b5c8f31fbd16c1b08a6c6929d5cdf14857",
+          "candidateReceipt": "b56e17542d224745df5d2ed511f6a63ad9b58221c98bda00dc52033920a4ae6c",
+          "diff": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+        }
+      }
+    },
+    {
+      "name": "pixel-changed",
+      "exitCode": 1,
+      "comparison": {
+        "fixtureId": "chat-turn",
+        "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+        "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+        "changedSteps": [],
+        "pixels": {
+          "baseline": "baseline/capture.png",
+          "candidate": "pixel-changed/capture.png",
+          "diff": "pixel-changed.png",
+          "baselineSize": [1280, 1200],
+          "candidateSize": [1280, 1200],
+          "differentPixels": 1,
+          "bounds": [0, 0, 1, 1]
+        },
+        "artifactSha256": {
+          "baselineReceipt": "d0630b9594aefbf2b358b8cf0399b2b5c8f31fbd16c1b08a6c6929d5cdf14857",
+          "candidateReceipt": "68e11341e405aae4d00b0500edfbbacbbd0f6d874489219d7311b41e6fc589b3",
+          "diff": "db3a0f850004854460f23bc5403f8327a7b37a9de9d8e6b41f375b935704dbf4"
+        }
+      }
+    },
+    {
+      "name": "replay-result-changed",
+      "exitCode": 1,
+      "comparison": {
+        "fixtureId": "chat-turn",
+        "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+        "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+        "changedSteps": [1],
+        "pixels": {
+          "baseline": "baseline/capture.png",
+          "candidate": "replay-result-changed/capture.png",
+          "diff": "replay-result-changed.png",
+          "baselineSize": [1280, 1200],
+          "candidateSize": [1280, 1200],
+          "differentPixels": 0,
+          "bounds": null
+        },
+        "artifactSha256": {
+          "baselineReceipt": "d0630b9594aefbf2b358b8cf0399b2b5c8f31fbd16c1b08a6c6929d5cdf14857",
+          "candidateReceipt": "96ff968cecfab3f2eb277e2be75c33c2323c9b4ddd0893b5341d0781e3c4d5af",
+          "diff": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+        }
+      }
+    },
+    {
+      "name": "widget-state-missing",
+      "exitCode": 1,
+      "comparison": {
+        "fixtureId": "chat-turn",
+        "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+        "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+        "changedSteps": [1],
+        "pixels": {
+          "baseline": "baseline/capture.png",
+          "candidate": "widget-state-missing/capture.png",
+          "diff": "widget-state-missing.png",
+          "baselineSize": [1280, 1200],
+          "candidateSize": [1280, 1200],
+          "differentPixels": 0,
+          "bounds": null
+        },
+        "artifactSha256": {
+          "baselineReceipt": "d0630b9594aefbf2b358b8cf0399b2b5c8f31fbd16c1b08a6c6929d5cdf14857",
+          "candidateReceipt": "6d8ef8b8bc6a4b184a7c70f972298a426ca435c7c6cd782895bfcb29859836b4",
+          "diff": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+        }
+      }
+    }
+  ]
+}

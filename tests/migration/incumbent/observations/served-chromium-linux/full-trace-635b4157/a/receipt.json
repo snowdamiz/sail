@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "chat-turn",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "client": "Google Chrome for Testing 158.0.8127.88 through the Sail Browser panel",
+  "server": "Sail v0.1.17 Linux arm64 CLI server",
+  "profile": {
+    "browser": "Chrome/158.0.0.0",
+    "locale": "en",
+    "theme": "light",
+    "motion": "standard",
+    "viewport": {
+      "width": 640,
+      "height": 600,
+      "scale": 2,
+      "zoom": 1
+    },
+    "fonts": [
+      "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+      "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+    ],
+    "surface": "server-served-web",
+    "platform": "Debian 12.15 Linux arm64",
+    "origin": "server-served loopback"
+  },
+  "trace": [
+    {
+      "action": "openDirectThreadUrl",
+      "observed": {
+        "threadTitle": "Compatibility replay",
+        "replyVisible": true,
+        "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "stopVisible": false,
+        "tableRows": 4,
+        "availableModel": true,
+        "table": [
+          ["Step", "Tool", "Result"],
+          ["Read", "read", "1 file"],
+          ["Edit", "edit", "+4 lines"],
+          ["Test", "execute", "12 passed"]
+        ]
+      }
+    },
+    {
+      "action": "tabToAttachFiles",
+      "observed": {
+        "composerName": "Message Compatibility replay",
+        "focusName": "Attach files",
+        "focusRole": "button",
+        "menuCount": 0
+      }
+    },
+    {
+      "action": "readComposerControls",
+      "observed": {
+        "controls": [
+          {
+            "name": "Attach files",
+            "pressed": null
+          },
+          {
+            "name": "Showcase",
+            "pressed": null
+          },
+          {
+            "name": "Submit message",
+            "pressed": null
+          }
+        ]
+      }
+    }
+  ],
+  "screenshotSha256": "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f",
+  "coverage": {
+    "caseId": "chat-turn",
+    "platformId": "served-chromium-linux",
+    "state": "settled",
+    "entrypoint": "chat",
+    "configurationId": "chrome-158.0.8127.88-debian-arm64-en-light-640x600-2x"
+  },
+  "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+  "captureRunId": "chrome-158.0.8127.88-debian-arm64-en-light-640x600-2x-7aea3026-b73e-4ddc-a5d8-fc22fc611cbc"
+}

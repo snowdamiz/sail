@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "chat-display",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "client": "Sail 0.1.17 Electron 44.10.1",
+  "server": "Bundled Node 0.1.17",
+  "profile": {
+    "surface": "desktop",
+    "platform": "Debian 13.8 x64",
+    "browser": null,
+    "origin": "desktop local",
+    "locale": "en",
+    "theme": "light",
+    "motion": "standard",
+    "fonts": [
+      "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+      "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+    ],
+    "viewport": {
+      "width": 640,
+      "height": 780,
+      "scale": 1,
+      "zoom": 1
+    }
+  },
+  "coverage": {
+    "caseId": "chat-display",
+    "platformId": "electron-linux-x64",
+    "state": "compact",
+    "entrypoint": "chat",
+    "configurationId": "electron-44.10.1-debian-13.8-deb-compact"
+  },
+  "captureRunId": "522cd6b7-2fa1-4962-b309-902a37504f99",
+  "packageSha256": "31ecd16a6cc3b63bce892aa8f37d24fd8e569acf0461260b3755366890ed59cf",
+  "screenshotSha256": "223bdafb18148d3e42761c02332761363120c69cfaed00f65bd91c246e56a6d7",
+  "stateReceiptSha256": "b1282021d5442c6ca214037741c1e69ae6b7008cefe22b162e05a3483ba6dd76",
+  "trace": [
+    {
+      "action": "setChatDisplay",
+      "observed": {
+        "sidebar": "mobile sheet",
+        "closedAfterCheck": true
+      }
+    },
+    {
+      "action": "observeChatDisplay",
+      "observed": {
+        "profile": {
+          "locale": "en",
+          "theme": "light",
+          "motion": "standard",
+          "fonts": [
+            "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+            "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+          ],
+          "viewport": {
+            "width": 640,
+            "height": 780,
+            "scale": 1,
+            "zoom": 1
+          }
+        },
+        "chat": {
+          "title": "Compatibility replay",
+          "reply": true,
+          "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+          "highlightedCode": true,
+          "table": [
+            ["Step", "Tool", "Result"],
+            ["Read", "read", "1 file"],
+            ["Edit", "edit", "+4 lines"],
+            ["Test", "execute", "12 passed"]
+          ],
+          "composerFocused": false,
+          "sidebarOpen": false,
+          "detailsOpen": false,
+          "menuOpen": false
+        },
+        "rendererViewport": {
+          "width": 640,
+          "height": 780,
+          "scale": 1,
+          "zoom": 1
+        },
+        "zoom": 1,
+        "compact": true,
+        "attachmentControl": "Attach files"
+      }
+    }
+  ]
+}

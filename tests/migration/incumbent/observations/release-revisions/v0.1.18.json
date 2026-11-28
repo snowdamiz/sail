@@ -1,0 +1,107 @@
+{
+  "release": "https://github.com/snowdamiz/sail/releases/tag/v0.1.18",
+  "tag": "v0.1.18",
+  "sourceSha": "8337252d5112501cc06bae39921b84c807c662fc",
+  "publishedAt": "2026-11-28T04:57:29Z",
+  "workflow": "https://github.com/snowdamiz/sail/actions/runs/46108077489",
+  "archive": {
+    "asset": "Sail-0.1.18-arm64.zip",
+    "sha256": "915c9e7c3384b4d4c0a020e42cdd92a2ddb730b966ebc3edde43644116663a0f",
+    "sha512": "beNGEc64bD1sgSKDbeDnjQyhykpEwGSa6FqbHh3HwXIf9li0KpHFiSEf4deT9drPCevRksi1XprhvkZCzLPxww==",
+    "bundleId": "com.sail.desktop",
+    "bundledCliVersion": "0.1.18"
+  },
+  "assets": [
+    {
+      "name": "install-desktop.sh",
+      "digest": "sha256:f0d03fb3a96b8dbaa60bfe397731851713bdb4ff85f02c780470c3b5177e55c7"
+    },
+    {
+      "name": "install.sh",
+      "digest": "sha256:d20fc7f97d2e61e72750ffddb798a9368e4d7b68ae191aec3875792e6a600270"
+    },
+    {
+      "name": "latest-linux-arm64.yml",
+      "digest": "sha256:e92a1596b1bad044765ad787e8e204a3f120710c74c6a08a18ae3d0f99409e22"
+    },
+    {
+      "name": "latest-linux.yml",
+      "digest": "sha256:cd87fff75ef1436f579110451bf0624302bc7031c6c075af84195d30d8f81266"
+    },
+    {
+      "name": "latest-mac.yml",
+      "digest": "sha256:1f687f6bc0d23e5bcb5dc709aca66cdf02e9a7464936c7578ad9df746dde30d2"
+    },
+    {
+      "name": "Sail-0.1.18-arm64.deb",
+      "digest": "sha256:d01379cbe010d9fdfe96f7025fd0918c9ecc3f3a917b179ade5a0ff84082ba9f"
+    },
+    {
+      "name": "Sail-0.1.18-arm64.dmg",
+      "digest": "sha256:6c6c3df572d828361af6766b6f3d694dcd447615ca8b8fc0355e14c191a0ef06"
+    },
+    {
+      "name": "Sail-0.1.18-arm64.dmg.blockmap",
+      "digest": "sha256:02d62f87c12408db59570f25f5fb8c10615f03c016d5c20d0aa9f8ec3ca757ee"
+    },
+    {
+      "name": "Sail-0.1.18-arm64.zip",
+      "digest": "sha256:915c9e7c3384b4d4c0a020e42cdd92a2ddb730b966ebc3edde43644116663a0f"
+    },
+    {
+      "name": "Sail-0.1.18-arm64.zip.blockmap",
+      "digest": "sha256:64fc62647938187d46070b964b0d2db96b93b9f303be179a76456b5ee8b1803c"
+    },
+    {
+      "name": "Sail-0.1.18-x64.deb",
+      "digest": "sha256:a5b960cce371448240e00d5b02576bb4507afe9090207f28db2736da25033027"
+    },
+    {
+      "name": "Sail-0.1.18-x64.dmg",
+      "digest": "sha256:3f4ef500ca624d05a1d75360d2b392d8fa69f4345810c50c91bb71da37775d53"
+    },
+    {
+      "name": "Sail-0.1.18-x64.dmg.blockmap",
+      "digest": "sha256:6b228597c6a67c8d52eed32f8056862e61c0e319f54e20c0fce209ebd6c67d96"
+    },
+    {
+      "name": "Sail-0.1.18-x64.zip",
+      "digest": "sha256:34c8e247e8e434941b2e0d60d57fac912575b898430f06672e2a460325ba9883"
+    },
+    {
+      "name": "Sail-0.1.18-x64.zip.blockmap",
+      "digest": "sha256:75052708c87a223a09468527986fcceb2d26aa25525501c16bfd3f138c51073c"
+    },
+    {
+      "name": "Sail-arm64.AppImage",
+      "digest": "sha256:889b06160d37fb9f0ab8e0b5d5eecd15beee2565b35c5f73119264c92161bec7"
+    },
+    {
+      "name": "Sail-x86_64.AppImage",
+      "digest": "sha256:6f68862cd310faa0bf49da6ade181a550aafd69cbad5f2d0e85af77b72ee6255"
+    },
+    {
+      "name": "SHA256SUMS",
+      "digest": "sha256:b5516d5771ea470e555ce80fb77949a3ab54256b04133a8e0d254246c2b8dc5f"
+    },
+    {
+      "name": "t3-0.1.18-linux-arm64.tar.gz",
+      "digest": "sha256:fde0ac091d545e9bfa2a8dd31ceacbe4b3ef9fbf66cbde0643435986af478e35"
+    },
+    {
+      "name": "t3-0.1.18-linux-x64.tar.gz",
+      "digest": "sha256:df8fa710fb578c96715c1c41b55bf4e551621d228405361cfd7aa0a70b8d5f5f"
+    }
+  ],
+  "changes": [
+    "Provider-account onboarding",
+    "Automatic provider usage-limit failover",
+    "Built-in pstack skills"
+  ],
+  "scope": "Release inventory, archive, bundled CLI and one settled Electron Replay profile collected separately from the pinned v0.1.17 reference.",
+  "settledElectronReplay": {
+    "receipt": "../electron-macos-arm64/settled-hover/v018/receipt.json",
+    "comparisons": "../electron-macos-arm64/settled-hover/comparisons.json",
+    "captureTimings": "../electron-macos-arm64/settled-hover/capture-timings.json"
+  }
+}

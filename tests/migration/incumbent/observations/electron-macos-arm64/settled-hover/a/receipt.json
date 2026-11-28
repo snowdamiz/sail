@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "chat-turn",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "client": "Sail v0.1.17 (Electron 44.10.1)",
+  "server": "Sail v0.1.17 bundled Node server",
+  "profile": {
+    "surface": "desktop",
+    "platform": "macOS 27.0.1 (26A434) arm64",
+    "browser": null,
+    "origin": "desktop local",
+    "locale": "en",
+    "theme": "dark",
+    "motion": "standard",
+    "fonts": [
+      "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+      "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+    ],
+    "viewport": {
+      "width": 1100,
+      "height": 780,
+      "scale": 2,
+      "zoom": 1
+    }
+  },
+  "trace": [
+    {
+      "action": "observeSettledReplayAfterNativeHover",
+      "observed": {
+        "title": "Compatibility replay",
+        "replyVisible": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "tableRows": 4,
+        "composerFocused": false,
+        "sidebarOpen": false,
+        "detailsOpen": false,
+        "actionsOpacity": "1",
+        "actionsHovered": true,
+        "menuOpen": false,
+        "viewport": {
+          "width": 1100,
+          "height": 780,
+          "scale": 2,
+          "zoom": 1
+        },
+        "locale": "en",
+        "theme": "dark",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ]
+      }
+    }
+  ],
+  "screenshotSha256": "9bb16ba84e1ec54ed0facd0455bb4869b0893f1e2a833ff2e51a8499a71bbfd7",
+  "packageSha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+  "coverage": {
+    "caseId": "chat-turn",
+    "platformId": "electron-macos-arm64",
+    "state": "settled",
+    "entrypoint": "chat",
+    "configurationId": "electron-44.10.1-macos-en-dark-1100x780-2x-hover"
+  },
+  "captureRunId": "electron-44.10.1-macos-en-dark-1100x780-2x-hover-a"
+}

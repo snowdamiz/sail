@@ -1,0 +1,544 @@
+{
+  "artifact": {
+    "archive": "Sail-0.1.17-arm64.zip",
+    "archiveDigest": "sha256:d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+    "assetId": 802852659,
+    "bundleVersion": "0.1.17",
+    "installedAppEntriesMatched": 327,
+    "installedLauncherInspection": "exec /usr/bin/open \"$APP\" --args \"$@\"",
+    "serverCommand": [
+      "Contents/MacOS/Sail (Beta)",
+      "Contents/Resources/app.asar/apps/server/dist/bin.mjs"
+    ],
+    "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "tag": "v0.1.17"
+  },
+  "cases": [
+    {
+      "arguments": [
+        "serve",
+        "--base-dir",
+        "$CASE/explicit",
+        "--startup-pairing",
+        "off",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "$PORT"
+      ],
+      "case": "serve-explicit",
+      "environmentDescriptor": {
+        "path": "/.well-known/t3/environment",
+        "profile": "serve-explicit",
+        "status": 200
+      },
+      "homeEnvironment": {
+        "SAIL_HOME": "sail",
+        "T3CODE_HOME": "legacy"
+      },
+      "pair": {
+        "browserSession": {
+          "cookieCheck": {
+            "anonymousAuthenticated": false,
+            "authenticated": true,
+            "path": "/api/auth/session",
+            "status": 200
+          },
+          "path": "/api/auth/browser-session",
+          "reuseStatus": 401,
+          "sessionMethod": "browser-session-cookie",
+          "status": 200
+        },
+        "command": "pair --base-dir $SELECTED_HOME",
+        "exitCode": 0,
+        "url": "http://127.0.0.1:$PORT/pair#token=[redacted]"
+      },
+      "protocolRejection": {
+        "body": {
+          "code": "orchestration_protocol_incompatible",
+          "orchestrationProtocolVersion": 2
+        },
+        "path": "/ws?orchestrationProtocol=1",
+        "status": 426
+      },
+      "runtime": {
+        "bindHost": "127.0.0.1",
+        "database": "userdata/statev2.sqlite",
+        "pidMatchesChild": true,
+        "version": 1
+      },
+      "selectedHome": "explicit",
+      "startupPairing": {
+        "headlessReadyPrinted": true,
+        "pairingUrlPrinted": false
+      },
+      "stop": {
+        "exitCode": 130,
+        "listenerClosed": true,
+        "runtimeRecordRemoved": true,
+        "signal": "SIGTERM"
+      }
+    },
+    {
+      "arguments": [
+        "--no-browser",
+        "--no-auto-bootstrap-project-from-cwd",
+        "--startup-pairing",
+        "off",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "$PORT"
+      ],
+      "case": "default-command",
+      "environmentDescriptor": {
+        "path": "/.well-known/t3/environment",
+        "profile": "serve-explicit",
+        "status": 200
+      },
+      "homeEnvironment": {
+        "SAIL_HOME": "sail",
+        "T3CODE_HOME": "legacy"
+      },
+      "runtime": {
+        "bindHost": "127.0.0.1",
+        "database": "userdata/statev2.sqlite",
+        "pidMatchesChild": true,
+        "version": 1
+      },
+      "selectedHome": "sail",
+      "stop": {
+        "exitCode": 130,
+        "listenerClosed": true,
+        "runtimeRecordRemoved": true,
+        "signal": "SIGTERM"
+      }
+    },
+    {
+      "arguments": ["serve", "--local-sessions", "off", "--host", "127.0.0.1", "--port", "$PORT"],
+      "case": "serve-control-plane",
+      "environmentDescriptor": {
+        "path": "/.well-known/t3/environment",
+        "profile": "serve-control-plane",
+        "status": 200
+      },
+      "homeEnvironment": {
+        "T3CODE_HOME": "legacy"
+      },
+      "runtime": {
+        "bindHost": "127.0.0.1",
+        "database": "userdata/statev2.sqlite",
+        "pidMatchesChild": true,
+        "version": 1
+      },
+      "selectedHome": "legacy",
+      "startupPairing": {
+        "browserSession": {
+          "cookieCheck": {
+            "anonymousAuthenticated": false,
+            "authenticated": true,
+            "path": "/api/auth/session",
+            "status": 200
+          },
+          "path": "/api/auth/browser-session",
+          "reuseStatus": 401,
+          "sessionMethod": "browser-session-cookie",
+          "status": 200
+        },
+        "headlessReadyPrinted": true,
+        "url": "http://127.0.0.1:$PORT/pair#token=[redacted]"
+      },
+      "stop": {
+        "exitCode": 130,
+        "listenerClosed": true,
+        "runtimeRecordRemoved": true,
+        "signal": "SIGTERM"
+      }
+    },
+    {
+      "arguments": ["serve", "--startup-pairing", "off", "--host", "127.0.0.1", "--port", "$PORT"],
+      "case": "serve-default-home",
+      "environmentDescriptor": {
+        "path": "/.well-known/t3/environment",
+        "profile": "serve-explicit",
+        "status": 200
+      },
+      "homeEnvironment": {},
+      "runtime": {
+        "bindHost": "127.0.0.1",
+        "database": "userdata/statev2.sqlite",
+        "pidMatchesChild": true,
+        "version": 1
+      },
+      "selectedHome": "home/.sail",
+      "startupPairing": {
+        "headlessReadyPrinted": true,
+        "pairingUrlPrinted": false
+      },
+      "stop": {
+        "exitCode": 130,
+        "listenerClosed": true,
+        "runtimeRecordRemoved": true,
+        "signal": "SIGTERM"
+      }
+    },
+    {
+      "arguments": ["--bootstrap-fd", "3"],
+      "bootstrap": {
+        "encoding": "newline-delimited JSON",
+        "envelope": {
+          "desktopBootstrapToken": "[redacted]",
+          "desktopReadinessSecret": "[redacted]",
+          "host": "127.0.0.1",
+          "mode": "desktop",
+          "noBrowser": true,
+          "port": "$PORT",
+          "shellEnvironmentPrepared": true,
+          "t3Home": "$SELECTED_HOME",
+          "tailscaleServeEnabled": false,
+          "tailscaleServePort": 443
+        },
+        "fd": 3,
+        "readinessPath": "/.well-known/t3/desktop-readiness?challenge=p01",
+        "readinessProofVerified": true,
+        "readinessStatus": 200
+      },
+      "browserSession": {
+        "cookieCheck": {
+          "anonymousAuthenticated": false,
+          "authenticated": true,
+          "path": "/api/auth/session",
+          "status": 200
+        },
+        "path": "/api/auth/browser-session",
+        "sessionMethod": "browser-session-cookie",
+        "status": 200
+      },
+      "case": "desktop-fd3",
+      "environmentDescriptor": {
+        "path": "/.well-known/t3/environment",
+        "profile": "desktop-fd3",
+        "status": 200
+      },
+      "homeEnvironment": {},
+      "runtime": {
+        "bindHost": "127.0.0.1",
+        "database": "userdata/statev2.sqlite",
+        "pidMatchesChild": true,
+        "version": 1
+      },
+      "selectedHome": "envelope",
+      "stop": {
+        "exitCode": 130,
+        "listenerClosed": true,
+        "runtimeRecordRemoved": true,
+        "signal": "SIGTERM"
+      }
+    },
+    {
+      "arguments": ["--bootstrap-fd", "3"],
+      "bootstrapDecodeError": true,
+      "case": "desktop-fd3-invalid",
+      "exitCode": 1,
+      "homeEnvironment": {},
+      "omittedBootstrapKey": "mode",
+      "runtimeRecordCreated": false
+    }
+  ],
+  "cliVersion": "t3 v0.1.17",
+  "descriptorProfiles": {
+    "desktop-fd3": {
+      "capabilities": {
+        "accessTokenRenewal": true,
+        "agentActivityPublishing": false,
+        "agentFeedback": true,
+        "attachmentUploads": true,
+        "cloudVoiceTranscription": true,
+        "commandOutputStreaming": true,
+        "connectionProbe": true,
+        "databaseStorage": true,
+        "environmentIcon": true,
+        "environmentThemes": true,
+        "fastWorktreeCheckout": true,
+        "fileAttachments": {
+          "maxUploadBytes": 52428800
+        },
+        "freshContext": true,
+        "ignoredFileListing": true,
+        "ignoredFileSearch": true,
+        "inlineMessageContext": true,
+        "issueLinkedThreads": true,
+        "issueTrackerAccounts": true,
+        "issues": true,
+        "linkClientPairing": true,
+        "linkFence": true,
+        "linkPairingForLink": true,
+        "linkThreadStream": true,
+        "linkedThreadRefreshes": true,
+        "localServerStop": true,
+        "mcpApprovalCodes": true,
+        "mcpHostedApproval": true,
+        "mcpModeLimitHeader": true,
+        "modelCatalogRefresh": true,
+        "npmReleaseLookup": true,
+        "oneTimeSchedules": true,
+        "otlpEndpointCheck": true,
+        "peerLinkPairingCodes": true,
+        "peerLinks": true,
+        "previewTunnelSetting": true,
+        "projectCloneTracking": true,
+        "projectOrganization": true,
+        "projectProviderInstanceOverrides": true,
+        "projectSettingsOverrides": true,
+        "projectWorktreeCleanup": true,
+        "providerWorkspaceSnapshotsOnDemand": true,
+        "pullRequestChecks": true,
+        "pullRequestStackActions": true,
+        "pullRequests": true,
+        "questionAttachments": true,
+        "repositoryIdentity": true,
+        "requiredWorktreeBootstrap": true,
+        "scheduledTaskThreadModes": true,
+        "secretSourceCheck": true,
+        "serverBrowser": true,
+        "serverResolvedCommandContext": true,
+        "serverSelfUpdate": "desktop-managed",
+        "settledWorktreeCleanup": true,
+        "shellOlderSettled": true,
+        "shellThreadFamilies": true,
+        "sideChats": true,
+        "storageCleanup": true,
+        "storageCleanupRun": true,
+        "threadActiveReorder": true,
+        "threadAutoSettleOptOut": true,
+        "threadAutoSettlement": true,
+        "threadAutoSettlementScope": true,
+        "threadForceStop": true,
+        "threadPinReorder": true,
+        "threadPinning": true,
+        "threadProjectFromScratch": true,
+        "threadPullRequestLinking": true,
+        "threadPullRequestWatch": true,
+        "threadPullRequests": true,
+        "threadRestartContinuation": true,
+        "threadSettlement": true,
+        "threadSnooze": true,
+        "threadStop": true,
+        "threadTitleRegeneration": true,
+        "threadVisitedTracking": true,
+        "triage": true,
+        "usageLimitSources": true,
+        "usageModelAliases": true,
+        "usagePriceOverrides": true,
+        "vcsBranchStatus": true,
+        "voiceTranscription": true,
+        "worktreesDirectory": true
+      },
+      "databaseMigration": 118,
+      "environmentIdMatchesSelectedHome": true,
+      "label": "P01 launcher fixture",
+      "orchestrationProtocolVersion": 2,
+      "platform": {
+        "arch": "arm64",
+        "machine": "laptop",
+        "os": "darwin"
+      },
+      "serverVersion": "0.1.17"
+    },
+    "serve-control-plane": {
+      "capabilities": {
+        "accessTokenRenewal": true,
+        "agentActivityPublishing": false,
+        "agentFeedback": true,
+        "attachmentUploads": true,
+        "cloudVoiceTranscription": true,
+        "commandOutputStreaming": true,
+        "connectionProbe": true,
+        "databaseStorage": true,
+        "environmentIcon": true,
+        "environmentThemes": true,
+        "fastWorktreeCheckout": true,
+        "fileAttachments": {
+          "maxUploadBytes": 52428800
+        },
+        "freshContext": true,
+        "ignoredFileListing": true,
+        "ignoredFileSearch": true,
+        "inlineMessageContext": true,
+        "issueLinkedThreads": true,
+        "issueTrackerAccounts": true,
+        "issues": true,
+        "linkClientPairing": true,
+        "linkFence": true,
+        "linkPairingForLink": true,
+        "linkThreadStream": true,
+        "linkedThreadRefreshes": true,
+        "localServerStop": true,
+        "localSessions": false,
+        "mcpApprovalCodes": true,
+        "mcpHostedApproval": true,
+        "mcpModeLimitHeader": true,
+        "modelCatalogRefresh": true,
+        "npmReleaseLookup": true,
+        "oneTimeSchedules": true,
+        "otlpEndpointCheck": true,
+        "peerLinkPairingCodes": true,
+        "peerLinks": true,
+        "previewTunnelSetting": true,
+        "projectCloneTracking": true,
+        "projectOrganization": true,
+        "projectProviderInstanceOverrides": true,
+        "projectSettingsOverrides": true,
+        "projectWorktreeCleanup": true,
+        "providerWorkspaceSnapshotsOnDemand": true,
+        "pullRequestChecks": true,
+        "pullRequestStackActions": true,
+        "pullRequests": true,
+        "questionAttachments": true,
+        "repositoryIdentity": true,
+        "requiredWorktreeBootstrap": true,
+        "scheduledTaskThreadModes": true,
+        "secretSourceCheck": true,
+        "serverResolvedCommandContext": true,
+        "settledWorktreeCleanup": true,
+        "shellOlderSettled": true,
+        "shellThreadFamilies": true,
+        "sideChats": true,
+        "storageCleanup": true,
+        "storageCleanupRun": true,
+        "threadActiveReorder": true,
+        "threadAutoSettleOptOut": true,
+        "threadAutoSettlement": true,
+        "threadAutoSettlementScope": true,
+        "threadForceStop": true,
+        "threadPinReorder": true,
+        "threadPinning": true,
+        "threadProjectFromScratch": true,
+        "threadPullRequestLinking": true,
+        "threadPullRequestWatch": true,
+        "threadPullRequests": true,
+        "threadRestartContinuation": true,
+        "threadSettlement": true,
+        "threadSnooze": true,
+        "threadStop": true,
+        "threadTitleRegeneration": true,
+        "threadVisitedTracking": true,
+        "triage": true,
+        "usageLimitSources": true,
+        "usageModelAliases": true,
+        "usagePriceOverrides": true,
+        "vcsBranchStatus": true,
+        "voiceTranscription": true,
+        "worktreesDirectory": true
+      },
+      "databaseMigration": 118,
+      "environmentIdMatchesSelectedHome": true,
+      "label": "P01 launcher fixture",
+      "orchestrationProtocolVersion": 2,
+      "platform": {
+        "arch": "arm64",
+        "machine": "laptop",
+        "os": "darwin"
+      },
+      "serverVersion": "0.1.17"
+    },
+    "serve-explicit": {
+      "capabilities": {
+        "accessTokenRenewal": true,
+        "agentActivityPublishing": false,
+        "agentFeedback": true,
+        "attachmentUploads": true,
+        "cloudVoiceTranscription": true,
+        "commandOutputStreaming": true,
+        "connectionProbe": true,
+        "databaseStorage": true,
+        "environmentIcon": true,
+        "environmentThemes": true,
+        "fastWorktreeCheckout": true,
+        "fileAttachments": {
+          "maxUploadBytes": 52428800
+        },
+        "freshContext": true,
+        "ignoredFileListing": true,
+        "ignoredFileSearch": true,
+        "inlineMessageContext": true,
+        "issueLinkedThreads": true,
+        "issueTrackerAccounts": true,
+        "issues": true,
+        "linkClientPairing": true,
+        "linkFence": true,
+        "linkPairingForLink": true,
+        "linkThreadStream": true,
+        "linkedThreadRefreshes": true,
+        "localServerStop": true,
+        "mcpApprovalCodes": true,
+        "mcpHostedApproval": true,
+        "mcpModeLimitHeader": true,
+        "modelCatalogRefresh": true,
+        "npmReleaseLookup": true,
+        "oneTimeSchedules": true,
+        "otlpEndpointCheck": true,
+        "peerLinkPairingCodes": true,
+        "peerLinks": true,
+        "previewTunnelSetting": true,
+        "projectCloneTracking": true,
+        "projectOrganization": true,
+        "projectProviderInstanceOverrides": true,
+        "projectSettingsOverrides": true,
+        "projectWorktreeCleanup": true,
+        "providerWorkspaceSnapshotsOnDemand": true,
+        "pullRequestChecks": true,
+        "pullRequestStackActions": true,
+        "pullRequests": true,
+        "questionAttachments": true,
+        "repositoryIdentity": true,
+        "requiredWorktreeBootstrap": true,
+        "scheduledTaskThreadModes": true,
+        "secretSourceCheck": true,
+        "serverBrowser": true,
+        "serverResolvedCommandContext": true,
+        "settledWorktreeCleanup": true,
+        "shellOlderSettled": true,
+        "shellThreadFamilies": true,
+        "sideChats": true,
+        "storageCleanup": true,
+        "storageCleanupRun": true,
+        "threadActiveReorder": true,
+        "threadAutoSettleOptOut": true,
+        "threadAutoSettlement": true,
+        "threadAutoSettlementScope": true,
+        "threadForceStop": true,
+        "threadPinReorder": true,
+        "threadPinning": true,
+        "threadProjectFromScratch": true,
+        "threadPullRequestLinking": true,
+        "threadPullRequestWatch": true,
+        "threadPullRequests": true,
+        "threadRestartContinuation": true,
+        "threadSettlement": true,
+        "threadSnooze": true,
+        "threadStop": true,
+        "threadTitleRegeneration": true,
+        "threadVisitedTracking": true,
+        "triage": true,
+        "usageLimitSources": true,
+        "usageModelAliases": true,
+        "usagePriceOverrides": true,
+        "vcsBranchStatus": true,
+        "voiceTranscription": true,
+        "worktreesDirectory": true
+      },
+      "databaseMigration": 118,
+      "environmentIdMatchesSelectedHome": true,
+      "label": "P01 launcher fixture",
+      "orchestrationProtocolVersion": 2,
+      "platform": {
+        "arch": "arm64",
+        "machine": "laptop",
+        "os": "darwin"
+      },
+      "serverVersion": "0.1.17"
+    }
+  },
+  "schemaVersion": 1
+}

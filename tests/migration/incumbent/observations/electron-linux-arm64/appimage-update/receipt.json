@@ -1,0 +1,219 @@
+{
+  "schemaVersion": 1,
+  "scope": "Linux arm64 AppImage in a disposable Debian 13.8 container under Xvfb",
+  "packages": {
+    "before": {
+      "release": "v0.1.17",
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "asset": "Sail-arm64.AppImage",
+      "size": 248762685,
+      "sha256": "d0e469c17aa9a5500be74c70fb0a497bb0bd4f8f8178ab9216ff4d3e5e89d09c",
+      "sha512": "tSQsj/hYrY6hT9xm+ScB3zwcxAR8aYiHs5m/0i+Tb7FYeckaMgDJCn0VwzCOAPbRG6mglhed4EIJ+jojRzHMcA==",
+      "manifestSha256": "09549f5abac8acb095bde12908f7c5879a7866eef78185f245604b95ed4d229e"
+    },
+    "after": {
+      "release": "v0.1.18",
+      "sourceSha": "8337252d5112501cc06bae39921b84c807c662fc",
+      "asset": "Sail-arm64.AppImage",
+      "size": 248999886,
+      "sha256": "889b06160d37fb9f0ab8e0b5d5eecd15beee2565b35c5f73119264c92161bec7",
+      "sha512": "bu0DzEheoPUj5Q6kTSUIKdieMNSJUa7jNc1MJtd4yss7Y7VVgnhp57nkGHSCeKc+yZXeVWY+6e2Qs6oOGtEiEA==",
+      "manifestSha256": "e92a1596b1bad044765ad787e8e204a3f120710c74c6a08a18ae3d0f99409e22"
+    }
+  },
+  "fixture": {
+    "databaseSha256": "84b10b976c546179059ed6200c7e6e5ef2c883ee9cbf6795c0c85c2995f1adbd",
+    "title": "Compatibility replay",
+    "execution": "APPIMAGE_EXTRACT_AND_RUN=1 with AppRun namespace fallback",
+    "window": {
+      "width": 1100,
+      "height": 780,
+      "scale": 1
+    }
+  },
+  "feed": {
+    "mode": "packaged test-feed override to a loopback mirror",
+    "checksumControlManifestSha256": "a5285145b7c4ae29c37a4b86228718d9c4dbf5e170e219b9497436fb1fb1363e",
+    "requestLog": [
+      {
+        "path": "/latest-linux-arm64.yml",
+        "status": 200,
+        "manifest": "bad-sha512"
+      },
+      {
+        "path": "/latest-linux-arm64.yml",
+        "status": 200,
+        "manifest": "bad-sha512"
+      },
+      {
+        "path": "/Sail-arm64.AppImage",
+        "status": 416,
+        "manifest": "bad-sha512"
+      },
+      {
+        "path": "/Sail-arm64.AppImage",
+        "status": 200,
+        "manifest": "bad-sha512"
+      },
+      {
+        "path": "/latest-linux-arm64.yml",
+        "status": 200,
+        "manifest": "published"
+      },
+      {
+        "path": "/latest-linux-arm64.yml",
+        "status": 200,
+        "manifest": "published"
+      },
+      {
+        "path": "/Sail-arm64.AppImage",
+        "status": 416,
+        "manifest": "published"
+      },
+      {
+        "path": "/Sail-arm64.AppImage",
+        "status": 200,
+        "manifest": "published"
+      },
+      {
+        "path": "/latest-linux-arm64.yml",
+        "status": 200,
+        "manifest": "published"
+      }
+    ]
+  },
+  "before": {
+    "version": "0.1.17",
+    "migration": 118
+  },
+  "reportedStates": {
+    "offered": {
+      "status": "available",
+      "currentVersion": "0.1.17",
+      "availableVersion": "0.1.18",
+      "downloadedVersion": null,
+      "errorContext": null,
+      "canRetry": false
+    },
+    "failed": {
+      "status": "available",
+      "currentVersion": "0.1.17",
+      "availableVersion": "0.1.18",
+      "downloadedVersion": null,
+      "errorContext": "download",
+      "canRetry": true
+    },
+    "recovered": {
+      "status": "available",
+      "currentVersion": "0.1.17",
+      "availableVersion": "0.1.18",
+      "downloadedVersion": null,
+      "errorContext": "download",
+      "canRetry": true
+    },
+    "ready": {
+      "status": "downloaded",
+      "currentVersion": "0.1.17",
+      "availableVersion": "0.1.18",
+      "downloadedVersion": "0.1.18",
+      "errorContext": null,
+      "canRetry": true
+    }
+  },
+  "checksumRejection": {
+    "code": "ERR_CHECKSUM_MISMATCH",
+    "originalExecutablePreserved": true,
+    "originalServerKeptRunning": true,
+    "sameRunAndMessages": true
+  },
+  "confirmationText": "Install update 0.1.18 and restart T3 Code?",
+  "after": {
+    "version": "0.1.18",
+    "migration": 118,
+    "protocol": 2,
+    "environmentIdentityPreserved": true,
+    "sameRunAndMessages": true,
+    "runs": 1,
+    "messages": 3,
+    "automaticRelaunch": true,
+    "replacementExecutableMatchesArchive": true,
+    "initialWindow": "Sail startup screen",
+    "reopenAction": "Select Compatibility replay in the sidebar",
+    "visibleTitle": "Compatibility replay",
+    "visibleReplayReply": true,
+    "highlightedCodeAndTableVisible": true
+  },
+  "screenshots": [
+    {
+      "file": "update-available.png",
+      "sha256": "65e7a0065955325a58ce2874bd369c45cfc3123733d626ae692034faf0452367",
+      "pixels": [1100, 780],
+      "scope": "X11 window",
+      "title": "Sail (Beta)"
+    },
+    {
+      "file": "update-rejected.png",
+      "sha256": "31b20f2ad54faa6beb2ced7eb47f60e4093009f45a2d12f2203bdff9411eedeb",
+      "pixels": [1100, 780],
+      "scope": "X11 window",
+      "title": "Sail (Beta)"
+    },
+    {
+      "file": "update-ready.png",
+      "sha256": "78686713760607eb3a828739cf3947387dbe42b4e1c3a304d0ec55b41d30d305",
+      "pixels": [1100, 780],
+      "scope": "X11 window",
+      "title": "Sail (Beta)"
+    },
+    {
+      "file": "update-confirm.png",
+      "sha256": "18ddd64464e2eab7e142e3cbb2665cef05b242c91f1d3548afd7d670697bd041",
+      "pixels": [1100, 780],
+      "scope": "X11 window",
+      "title": "Sail (Beta)"
+    },
+    {
+      "file": "update-restarted.png",
+      "sha256": "843abf1ab5151791ef91e08e2ab1cef44121152a49a9757ce20a8d9531964398",
+      "pixels": [1100, 780],
+      "scope": "X11 window",
+      "title": "Sail (Beta)"
+    },
+    {
+      "file": "update-reopened.png",
+      "sha256": "0f13d712cde160507f8bd444cb51a7c0965cda2ca96af436a5ddfab7edcba08a",
+      "pixels": [1100, 780],
+      "scope": "X11 window",
+      "title": "Sail (Beta)"
+    }
+  ],
+  "payloadRecheck": {
+    "scope": "Repeated the same upgrade with full message and run payload comparison at each checkpoint. The screenshots above are from the original capture.",
+    "fingerprints": {
+      "before": {
+        "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+        "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+      },
+      "afterChecksumRejection": {
+        "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+        "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+      },
+      "afterInstall": {
+        "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+        "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+      }
+    },
+    "messageEditControl": {
+      "baseline": {
+        "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+        "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+      },
+      "mutant": {
+        "messages": "c438501b9597287291c698c57657bf1e5f7968a81397fba3d7167f1632cd8890",
+        "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+      },
+      "oldIdRoleSearchProjectionEqual": true,
+      "fullPayloadComparisonRejected": true
+    }
+  }
+}

@@ -1,0 +1,187 @@
+{
+  "release": {
+    "tag": "v0.1.17",
+    "commit": "18fd0e5d66291fc007163512d783d7268218db16",
+    "captureSourceCommit": "f29f09835c97386742075c6edf799d1669923b15"
+  },
+  "sessionScopes": ["orchestration:read"],
+  "seed": {
+    "create": {
+      "type": "project.create",
+      "commandId": "wire-project-create",
+      "projectId": "wire-project",
+      "title": "Wire fixture"
+    },
+    "remove": {
+      "type": "project.delete",
+      "commandId": "wire-project-delete",
+      "projectId": "wire-project",
+      "force": true
+    }
+  },
+  "http": [
+    {
+      "path": "/ws",
+      "status": 426,
+      "body": {
+        "code": "orchestration_protocol_incompatible",
+        "message": "Update this client to one that supports orchestration protocol 2.",
+        "orchestrationProtocolVersion": 2
+      }
+    },
+    {
+      "path": "/ws?orchestrationProtocol=1",
+      "status": 426,
+      "body": {
+        "code": "orchestration_protocol_incompatible",
+        "message": "Update this client to one that supports orchestration protocol 2.",
+        "orchestrationProtocolVersion": 2
+      }
+    },
+    {
+      "path": "/ws?orchestrationProtocol=3",
+      "status": 426,
+      "body": {
+        "code": "orchestration_protocol_incompatible",
+        "message": "Update this client to one that supports orchestration protocol 2.",
+        "orchestrationProtocolVersion": 2
+      }
+    },
+    {
+      "path": "/api/orchestration/shell?resumeFrom=1",
+      "headers": { "x-t3-orchestration-protocol": "2" },
+      "status": 200,
+      "body": { "resumable": true }
+    }
+  ],
+  "socket": {
+    "path": "/ws?orchestrationProtocol=2",
+    "ticketPath": "/api/auth/websocket-ticket/rpc",
+    "ticketQuery": "wsTicket",
+    "steps": [
+      { "send": { "_tag": "Ping" } },
+      { "receive": { "_tag": "Pong" } },
+      {
+        "send": {
+          "_tag": "Request",
+          "id": "1",
+          "tag": "orchestration.getThreadTitles",
+          "payload": { "threadIds": ["wire-missing-thread"] },
+          "headers": []
+        }
+      },
+      {
+        "receive": { "_tag": "Exit", "requestId": "1", "exit": { "_tag": "Success", "value": {} } }
+      },
+      {
+        "send": {
+          "_tag": "Request",
+          "id": "2",
+          "tag": "orchestration.getThreadProjection",
+          "payload": { "threadId": "wire-missing-thread" },
+          "headers": []
+        }
+      },
+      {
+        "receive": {
+          "_tag": "Exit",
+          "requestId": "2",
+          "exit": {
+            "_tag": "Failure",
+            "cause": [
+              {
+                "_tag": "Fail",
+                "error": {
+                  "_tag": "OrchestrationV2GetThreadProjectionError",
+                  "threadId": "wire-missing-thread",
+                  "message": "Failed to load orchestration V2 thread wire-missing-thread",
+                  "cause": {
+                    "name": "OrchestratorProjectionError",
+                    "message": "Failed to load orchestration projection for thread wire-missing-thread.",
+                    "cause": {
+                      "name": "ProjectionStoreThreadNotFoundError",
+                      "message": "No orchestration projection exists for thread wire-missing-thread."
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "send": {
+          "_tag": "Request",
+          "id": "3",
+          "tag": "projects.mutate",
+          "payload": {
+            "type": "project.delete",
+            "commandId": "wire-denied-delete",
+            "projectId": "wire-project",
+            "force": true
+          },
+          "headers": []
+        }
+      },
+      {
+        "receive": {
+          "_tag": "Exit",
+          "requestId": "3",
+          "exit": {
+            "_tag": "Failure",
+            "cause": [
+              {
+                "_tag": "Fail",
+                "error": {
+                  "_tag": "EnvironmentAuthorizationError",
+                  "message": "The authenticated token is missing required scope: orchestration:operate.",
+                  "requiredScope": "orchestration:operate",
+                  "requiredPermission": "orchestration:operate"
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "send": {
+          "_tag": "Request",
+          "id": "4",
+          "tag": "orchestration.subscribeShell",
+          "payload": {
+            "afterSequence": 1,
+            "httpSnapshotFallback": true,
+            "requestCompletionMarker": true
+          },
+          "headers": []
+        }
+      },
+      {
+        "receive": {
+          "_tag": "Chunk",
+          "requestId": "4",
+          "values": [{ "kind": "project.removed", "sequence": 2, "projectId": "wire-project" }]
+        }
+      },
+      { "send": { "_tag": "Ack", "requestId": "4" } },
+      {
+        "receive": {
+          "_tag": "Chunk",
+          "requestId": "4",
+          "values": [{ "kind": "synchronized" }]
+        }
+      },
+      { "send": { "_tag": "Ack", "requestId": "4" } },
+      { "send": { "_tag": "Interrupt", "requestId": "4" } },
+      {
+        "receive": {
+          "_tag": "Exit",
+          "requestId": "4",
+          "exit": { "_tag": "Failure", "cause": [{ "_tag": "Interrupt", "fiberId": 0 }] }
+        }
+      },
+      { "send": { "_tag": "Ping" } },
+      { "receive": { "_tag": "Pong" } }
+    ]
+  }
+}

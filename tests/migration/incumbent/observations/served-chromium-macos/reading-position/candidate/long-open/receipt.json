@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "chat-scroll-position",
+  "sourceSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+  "server": "Packaged Sail v0.1.18",
+  "client": "Chromium headless shell 156.0.8078.4",
+  "profile": {
+    "surface": "server-served-web",
+    "platform": "macOS arm64",
+    "origin": "direct loopback",
+    "browser": "Chromium/156.0.8078.4",
+    "motion": "standard",
+    "viewport": {
+      "width": 1440,
+      "height": 1000,
+      "scale": 2,
+      "zoom": 1
+    },
+    "locale": "en",
+    "theme": "light",
+    "fonts": [
+      "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+    ]
+  },
+  "trace": [
+    {
+      "action": "openSettledThread",
+      "observed": {
+        "threadId": "mcp:1719c948-d20d-43f9-b1f0-ac91c089ae77",
+        "runCount": 2,
+        "status": "completed",
+        "messages": [
+          {
+            "role": "user",
+            "length": 5
+          },
+          {
+            "role": "assistant",
+            "length": 27
+          },
+          {
+            "role": "user",
+            "length": 8600
+          },
+          {
+            "role": "assistant",
+            "length": 28
+          }
+        ]
+      }
+    },
+    {
+      "action": "expandUserMessageAndPlaceAnchor",
+      "observed": {
+        "relativeY": 47.75,
+        "anchorVisible": true,
+        "part": " sentence being read visible w",
+        "scrollTop": 775,
+        "clientHeight": 948,
+        "viewWidth": 1440,
+        "focus": null,
+        "rightPanel": "false"
+      }
+    },
+    {
+      "action": "openRightPanel",
+      "observed": {
+        "relativeY": 47.75,
+        "anchorVisible": true,
+        "part": " sentence being read visible w",
+        "scrollTop": 775,
+        "clientHeight": 948,
+        "viewWidth": 900,
+        "focus": "Open a surface",
+        "rightPanel": "true"
+      }
+    },
+    {
+      "action": "observeComposerControls",
+      "observed": {
+        "controls": [
+          {
+            "name": "Attach files",
+            "disabled": false
+          },
+          {
+            "name": "Multi turn",
+            "disabled": false
+          },
+          {
+            "name": "Enable Poteto mode for this session",
+            "disabled": false
+          },
+          {
+            "name": "More composer controls",
+            "disabled": false
+          },
+          {
+            "name": "Start voice input",
+            "disabled": false
+          },
+          {
+            "name": "Submit message",
+            "disabled": true
+          }
+        ]
+      }
+    }
+  ],
+  "screenshotSha256": "21b65f94eab15f8936a503c2abe00dfef93696a98e30f4ff93fef0e3c6b62a1f"
+}

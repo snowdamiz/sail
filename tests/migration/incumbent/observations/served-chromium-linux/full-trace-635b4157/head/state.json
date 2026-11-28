@@ -1,0 +1,24 @@
+{
+  "platform": {
+    "os": "linux",
+    "arch": "arm64"
+  },
+  "version": "0.1.18",
+  "protocol": 2,
+  "databaseMigration": 119,
+  "browser": "Google Chrome for Testing 158.0.8127.88",
+  "distribution": "Debian 12.15",
+  "systemFontPackage": "fonts-dejavu-core 2.37-6",
+  "pairing": "browser-session-cookie",
+  "openedExpectedThread": true,
+  "browserPlatform": "Linux x86_64",
+  "availableModel": true,
+  "providerWarning": false,
+  "table": [
+    ["Step", "Tool", "Result"],
+    ["Read", "read", "1 file"],
+    ["Edit", "edit", "+4 lines"],
+    ["Test", "execute", "12 passed"]
+  ],
+  "captureRunId": "chrome-158.0.8127.88-debian-arm64-en-light-640x600-2x-8d2422c8-af98-494e-a02e-0f8c19ed2642"
+}

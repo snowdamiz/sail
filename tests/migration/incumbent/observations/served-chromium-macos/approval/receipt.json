@@ -1,0 +1,76 @@
+{
+  "fixtureId": "approval",
+  "tag": "v0.1.17",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "profile": {
+    "os": "macOS 27.0.1 (26A434) arm64",
+    "browser": "Chrome/154.0.0.0",
+    "viewport": {
+      "width": 640,
+      "height": 600,
+      "scale": 2,
+      "zoom": 1
+    },
+    "origin": "server-served loopback"
+  },
+  "scopes": [
+    "orchestration:read",
+    "orchestration:operate",
+    "terminal:operate",
+    "relay:read",
+    "access:read",
+    "access:write",
+    "relay:write"
+  ],
+  "scenarios": {
+    "requested": {
+      "screenshot": {
+        "path": "ref-approval.png",
+        "sha256": "62bda6c8bd40434be64c692a9b2555427a05ee3025f7900a7f8bd054349d625a"
+      },
+      "visibleControls": ["Decline", "Approve", "More"],
+      "permissionMode": "Supervised"
+    },
+    "approved": {
+      "screenshot": {
+        "path": "approved.png",
+        "sha256": "35e9fe7b62192ddef583f210a272252b7e8ee87946806b0664b228c6ceab0bb0"
+      },
+      "replayReplyVisible": true,
+      "approvalRemoved": true,
+      "decision": "accept",
+      "status": "resolved"
+    },
+    "denied": {
+      "screenshot": {
+        "path": "declined.png",
+        "sha256": "8c6c69ba6c24f3976994c8be8c766f202e4084e56da220dc46efb78d6027646f"
+      },
+      "replayReplyVisible": false,
+      "approvalRemoved": true,
+      "decision": "decline",
+      "status": "resolved"
+    }
+  },
+  "readOnly": {
+    "authenticated": true,
+    "buttons": [
+      {
+        "disabled": true,
+        "name": "Decline"
+      },
+      {
+        "disabled": true,
+        "name": "Approve"
+      },
+      {
+        "disabled": true,
+        "name": "More"
+      }
+    ],
+    "hasWarning": true,
+    "pending": true,
+    "scopes": ["orchestration:read"]
+  },
+  "stateSource": "orchestration_v2_projection_runtime_requests in the isolated packaged host"
+}

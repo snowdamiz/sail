@@ -1,0 +1,171 @@
+{
+  "schemaVersion": 1,
+  "captureRunId": "2954f8e7-e23b-41c3-b102-446bcec52bf2",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+  "arch": "arm64",
+  "osVersion": "Debian 12.15",
+  "browser": "Google Chrome for Testing 158.0.8127.88",
+  "pairing": "browser-session-cookie",
+  "runtimeOwnerSha256": "14753a90864c37e57ce6320df0286cb730c46fe1dd88d0b985a6ca2de146df5c",
+  "operator": {
+    "authenticated": true,
+    "method": "browser-session-cookie",
+    "scopes": [
+      "access:read",
+      "access:write",
+      "orchestration:operate",
+      "orchestration:read",
+      "relay:read",
+      "relay:write",
+      "terminal:operate"
+    ]
+  },
+  "readOnly": {
+    "session": {
+      "authenticated": true,
+      "method": "browser-session-cookie",
+      "scopes": ["orchestration:read"]
+    },
+    "controls": [
+      {
+        "name": "Decline",
+        "disabled": true
+      },
+      {
+        "name": "Approve",
+        "disabled": true
+      },
+      {
+        "name": "More approval options",
+        "disabled": true
+      }
+    ],
+    "denial": {
+      "_tag": "EnvironmentAuthorizationError",
+      "message": "The authenticated token is missing required scope: orchestration:operate.",
+      "requiredScope": "orchestration:operate",
+      "requiredPermission": "orchestration:operate"
+    },
+    "requestUnchanged": true
+  },
+  "server": {
+    "requested": {
+      "status": "pending",
+      "runStatus": "running",
+      "mode": "approval-required",
+      "decision": null
+    },
+    "approved": {
+      "status": "resolved",
+      "runStatus": "completed",
+      "mode": "approval-required",
+      "decision": "accept"
+    },
+    "declineRequested": {
+      "status": "pending",
+      "runStatus": "running",
+      "mode": "approval-required",
+      "decision": null
+    },
+    "denied": {
+      "status": "resolved",
+      "runStatus": "completed",
+      "mode": "approval-required",
+      "decision": "decline"
+    }
+  },
+  "approvalStates": {
+    "requested": {
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "locale": "en",
+        "theme": "light",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+        ],
+        "viewport": {
+          "width": 640,
+          "height": 600,
+          "scale": 2,
+          "zoom": 1
+        }
+      },
+      "observed": {
+        "pending": true,
+        "detail": "Changed files",
+        "controls": [
+          {
+            "name": "Decline",
+            "disabled": false
+          },
+          {
+            "name": "Approve",
+            "disabled": false
+          },
+          {
+            "name": "More approval options",
+            "disabled": false
+          }
+        ],
+        "replayReply": false,
+        "permission": "Permissions: Supervised",
+        "focusedElement": "BODY"
+      },
+      "screenshotSha256": "1bc0a16fb25b8b98e98f9d0e1a4299ddf4e22636169f5f0aa684ef47eaaee76d"
+    },
+    "approved": {
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "locale": "en",
+        "theme": "light",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+        ],
+        "viewport": {
+          "width": 640,
+          "height": 600,
+          "scale": 2,
+          "zoom": 1
+        }
+      },
+      "observed": {
+        "pending": false,
+        "detail": null,
+        "controls": [],
+        "replayReply": true,
+        "permission": "Permissions: Supervised",
+        "focusedElement": "BODY"
+      },
+      "screenshotSha256": "b588ab1c6452c9df6461992c8696e536f35f1bbfa50710e50570c2ec4ce82901"
+    },
+    "denied": {
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "locale": "en",
+        "theme": "light",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+        ],
+        "viewport": {
+          "width": 640,
+          "height": 600,
+          "scale": 2,
+          "zoom": 1
+        }
+      },
+      "observed": {
+        "pending": false,
+        "detail": null,
+        "controls": [],
+        "replayReply": false,
+        "permission": "Permissions: Supervised",
+        "focusedElement": "BODY"
+      },
+      "screenshotSha256": "ba14802c4690813e40ee94b2815fdf48de409e92a26374faece9545e7353de85"
+    }
+  }
+}

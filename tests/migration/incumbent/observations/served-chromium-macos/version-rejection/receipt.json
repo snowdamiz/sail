@@ -1,0 +1,59 @@
+{
+  "fixtureId": "version-rejection",
+  "tag": "v0.1.17",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "profile": {
+    "os": "macOS 27.0.1 (26A434) arm64",
+    "browser": "Chrome/154.0.0.0",
+    "viewport": {
+      "width": 960,
+      "height": 720,
+      "scale": 2,
+      "zoom": 1
+    },
+    "origin": "server-served loopback",
+    "screenshotPixels": [1280, 960],
+    "capture": "The Browser panel saves these wider viewport screenshots at 1280 pixels across."
+  },
+  "publishedServer": {
+    "status": 426,
+    "requiredProtocolVersion": 2,
+    "receipt": "../../../runtime/v0.1.17-macos-arm64.json"
+  },
+  "simulatedOlderService": {
+    "protocol": 1,
+    "mode": "boot-service",
+    "label": "P01 simulated older boot service",
+    "events": [
+      {
+        "event": "simulated-protocol-1-boot-service"
+      },
+      {
+        "event": "pairing-exchanged"
+      },
+      {
+        "event": "authenticated-bare-update-socket"
+      },
+      {
+        "event": "simulated-update-refused",
+        "method": "server.updateServer",
+        "targetVersion": "0.1.17"
+      }
+    ]
+  },
+  "before": {
+    "screenshot": {
+      "path": "ref-contract.png",
+      "sha256": "bddbb9d6e98a3bab25e25775264e60ac446dce7ce8766ddedbd2e583bec4d491"
+    },
+    "controls": ["Client not supported", "Update"]
+  },
+  "after": {
+    "screenshot": {
+      "path": "retry-update.png",
+      "sha256": "7c531a2441b9848af63fa0c833a007b8775e51994c68bea2dad623c00a158f9c"
+    },
+    "controls": ["Client not supported", "Retry update"],
+    "error": "Server update failed: Simulated boot service. The fixture does not install updates."
+  }
+}

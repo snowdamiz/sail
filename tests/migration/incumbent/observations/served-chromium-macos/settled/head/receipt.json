@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "chat-turn",
+  "sourceSha": "94730fd425c8d0a2f0c341495d1b784e2d0c245b",
+  "client": "Sail v0.1.18 Chromium web",
+  "server": "Sail v0.1.18 Node server",
+  "profile": {
+    "surface": "server-served-web",
+    "platform": "macOS 27.0.1 (26A434) arm64",
+    "origin": "server-served loopback",
+    "browser": "Chrome/154.0.0.0",
+    "locale": "en",
+    "theme": "light",
+    "motion": "standard",
+    "viewport": {
+      "width": 640,
+      "height": 600,
+      "scale": 2,
+      "zoom": 1
+    },
+    "fonts": [
+      "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+      "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+    ]
+  },
+  "trace": [
+    {
+      "action": "openDirectThreadUrl",
+      "observed": {
+        "threadTitle": "Compatibility replay",
+        "replyVisible": true,
+        "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "stopVisible": false,
+        "tableRows": 4
+      }
+    },
+    {
+      "action": "tabToAttachFiles",
+      "observed": {
+        "composerName": "Message Compatibility replay",
+        "focusName": "Attach files",
+        "focusRole": "button",
+        "menuCount": 0
+      }
+    }
+  ],
+  "screenshotSha256": "9763f6cc9a19a8a94bfd5c81b70f501450b698cf96792441584dc5777f20dee8"
+}

@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "disconnect-recover",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "client": "Sail 0.1.17 in Google Chrome for Testing 158.0.8127.88",
+  "server": "Node 0.1.17",
+  "profile": {
+    "surface": "server-served-web",
+    "platform": "Debian 12.15 arm64",
+    "origin": "server-served loopback",
+    "browser": "Chrome/158.0.0.0",
+    "locale": "en",
+    "theme": "light",
+    "motion": "standard",
+    "fonts": [
+      "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+      "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+    ],
+    "viewport": {
+      "width": 640,
+      "height": 600,
+      "scale": 2,
+      "zoom": 1
+    }
+  },
+  "coverage": {
+    "caseId": "disconnect-recover",
+    "platformId": "served-chromium-linux",
+    "state": "online",
+    "entrypoint": "chat",
+    "configurationId": "chrome-158.0.8127.88-debian-arm64-en-light-640x600-2x"
+  },
+  "captureRunId": "4f0c511b-95a2-4fbb-a09e-95b67d5efab5",
+  "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+  "screenshotSha256": "fd2e19f34cdf158dd4608eb123596cea0b5c12bae12d2b463b82384b4a2e0955",
+  "stateReceiptSha256": "8f8d8b4921f82d68fc194080c7e4d8b52787a89395aeaf179e236b61da744d8a",
+  "trace": [
+    {
+      "action": "typeDraft",
+      "observed": {
+        "title": "Compatibility replay",
+        "reply": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "table": [
+          ["Step", "Tool", "Result"],
+          ["Read", "read", "1 file"],
+          ["Edit", "edit", "+4 lines"],
+          ["Test", "execute", "12 passed"]
+        ],
+        "draft": "P01 draft survives reconnect",
+        "sendAvailable": true,
+        "focusedElement": "BODY",
+        "banner": []
+      }
+    }
+  ]
+}

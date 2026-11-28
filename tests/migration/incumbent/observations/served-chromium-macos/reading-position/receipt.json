@@ -1,0 +1,186 @@
+{
+  "schemaVersion": 1,
+  "fixture": "chat-scroll-position",
+  "scope": "Server-served Chromium on macOS arm64 and direct loopback with the configured Replay provider",
+  "fixtureLabel": "Compatibility host",
+  "seed": {
+    "candidateDatabaseCopySha256": "40953a143b474589191d9e141ae4005c4f01ad7ea0c681dcbba7dbde1d706aca",
+    "longModel": "Replay (dev) Multi turn",
+    "longMessageSource": "Submitted through the published browser composer",
+    "longMessageLength": 8600,
+    "anchorTextOffset": 2500,
+    "requestedAnchorY": 48,
+    "emptyCreation": "Published v2 thread.create without sending a message"
+  },
+  "browserPanelCheck": {
+    "client": "Acid Browser panel",
+    "viewport": {
+      "width": 1440,
+      "height": 1000,
+      "scale": 2
+    },
+    "exportDimensions": [1280, 889],
+    "readingPosition": {
+      "before": {
+        "relativeY": 47.75,
+        "anchorVisible": true,
+        "part": " sentence being read visible w",
+        "scrollTop": 776,
+        "clientHeight": 948,
+        "viewWidth": 1440,
+        "focus": null,
+        "rightPanel": "false"
+      },
+      "after": {
+        "relativeY": 47.75,
+        "anchorVisible": true,
+        "part": " sentence being read visible w",
+        "scrollTop": 776,
+        "clientHeight": 948,
+        "viewWidth": 900,
+        "focus": "Open a surface",
+        "rightPanel": "true"
+      }
+    },
+    "empty": {
+      "title": "Empty reading position",
+      "focused": "Message Empty reading position",
+      "emptyHint": true,
+      "visibleMessages": 0
+    }
+  },
+  "comparisonCapture": {
+    "client": "Chromium headless shell via Playwright Core 1.64.1",
+    "independentBrowserProfilesPerBuild": 2,
+    "captureDimensions": [2880, 2000]
+  },
+  "builds": {
+    "published": {
+      "package": {
+        "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+        "archive": "Sail-0.1.17-arm64.zip",
+        "archiveSha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+        "packageReceipt": "../../../runtime/v0.1.17-macos-arm64.json"
+      },
+      "serverVersion": "0.1.17",
+      "databaseMigration": 118,
+      "serverState": {
+        "long": {
+          "threadId": "mcp:1719c948-d20d-43f9-b1f0-ac91c089ae77",
+          "runCount": 2,
+          "status": "completed",
+          "messages": [
+            {
+              "role": "user",
+              "length": 5
+            },
+            {
+              "role": "assistant",
+              "length": 27
+            },
+            {
+              "role": "user",
+              "length": 8600
+            },
+            {
+              "role": "assistant",
+              "length": 28
+            }
+          ]
+        },
+        "empty": {
+          "threadId": "p01-empty-reading-position",
+          "runCount": 0,
+          "status": "idle",
+          "messages": []
+        }
+      },
+      "repeatedTracesMatch": true,
+      "captures": {
+        "long-closed": {
+          "receipt": "published/long-closed/receipt.json",
+          "firstSha256": "9fc6fe58c5221c5f1197507c66224be94879595eb7d9c49dd6103819deeea6a9",
+          "repeatSha256": "9fc6fe58c5221c5f1197507c66224be94879595eb7d9c49dd6103819deeea6a9"
+        },
+        "long-open": {
+          "receipt": "published/long-open/receipt.json",
+          "firstSha256": "56accdd2b9beeb5c0add4cf74fcf7a6be7b73139e364ee0a60ae97a1a65daec4",
+          "repeatSha256": "56accdd2b9beeb5c0add4cf74fcf7a6be7b73139e364ee0a60ae97a1a65daec4"
+        },
+        "empty": {
+          "receipt": "published/empty/receipt.json",
+          "firstSha256": "8fc525eaa5839d04a44e506b94af83b4cde4778df43d041b0290faad5a89c8aa",
+          "repeatSha256": "8fc525eaa5839d04a44e506b94af83b4cde4778df43d041b0290faad5a89c8aa"
+        }
+      }
+    },
+    "candidate": {
+      "package": {
+        "sourceSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+        "archive": "Sail-0.1.18-arm64.zip",
+        "archiveSha256": "139921c785019bd432b8582c26eb8c5fc5c80c4e9b2b4e4d9df98e8323cc98b7",
+        "packageReceipt": "../../electron-macos-arm64/migration-head-9982ba07/package-receipt.json"
+      },
+      "serverVersion": "0.1.18",
+      "databaseMigration": 119,
+      "serverState": {
+        "long": {
+          "threadId": "mcp:1719c948-d20d-43f9-b1f0-ac91c089ae77",
+          "runCount": 2,
+          "status": "completed",
+          "messages": [
+            {
+              "role": "user",
+              "length": 5
+            },
+            {
+              "role": "assistant",
+              "length": 27
+            },
+            {
+              "role": "user",
+              "length": 8600
+            },
+            {
+              "role": "assistant",
+              "length": 28
+            }
+          ]
+        },
+        "empty": {
+          "threadId": "p01-empty-reading-position",
+          "runCount": 0,
+          "status": "idle",
+          "messages": []
+        }
+      },
+      "repeatedTracesMatch": true,
+      "captures": {
+        "long-closed": {
+          "receipt": "candidate/long-closed/receipt.json",
+          "firstSha256": "496df21481a974e6fe21d3db046676684e23cedc3de6587a049f3ffb88aa2815",
+          "repeatSha256": "496df21481a974e6fe21d3db046676684e23cedc3de6587a049f3ffb88aa2815"
+        },
+        "long-open": {
+          "receipt": "candidate/long-open/receipt.json",
+          "firstSha256": "21b65f94eab15f8936a503c2abe00dfef93696a98e30f4ff93fef0e3c6b62a1f",
+          "repeatSha256": "21b65f94eab15f8936a503c2abe00dfef93696a98e30f4ff93fef0e3c6b62a1f"
+        },
+        "empty": {
+          "receipt": "candidate/empty/receipt.json",
+          "firstSha256": "c44ac30bd7484ff74232bd2eeebc5bdbcf5b7db68882c72640bd295e7e93ee00",
+          "repeatSha256": "c44ac30bd7484ff74232bd2eeebc5bdbcf5b7db68882c72640bd295e7e93ee00"
+        }
+      }
+    }
+  },
+  "comparisons": "comparisons.json",
+  "result": {
+    "readingPosition": "pass",
+    "emptyThreadAndFocus": "pass",
+    "withinBuildRepeat": "pass",
+    "wholeWindowCrossBuildParity": "fail",
+    "observedPixelDifference": "All 3,170 changes in each comparison are in the composer control row where Poteto shifts Multi turn.",
+    "controlChangeSource": "386d27b43c1b2e5eadbf4856dd096fba3a4ba866"
+  }
+}

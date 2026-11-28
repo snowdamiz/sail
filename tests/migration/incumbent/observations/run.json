@@ -1,0 +1,608 @@
+{
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "release": "v0.1.17",
+  "platform": "macOS 27.0.1 (26A434) arm64",
+  "artifact": {
+    "name": "Sail-0.1.17-arm64.zip",
+    "sha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+    "updaterSha512": "LXnOh/+QKz1HlD+J/4OTWqXuB0Vvrrj/GxMHnVvNlOK8yWsQKInOydyd9DR8ix3Fkgq16CUViGMv3OgxFQ4Wlw==",
+    "installedBundleId": "com.sail.desktop",
+    "installedVersion": "0.1.17"
+  },
+  "installer": {
+    "result": "pass",
+    "check": "The published install-desktop.sh verified the ZIP from a local mirror of the release assets and installed it into a scratch home. The installed app started its bundled backend and completed the seeded Replay turn.",
+    "copiedHome": {
+      "result": "pass",
+      "receipt": "electron-macos-arm64/copied-home/receipt.json"
+    }
+  },
+  "wire": {
+    "result": "pass",
+    "fixture": "../../wire/incumbent-v2.json",
+    "check": "The published ZIP's bundled backend passed the standalone checker on a fresh seeded loopback server with a read-only token.",
+    "currentTrunkRegression": "trunk-wire-2ea2e7a8.json",
+    "replay": {
+      "fixture": "../../wire/incumbent-replay-v2.json",
+      "check": "A fresh Showcase turn over Effect RPC v2 retained its three messages, original send receipt, completed run and typed denial across reconnect, retry and read-only access.",
+      "published": {
+        "result": "pass",
+        "runs": 2,
+        "observedCursors": {
+          "snapshotCursor": 2,
+          "acceptedSequence": 10,
+          "disconnectedAt": 32,
+          "resumedThrough": 61
+        }
+      },
+      "migrationHeadPackage": {
+        "result": "pass",
+        "sourceSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+        "receipt": "electron-macos-arm64/migration-head-9982ba07/package-receipt.json",
+        "observedCursors": {
+          "snapshotCursor": 2,
+          "acceptedSequence": 10,
+          "disconnectedAt": 32,
+          "resumedThrough": 61
+        }
+      }
+    }
+  },
+  "sqlite": {
+    "filename": "statev2.sqlite",
+    "journalMode": "wal",
+    "userVersion": 0,
+    "appliedMigrations": 118,
+    "latestMigration": {
+      "id": 118,
+      "name": "PeerMutationIntents"
+    },
+    "projects": 1,
+    "threads": 1,
+    "messages": 3
+  },
+  "captures": {
+    "electron": {
+      "receipt": "electron-macos-arm64/receipt.json",
+      "result": "observed"
+    },
+    "chromium": {
+      "receipts": [
+        "served-chromium-macos/first/receipt.json",
+        "served-chromium-macos/repeat/receipt.json"
+      ],
+      "result": "pixel-difference",
+      "changedSteps": [],
+      "differentPixels": 169,
+      "diff": "served-chromium-macos/diff.png"
+    },
+    "chromiumSettledRepeat": {
+      "result": "pass",
+      "observations": "served-chromium-macos/settled/capture-timings.json",
+      "differentPixels": 0,
+      "changedSteps": [],
+      "scope": "settled replay in the recorded Chromium profile"
+    },
+    "chromiumLinuxSettledRepeat": {
+      "result": "pass",
+      "comparison": "served-chromium-linux/settled/reference-pair-comparison.json",
+      "differentPixels": 0,
+      "changedSteps": [],
+      "scope": "Two published v0.1.17 Linux arm64 CLI installs on Debian 12.15. The packaged Browser panel used Chrome for Testing 158.0.8127.88 in separate profiles and opened the saved Replay thread at 640 by 600 CSS pixels and scale 2 with Showcase available."
+    },
+    "chromiumLinuxMigrationHead": {
+      "sourceSha": "87ca7814f721cfa04540fd76ead915745ffd064f",
+      "receipt": "served-chromium-linux/migration-head-87ca7814/receipt.json",
+      "visualResult": "fail",
+      "differentPixels": 5560,
+      "changedSteps": [3],
+      "pairedTimingResult": "pass",
+      "incumbentFirstTimingResult": "fail",
+      "timingQualification": "fail",
+      "scope": "Saved Replay thread in separate Linux arm64 Chromium profiles, with two warmups and 12 measured captures per install in each series. The Poteto control and shifted Showcase account for the visual difference. The candidate met both limits in the paired run and exceeded them against the earlier incumbent-only series."
+    },
+    "chromiumLinuxFullTrace": {
+      "sourceSha": "87ca7814f721cfa04540fd76ead915745ffd064f",
+      "runnerSourceSha": "635b4157c3b331537cb77f5137e0011b13351bfb",
+      "receipt": "served-chromium-linux/full-trace-635b4157/receipt.json",
+      "visualResult": "fail",
+      "differentPixels": 5560,
+      "changedSteps": [3],
+      "timingQualification": "pass",
+      "scope": "Saved Replay thread in separate Linux arm64 Chromium profiles, with two warmups and 12 measured captures per install in each series. The timed interval includes the composer-control read. The candidate met both limits against each published install in both series."
+    },
+    "electronSettledHover": {
+      "result": "pass",
+      "observations": "electron-macos-arm64/settled-hover/capture-timings.json",
+      "comparison": "electron-macos-arm64/settled-hover/comparisons.json",
+      "differentPixels": 0,
+      "changedSteps": [],
+      "scope": "settled Replay thread with both panels closed and the reply action bar hovered"
+    },
+    "firefoxLinuxSettledRepeat": {
+      "result": "pass",
+      "comparison": "served-firefox-linux/settled/comparison.json",
+      "runtime": "served-firefox-linux/settled/runtime.json",
+      "differentPixels": 0,
+      "changedSteps": [],
+      "scope": "settled replay in the recorded Linux arm64 Firefox ESR profile"
+    },
+    "firefoxLinuxMigrationHead": {
+      "result": "incomplete",
+      "sourceSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+      "package": "served-firefox-linux/migration-head-03c866c2/package-receipt.json",
+      "firstRoundComparisons": "served-firefox-linux/migration-head-03c866c2/first-round-comparisons.json",
+      "repeat": "served-firefox-linux/migration-head-03c866c2/repeat-receipt.json",
+      "scope": "The first Firefox ESR capture matched the published pixels and action trace on both locally built installs. Later captures varied across builds and all three timed attempts ended early."
+    },
+    "firefoxLinuxSynchronized": {
+      "result": "pass",
+      "sourceSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+      "package": "served-firefox-linux/migration-head-03c866c2/package-receipt.json",
+      "comparison": "served-firefox-linux/migration-head-03c866c2/synchronized/comparisons.json",
+      "timing": "served-firefox-linux/migration-head-03c866c2/synchronized/capture-timings.json",
+      "differentPixels": 0,
+      "changedSteps": [],
+      "scope": "Settled Firefox ESR on Debian arm64 with a synchronized subscription and the transcript at the end of its scroll range. The archived fixture has no configured provider. All four timing comparisons passed with 24 measured samples per install."
+    },
+    "firefoxMacosSynchronized": {
+      "result": "fail",
+      "sourceSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+      "package": "electron-macos-arm64/migration-head-9982ba07/package-receipt.json",
+      "comparison": "served-firefox-macos/settled/comparisons.json",
+      "timing": "served-firefox-macos/settled/capture-timings.json",
+      "differentPixels": 3460,
+      "changedSteps": [4],
+      "scope": "Stock Firefox 161.0 on macOS arm64 in four independent headless profiles. Both v0.1.17 copies match exactly. All four timing comparisons passed with 24 measured samples per install. Cross-build parity fails on the Poteto control and the shifted Showcase button."
+    },
+    "electronMigrationHead": {
+      "result": "fail",
+      "sourceSha": "4807bdae945354ade96b40ad7d5116483ff0d308",
+      "package": "electron-macos-arm64/migration-head-4807bdae/package-receipt.json",
+      "comparison": "electron-macos-arm64/migration-head-4807bdae/comparisons.json",
+      "timing": "electron-macos-arm64/migration-head-4807bdae/capture-timings.json",
+      "differentPixels": 3417,
+      "changedSteps": [2],
+      "scope": "Settled Replay in the pinned macOS dark Electron profile. The delta is the Poteto composer control introduced by trunk 386d27b4. Timing passed against incumbent A and exceeded the budget against incumbent B."
+    },
+    "electronMigrationHeadRepeat": {
+      "result": "fail",
+      "sourceSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+      "package": "electron-macos-arm64/migration-head-9982ba07/package-receipt.json",
+      "comparison": "electron-macos-arm64/migration-head-9982ba07/comparisons.json",
+      "timing": "electron-macos-arm64/migration-head-9982ba07/capture-timings.json",
+      "differentPixels": 3417,
+      "changedSteps": [2],
+      "scope": "The two incumbent installations and the two migration-head installations each matched within their build. The cross-source difference remains confined to the composer. One migration-head installation exceeded the 15% limit against both incumbents and stayed within the 2 s absolute limit."
+    },
+    "electronPersistentCapture": {
+      "captureOnlyPilot": "electron-macos-arm64/native-capture-session/capture-only-pilot.json",
+      "timing": "electron-macos-arm64/native-capture-session/capture-timings.json",
+      "comparison": "electron-macos-arm64/native-capture-session/comparisons.json",
+      "timingBudget": "pass",
+      "crossBuildParity": "fail",
+      "scope": "One macOS dark Electron profile with 48 measured rounds per installation. Both copies of the package built at 9982ba07 met the capture timing limits against both published copies. Each build reproduced its earlier decoded pixels. The cross-build composer difference remained."
+    },
+    "chromiumMigrationHead": {
+      "result": "fail",
+      "sourceSha": "4807bdae945354ade96b40ad7d5116483ff0d308",
+      "comparison": "served-chromium-macos/migration-head-4807bdae/comparisons.json",
+      "timing": "served-chromium-macos/migration-head-4807bdae/capture-timings.json",
+      "differentPixels": 3478,
+      "changedSteps": [3],
+      "timingBudget": "pass",
+      "scope": "Settled Replay in the recorded Chromium headless profile. The delta is the Poteto composer control introduced by trunk 386d27b4."
+    }
+  },
+  "launcherRuntime": {
+    "result": "pass",
+    "receipt": "../runtime/v0.1.17-macos-arm64.json"
+  },
+  "cliLifecycle": {
+    "result": "pass",
+    "arm64": "cli-linux-arm64/lifecycle",
+    "x64": "cli-linux-x64/lifecycle",
+    "scope": "Two fresh and two copied-home boots of each published v0.1.17 Linux CLI archive on Debian 12.15. The x64 boot uses Rosetta in Docker. Covered CLI version, selected-home readiness, read-only pairing and one-use replay rejection, Ctrl-C cleanup, and live readback of the copied Replay thread."
+  },
+  "macosPackageFormats": {
+    "result": "observed",
+    "receipt": "../runtime/v0.1.17-macos-package-formats.json",
+    "scope": "Published macOS ZIP and DMG payloads match by architecture. The translated desktop installer selected arm64. The Intel ZIP CLI served protocol 2 under Rosetta. Both DMG runs opened the saved thread and preserved the Replay payloads. The arm64 capture settled, and the translated Intel capture timed out waiting for highlighted code."
+  },
+  "linuxInstallers": {
+    "arm64Receipt": "../runtime/v0.1.17-linux-arm64.json",
+    "x64Receipt": "../runtime/v0.1.17-linux-x64.json",
+    "scope": "Published CLI shell installer, desktop shell installer and Debian package on both Linux architectures. The arm64 AppImage booted in extract-and-run mode. The emulated x64 AppImage runtime exited 127 and its extracted AppRun booted. The installed CLI and all four tested desktop payloads opened the copied Replay thread."
+  },
+  "ociRuntime": {
+    "receipt": "../runtime/v0.1.17-oci.json",
+    "scope": "The published linux/arm64 and linux/amd64 manifests each passed the v2 wire check from a fresh data mount and opened the saved Replay thread from a copied mount."
+  },
+  "foregroundCliUpgrade": {
+    "receipt": "../runtime/v0.1.17-to-v0.1.18-cli.json",
+    "scope": "Published Linux foreground CLI upgrade on arm64 and emulated x64. The restarted host preserved the Replay transcript, environment identity, and scoped browser and bearer sessions. Both launchers rejected a deliberately invalid checksum."
+  },
+  "serviceLauncherUpgrade": {
+    "receipt": "../runtime/v0.1.17-to-v0.1.18-service.json",
+    "scope": "Published Linux arm64 service launcher under Docker init. The update RPC denied a read-only token and rejected a corrupt checksum. A retry with the published manifest activated v0.1.18 under the original launcher. An explicit restart retained the new selection, environment, both scoped bearer tokens, and the saved Replay payloads."
+  },
+  "serviceLauncherRollback": {
+    "receipt": "../runtime/v0.1.17-to-v0.1.18-rollback.json",
+    "scope": "Published Linux arm64 launcher under Docker init. A Rust gate paused the trial after snapshot publication. The probe changed the saved reply and added a marker to the copied database, then released the published candidate with an unbindable address. The launcher restored the snapshot, selected v0.1.17 across restart, and accepted a clean retry to v0.1.18."
+  },
+  "macosArm64ArchiveUpdate": {
+    "result": "observed",
+    "receipt": "electron-macos-arm64/archive-update/receipt.json",
+    "scope": "Published v0.1.17 to v0.1.18 on macOS arm64 through the loopback mirror and configured GitHub feed. Both installed trees matched all 327 entries inside the target ZIP bundle, and both apps relaunched on the same port with the original Replay payloads. The loopback run also verified checksum rejection, retry and reopening the saved thread."
+  },
+  "macosRosettaArchiveUpdate": {
+    "result": "observed",
+    "receipt": "electron-macos-x64/rosetta-update/receipt.json",
+    "scope": "The published Intel v0.1.17 app under Rosetta installed the arm64 v0.1.18 archive from the configured GitHub feed through the desktop bridge. The relaunched app kept the environment, port and saved Replay payloads. The translated Settings flow and native Intel execution remain open."
+  },
+  "linuxArm64AppImageUpdate": {
+    "result": "observed",
+    "receipt": "electron-linux-arm64/appimage-update/receipt.json",
+    "scope": "Published v0.1.17 to v0.1.18 on Debian 13.8 arm64 under Xvfb. The packaged updater rejected an invalid SHA-512, retried with the published manifest, and relaunched automatically with the same environment and Replay run. The mirror served full downloads on loopback."
+  },
+  "linuxDebUpdates": {
+    "result": "observed",
+    "arm64Receipt": "electron-linux-arm64/deb-update/receipt.json",
+    "x64Receipt": "electron-linux-x64/deb-update/receipt.json",
+    "scope": "Published v0.1.17 to v0.1.18 on Debian 13.8 arm64 and emulated amd64 under Xvfb. Both packaged updaters rejected the bad SHA-512, then installed and relaunched through sudo and dpkg with the published manifest. The same environment and Replay payloads survived. The fixture used a loopback feed and passwordless sudo."
+  },
+  "chatLatencyReference": {
+    "result": "observed",
+    "receipt": "served-chromium-macos/chat-latency/receipt.json",
+    "scope": "Published v0.1.17 in the macOS Chromium Browser panel with a controlled mid-turn WebSocket cut. All twelve measured turns preserved the exact table and three ordered rendered messages. Reconnect timing includes the client's automatic retry delay."
+  },
+  "chatSendOnce": {
+    "result": "observed",
+    "receipt": "served-chromium-macos/send-once/receipt.json",
+    "scope": "Published v0.1.17 in the macOS Chromium Browser panel. Two separate Replay threads each received one Submit click. Both runs recorded matching command IDs and receipts after reconnect, with one completed run and the full ordered transcript. The repeat also retained matching full-payload digests."
+  },
+  "negativeControls": {
+    "result": "pass",
+    "receipt": "harness-controls/replay/receipt.json",
+    "comparisonResult": "harness-controls/replay/comparisons.json",
+    "scope": "Offline comparison of the archived published Chromium pair. Both unchanged comparisons passed. A changed pixel, a changed Replay result, and a missing Stop state each caused a failure. The accompanying PNG renders the comparator results."
+  },
+  "navigation": {
+    "result": "pass",
+    "receipt": "served-chromium-macos/entrypoints/receipt.json",
+    "scope": "chat link and command palette in the recorded Chromium profile"
+  },
+  "stopAndRelink": {
+    "result": "observed",
+    "receipt": "served-chromium-macos/stop-and-relink/receipt.json",
+    "scope": "Published served Chromium on macOS. Stopping a Replay Question run awaiting input interrupted that same run and restored the composer. Cookie revocation ended the connection and showed the pairing form on a fresh visit. A new link reopened the same stopped thread."
+  },
+  "readOnlyChat": {
+    "result": "observed",
+    "receipt": "served-chromium-macos/read-only-chat/receipt.json",
+    "scope": "Published and locally built macOS arm64 packages, direct loopback Chromium cookie session. Read-only draft editing remained available, Enter left the draft unsent, and typed denial preserved the projection. The operate-scope control succeeded on both builds. The visible Poteto control differs."
+  },
+  "chatReadingPosition": {
+    "result": "observed",
+    "receipt": "served-chromium-macos/reading-position/receipt.json",
+    "scope": "Published and locally built macOS arm64 packages, direct loopback Chromium. The long user-message anchor stayed at 47.75 CSS pixels when the right panel opened. The empty thread focused its composer with zero saved runs and messages. Each build repeated all three images exactly. Cross-build images differ in the composer control row."
+  },
+  "hostedHttpsPairing": {
+    "result": "observed",
+    "receipt": "hosted-chromium-macos/approved-pairing/receipt.json",
+    "scope": "Local HTTPS hosted build from the published source tag, paired to the installed macOS arm64 v0.1.17 backend in Chromium. The browser observed zero backend request starts through the confirmation capture. The approved link issued one read-only DPoP session, opened the same saved thread after reload, and returned HTTP 401 when reused."
+  },
+  "bundledDesktopActivation": {
+    "result": "observed",
+    "receipt": "electron-macos-arm64/local-activation/comparison.json",
+    "scope": "One launch per macOS arm64 package with an independent copy of the seed and no active sessions. Each startup link opened the same saved thread through a fresh desktop bearer session on the bundled backend. The launch traces match and the whole-window pixel comparison fails."
+  },
+  "approval": {
+    "result": "pass",
+    "receipt": "served-chromium-macos/approval/receipt.json"
+  },
+  "clientVersionRejection": {
+    "result": "pass",
+    "receipt": "served-chromium-macos/version-rejection/receipt.json",
+    "scope": "real published v0.1.17 HTTP 426 and simulated older boot-service metadata for the client update action"
+  },
+  "laterPublicRelease": {
+    "tag": "v0.1.18",
+    "receipt": "release-revisions/v0.1.18.json"
+  },
+  "browserAvailability": "browser-availability.json",
+  "browserPanel": {
+    "result": "pass",
+    "receipt": "served-chromium-macos/browser-panel/receipt.json"
+  },
+  "chatViewStates": {
+    "result": "pass",
+    "receipt": "served-chromium-macos/chat-states/receipt.json",
+    "scope": "empty composer, initial thread detail loading and unavailable environment in the recorded Chromium profile"
+  },
+  "disconnectRecover": {
+    "result": "pass",
+    "receipt": "served-chromium-macos/disconnect-recover/receipt.json",
+    "scope": "isolated packaged host stop and restart with draft and transcript preserved in the same Chromium tab"
+  },
+  "chatDisplay": {
+    "result": "pass",
+    "receipt": "electron-macos-arm64/display/receipt.json",
+    "scope": "macOS arm64 Electron. English light and dark, native 120% zoom, German, and wide and compact sidebars."
+  },
+  "linuxDebDesktopReferences": {
+    "result": "pass",
+    "differentPixelsBeforeResize": {
+      "arm64": 8,
+      "x64": 1135
+    },
+    "differentPixels": {
+      "arm64": 0,
+      "x64": 0
+    },
+    "arm64": "electron-linux-arm64/deb-settled",
+    "x64": "electron-linux-x64/deb-settled",
+    "scope": "Two independent v0.1.17 Debian installations per architecture on Debian 13.8, with x64 under Rosetta. Each cold argv activation paired with its bundled backend, focused the copied Replay thread, and preserved all saved message and run payloads through shutdown. The architecture-specific X11 comparisons use the whole unmasked 1100 \u00d7 780 window after a resize-triggered repaint. Capture timing and candidate comparisons remain open."
+  },
+  "ociLifecycle": {
+    "result": "pass",
+    "arm64": "oci-linux-arm64/lifecycle",
+    "amd64": "oci-linux-amd64/lifecycle",
+    "scope": "Two fresh and two copied-home boots per published v0.1.17 OCI platform manifest on Debian 12.15. The amd64 image ran under emulation on an arm64 Docker engine. Each container used the published entrypoint, owned loopback host port, and unprivileged server. One-time read-only cookie pairing and listener cleanup passed. Fresh homes passed the frozen v2 wire check. Copied homes reopened the saved Replay thread and preserved its full message and run payloads through shutdown."
+  },
+  "serviceLauncherTrialReferences": {
+    "result": "pass",
+    "captures": "cli-linux-arm64/service-upgrade-trial",
+    "scope": "Two independent published v0.1.17 to v0.1.18 service launcher trials beneath Docker init on Debian 12.15 arm64. Both staged the target while v0.1.17 kept serving, rejected the corrupt checksum, rolled back the failed activation with restored Replay payloads, and committed the unchanged target on retry. The original two bearer grants and environment identity survived restart."
+  },
+  "linuxDebChatDisplay": {
+    "comparisons": {
+      "arm64": {
+        "light": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "dark": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "zoomed": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "translated": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "compact": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "wide": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        }
+      },
+      "x64": {
+        "light": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "dark": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "zoomed": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "translated": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "compact": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        },
+        "wide": {
+          "differentPixels": 0,
+          "changedSteps": [],
+          "result": "pass"
+        }
+      }
+    },
+    "arm64": "electron-linux-arm64/display",
+    "x64": "electron-linux-x64/display",
+    "scope": "Two independent installs of each published v0.1.17 Debian package, with x64 under Rosetta. The runs exercised the real light and dark settings, window zoom shortcuts, German language option, and the compact and wide sidebar controls. Each image covers the whole 1\u00d7 X11 window. Candidate and performance comparisons remain open."
+  },
+  "linuxDebNavigation": {
+    "arm64": "electron-linux-arm64/entrypoints",
+    "x64": "electron-linux-x64/entrypoints",
+    "comparisons": {
+      "arm64": {
+        "chat-link": {
+          "result": "pass",
+          "differentPixels": 0,
+          "changedSteps": []
+        },
+        "palette-link": {
+          "result": "pass",
+          "differentPixels": 0,
+          "changedSteps": []
+        }
+      },
+      "x64": {
+        "chat-link": {
+          "result": "pass",
+          "differentPixels": 0,
+          "changedSteps": []
+        },
+        "palette-link": {
+          "result": "pass",
+          "differentPixels": 0,
+          "changedSteps": []
+        }
+      }
+    },
+    "scope": "Two independent published v0.1.17 Debian installations per architecture, with x64 under Rosetta. Both the rendered chat link and the command palette opened the same saved Replay thread from a separate source thread and focused its composer. Captures use the full 1100 \u00d7 780 X11 window after clearing focus. Candidate comparisons and timing remain open."
+  },
+  "linuxChromiumChatStates": {
+    "directory": "served-chromium-linux/chat-states",
+    "comparisons": {
+      "empty": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "initial-loading": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "error": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      }
+    },
+    "scope": "Two isolated published v0.1.17 installations and Browser panel sessions on Debian 12.15 arm64. Captures show the empty draft after Git resolves main, a held thread subscription, and the unavailable thread on an unpaired environment. Both runs verified cleared focus, the saved Replay reply and all four table rows after release, and the Environments recovery link. Candidate comparisons and timing remain open."
+  },
+  "linuxChromiumReconnect": {
+    "directory": "served-chromium-linux/disconnect-recover",
+    "comparisons": {
+      "online": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "offline": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "reconnecting": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "recovered": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      }
+    },
+    "scope": "Two isolated published v0.1.17 target homes and Browser panel sessions on Debian 12.15 arm64. Each run terminated the real thread host, confirmed its listener refused connections, clicked Retry now while it was stopped, and restarted the same home. The original authenticated cookie session reconnected its WebSocket. The same tab kept the draft and restored Send, and the saved Replay message and run payloads matched the pinned seed. Candidate comparisons and timing remain open."
+  },
+  "linuxChromiumBrowserPanel": {
+    "directory": "served-chromium-linux/browser-panel",
+    "comparisons": {
+      "preview-rendered": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "tool-result": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      }
+    },
+    "scope": "Two isolated published v0.1.17 Browser panel runs on Debian 12.15 arm64. Both maximized the actual product panel, changed the inner page title through the canvas without changing the tab or address, and released control. The packaged provider returned the exact evaluation result as its completed reply. Candidate comparisons and timing remain open."
+  },
+  "linuxChromiumApproval": {
+    "directory": "served-chromium-linux/approval",
+    "comparisons": {
+      "requested": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "approved": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "denied": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      }
+    },
+    "scope": "Two isolated published v0.1.17 Browser panel runs on Debian 12.15 arm64. Both chose Supervised on two fresh Replay threads and captured the requested, approved, and declined views. A separately paired read-only cookie saw disabled controls and received a typed scope denial on the same pending request. The operate cookie approved or declined through the real UI and both server runs finished. Candidate comparisons and timing remain open."
+  },
+  "linuxChromiumVersionRejection": {
+    "directory": "served-chromium-linux/version-rejection",
+    "comparisons": {
+      "exact-version-rejected": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": [],
+        "retryScreenshotMatched": true
+      }
+    },
+    "scope": "Two isolated published v0.1.17 Linux Chromium runs verified HTTP 426 with required protocol 2 on the real server. A separate simulated protocol-1 boot service showed Client not supported, offered Update, and recorded the authenticated update socket and RPC after the click. Its deliberate refusal produced Retry update, with the simulator descriptor unchanged. Candidate comparisons and timing remain open."
+  },
+  "linuxChromiumNavigation": {
+    "directory": "served-chromium-linux/entrypoints",
+    "comparisons": {
+      "chat-link": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "palette-link": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      }
+    },
+    "scope": "Two isolated published v0.1.17 Linux Chromium installations opened the original Replay route through the rendered chat link and Ctrl+K search and selection. The destination composer had focus on arrival and the original environment and saved payloads were preserved. Captures clear focus. Candidate comparisons and timing remain open."
+  },
+  "linuxChromiumDisplay": {
+    "directory": "served-chromium-linux/display",
+    "comparisons": {
+      "light": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "dark": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "zoomed": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "translated": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "compact": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "wide": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      }
+    },
+    "scope": "Two isolated published v0.1.17 Linux Chromium installations show light, dark, Browser panel zoom at 125%, German, and compact and wide responsive layouts on the original saved Replay route. The full unmasked captures preserve the exact saved payloads. Candidate comparisons and timing remain open."
+  }
+}

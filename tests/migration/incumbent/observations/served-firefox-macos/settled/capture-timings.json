@@ -1,0 +1,247 @@
+{
+  "scope": "One saved Replay thread with the Replay provider configured, served by the packaged macOS arm64 backend to stock Firefox 161.0 in headless mode",
+  "method": "Four independent server homes and Firefox profiles with separate cookie sessions. Timer starts at direct thread navigation and ends when WebDriver returns the screenshot. Browser and server startup, pairing, and the last control read are outside the timer.",
+  "display": "Light English at 640 \u00d7 600 CSS pixels, 2\u00d7 scale, 100% zoom, standard motion, and non-overlay scrollbars",
+  "browser": {
+    "package": "Mozilla Firefox 161.0 for macOS",
+    "bundleId": "org.mozilla.firefox",
+    "teamId": "43AQ936H96",
+    "codeDirectoryHash": "17135a251b505b1d74eb66a5598acedc1760d9d0",
+    "diskImageSha256": "18f398ada9ba9faa5458dc01c2a68fc7df35517283be2e7a421a0867c5f47f83",
+    "geckodriverSha256": "4ac58e7b0eff875a6f4860915d46386c2ca4344091c8265ed83893e49d747ac9"
+  },
+  "seedSha256": "84b10b976c546179059ed6200c7e6e5ef2c883ee9cbf6795c0c85c2995f1adbd",
+  "hosts": {
+    "a": {
+      "name": "a",
+      "browser": "161.0",
+      "serverVersion": "0.1.17",
+      "migration": 118,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "geckodriver": "0.36.0",
+      "controls": [
+        {
+          "name": "Attach files",
+          "pressed": null
+        },
+        {
+          "name": "Showcase",
+          "pressed": null
+        },
+        {
+          "name": "Submit message",
+          "pressed": null
+        }
+      ]
+    },
+    "head-a": {
+      "name": "head-a",
+      "browser": "161.0",
+      "serverVersion": "0.1.18",
+      "migration": 119,
+      "sourceSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+      "geckodriver": "0.36.0",
+      "controls": [
+        {
+          "name": "Attach files",
+          "pressed": null
+        },
+        {
+          "name": "Showcase",
+          "pressed": null
+        },
+        {
+          "name": "Enable Poteto mode for this session",
+          "pressed": "false"
+        },
+        {
+          "name": "Submit message",
+          "pressed": null
+        }
+      ]
+    },
+    "b": {
+      "name": "b",
+      "browser": "161.0",
+      "serverVersion": "0.1.17",
+      "migration": 118,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "geckodriver": "0.36.0",
+      "controls": [
+        {
+          "name": "Attach files",
+          "pressed": null
+        },
+        {
+          "name": "Showcase",
+          "pressed": null
+        },
+        {
+          "name": "Submit message",
+          "pressed": null
+        }
+      ]
+    },
+    "head-b": {
+      "name": "head-b",
+      "browser": "161.0",
+      "serverVersion": "0.1.18",
+      "migration": 119,
+      "sourceSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+      "geckodriver": "0.36.0",
+      "controls": [
+        {
+          "name": "Attach files",
+          "pressed": null
+        },
+        {
+          "name": "Showcase",
+          "pressed": null
+        },
+        {
+          "name": "Enable Poteto mode for this session",
+          "pressed": "false"
+        },
+        {
+          "name": "Submit message",
+          "pressed": null
+        }
+      ]
+    }
+  },
+  "rawSamples": {
+    "path": "capture-samples.ndjson",
+    "sha256": "52f1ca259fec06444f7feecb5df026e94615d620babd6b3dc357526d887d0788",
+    "rows": 104
+  },
+  "distinctCapturesByHost": {
+    "a": {
+      "pngSha256": 1,
+      "rgbaSha256": 1,
+      "profile": 1,
+      "trace": 1
+    },
+    "head-a": {
+      "pngSha256": 1,
+      "rgbaSha256": 1,
+      "profile": 1,
+      "trace": 1
+    },
+    "b": {
+      "pngSha256": 1,
+      "rgbaSha256": 1,
+      "profile": 1,
+      "trace": 1
+    },
+    "head-b": {
+      "pngSha256": 1,
+      "rgbaSha256": 1,
+      "profile": 1,
+      "trace": 1
+    }
+  },
+  "summary": {
+    "a": {
+      "warmups": 2,
+      "measured": 24,
+      "minMs": 901.48,
+      "maxMs": 1877.342,
+      "medianMs": 960.283,
+      "p95Ms": 1859.898,
+      "p95Round": 13,
+      "p95StagesMs": {
+        "navigation": 881.343,
+        "highlighting": 676.315,
+        "focusAndPointer": 16.852,
+        "stabilization": 28.518,
+        "trace": 128.889,
+        "screenshot": 127.982
+      }
+    },
+    "head-a": {
+      "warmups": 2,
+      "measured": 24,
+      "minMs": 707.091,
+      "maxMs": 2474.46,
+      "medianMs": 964.036,
+      "p95Ms": 1704.343,
+      "p95Round": 5,
+      "p95StagesMs": {
+        "navigation": 89.495,
+        "highlighting": 1374.743,
+        "focusAndPointer": 20.979,
+        "stabilization": 28.616,
+        "trace": 123.647,
+        "screenshot": 66.864
+      }
+    },
+    "b": {
+      "warmups": 2,
+      "measured": 24,
+      "minMs": 912.522,
+      "maxMs": 1841.237,
+      "medianMs": 976.753,
+      "p95Ms": 1818.204,
+      "p95Round": 19,
+      "p95StagesMs": {
+        "navigation": 390.197,
+        "highlighting": 648.581,
+        "focusAndPointer": 114.572,
+        "stabilization": 100.3,
+        "trace": 28.491,
+        "screenshot": 536.062
+      }
+    },
+    "head-b": {
+      "warmups": 2,
+      "measured": 24,
+      "minMs": 692.157,
+      "maxMs": 2932.553,
+      "medianMs": 907.759,
+      "p95Ms": 1684.642,
+      "p95Round": 19,
+      "p95StagesMs": {
+        "navigation": 227.56,
+        "highlighting": 1212.077,
+        "focusAndPointer": 19.493,
+        "stabilization": 29.344,
+        "trace": 124.465,
+        "screenshot": 71.703
+      }
+    }
+  },
+  "timingGate": [
+    {
+      "baseline": "a",
+      "candidate": "head-a",
+      "excessMs": -155.555,
+      "relativePercent": -8.364,
+      "within15Percent": true,
+      "within2000Ms": true
+    },
+    {
+      "baseline": "a",
+      "candidate": "head-b",
+      "excessMs": -175.257,
+      "relativePercent": -9.423,
+      "within15Percent": true,
+      "within2000Ms": true
+    },
+    {
+      "baseline": "b",
+      "candidate": "head-a",
+      "excessMs": -113.86,
+      "relativePercent": -6.262,
+      "within15Percent": true,
+      "within2000Ms": true
+    },
+    {
+      "baseline": "b",
+      "candidate": "head-b",
+      "excessMs": -133.562,
+      "relativePercent": -7.346,
+      "within15Percent": true,
+      "within2000Ms": true
+    }
+  ]
+}

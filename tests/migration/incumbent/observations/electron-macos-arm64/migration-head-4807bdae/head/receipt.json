@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "chat-turn",
+  "sourceSha": "4807bdae945354ade96b40ad7d5116483ff0d308",
+  "client": "Sail v0.1.18 (Electron 44.10.1)",
+  "server": "Sail v0.1.18 bundled Node server",
+  "profile": {
+    "surface": "desktop",
+    "platform": "macOS 27.0.1 (26A434) arm64",
+    "browser": null,
+    "origin": "desktop local",
+    "locale": "en",
+    "theme": "dark",
+    "motion": "standard",
+    "fonts": [
+      "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+      "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+    ],
+    "viewport": {
+      "width": 1100,
+      "height": 780,
+      "scale": 2,
+      "zoom": 1
+    }
+  },
+  "trace": [
+    {
+      "action": "observeSettledReplayAfterNativeHover",
+      "observed": {
+        "title": "Compatibility replay",
+        "replyVisible": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "tableRows": 4,
+        "composerFocused": false,
+        "sidebarOpen": false,
+        "detailsOpen": false,
+        "actionsOpacity": "1",
+        "actionsHovered": true,
+        "menuOpen": false,
+        "viewport": {
+          "width": 1100,
+          "height": 780,
+          "scale": 2,
+          "zoom": 1
+        },
+        "locale": "en",
+        "theme": "dark",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ]
+      }
+    },
+    {
+      "action": "readComposerControlsAfterTiming",
+      "observed": {
+        "buttons": [
+          {
+            "name": "Attach files",
+            "pressed": null
+          },
+          {
+            "name": "Showcase",
+            "pressed": null
+          },
+          {
+            "name": "Enable Poteto mode for this session",
+            "pressed": "false"
+          },
+          {
+            "name": "Submit message",
+            "pressed": null
+          }
+        ]
+      }
+    }
+  ],
+  "screenshotSha256": "6cc3d9ae9e3e81d678337b6e42cacade52a26f05403f2893e653cda47e6ca2e9"
+}

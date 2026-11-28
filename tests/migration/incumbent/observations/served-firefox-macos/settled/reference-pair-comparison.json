@@ -1,0 +1,20 @@
+{
+  "fixtureId": "chat-turn",
+  "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "changedSteps": [],
+  "pixels": {
+    "baseline": "tests/migration/incumbent/observations/served-firefox-macos/settled/a/capture.png",
+    "candidate": "tests/migration/incumbent/observations/served-firefox-macos/settled/b/capture.png",
+    "diff": "tests/migration/incumbent/observations/served-firefox-macos/settled/a-b-diff.png",
+    "baselineSize": [1280, 1200],
+    "candidateSize": [1280, 1200],
+    "differentPixels": 0,
+    "bounds": null
+  },
+  "artifactSha256": {
+    "baselineReceipt": "8f99b43331d5c43dd28a4807d8f8fe5e1932ab1c660ef50608d58f0054e2a84d",
+    "candidateReceipt": "4fdacf5b950006ad572e639c7a4ca40fa2da96e699ac30474a0fc3deafd2a63d",
+    "diff": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+  }
+}

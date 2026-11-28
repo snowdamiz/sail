@@ -1,0 +1,275 @@
+{
+  "release": {
+    "tag": "v0.1.17",
+    "commit": "18fd0e5d66291fc007163512d783d7268218db16",
+    "asset": "Sail-0.1.17-arm64.zip",
+    "assetSha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372"
+  },
+  "project": {
+    "type": "project.create",
+    "commandId": "wire-replay-project-create",
+    "projectId": "wire-replay-project",
+    "title": "Compatibility demo"
+  },
+  "createThread": {
+    "type": "thread.create",
+    "commandId": "wire-replay-create",
+    "projectId": "wire-replay-project",
+    "threadId": "wire-replay-thread",
+    "title": "Compatibility replay",
+    "modelSelection": {
+      "instanceId": "devReplay",
+      "model": "showcase"
+    },
+    "runtimeMode": "full-access",
+    "interactionMode": "default",
+    "createdBy": "user",
+    "creationSource": "web",
+    "branch": null,
+    "worktreePath": null
+  },
+  "sendMessage": {
+    "type": "message.dispatch",
+    "commandId": "wire-replay-send",
+    "threadId": "wire-replay-thread",
+    "createdBy": "user",
+    "creationSource": "web",
+    "messageId": "wire-replay-message",
+    "text": "Give me a short tour",
+    "attachments": [],
+    "dispatchMode": {
+      "type": "start_immediately"
+    }
+  },
+  "expected": {
+    "thread": {
+      "id": "wire-replay-thread",
+      "title": "Compatibility replay",
+      "modelSelection": {
+        "instanceId": "devReplay",
+        "model": "showcase"
+      },
+      "runtimeMode": "full-access",
+      "interactionMode": "default"
+    },
+    "messages": [
+      {
+        "role": "user",
+        "text": "Give me a short tour",
+        "streaming": false
+      },
+      {
+        "role": "assistant",
+        "text": "The project has a single math module. I will add a `clamp` helper beside `sum`.\n\n",
+        "streaming": false
+      },
+      {
+        "role": "assistant",
+        "text": "## Done\n\nI added `clamp` next to `sum` and the tests pass.\n\n- Reads the manifest first\n- Asks before it writes\n- Streams a terminal result\n\n```ts\nclamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0\n```\n\n| Step | Tool | Result |\n| --- | --- | --- |\n| Read | `read` | 1 file |\n| Edit | `edit` | +4 lines |\n| Test | `execute` | 12 passed |\n\nThis turn is a replay. It costs nothing, so send it again as often as you need.",
+        "streaming": false
+      }
+    ],
+    "runs": ["completed"],
+    "deniedExit": {
+      "_tag": "Failure",
+      "cause": [
+        {
+          "_tag": "Fail",
+          "error": {
+            "_tag": "EnvironmentAuthorizationError",
+            "message": "The authenticated token is missing required scope: orchestration:operate.",
+            "requiredScope": "orchestration:operate",
+            "requiredPermission": "orchestration:operate"
+          }
+        }
+      ]
+    },
+    "cancelledExit": {
+      "_tag": "Failure",
+      "cause": [
+        {
+          "_tag": "Interrupt",
+          "fiberId": 0
+        }
+      ]
+    },
+    "messageStreamingObserved": [false, true, true],
+    "attempts": ["completed"],
+    "turnItemTypes": [
+      "user_message",
+      "reasoning",
+      "todo_list",
+      "dynamic_tool",
+      "assistant_message",
+      "file_change",
+      "command_execution",
+      "assistant_message"
+    ],
+    "projectionArrays": [
+      "attempts",
+      "checkpointScopes",
+      "checkpoints",
+      "contextHandoffs",
+      "contextTransfers",
+      "messages",
+      "nodes",
+      "plans",
+      "providerSessions",
+      "providerThreads",
+      "providerTurns",
+      "runs",
+      "runtimeRequests",
+      "subagents",
+      "turnItems",
+      "visibleTurnItems"
+    ],
+    "threadFields": [
+      "activeProviderThreadId",
+      "archivedAt",
+      "branch",
+      "createdAt",
+      "createdBy",
+      "creationSource",
+      "deletedAt",
+      "forkedFrom",
+      "id",
+      "interactionMode",
+      "lastVisitedAt",
+      "lineage",
+      "modelSelection",
+      "projectId",
+      "providerInstanceId",
+      "pullRequests",
+      "runtimeMode",
+      "settledAt",
+      "settledOverride",
+      "snoozedAt",
+      "snoozedUntil",
+      "title",
+      "updatedAt",
+      "worktreePath"
+    ]
+  },
+  "publishedExamples": {
+    "initialSnapshotSequence": 2,
+    "acceptedExit": {
+      "_tag": "Success",
+      "value": {
+        "sequence": 10
+      }
+    },
+    "assistantAtDisconnect": {
+      "kind": "event",
+      "sequence": 32,
+      "event": {
+        "id": "event:thread:wire-replay-thread:provider-session:provider-session%3Aprovider-instance%3AdevReplay%3Athread%3Awire-replay-thread%3A7d078707-e59c-4592-8798-9831599a3fbe:b1c720e9-0541-4bb5-ae9b-d056beebfccb",
+        "threadId": "wire-replay-thread",
+        "runId": "run:thread:wire-replay-thread:ordinal:1",
+        "nodeId": "node:provider:acpRegistry:native-item:provider-instance%3AdevReplay%3A7e40af2a-7cb0-4178-8ee7-231714753c5b%3Aturn%3A1%3Aassistant%3A0",
+        "driver": "acpRegistry",
+        "providerInstanceId": "devReplay",
+        "occurredAt": "2026-11-28T07:15:43.521Z",
+        "type": "turn-item.updated",
+        "payload": {
+          "id": "turn-item:provider:acpRegistry:native-item:provider-instance%3AdevReplay%3A7e40af2a-7cb0-4178-8ee7-231714753c5b%3Aturn%3A1%3Aassistant%3A0",
+          "threadId": "wire-replay-thread",
+          "runId": "run:thread:wire-replay-thread:ordinal:1",
+          "nodeId": "node:provider:acpRegistry:native-item:provider-instance%3AdevReplay%3A7e40af2a-7cb0-4178-8ee7-231714753c5b%3Aturn%3A1%3Aassistant%3A0",
+          "providerThreadId": "provider-thread:provider:acpRegistry:native-thread:pending%3Arun%3Athread%3Awire-replay-thread%3Aordinal%3A1",
+          "providerTurnId": "provider-turn:provider:acpRegistry:native-turn:provider-instance%3AdevReplay%3A7e40af2a-7cb0-4178-8ee7-231714753c5b%3Aturn%3A1",
+          "nativeItemRef": {
+            "driver": "acpRegistry",
+            "nativeId": "7e40af2a-7cb0-4178-8ee7-231714753c5b:turn:1:assistant:0",
+            "strength": "weak"
+          },
+          "parentItemId": null,
+          "ordinal": 1000005,
+          "status": "running",
+          "title": null,
+          "startedAt": "2026-11-28T07:15:43.377Z",
+          "completedAt": null,
+          "updatedAt": "2026-11-28T07:15:43.520Z",
+          "type": "assistant_message",
+          "messageId": "message:provider:acpRegistry:native-item:provider-instance%3AdevReplay%3A7e40af2a-7cb0-4178-8ee7-231714753c5b%3Aturn%3A1%3Aassistant%3A0",
+          "text": "The project has a single math module. I will add a `clamp` helper beside `sum`.\n\n",
+          "streaming": true
+        }
+      }
+    },
+    "resumedCompletion": {
+      "kind": "event",
+      "sequence": 59,
+      "event": {
+        "id": "event:thread:wire-replay-thread:d8d16dce-76d3-4481-ba18-79955eadafda",
+        "threadId": "wire-replay-thread",
+        "runId": "run:thread:wire-replay-thread:ordinal:1",
+        "nodeId": "node:run:run%3Athread%3Awire-replay-thread%3Aordinal%3A1:root",
+        "providerInstanceId": "devReplay",
+        "occurredAt": "2026-11-28T07:15:47.205Z",
+        "type": "run.updated",
+        "payload": {
+          "id": "run:thread:wire-replay-thread:ordinal:1",
+          "threadId": "wire-replay-thread",
+          "ordinal": 1,
+          "providerInstanceId": "devReplay",
+          "modelSelection": {
+            "instanceId": "devReplay",
+            "model": "showcase"
+          },
+          "providerThreadId": "provider-thread:provider:acpRegistry:native-thread:pending%3Arun%3Athread%3Awire-replay-thread%3Aordinal%3A1",
+          "userMessageId": "wire-replay-message",
+          "rootNodeId": "node:run:run%3Athread%3Awire-replay-thread%3Aordinal%3A1:root",
+          "activeAttemptId": "run-attempt:run:run%3Athread%3Awire-replay-thread%3Aordinal%3A1:attempt:1",
+          "status": "completed",
+          "queuePosition": null,
+          "requestedAt": "2026-11-28T07:15:41.951Z",
+          "startedAt": "2026-11-28T07:15:42.058Z",
+          "completedAt": "2026-11-28T07:15:47.205Z",
+          "checkpointId": null,
+          "contextHandoffId": null
+        }
+      }
+    },
+    "synchronized": {
+      "kind": "synchronized"
+    },
+    "resumedIdle": {
+      "kind": "event",
+      "sequence": 61,
+      "event": {
+        "id": "event:thread:wire-replay-thread:c8e69597-fe2f-4db2-a335-49de35fc5ab8",
+        "threadId": "wire-replay-thread",
+        "providerInstanceId": "devReplay",
+        "occurredAt": "2026-11-28T07:15:47.205Z",
+        "type": "provider-thread.updated",
+        "payload": {
+          "id": "provider-thread:provider:acpRegistry:native-thread:pending%3Arun%3Athread%3Awire-replay-thread%3Aordinal%3A1",
+          "driver": "acpRegistry",
+          "providerInstanceId": "devReplay",
+          "providerSessionId": "provider-session:provider-instance:devReplay:thread:wire-replay-thread:7d078707-e59c-4592-8798-9831599a3fbe",
+          "appThreadId": "wire-replay-thread",
+          "ownerNodeId": null,
+          "nativeThreadRef": {
+            "driver": "acpRegistry",
+            "nativeId": "7e40af2a-7cb0-4178-8ee7-231714753c5b",
+            "strength": "strong"
+          },
+          "nativeConversationHeadRef": null,
+          "status": "idle",
+          "firstRunOrdinal": 1,
+          "lastRunOrdinal": 1,
+          "handoffIds": [],
+          "forkedFrom": null,
+          "pendingBackgroundTasks": [],
+          "contextUsage": null,
+          "nativeMetadata": {
+            "itemIdentityVersion": 2
+          },
+          "goal": null,
+          "createdAt": "2026-11-28T07:15:41.951Z",
+          "updatedAt": "2026-11-28T07:15:47.205Z"
+        }
+      }
+    }
+  }
+}

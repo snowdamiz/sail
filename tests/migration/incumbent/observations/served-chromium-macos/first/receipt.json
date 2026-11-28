@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "chat-turn",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "client": "Sail v0.1.17",
+  "server": "Sail v0.1.17 bundled Node server",
+  "profile": {
+    "surface": "server-served-web",
+    "platform": "macOS 27.0.1 (26A434) arm64",
+    "browser": "Chromium 152.0.7977.167",
+    "origin": "server-served loopback",
+    "locale": "en",
+    "theme": "light",
+    "motion": "system, standard",
+    "fonts": [
+      "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+      "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+    ],
+    "viewport": {
+      "width": 640,
+      "height": 600,
+      "scale": 2,
+      "zoom": 1
+    }
+  },
+  "trace": [
+    {
+      "action": "openDirectThreadUrl",
+      "observed": {
+        "threadTitle": "Compatibility replay",
+        "replyVisible": true,
+        "stopVisible": false,
+        "tableRows": 4
+      }
+    },
+    {
+      "action": "clickThreadHeading",
+      "observed": {
+        "composerName": "Message Compatibility replay",
+        "composerFocused": false
+      }
+    }
+  ],
+  "screenshotSha256": "4307adcad0ab9e3559f94a889f93e1bf226748ee7e26436ac90761b79f5615ab"
+}

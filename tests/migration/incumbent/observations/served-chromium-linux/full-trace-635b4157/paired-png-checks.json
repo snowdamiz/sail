@@ -1,0 +1,17 @@
+{
+  "pngs": {
+    "f922a95d2b7681f9d355f2632242166f4932cce2096cd3e10b98f83616370f3f": {
+      "rgbaSha256": "686f4e963585d6106238b69f56dd92b2a6e763897e155716dab412e5e24fa618",
+      "firstSequence": 0
+    },
+    "2f2bad1be3cbd119022b0e80aad2d80845e4637f2a0cd8c81aa1d00615f5ef64": {
+      "rgbaSha256": "9add5f0a52f3fd1e2e935d220bd46c7aaac25d53232a6c4fdf80c460a6b60f52",
+      "firstSequence": 1
+    }
+  },
+  "distinctDecodedPngsByHost": {
+    "a": 1,
+    "head": 1,
+    "b": 1
+  }
+}

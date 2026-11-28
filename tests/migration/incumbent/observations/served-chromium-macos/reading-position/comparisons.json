@@ -1,0 +1,47 @@
+{
+  "long-closed": {
+    "fixtureId": "chat-scroll-position",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+    "changedSteps": [],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/served-chromium-macos/reading-position/published/long-closed/capture.png",
+      "candidate": "tests/migration/incumbent/observations/served-chromium-macos/reading-position/candidate/long-closed/capture.png",
+      "diff": "tests/migration/incumbent/observations/served-chromium-macos/reading-position/long-closed-diff.png",
+      "baselineSize": [2880, 2000],
+      "candidateSize": [2880, 2000],
+      "differentPixels": 3170,
+      "bounds": [1646, 1896, 1987, 1924]
+    }
+  },
+  "long-open": {
+    "fixtureId": "chat-scroll-position",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+    "changedSteps": [4],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/served-chromium-macos/reading-position/published/long-open/capture.png",
+      "candidate": "tests/migration/incumbent/observations/served-chromium-macos/reading-position/candidate/long-open/capture.png",
+      "diff": "tests/migration/incumbent/observations/served-chromium-macos/reading-position/long-open-diff.png",
+      "baselineSize": [2880, 2000],
+      "candidateSize": [2880, 2000],
+      "differentPixels": 3170,
+      "bounds": [1106, 1896, 1447, 1924]
+    }
+  },
+  "empty": {
+    "fixtureId": "chat-scroll-position",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+    "changedSteps": [3],
+    "pixels": {
+      "baseline": "tests/migration/incumbent/observations/served-chromium-macos/reading-position/published/empty/capture.png",
+      "candidate": "tests/migration/incumbent/observations/served-chromium-macos/reading-position/candidate/empty/capture.png",
+      "diff": "tests/migration/incumbent/observations/served-chromium-macos/reading-position/empty-diff.png",
+      "baselineSize": [2880, 2000],
+      "candidateSize": [2880, 2000],
+      "differentPixels": 3170,
+      "bounds": [1646, 1896, 1987, 1924]
+    }
+  }
+}

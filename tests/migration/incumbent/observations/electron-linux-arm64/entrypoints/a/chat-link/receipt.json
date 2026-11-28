@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "chat-link",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "client": "Sail 0.1.17 Electron 44.10.1",
+  "server": "Bundled Node 0.1.17",
+  "profile": {
+    "surface": "desktop",
+    "platform": "Debian 13.8 arm64",
+    "browser": null,
+    "origin": "desktop local",
+    "locale": "en",
+    "theme": "light",
+    "motion": "standard",
+    "fonts": [
+      "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+      "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+    ],
+    "viewport": {
+      "width": 1100,
+      "height": 780,
+      "scale": 1,
+      "zoom": 1
+    }
+  },
+  "coverage": {
+    "caseId": "chat-link",
+    "platformId": "electron-linux-arm64",
+    "state": "linked-thread-opened",
+    "entrypoint": "chat",
+    "configurationId": "electron-44.10.1-debian-13.8-deb-en-light-1100x780-1x"
+  },
+  "captureRunId": "11bf8e1a-7d5d-473b-af4b-0f1d4b378705",
+  "packageSha256": "586f462a77a7973d51bea119712dcc3bc1245753cff986f32d6568040fa20f91",
+  "screenshotSha256": "9e71b1e84c909655cb8f104b23c3fd5319c008b5973ca7a9a762a06decf3ff26",
+  "stateReceiptSha256": "8a453a262af2a0716346d0fba77ed9ef04f62a6d8f938019477459d326d18356",
+  "trace": [
+    {
+      "action": "clickThreadLink",
+      "observed": {
+        "sourceTitle": "Navigation source",
+        "linkLabel": "Thread, Compatibility replay",
+        "clickedDestinationLink": true
+      }
+    },
+    {
+      "action": "observeSavedDestination",
+      "observed": {
+        "sameSavedRoute": true,
+        "title": "Compatibility replay",
+        "focus": "Message Compatibility replay",
+        "windowFocusedOnArrival": true,
+        "paletteClosed": true,
+        "reply": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "table": [
+          ["Step", "Tool", "Result"],
+          ["Read", "read", "1 file"],
+          ["Edit", "edit", "+4 lines"],
+          ["Test", "execute", "12 passed"]
+        ]
+      }
+    }
+  ]
+}

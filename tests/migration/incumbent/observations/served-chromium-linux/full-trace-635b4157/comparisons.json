@@ -1,0 +1,65 @@
+{
+  "a-to-b": {
+    "exitCode": 0,
+    "fixtureId": "chat-turn",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "changedSteps": [],
+    "pixels": {
+      "baseline": "a/capture.png",
+      "candidate": "b/capture.png",
+      "diff": "a-to-b-diff.png",
+      "baselineSize": [1280, 1200],
+      "candidateSize": [1280, 1200],
+      "differentPixels": 0,
+      "bounds": null
+    },
+    "artifactSha256": {
+      "baselineReceipt": "30dbbf322d67f513ae1e15e43dd2fb65a7b66d76d8a6ddcb9ccf2d880ff80088",
+      "candidateReceipt": "a129628502f6c4833e296f9795301f1f9ec891135ceb541ecb1ea9811e9fb58b",
+      "diff": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+    }
+  },
+  "a-to-head": {
+    "exitCode": 1,
+    "fixtureId": "chat-turn",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "87ca7814f721cfa04540fd76ead915745ffd064f",
+    "changedSteps": [3],
+    "pixels": {
+      "baseline": "a/capture.png",
+      "candidate": "head/capture.png",
+      "diff": "a-to-head-diff.png",
+      "baselineSize": [1280, 1200],
+      "candidateSize": [1280, 1200],
+      "differentPixels": 5560,
+      "bounds": [642, 1096, 996, 1138]
+    },
+    "artifactSha256": {
+      "baselineReceipt": "30dbbf322d67f513ae1e15e43dd2fb65a7b66d76d8a6ddcb9ccf2d880ff80088",
+      "candidateReceipt": "30821e27d1451651246bd1910c50a8aa0f304e6f6a11d44d7df8ef44e4ee0b84",
+      "diff": "6acc0c85f0c7baf3afe69205455891963ac0f3e1609aecdd6a1d116e223a275b"
+    }
+  },
+  "b-to-head": {
+    "exitCode": 1,
+    "fixtureId": "chat-turn",
+    "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+    "candidateSha": "87ca7814f721cfa04540fd76ead915745ffd064f",
+    "changedSteps": [3],
+    "pixels": {
+      "baseline": "b/capture.png",
+      "candidate": "head/capture.png",
+      "diff": "b-to-head-diff.png",
+      "baselineSize": [1280, 1200],
+      "candidateSize": [1280, 1200],
+      "differentPixels": 5560,
+      "bounds": [642, 1096, 996, 1138]
+    },
+    "artifactSha256": {
+      "baselineReceipt": "a129628502f6c4833e296f9795301f1f9ec891135ceb541ecb1ea9811e9fb58b",
+      "candidateReceipt": "30821e27d1451651246bd1910c50a8aa0f304e6f6a11d44d7df8ef44e4ee0b84",
+      "diff": "6acc0c85f0c7baf3afe69205455891963ac0f3e1609aecdd6a1d116e223a275b"
+    }
+  }
+}

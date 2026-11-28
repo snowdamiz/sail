@@ -1,0 +1,15 @@
+{
+  "fixtureId": "read-only-chat",
+  "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "candidateSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+  "changedSteps": [2],
+  "pixels": {
+    "baseline": "tests/migration/incumbent/observations/served-chromium-macos/read-only-chat/published/capture.png",
+    "candidate": "tests/migration/incumbent/observations/served-chromium-macos/read-only-chat/candidate/capture.png",
+    "diff": "tests/migration/incumbent/observations/served-chromium-macos/read-only-chat/diff.png",
+    "baselineSize": [2200, 1560],
+    "candidateSize": [2200, 1560],
+    "differentPixels": 3697,
+    "bounds": [549, 139, 1647, 1484]
+  }
+}

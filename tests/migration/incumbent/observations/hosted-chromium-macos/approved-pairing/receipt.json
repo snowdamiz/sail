@@ -1,0 +1,365 @@
+{
+  "schemaVersion": 1,
+  "fixture": "hosted-pair",
+  "classification": "local-https-test-deployment",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "release": "v0.1.17",
+  "hostedBuild": {
+    "staticOrigin": "https://sail-hosted.test:44651",
+    "channel": "latest",
+    "build": "vp run build from apps/web with VITE_HOSTED_APP_CHANNEL and VITE_HOSTED_APP_URL",
+    "lockfileSha256": "bcc697813df7b521ba97c0327a901ebacd4813e0a22214a95479bf542bdcb515",
+    "assetCount": 2240,
+    "assetManifestSha256": "64829d9a336ec6e0c033ad374b6b34de3fc440dc6ea9359157fa9b628d9de7cd",
+    "assetArchiveSha256": "5d05893bc939f89645ade0ccdd426d1fe9475ed4931d42d088193871d0060688",
+    "index": {
+      "path": "index.html",
+      "size": 23490,
+      "sha256": "982f1d30e04f0ba3c6f3d272f9daa7f4de38270248f455b7e56d9304a1b30f82"
+    }
+  },
+  "backend": {
+    "httpsOrigin": "https://sail-backend.test:44652",
+    "label": "Compatibility host",
+    "package": "Sail-0.1.17-arm64.zip",
+    "packageSha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+    "runtimeReceipt": "../../../runtime/v0.1.17-macos-arm64.json",
+    "environmentId": "63169d5d-e73a-4f1a-a103-05a8122cb114",
+    "threadId": "mcp:74c0efcc-e0e1-4eac-90ef-852df2131c55",
+    "protocol": 2
+  },
+  "client": {
+    "browser": "Chromium headless shell 156.0.8078.4",
+    "driver": "Playwright Core 1.64.1",
+    "platform": "macOS arm64",
+    "fixtureTrust": "Loopback DNS mapping and certificate SPKI pin in the isolated Chromium process",
+    "viewport": {
+      "width": 1100,
+      "height": 780,
+      "scale": 2,
+      "zoom": 1
+    },
+    "theme": "light",
+    "locale": "en",
+    "motion": "standard"
+  },
+  "observations": {
+    "static": {
+      "secure": true,
+      "origin": "https://sail-hosted.test:44651"
+    },
+    "beforeApproval": {
+      "heading": "Add this backend?",
+      "displayedBackend": "https://sail-backend.test:44652",
+      "backendRequests": 0,
+      "sessions": 0,
+      "backendRequestStarts": 0,
+      "requestStartCutoff": "Immediately after the confirmation screenshot and before Add backend"
+    },
+    "approved": {
+      "route": {
+        "path": "/draft/afe0e205-88b5-4c6c-95da-d7ea79608ee1",
+        "heading": "New thread"
+      },
+      "fragmentCleared": true,
+      "session": {
+        "method": "dpop-access-token",
+        "scopes": ["orchestration:read"]
+      }
+    },
+    "destination": {
+      "path": "/63169d5d-e73a-4f1a-a103-05a8122cb114/mcp%3A74c0efcc-e0e1-4eac-90ef-852df2131c55",
+      "title": "Compatibility replay",
+      "secure": true,
+      "reply": true,
+      "sendEnabled": false,
+      "permissionNotice": "Permissions have changed for Compatibility host"
+    },
+    "reloaded": {
+      "path": "/63169d5d-e73a-4f1a-a103-05a8122cb114/mcp%3A74c0efcc-e0e1-4eac-90ef-852df2131c55",
+      "title": "Compatibility replay",
+      "secure": true,
+      "reply": true,
+      "sendEnabled": false,
+      "originalSessionRetained": true
+    },
+    "backendRequestStarts": [
+      {
+        "path": "/.well-known/t3/environment",
+        "method": "GET"
+      },
+      {
+        "path": "/oauth/token",
+        "method": "POST"
+      },
+      {
+        "path": "/.well-known/t3/environment",
+        "method": "GET"
+      },
+      {
+        "path": "/api/auth/websocket-ticket/rpc",
+        "method": "POST"
+      },
+      {
+        "path": "/api/orchestration/shell",
+        "method": "GET"
+      },
+      {
+        "path": "/ws",
+        "method": "WebSocket"
+      },
+      {
+        "path": "/api/auth/session",
+        "method": "GET"
+      },
+      {
+        "path": "/.well-known/t3/environment",
+        "method": "GET"
+      },
+      {
+        "path": "/api/auth/websocket-ticket/rpc",
+        "method": "POST"
+      },
+      {
+        "path": "/api/orchestration/shell",
+        "method": "GET"
+      },
+      {
+        "path": "/ws",
+        "method": "WebSocket"
+      },
+      {
+        "path": "/api/auth/session",
+        "method": "GET"
+      },
+      {
+        "path": "/.well-known/t3/environment",
+        "method": "GET"
+      },
+      {
+        "path": "/api/auth/websocket-ticket/rpc",
+        "method": "POST"
+      },
+      {
+        "path": "/api/orchestration/shell",
+        "method": "GET"
+      },
+      {
+        "path": "/ws",
+        "method": "WebSocket"
+      },
+      {
+        "path": "/api/auth/session",
+        "method": "GET"
+      }
+    ],
+    "usedLinkRejected": {
+      "status": 401,
+      "matchingSessions": 1
+    }
+  },
+  "backendRequestsAfterApproval": [
+    {
+      "path": "/.well-known/t3/environment",
+      "method": "OPTIONS",
+      "status": 204,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": null,
+      "hasProof": false,
+      "hasCookie": false
+    },
+    {
+      "path": "/.well-known/t3/environment",
+      "method": "GET",
+      "status": 200,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": null,
+      "hasProof": false,
+      "hasCookie": false
+    },
+    {
+      "path": "/oauth/token",
+      "method": "OPTIONS",
+      "status": 204,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": null,
+      "hasProof": false,
+      "hasCookie": false
+    },
+    {
+      "path": "/oauth/token",
+      "method": "POST",
+      "status": 200,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": null,
+      "hasProof": true,
+      "hasCookie": false
+    },
+    {
+      "path": "/.well-known/t3/environment",
+      "method": "GET",
+      "status": 200,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": null,
+      "hasProof": false,
+      "hasCookie": false
+    },
+    {
+      "path": "/api/auth/websocket-ticket/rpc",
+      "method": "OPTIONS",
+      "status": 204,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": null,
+      "hasProof": false,
+      "hasCookie": false
+    },
+    {
+      "path": "/api/auth/websocket-ticket/rpc",
+      "method": "POST",
+      "status": 200,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": "DPoP",
+      "hasProof": true,
+      "hasCookie": false
+    },
+    {
+      "path": "/api/orchestration/shell",
+      "method": "OPTIONS",
+      "status": 204,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": null,
+      "hasProof": false,
+      "hasCookie": false
+    },
+    {
+      "path": "/api/orchestration/shell",
+      "method": "GET",
+      "status": 200,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": "DPoP",
+      "hasProof": true,
+      "hasCookie": false
+    },
+    {
+      "path": "/ws",
+      "method": "GET",
+      "status": 101,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": null,
+      "hasProof": false,
+      "hasCookie": false
+    },
+    {
+      "path": "/api/auth/session",
+      "method": "OPTIONS",
+      "status": 204,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": null,
+      "hasProof": false,
+      "hasCookie": false
+    },
+    {
+      "path": "/api/auth/session",
+      "method": "GET",
+      "status": 200,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": "DPoP",
+      "hasProof": true,
+      "hasCookie": false
+    },
+    {
+      "path": "/.well-known/t3/environment",
+      "method": "GET",
+      "status": 200,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": null,
+      "hasProof": false,
+      "hasCookie": false
+    },
+    {
+      "path": "/api/auth/websocket-ticket/rpc",
+      "method": "POST",
+      "status": 200,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": "DPoP",
+      "hasProof": true,
+      "hasCookie": false
+    },
+    {
+      "path": "/api/orchestration/shell",
+      "method": "OPTIONS",
+      "status": 204,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": null,
+      "hasProof": false,
+      "hasCookie": false
+    },
+    {
+      "path": "/ws",
+      "method": "GET",
+      "status": 101,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": null,
+      "hasProof": false,
+      "hasCookie": false
+    },
+    {
+      "path": "/api/orchestration/shell",
+      "method": "GET",
+      "status": 200,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": "DPoP",
+      "hasProof": true,
+      "hasCookie": false
+    },
+    {
+      "path": "/api/auth/session",
+      "method": "GET",
+      "status": 200,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": "DPoP",
+      "hasProof": true,
+      "hasCookie": false
+    },
+    {
+      "path": "/.well-known/t3/environment",
+      "method": "GET",
+      "status": 200,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": null,
+      "hasProof": false,
+      "hasCookie": false
+    },
+    {
+      "path": "/api/auth/websocket-ticket/rpc",
+      "method": "POST",
+      "status": 200,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": "DPoP",
+      "hasProof": true,
+      "hasCookie": false
+    },
+    {
+      "path": "/ws",
+      "method": "GET",
+      "status": 101,
+      "origin": "https://sail-hosted.test:44651",
+      "accessScheme": null,
+      "hasProof": false,
+      "hasCookie": false
+    }
+  ],
+  "screenshots": {
+    "ref-hosted-confirm": {
+      "path": "ref-hosted-confirm.png",
+      "sha256": "2cdea01f77fd84267e84296f380844b1a6eb868d2d193cf696b4f3ef709dd715",
+      "dimensions": [2200, 1560]
+    },
+    "ref-hosted-thread": {
+      "path": "ref-hosted-thread.png",
+      "sha256": "08aea072b9230e4dd46289b7e5c65d423cb96b37a1cec4ebdefccc5dd590a735",
+      "dimensions": [2200, 1560]
+    }
+  },
+  "scope": "Loopback HTTPS test deployment of a hosted build from the release tag. The official hosted deployment identity remains unresolved."
+}

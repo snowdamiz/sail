@@ -1,0 +1,279 @@
+{
+  "fixtureId": "chat-view-states",
+  "tag": "v0.1.17",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "artifact": "Sail-0.1.17-arm64.zip",
+  "artifactSha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+  "os": "macOS 27.0.1 (26A434) arm64",
+  "states": [
+    {
+      "state": "empty",
+      "action": "Open the initial project draft after pairing.",
+      "observed": {
+        "body": [
+          "CD",
+          "Compatib",
+          "ility demo",
+          "/",
+          "New thread",
+          "What should we build?",
+          "Compatibility demo",
+          "or start without a project",
+          "Ask anything. @ files, $ skills, / commands",
+          "6 Astra"
+        ],
+        "composer": "Message New thread",
+        "controls": [
+          {
+            "disabled": false,
+            "name": "Toggle thread details panel"
+          },
+          {
+            "disabled": false,
+            "name": "Toggle terminal drawer"
+          },
+          {
+            "disabled": false,
+            "name": "Toggle right panel"
+          },
+          {
+            "disabled": false,
+            "name": "New thread in Compatibility demo"
+          },
+          {
+            "disabled": false,
+            "name": "Compatibility demo"
+          },
+          {
+            "disabled": false,
+            "name": "or start without a project"
+          },
+          {
+            "disabled": false,
+            "name": "Attach files"
+          },
+          {
+            "disabled": false,
+            "name": "GPT-6-Astra, Medium · Standard"
+          },
+          {
+            "disabled": false,
+            "name": "More composer controls"
+          },
+          {
+            "disabled": false,
+            "name": "Start voice input"
+          },
+          {
+            "disabled": true,
+            "name": "Submit message"
+          },
+          {
+            "disabled": false,
+            "name": "Current checkout"
+          },
+          {
+            "disabled": false,
+            "name": "Branch: main"
+          },
+          {
+            "disabled": false,
+            "name": "Permissions: Full access"
+          }
+        ],
+        "focus": {
+          "label": "Message New thread",
+          "tag": "DIV"
+        },
+        "hasReplayReply": false,
+        "heading": "New thread",
+        "profile": {
+          "browser": "Chrome/152.0.7977.167",
+          "fonts": [
+            "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+          ],
+          "locale": "en",
+          "motion": "standard",
+          "theme": "light",
+          "viewport": {
+            "height": 600,
+            "scale": 2,
+            "width": 640,
+            "zoom": 1
+          }
+        },
+        "threadStatus": null
+      },
+      "screenshot": {
+        "path": "empty.png",
+        "sha256": "201b1a064470be5b6a4031038832beeb53ca83f61e4ae529ad739150a858fe97",
+        "pixels": [1280, 1200]
+      },
+      "capture": {
+        "origin": "http://localhost:47876",
+        "capturedAtUtc": "2026-11-28T06:00:45Z"
+      }
+    },
+    {
+      "state": "initial-loading",
+      "action": "Open the Replay thread while the gate holds its detail subscription.",
+      "observed": {
+        "body": [
+          "CD",
+          "Compatib",
+          "ility demo",
+          "/",
+          "Compatibility replay",
+          "Loading messages...",
+          "Ask anything. @ files, $ skills, / commands",
+          "Showcase"
+        ],
+        "composer": "Message Compatibility replay",
+        "controls": [
+          {
+            "disabled": false,
+            "name": "Toggle thread details panel"
+          },
+          {
+            "disabled": false,
+            "name": "Toggle terminal drawer"
+          },
+          {
+            "disabled": false,
+            "name": "Toggle right panel"
+          },
+          {
+            "disabled": false,
+            "name": "New thread in Compatibility demo"
+          },
+          {
+            "disabled": false,
+            "name": "Thread actions for Compatibility replay"
+          },
+          {
+            "disabled": false,
+            "name": "Attach files"
+          },
+          {
+            "disabled": false,
+            "name": "Showcase"
+          },
+          {
+            "disabled": false,
+            "name": "More composer controls"
+          },
+          {
+            "disabled": false,
+            "name": "Start voice input"
+          },
+          {
+            "disabled": true,
+            "name": "Messages loading"
+          }
+        ],
+        "focus": {
+          "label": "Message Compatibility replay",
+          "tag": "DIV"
+        },
+        "hasReplayReply": false,
+        "heading": "Compatibility replay",
+        "profile": {
+          "browser": "Chrome/152.0.7977.167",
+          "fonts": [
+            "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+          ],
+          "locale": "en",
+          "motion": "standard",
+          "theme": "light",
+          "viewport": {
+            "height": 600,
+            "scale": 2,
+            "width": 640,
+            "zoom": 1
+          }
+        },
+        "threadStatus": {
+          "label": "Loading messages...",
+          "phase": "loading",
+          "role": "status"
+        }
+      },
+      "screenshot": {
+        "path": "ref-states.png",
+        "sha256": "244f1aa4a5cd2d0adf13200bf6842d7a2ac61176384c5b577c6ae4c3527a2ebc",
+        "pixels": [1280, 1200]
+      },
+      "capture": {
+        "origin": "http://127.0.0.1:47878",
+        "capturedAtUtc": "2026-11-28T06:02:42Z"
+      }
+    },
+    {
+      "state": "error",
+      "action": "Open the thread route under an environment that is not paired.",
+      "observed": {
+        "body": [
+          "Thread unavailable",
+          "This thread is on an environment this app is not connected to.",
+          "Open Environments"
+        ],
+        "composer": null,
+        "controls": [
+          {
+            "disabled": false,
+            "href": "/settings/connections",
+            "name": "Open Environments"
+          }
+        ],
+        "focus": {
+          "label": null,
+          "tag": "BODY"
+        },
+        "hasReplayReply": false,
+        "heading": null,
+        "profile": {
+          "browser": "Chrome/152.0.7977.167",
+          "fonts": [
+            "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+          ],
+          "locale": "en",
+          "motion": "standard",
+          "theme": "light",
+          "viewport": {
+            "height": 600,
+            "scale": 2,
+            "width": 640,
+            "zoom": 1
+          }
+        },
+        "threadStatus": null
+      },
+      "screenshot": {
+        "path": "error.png",
+        "sha256": "5d885b4fa679256d2a7e0afdb05db91c773537ef09c3816ec32874f40a92718e",
+        "pixels": [1280, 1200]
+      },
+      "capture": {
+        "origin": "http://localhost:47876",
+        "capturedAtUtc": "2026-11-28T06:01:10Z"
+      }
+    }
+  ],
+  "loadingGate": {
+    "event": "held-thread-rpc",
+    "method": "orchestration.subscribeThread",
+    "released": {
+      "loading": false,
+      "messagesLoadingControl": false,
+      "reply": true
+    },
+    "origin": "http://127.0.0.1:47878"
+  },
+  "errorRecovery": {
+    "action": "Open Environments",
+    "path": "/settings/connections",
+    "opened": true,
+    "origin": "http://localhost:47876"
+  },
+  "captureSetup": "Published server-served pages behind the loopback gate. Empty and error share one browser origin. Loading and its release share a second browser origin."
+}

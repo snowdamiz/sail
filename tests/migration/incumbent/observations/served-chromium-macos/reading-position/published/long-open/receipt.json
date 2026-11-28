@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "chat-scroll-position",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "server": "Packaged Sail v0.1.17",
+  "client": "Chromium headless shell 156.0.8078.4",
+  "profile": {
+    "surface": "server-served-web",
+    "platform": "macOS arm64",
+    "origin": "direct loopback",
+    "browser": "Chromium/156.0.8078.4",
+    "motion": "standard",
+    "viewport": {
+      "width": 1440,
+      "height": 1000,
+      "scale": 2,
+      "zoom": 1
+    },
+    "locale": "en",
+    "theme": "light",
+    "fonts": [
+      "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+    ]
+  },
+  "trace": [
+    {
+      "action": "openSettledThread",
+      "observed": {
+        "threadId": "mcp:1719c948-d20d-43f9-b1f0-ac91c089ae77",
+        "runCount": 2,
+        "status": "completed",
+        "messages": [
+          {
+            "role": "user",
+            "length": 5
+          },
+          {
+            "role": "assistant",
+            "length": 27
+          },
+          {
+            "role": "user",
+            "length": 8600
+          },
+          {
+            "role": "assistant",
+            "length": 28
+          }
+        ]
+      }
+    },
+    {
+      "action": "expandUserMessageAndPlaceAnchor",
+      "observed": {
+        "relativeY": 47.75,
+        "anchorVisible": true,
+        "part": " sentence being read visible w",
+        "scrollTop": 775,
+        "clientHeight": 948,
+        "viewWidth": 1440,
+        "focus": null,
+        "rightPanel": "false"
+      }
+    },
+    {
+      "action": "openRightPanel",
+      "observed": {
+        "relativeY": 47.75,
+        "anchorVisible": true,
+        "part": " sentence being read visible w",
+        "scrollTop": 775,
+        "clientHeight": 948,
+        "viewWidth": 900,
+        "focus": "Open a surface",
+        "rightPanel": "true"
+      }
+    },
+    {
+      "action": "observeComposerControls",
+      "observed": {
+        "controls": [
+          {
+            "name": "Attach files",
+            "disabled": false
+          },
+          {
+            "name": "Multi turn",
+            "disabled": false
+          },
+          {
+            "name": "More composer controls",
+            "disabled": false
+          },
+          {
+            "name": "Start voice input",
+            "disabled": false
+          },
+          {
+            "name": "Submit message",
+            "disabled": true
+          }
+        ]
+      }
+    }
+  ],
+  "screenshotSha256": "56accdd2b9beeb5c0add4cf74fcf7a6be7b73139e364ee0a60ae97a1a65daec4"
+}

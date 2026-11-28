@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "chat-display",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "client": "Sail 0.1.17 in Google Chrome for Testing 158.0.8127.88",
+  "server": "Node 0.1.17",
+  "profile": {
+    "surface": "server-served-web",
+    "platform": "Debian 12.15 arm64",
+    "origin": "server-served loopback",
+    "browser": "Chrome/158.0.0.0",
+    "locale": "en",
+    "theme": "light",
+    "motion": "standard",
+    "fonts": [
+      "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+      "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+    ],
+    "viewport": {
+      "width": 960,
+      "height": 720,
+      "scale": 2,
+      "zoom": 1.25
+    }
+  },
+  "coverage": {
+    "caseId": "chat-display",
+    "platformId": "served-chromium-linux",
+    "state": "zoomed",
+    "entrypoint": "chat",
+    "configurationId": "chrome-158.0.8127.88-debian-arm64-zoomed"
+  },
+  "captureRunId": "e8b960bf-0b02-4ad5-af6c-e59fdb946f72",
+  "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+  "screenshotSha256": "b18cfe5cc5b2ea649d9a2494b17c9574b68a667b62c18f759d7c150bb46f9daa",
+  "stateReceiptSha256": "a0c6bca2cee4f0ded5f520c4017cbb9d0250c8f9e6c35492f647b358bb39cfad",
+  "trace": [
+    {
+      "action": "setChatDisplay",
+      "observed": {
+        "control": "Browser panel zoom",
+        "rpc": "preview.adjust",
+        "acceptedFactor": 1.25
+      }
+    },
+    {
+      "action": "observeChatDisplay",
+      "observed": {
+        "profile": {
+          "browser": "Chrome/158.0.0.0",
+          "locale": "en",
+          "theme": "light",
+          "motion": "standard",
+          "fonts": [
+            "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+            "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+          ],
+          "viewport": {
+            "width": 960,
+            "height": 720,
+            "scale": 2,
+            "zoom": 1.25
+          }
+        },
+        "compact": false,
+        "attachmentControl": "Attach files",
+        "chat": {
+          "title": "Compatibility replay",
+          "reply": true,
+          "highlightedCode": true,
+          "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+          "table": [
+            ["Step", "Tool", "Result"],
+            ["Read", "read", "1 file"],
+            ["Edit", "edit", "+4 lines"],
+            ["Test", "execute", "12 passed"]
+          ],
+          "composerFocused": false,
+          "sidebarOpen": false,
+          "menuOpen": false
+        },
+        "rendererViewport": {
+          "width": 768,
+          "height": 576,
+          "scale": 2.5,
+          "zoom": 1
+        }
+      }
+    }
+  ]
+}

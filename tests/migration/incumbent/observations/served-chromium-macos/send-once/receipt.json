@@ -1,0 +1,289 @@
+{
+  "schemaVersion": 1,
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "artifact": {
+    "name": "Sail-0.1.17-arm64.dmg",
+    "digest": "sha256:5e3a966bcf2555bbcd9fd3300422ccb11e199bd806efbe9d7d8114e1ebf66bd6"
+  },
+  "host": {
+    "version": "0.1.17",
+    "protocol": 2,
+    "databaseMigration": 118,
+    "platform": "macOS 27.0.1 (26A434) arm64"
+  },
+  "browser": {
+    "surface": "T3 Browser panel",
+    "engine": "Chrome/154.0.0.0",
+    "viewportCssPixels": [1280, 800],
+    "deviceScale": 2,
+    "locale": "en",
+    "theme": "light",
+    "pairing": "The same-origin browser session endpoint redeemed a fresh fixture token and the session endpoint confirmed the cookie.",
+    "profile": "Incognito with a new tab. The two turns used distinct loopback proxy ports against one fixture server."
+  },
+  "action": "Type the Replay prompt and click Submit once. The gate drops the first successful send receipt and terminates that socket. The client retries on a new connection.",
+  "runs": [
+    {
+      "threadId": "latency-00",
+      "wire": [
+        {
+          "event": "send",
+          "connection": 3,
+          "requestId": "28",
+          "commandId": "2a7280c0-428c-4f43-b783-b7dc0c80aaa8"
+        },
+        {
+          "event": "receipt-dropped",
+          "connection": 3,
+          "requestId": "28",
+          "receipt": {
+            "sequence": 25
+          }
+        },
+        {
+          "event": "send",
+          "connection": 4,
+          "requestId": "30",
+          "commandId": "2a7280c0-428c-4f43-b783-b7dc0c80aaa8"
+        },
+        {
+          "event": "receipt-delivered",
+          "connection": 4,
+          "requestId": "30",
+          "receipt": {
+            "sequence": 25
+          }
+        }
+      ],
+      "browser": {
+        "expanded": true,
+        "ordered": [
+          ["user", "Give me a short tour"],
+          [
+            "assistant",
+            "The project has a single math module. I will add a clamp helper beside sum."
+          ],
+          [
+            "assistant",
+            "Done I added clamp next to sum and the tests pass. Reads the manifest first Asks before it writes Streams a terminal result clamp(12, 0, 10); // 10 clamp(-3, 0, 10); // 0 Step Tool Result Read read 1 file Edit edit +4 lines Test execute 12 passed This turn is a replay. It costs nothing, so send it again as often as you need."
+          ]
+        ],
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "cells": [
+          ["Step", "Tool", "Result"],
+          ["Read", "read", "1 file"],
+          ["Edit", "edit", "+4 lines"],
+          ["Test", "execute", "12 passed"]
+        ],
+        "draft": "",
+        "completed": true,
+        "descriptor": [1280, 800, 2, "en", "light"],
+        "chrome": "Chrome/154.0.0.0"
+      },
+      "server": {
+        "dispatchReceipts": 1,
+        "status": "accepted",
+        "sequence": 25,
+        "runId": "run:thread:latency-00:ordinal:1",
+        "runs": 1,
+        "runStatus": "completed",
+        "messages": [
+          {
+            "role": "user",
+            "text": "Give me a short tour",
+            "streaming": false
+          },
+          {
+            "role": "assistant",
+            "text": "The project has a single math module. I will add a `clamp` helper beside `sum`.\n\n",
+            "streaming": false
+          },
+          {
+            "role": "assistant",
+            "text": "## Done\n\nI added `clamp` next to `sum` and the tests pass.\n\n- Reads the manifest first\n- Asks before it writes\n- Streams a terminal result\n\n```ts\nclamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0\n```\n\n| Step | Tool | Result |\n| --- | --- | --- |\n| Read | `read` | 1 file |\n| Edit | `edit` | +4 lines |\n| Test | `execute` | 12 passed |\n\nThis turn is a replay. It costs nothing, so send it again as often as you need.",
+            "streaming": false
+          }
+        ],
+        "fingerprints": {
+          "messages": "cc33e9eb8ff2b2ae76620af53f313e5e4f1b5ae0461bae5b04d4faaf78c5e4c9",
+          "runs": "482517a3eb1b3185e55b79510f4f627168655941dcdf32cbe3fc49a56d7491be"
+        },
+        "eventsForCommand": [
+          {
+            "sequence": 19,
+            "type": "provider-thread.updated"
+          },
+          {
+            "sequence": 20,
+            "type": "run.created"
+          },
+          {
+            "sequence": 21,
+            "type": "run-attempt.created"
+          },
+          {
+            "sequence": 22,
+            "type": "node.updated"
+          },
+          {
+            "sequence": 23,
+            "type": "checkpoint-scope.created"
+          },
+          {
+            "sequence": 24,
+            "type": "message.updated"
+          },
+          {
+            "sequence": 25,
+            "type": "turn-item.updated"
+          }
+        ]
+      }
+    },
+    {
+      "threadId": "latency-01",
+      "wire": [
+        {
+          "event": "send",
+          "connection": 1,
+          "requestId": "26",
+          "commandId": "47172e3c-7657-45f4-a98c-fad7ce8ad153",
+          "commandSha256": "fc7e893ed6461d358c7bdc972f16261fb079d13a3169ce634642e2dea5203aac"
+        },
+        {
+          "event": "receipt-dropped",
+          "connection": 1,
+          "requestId": "26",
+          "receipt": {
+            "sequence": 93
+          }
+        },
+        {
+          "event": "send",
+          "connection": 2,
+          "requestId": "28",
+          "commandId": "47172e3c-7657-45f4-a98c-fad7ce8ad153",
+          "commandSha256": "fc7e893ed6461d358c7bdc972f16261fb079d13a3169ce634642e2dea5203aac"
+        },
+        {
+          "event": "receipt-delivered",
+          "connection": 2,
+          "requestId": "28",
+          "receipt": {
+            "sequence": 93
+          }
+        }
+      ],
+      "browser": {
+        "expanded": true,
+        "title": "Compatibility replay 01",
+        "thread": "latency-01",
+        "submitVisible": true,
+        "submitDisabled": true,
+        "draft": "",
+        "ordered": [
+          ["user", "Give me a short tour"],
+          [
+            "assistant",
+            "The project has a single math module. I will add a clamp helper beside sum."
+          ],
+          [
+            "assistant",
+            "Done I added clamp next to sum and the tests pass. Reads the manifest first Asks before it writes Streams a terminal result clamp(12, 0, 10); // 10 clamp(-3, 0, 10); // 0 Step Tool Result Read read 1 file Edit edit +4 lines Test execute 12 passed This turn is a replay. It costs nothing, so send it again as often as you need."
+          ]
+        ],
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "cells": [
+          ["Step", "Tool", "Result"],
+          ["Read", "read", "1 file"],
+          ["Edit", "edit", "+4 lines"],
+          ["Test", "execute", "12 passed"]
+        ]
+      },
+      "server": {
+        "dispatchReceipts": 1,
+        "status": "accepted",
+        "sequence": 93,
+        "runId": "run:thread:latency-01:ordinal:1",
+        "runs": 1,
+        "runStatus": "completed",
+        "messages": [
+          {
+            "role": "user",
+            "text": "Give me a short tour",
+            "streaming": false
+          },
+          {
+            "role": "assistant",
+            "text": "The project has a single math module. I will add a `clamp` helper beside `sum`.\n\n",
+            "streaming": false
+          },
+          {
+            "role": "assistant",
+            "text": "## Done\n\nI added `clamp` next to `sum` and the tests pass.\n\n- Reads the manifest first\n- Asks before it writes\n- Streams a terminal result\n\n```ts\nclamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0\n```\n\n| Step | Tool | Result |\n| --- | --- | --- |\n| Read | `read` | 1 file |\n| Edit | `edit` | +4 lines |\n| Test | `execute` | 12 passed |\n\nThis turn is a replay. It costs nothing, so send it again as often as you need.",
+            "streaming": false
+          }
+        ],
+        "fingerprints": {
+          "messages": "07cc38084da11a792dddaa7e460bf7e8e952c51c09decaf1411a4e8d2534487d",
+          "runs": "55bb7f5625e4d3e9c6a283336a45d343a219b54c40a75ea35117d5fb7263d14d"
+        },
+        "eventsForCommand": [
+          {
+            "sequence": 86,
+            "type": "thread.metadata-updated"
+          },
+          {
+            "sequence": 87,
+            "type": "provider-thread.updated"
+          },
+          {
+            "sequence": 88,
+            "type": "run.created"
+          },
+          {
+            "sequence": 89,
+            "type": "run-attempt.created"
+          },
+          {
+            "sequence": 90,
+            "type": "node.updated"
+          },
+          {
+            "sequence": 91,
+            "type": "checkpoint-scope.created"
+          },
+          {
+            "sequence": 92,
+            "type": "message.updated"
+          },
+          {
+            "sequence": 93,
+            "type": "turn-item.updated"
+          }
+        ]
+      }
+    }
+  ],
+  "gateControls": [
+    {
+      "fault": "none",
+      "result": "passed"
+    },
+    {
+      "fault": "command",
+      "result": "rejected"
+    },
+    {
+      "fault": "receipt",
+      "result": "rejected"
+    }
+  ],
+  "screenshot": {
+    "threadId": "latency-01",
+    "file": "chat-once.png",
+    "sha256": "2d9ebbce1253d277bde5a51fddd6f2117bc0d26f853489aa9baa4acad521b4c5",
+    "pixelDimensions": [1280, 800],
+    "state": "Recovered conversation with the inspected work summary collapsed."
+  }
+}

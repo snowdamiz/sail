@@ -1,0 +1,40 @@
+{
+  "sourceSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+  "artifact": {
+    "name": "t3-0.1.18-linux-arm64.tar.gz",
+    "bytes": 179933267,
+    "sha256": "51ce287680e8f1c3eb803176c9e8ccaad1676d007c41f1afc6688701464ccfea"
+  },
+  "build": {
+    "platform": "linux/arm64",
+    "distribution": "Debian Bookworm",
+    "steps": [
+      "Dockerfile build and rust stages",
+      "apps/server/scripts/cli.ts build-exe",
+      "scripts/build-cli-archive.ts with the built sail-boatd",
+      "scripts/smoke-cli-archive.ts"
+    ],
+    "smokeChecks": ["--version", "__service-launcher", "serve"],
+    "origin": "Local build from the Git archive of the recorded source"
+  },
+  "incumbentArtifact": {
+    "name": "t3-0.1.17-linux-arm64.tar.gz",
+    "sha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df"
+  },
+  "fixture": {
+    "databaseSha256": "729b1b31578df8ea0c48f3ab0b834c9d259451e32ad15cc1dc110aac9b9ef27a",
+    "threadTitle": "Compatibility replay",
+    "providerConfigured": false
+  },
+  "observed": {
+    "serverVersion": "0.1.18",
+    "platform": {
+      "os": "linux",
+      "arch": "arm64"
+    },
+    "orchestrationProtocolVersion": 2,
+    "databaseMigration": 119,
+    "authenticatedBrowserSession": true,
+    "independentInstalls": 2
+  }
+}

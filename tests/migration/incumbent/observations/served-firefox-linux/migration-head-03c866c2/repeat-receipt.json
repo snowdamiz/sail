@@ -1,0 +1,85 @@
+{
+  "sourceSha": "03c866c2f42b6635b2322e6e2a50751ee3d9e586",
+  "browser": {
+    "version": "Firefox ESR 153.8.0",
+    "geckodriver": "0.36.0",
+    "system": "Debian 12.15 Linux arm64/Xvfb"
+  },
+  "result": "incomplete",
+  "firstRound": "Both candidate images and ordered traces matched the published reference and the two new incumbent captures.",
+  "observedVariations": [
+    {
+      "state": "Syncing messages status and shifted transcript",
+      "sample": "measurements/04-a.png",
+      "bounds": [104, 104, 1274, 870],
+      "differentPixels": 174184
+    },
+    {
+      "state": "Transcript scroll offset",
+      "sample": "measurements/02-b.png",
+      "bounds": [104, 104, 1274, 1193],
+      "differentPixels": 31402
+    },
+    {
+      "state": "Assistant hover actions and time appeared",
+      "sample": "repeat/00-head-a.png",
+      "bounds": [117, 817, 392, 839],
+      "differentPixels": 1156
+    }
+  ],
+  "attempts": [
+    {
+      "captureTopology": "Four separate Firefox ESR profiles",
+      "plannedSamples": 104,
+      "capturedSamples": 43,
+      "termination": "GeckoDriver HTTP read timed out during round 10",
+      "countsByInstall": {
+        "a": 11,
+        "head-a": 11,
+        "b": 11,
+        "head-b": 10
+      },
+      "decodedPixelDigests": {
+        "5be966e09c6553a277bea734c325e100c4664fbe2a592f4a22aa047b1a21012e": 25,
+        "0afe130436f0fd7b9fa75b0dff49441d93a43900d56c1b5003a33826f714cbeb": 10,
+        "f0be240465184a26faf16a30ce1da1298ebc4320801b64f48aa0fca102f9a087": 8
+      },
+      "sampleLedger": {
+        "path": "measurements-samples.ndjson",
+        "sha256": "6154ffcd834585226e23f230fb595cecf72a143075be8b2d27630730a81f0676"
+      }
+    },
+    {
+      "captureTopology": "One Firefox ESR profile alternating four isolated host origins",
+      "plannedSamples": 56,
+      "capturedSamples": 6,
+      "termination": "The end-of-transcript readiness check failed on head-b in round 1",
+      "countsByInstall": {
+        "a": 1,
+        "head-a": 2,
+        "b": 2,
+        "head-b": 1
+      },
+      "decodedPixelDigests": {
+        "5be966e09c6553a277bea734c325e100c4664fbe2a592f4a22aa047b1a21012e": 1,
+        "d0410e08f5117cfc342f5a4cb51d4350031f68dacc7138502e5acd472f2ec598": 5
+      },
+      "sampleLedger": {
+        "path": "repeat-samples.ndjson",
+        "sha256": "c776e611ab63852c7f0ce631cbeccdfc348e7d4dba7c5548fe8611daf77d4d4b"
+      }
+    },
+    {
+      "captureTopology": "One Firefox ESR profile with one tab per isolated host origin",
+      "plannedSamples": 56,
+      "capturedSamples": 0,
+      "termination": "The first reloaded tab never reached the highlighted transcript readiness check",
+      "countsByInstall": {},
+      "decodedPixelDigests": {}
+    }
+  ],
+  "gates": {
+    "repeatParity": "open",
+    "timing": "open"
+  }
+}

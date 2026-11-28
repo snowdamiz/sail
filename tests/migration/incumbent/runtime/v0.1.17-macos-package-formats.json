@@ -1,0 +1,212 @@
+{
+  "tag": "v0.1.17",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "assets": {
+    "SHA256SUMS": {
+      "id": 802852660,
+      "size": 960,
+      "sha256": "c298f6aab51e71845cbbe3c8e08807cb095e04bcccbefb0df1bd6c55f5be99cc"
+    },
+    "Sail-0.1.17-arm64.dmg": {
+      "id": 802852661,
+      "size": 238259651,
+      "sha256": "5e3a966bcf2555bbcd9fd3300422ccb11e199bd806efbe9d7d8114e1ebf66bd6",
+      "sha512": "RK4PfK5T1x2ZipH0GN1/FwOqHECDclQiRlzE5W/msMUmGKatt6BjjKBZP7b/r4D6zRtVzP1uuSfnJlYCVtw8Dw=="
+    },
+    "Sail-0.1.17-arm64.zip": {
+      "id": 802852659,
+      "size": 230609211,
+      "sha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+      "sha512": "LXnOh/+QKz1HlD+J/4OTWqXuB0Vvrrj/GxMHnVvNlOK8yWsQKInOydyd9DR8ix3Fkgq16CUViGMv3OgxFQ4Wlw=="
+    },
+    "Sail-0.1.17-x64.dmg": {
+      "id": 802852709,
+      "size": 245488860,
+      "sha256": "9ea33cf097ddce2be16dbd24f91e8a80bad9383c7a5d8d0a40f3bffe11531a5a",
+      "sha512": "WnuaQoIs6AqeurNa7DhEKeGjVQZXmFPPkTfosoQOs/Ci1gTmZUtuA502EhYNg2+cgaM1RQ4DXcPbrWSaXEyD0Q=="
+    },
+    "Sail-0.1.17-x64.zip": {
+      "id": 802852925,
+      "size": 237838737,
+      "sha256": "4d3e316726f929c66d4466863c20c5826e2ac4cfda5f38986c2bdb381edcd75b",
+      "sha512": "xX9AF5jSdfm+bcMqCmYRtE+pHJ6JRZXCKbu7J6mCgIyid6BlEx9jxS3lKGZdwqtxXKXdGtN3npaB5PH7F+cpnQ=="
+    },
+    "install-desktop.sh": {
+      "id": 802852947,
+      "size": 3743,
+      "sha256": "6a2eab143c758494468b67d89c3607da63c1e8d7e5cc149fba4b97745b7d3147"
+    },
+    "latest-mac.yml": {
+      "id": 802852973,
+      "size": 669,
+      "sha256": "bec2826e8578cb368babb738f6162adab4e6b039d55540b8779374060aa17709"
+    }
+  },
+  "manualBundles": {
+    "x64-zip": {
+      "artifact": "Sail-0.1.17-x64.zip",
+      "architecture": "x86_64",
+      "zipEntriesMatched": 326
+    },
+    "x64-dmg": {
+      "artifact": "Sail-0.1.17-x64.dmg",
+      "architecture": "x86_64",
+      "zipEntriesMatched": 326
+    },
+    "arm64-dmg": {
+      "artifact": "Sail-0.1.17-arm64.dmg",
+      "architecture": "arm64",
+      "zipEntriesMatched": 327
+    }
+  },
+  "translatedShellInstaller": {
+    "shell": "x86_64",
+    "procTranslated": 1,
+    "hostArm64": true,
+    "selectedArchive": "Sail-0.1.17-arm64.zip",
+    "installedArchitecture": "arm64",
+    "installedEntriesMatchedArm64Zip": 327
+  },
+  "schemaVersion": 1,
+  "platform": "macOS 27.0.1 (26A434) arm64",
+  "translatedZipCli": {
+    "command": "Bundled CLI --version and foreground serve in Electron Node mode",
+    "versionOutput": "t3 v0.1.17",
+    "runtime": {
+      "serverVersion": "0.1.17",
+      "orchestrationProtocolVersion": 2,
+      "databaseMigration": 118,
+      "platform": {
+        "os": "darwin",
+        "arch": "x64",
+        "machine": "laptop"
+      },
+      "elapsedSeconds": 130.891
+    },
+    "scope": "Fresh scratch home. Foreground startup and loopback descriptor under Rosetta."
+  },
+  "desktopActivations": {
+    "arm64-dmg": {
+      "version": "0.1.17",
+      "databaseMigration": 118,
+      "protocol": 2,
+      "architecture": {
+        "hostArch": "arm64",
+        "appArch": "arm64",
+        "runningUnderArm64Translation": false
+      },
+      "serverArchitecture": "arm64",
+      "preservedState": {
+        "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+        "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+      },
+      "bundleId": "com.sail.desktop",
+      "activationLink": "sail://threads/836486f7-78b1-40ac-a99e-708a20d76966/mcp%3A7d7ee59c-00de-40dd-926e-8545e1a207d4",
+      "bundledBackend": {
+        "isDesktopChild": true,
+        "capability": "desktop-managed"
+      },
+      "renderer": {
+        "architecture": {
+          "hostArch": "arm64",
+          "appArch": "arm64",
+          "runningUnderArm64Translation": false
+        },
+        "scheme": "sail:",
+        "host": "app",
+        "route": "#/836486f7-78b1-40ac-a99e-708a20d76966/mcp%3A7d7ee59c-00de-40dd-926e-8545e1a207d4",
+        "title": "Compatibility replay",
+        "visibleReply": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "tableRows": 4,
+        "prompt": "Message Compatibility replay",
+        "windowFocused": true,
+        "dialogVisible": false,
+        "viewport": {
+          "width": 1100,
+          "height": 780,
+          "scale": 2,
+          "zoom": 1
+        },
+        "theme": "dark",
+        "locale": "en",
+        "fonts": [
+          "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+          "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+        ],
+        "composerFocused": true,
+        "localBootstrap": {
+          "id": "primary",
+          "matchingLoopbackHttpAndWebSocket": true
+        }
+      },
+      "sessions": [
+        {
+          "method": "bearer-access-token",
+          "scopes": [
+            "orchestration:read",
+            "orchestration:operate",
+            "settings:write",
+            "providers:manage",
+            "environment:maintain",
+            "preview:operate",
+            "diagnostics:read",
+            "terminal:read",
+            "terminal:operate",
+            "source-control:write",
+            "filesystem:read",
+            "filesystem:write",
+            "relay:read",
+            "access:read",
+            "access:write",
+            "relay:write",
+            "relay:configure"
+          ]
+        }
+      ],
+      "screenshot": {
+        "path": "../observations/electron-macos-arm64/dmg-install/capture.png",
+        "sha256": "d1eff6c103948970154301774ca48194094d933fa8ea542e105b813575f2aaf2",
+        "windowPoints": [1100, 780],
+        "pngPixels": [2200, 1560]
+      },
+      "result": "pass"
+    },
+    "x64-dmg": {
+      "result": "partial",
+      "runtime": {
+        "serverVersion": "0.1.17",
+        "databaseMigration": 118,
+        "protocol": 2,
+        "platform": {
+          "os": "darwin",
+          "arch": "x64",
+          "machine": "laptop"
+        },
+        "isDesktopChild": true,
+        "serverSelfUpdate": "desktop-managed",
+        "selectedCopiedEnvironment": true
+      },
+      "architecture": {
+        "hostArch": "arm64",
+        "appArch": "x64",
+        "runningUnderArm64Translation": true
+      },
+      "renderer": {
+        "route": "#/836486f7-78b1-40ac-a99e-708a20d76966/mcp%3A7d7ee59c-00de-40dd-926e-8545e1a207d4",
+        "title": "Compatibility replay",
+        "visibleReply": true,
+        "tableRows": 4,
+        "composerFocused": true,
+        "highlightedCodeObserved": false
+      },
+      "desktopBootstrapSessionsAdded": 1,
+      "desktopBootstrapMethod": "bearer-access-token",
+      "preservedState": {
+        "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+        "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+      },
+      "scope": "The expected route was present before the scripted sidebar selection. The renderer returned the saved reply, table and focus, but the settled screenshot gate timed out waiting for highlighted code."
+    }
+  }
+}

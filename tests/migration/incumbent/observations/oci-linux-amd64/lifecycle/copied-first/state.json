@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "homeMode": "copied",
+  "database": "sail/userdata/statev2.sqlite",
+  "seedDatabaseSha256": "b76ac23ca172ea7223867b52aef8eb2af96ba46db04d2a829f7531bdce8b4dc6",
+  "beforeStart": {
+    "messages": "575ae62e5027b648775dcb0ab7eada7005d996a4c71223daff6948d104b6d4d6",
+    "runs": "a543ae94a7af7d28ce23d8149c516a62fd9fb4e1da3ce6ebfe152550aac6ef47"
+  },
+  "threadRead": {
+    "title": "Compatibility replay",
+    "roles": ["user", "assistant", "assistant"],
+    "runCount": 1,
+    "messagesMatchSeed": true
+  },
+  "afterStop": {
+    "messages": "575ae62e5027b648775dcb0ab7eada7005d996a4c71223daff6948d104b6d4d6",
+    "runs": "a543ae94a7af7d28ce23d8149c516a62fd9fb4e1da3ce6ebfe152550aac6ef47"
+  },
+  "bootId": "57f6e736d410713503eabf243cb5281913273c9e648f8ae49525ffaa64ee6856",
+  "runtimeOwnerSha256": "19c4de90bca3d2d831e5a6abd9b39e4c82f933b09bba45d1d9a7f5dfdf13a118"
+}

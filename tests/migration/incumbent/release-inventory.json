@@ -1,0 +1,560 @@
+{
+  "schemaVersion": 1,
+  "repository": "snowdamiz/sail",
+  "incumbentSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "migrationBaseSha": "f29f09835c97386742075c6edf799d1669923b15",
+  "observedAtUtc": "2026-11-28T04:00:50Z",
+  "githubRelease": {
+    "id": 461234370,
+    "tag_name": "v0.1.17",
+    "name": "Sail 0.1.17",
+    "html_url": "https://github.com/snowdamiz/sail/releases/tag/v0.1.17",
+    "published_at": "2026-11-28T02:10:44Z",
+    "updated_at": "2026-11-28T02:10:44Z",
+    "draft": false,
+    "prerelease": false,
+    "immutable": false,
+    "target_commitish": "18fd0e5d66291fc007163512d783d7268218db16",
+    "latestStableWhenObserved": true,
+    "tagObject": {
+      "sha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "type": "commit",
+      "url": "https://api.github.com/repos/snowdamiz/sail/git/commits/18fd0e5d66291fc007163512d783d7268218db16"
+    },
+    "sourceArchives": {
+      "zipballUrl": "https://api.github.com/repos/snowdamiz/sail/zipball/v0.1.17",
+      "tarballUrl": "https://api.github.com/repos/snowdamiz/sail/tarball/v0.1.17",
+      "publishedDigests": null
+    },
+    "workflow": {
+      "path": ".github/workflows/release.yml",
+      "runId": 46095569036,
+      "url": "https://github.com/snowdamiz/sail/actions/runs/46095569036",
+      "event": "push",
+      "headSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "conclusion": "success"
+    },
+    "assets": [
+      {
+        "id": 802852947,
+        "name": "install-desktop.sh",
+        "size": 3743,
+        "digest": "sha256:6a2eab143c758494468b67d89c3607da63c1e8d7e5cc149fba4b97745b7d3147",
+        "content_type": "application/x-shellscript",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/install-desktop.sh",
+        "inPublishedSha256sums": false,
+        "bytesChecked": true
+      },
+      {
+        "id": 802852949,
+        "name": "install.sh",
+        "size": 23483,
+        "digest": "sha256:d20fc7f97d2e61e72750ffddb798a9368e4d7b68ae191aec3875792e6a600270",
+        "content_type": "application/x-shellscript",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/install.sh",
+        "inPublishedSha256sums": true,
+        "bytesChecked": true
+      },
+      {
+        "id": 802852963,
+        "name": "latest-linux-arm64.yml",
+        "size": 513,
+        "digest": "sha256:09549f5abac8acb095bde12908f7c5879a7866eef78185f245604b95ed4d229e",
+        "content_type": "application/yaml",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/latest-linux-arm64.yml",
+        "inPublishedSha256sums": false,
+        "bytesChecked": true
+      },
+      {
+        "id": 802852969,
+        "name": "latest-linux.yml",
+        "size": 513,
+        "digest": "sha256:c78966884ae7c789f7a1098829fa881536b726b432440b5aac5b809a5380e2f3",
+        "content_type": "application/yaml",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/latest-linux.yml",
+        "inPublishedSha256sums": false,
+        "bytesChecked": true
+      },
+      {
+        "id": 802852973,
+        "name": "latest-mac.yml",
+        "size": 669,
+        "digest": "sha256:bec2826e8578cb368babb738f6162adab4e6b039d55540b8779374060aa17709",
+        "content_type": "application/yaml",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/latest-mac.yml",
+        "inPublishedSha256sums": false,
+        "bytesChecked": true
+      },
+      {
+        "id": 802852658,
+        "name": "Sail-0.1.17-arm64.deb",
+        "size": 197995236,
+        "digest": "sha256:586f462a77a7973d51bea119712dcc3bc1245753cff986f32d6568040fa20f91",
+        "content_type": "application/x-debian-package",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/Sail-0.1.17-arm64.deb",
+        "inPublishedSha256sums": true,
+        "bytesChecked": false
+      },
+      {
+        "id": 802852661,
+        "name": "Sail-0.1.17-arm64.dmg",
+        "size": 238259651,
+        "digest": "sha256:5e3a966bcf2555bbcd9fd3300422ccb11e199bd806efbe9d7d8114e1ebf66bd6",
+        "content_type": "application/x-apple-diskimage",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/Sail-0.1.17-arm64.dmg",
+        "inPublishedSha256sums": true,
+        "bytesChecked": false
+      },
+      {
+        "id": 802852662,
+        "name": "Sail-0.1.17-arm64.dmg.blockmap",
+        "size": 251192,
+        "digest": "sha256:ff7bd69bb85497daf8224fd4dbfeddf3972bd19bb6c4cabfea8446bf56095fc7",
+        "content_type": "application/octet-stream",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/Sail-0.1.17-arm64.dmg.blockmap",
+        "inPublishedSha256sums": false,
+        "bytesChecked": true
+      },
+      {
+        "id": 802852659,
+        "name": "Sail-0.1.17-arm64.zip",
+        "size": 230609211,
+        "digest": "sha256:d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+        "content_type": "application/zip",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/Sail-0.1.17-arm64.zip",
+        "inPublishedSha256sums": true,
+        "bytesChecked": false
+      },
+      {
+        "id": 802852682,
+        "name": "Sail-0.1.17-arm64.zip.blockmap",
+        "size": 239944,
+        "digest": "sha256:a1e6941ebd5bad23209bf1a9babd09580a70206c0db034252863d12863739a6a",
+        "content_type": "application/octet-stream",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/Sail-0.1.17-arm64.zip.blockmap",
+        "inPublishedSha256sums": false,
+        "bytesChecked": true
+      },
+      {
+        "id": 802852684,
+        "name": "Sail-0.1.17-x64.deb",
+        "size": 211402028,
+        "digest": "sha256:31ecd16a6cc3b63bce892aa8f37d24fd8e569acf0461260b3755366890ed59cf",
+        "content_type": "application/x-debian-package",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/Sail-0.1.17-x64.deb",
+        "inPublishedSha256sums": true,
+        "bytesChecked": false
+      },
+      {
+        "id": 802852709,
+        "name": "Sail-0.1.17-x64.dmg",
+        "size": 245488860,
+        "digest": "sha256:9ea33cf097ddce2be16dbd24f91e8a80bad9383c7a5d8d0a40f3bffe11531a5a",
+        "content_type": "application/x-apple-diskimage",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/Sail-0.1.17-x64.dmg",
+        "inPublishedSha256sums": true,
+        "bytesChecked": false
+      },
+      {
+        "id": 802852918,
+        "name": "Sail-0.1.17-x64.dmg.blockmap",
+        "size": 256423,
+        "digest": "sha256:e35c32ca730108338fb86c859ca3d028a59eb71f2e6bcecc330d28b79f9acf0e",
+        "content_type": "application/octet-stream",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/Sail-0.1.17-x64.dmg.blockmap",
+        "inPublishedSha256sums": false,
+        "bytesChecked": true
+      },
+      {
+        "id": 802852925,
+        "name": "Sail-0.1.17-x64.zip",
+        "size": 237838737,
+        "digest": "sha256:4d3e316726f929c66d4466863c20c5826e2ac4cfda5f38986c2bdb381edcd75b",
+        "content_type": "application/zip",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/Sail-0.1.17-x64.zip",
+        "inPublishedSha256sums": true,
+        "bytesChecked": false
+      },
+      {
+        "id": 802852935,
+        "name": "Sail-0.1.17-x64.zip.blockmap",
+        "size": 248224,
+        "digest": "sha256:ce03d8c9d3b65ac6c7b0836d179a475b5e3476014de9d30dc79f9294292b9e34",
+        "content_type": "application/octet-stream",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/Sail-0.1.17-x64.zip.blockmap",
+        "inPublishedSha256sums": false,
+        "bytesChecked": true
+      },
+      {
+        "id": 802852936,
+        "name": "Sail-arm64.AppImage",
+        "size": 248762685,
+        "digest": "sha256:d0e469c17aa9a5500be74c70fb0a497bb0bd4f8f8178ab9216ff4d3e5e89d09c",
+        "content_type": "application/vnd.appimage",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/Sail-arm64.AppImage",
+        "inPublishedSha256sums": true,
+        "bytesChecked": false
+      },
+      {
+        "id": 802852941,
+        "name": "Sail-x86_64.AppImage",
+        "size": 257278137,
+        "digest": "sha256:ba3f5ea7dfb431111248ad1b624a2e1183ed7457c455512f4824fa772d1ca710",
+        "content_type": "application/vnd.appimage",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/Sail-x86_64.AppImage",
+        "inPublishedSha256sums": true,
+        "bytesChecked": false
+      },
+      {
+        "id": 802852660,
+        "name": "SHA256SUMS",
+        "size": 960,
+        "digest": "sha256:c298f6aab51e71845cbbe3c8e08807cb095e04bcccbefb0df1bd6c55f5be99cc",
+        "content_type": "application/octet-stream",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/SHA256SUMS",
+        "inPublishedSha256sums": false,
+        "bytesChecked": true
+      },
+      {
+        "id": 802852975,
+        "name": "t3-0.1.17-linux-arm64.tar.gz",
+        "size": 179655159,
+        "digest": "sha256:207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+        "content_type": "application/x-gtar",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/t3-0.1.17-linux-arm64.tar.gz",
+        "inPublishedSha256sums": true,
+        "bytesChecked": false,
+        "unpackedCli": {
+          "runtimeSha256": "7da1cd42672d5e4fbb83c50179cf694441e3eef2d1cf6cf2e98f359c94bdec8e",
+          "installedEntries": 3965
+        }
+      },
+      {
+        "id": 802852988,
+        "name": "t3-0.1.17-linux-x64.tar.gz",
+        "size": 189062659,
+        "digest": "sha256:71a13692526aed08e0c42ff1222ffa1545b2793c84190c8946bf52e26f261997",
+        "content_type": "application/x-gtar",
+        "browser_download_url": "https://github.com/snowdamiz/sail/releases/download/v0.1.17/t3-0.1.17-linux-x64.tar.gz",
+        "inPublishedSha256sums": true,
+        "bytesChecked": false,
+        "unpackedCli": {
+          "runtimeSha256": "71a95f081ed384dd7514e15d9cb10018998fa66033931d56bf7ebefb54278e18",
+          "installedEntries": 3975
+        }
+      }
+    ]
+  },
+  "ociServer": {
+    "repository": "ghcr.io/snowdamiz/sail-server",
+    "versionTag": "0.1.17",
+    "revisionTag": "18fd0e5d66291fc007163512d783d7268218db16",
+    "stableAlias": "latest",
+    "stableAliasDigestWhenObserved": "sha256:15f72134abee1c7bbb958a542a2870187401cd87c74099d9758df3e5bd9bc7e5",
+    "indexDigest": "sha256:15f72134abee1c7bbb958a542a2870187401cd87c74099d9758df3e5bd9bc7e5",
+    "manifests": [
+      {
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "digest": "sha256:df3eac36a85e62a304320c1df8cdc66e0978bae556b3f4e0814aa5dc66f3b218",
+        "size": 3335,
+        "platform": {
+          "architecture": "amd64",
+          "os": "linux"
+        }
+      },
+      {
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "digest": "sha256:0841e88f18eddc8f4020bff87b83298576c7bab7ba7d544d9146ccf99a55c8c3",
+        "size": 838,
+        "annotations": {
+          "vnd.docker.reference.digest": "sha256:df3eac36a85e62a304320c1df8cdc66e0978bae556b3f4e0814aa5dc66f3b218",
+          "vnd.docker.reference.type": "attestation-manifest"
+        },
+        "platform": {
+          "architecture": "unknown",
+          "os": "unknown"
+        }
+      },
+      {
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "digest": "sha256:6bb362ecf3f709a00160094af40931b3a63e1d5fff643d1d9a7d3fe0ccd38f32",
+        "size": 3335,
+        "platform": {
+          "architecture": "arm64",
+          "os": "linux"
+        }
+      },
+      {
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "digest": "sha256:4fd0a1e6d2264f3686b7d0c5ecae5d31d92eb8baf93e0a47c6330e06ae935bec",
+        "size": 838,
+        "annotations": {
+          "vnd.docker.reference.digest": "sha256:6bb362ecf3f709a00160094af40931b3a63e1d5fff643d1d9a7d3fe0ccd38f32",
+          "vnd.docker.reference.type": "attestation-manifest"
+        },
+        "platform": {
+          "architecture": "unknown",
+          "os": "unknown"
+        }
+      }
+    ],
+    "revisionTagDigestWhenObserved": "sha256:15f72134abee1c7bbb958a542a2870187401cd87c74099d9758df3e5bd9bc7e5"
+  },
+  "installerTargets": [
+    {
+      "id": "macos-arm64",
+      "os": "macos",
+      "arch": "arm64",
+      "desktopInstallScript": "install-desktop.sh",
+      "desktopInstallScriptAsset": "Sail-0.1.17-arm64.zip",
+      "desktopAssets": ["Sail-0.1.17-arm64.zip", "Sail-0.1.17-arm64.dmg"],
+      "cliArchive": null,
+      "desktopUpdateManifest": "latest-mac.yml",
+      "desktopUpdateAssets": ["Sail-0.1.17-arm64.zip"]
+    },
+    {
+      "id": "macos-x64",
+      "os": "macos",
+      "arch": "x64",
+      "desktopInstallScript": "install-desktop.sh",
+      "desktopInstallScriptAsset": "Sail-0.1.17-x64.zip",
+      "desktopAssets": ["Sail-0.1.17-x64.zip", "Sail-0.1.17-x64.dmg"],
+      "cliArchive": null,
+      "desktopUpdateManifest": "latest-mac.yml",
+      "desktopUpdateAssets": ["Sail-0.1.17-x64.zip"]
+    },
+    {
+      "id": "linux-arm64",
+      "os": "linux",
+      "arch": "arm64",
+      "desktopInstallScript": "install-desktop.sh",
+      "desktopInstallScriptAsset": "Sail-arm64.AppImage",
+      "desktopAssets": ["Sail-arm64.AppImage", "Sail-0.1.17-arm64.deb"],
+      "cliArchive": "t3-0.1.17-linux-arm64.tar.gz",
+      "desktopUpdateManifest": "latest-linux-arm64.yml",
+      "desktopUpdateAssets": ["Sail-arm64.AppImage", "Sail-0.1.17-arm64.deb"]
+    },
+    {
+      "id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "desktopInstallScript": "install-desktop.sh",
+      "desktopInstallScriptAsset": "Sail-x86_64.AppImage",
+      "desktopAssets": ["Sail-x86_64.AppImage", "Sail-0.1.17-x64.deb"],
+      "cliArchive": "t3-0.1.17-linux-x64.tar.gz",
+      "desktopUpdateManifest": "latest-linux.yml",
+      "desktopUpdateAssets": ["Sail-x86_64.AppImage", "Sail-0.1.17-x64.deb"]
+    }
+  ],
+  "updater": {
+    "stableFeedRepository": "snowdamiz/sail",
+    "channel": "latest",
+    "publishedManifests": {
+      "latest-mac.yml": {
+        "version": "0.1.17",
+        "files": [
+          {
+            "url": "Sail-0.1.17-arm64.zip",
+            "sha512": "LXnOh/+QKz1HlD+J/4OTWqXuB0Vvrrj/GxMHnVvNlOK8yWsQKInOydyd9DR8ix3Fkgq16CUViGMv3OgxFQ4Wlw==",
+            "size": 230609211
+          },
+          {
+            "url": "Sail-0.1.17-arm64.dmg",
+            "sha512": "RK4PfK5T1x2ZipH0GN1/FwOqHECDclQiRlzE5W/msMUmGKatt6BjjKBZP7b/r4D6zRtVzP1uuSfnJlYCVtw8Dw==",
+            "size": 238259651
+          },
+          {
+            "url": "Sail-0.1.17-x64.zip",
+            "sha512": "xX9AF5jSdfm+bcMqCmYRtE+pHJ6JRZXCKbu7J6mCgIyid6BlEx9jxS3lKGZdwqtxXKXdGtN3npaB5PH7F+cpnQ==",
+            "size": 237838737
+          },
+          {
+            "url": "Sail-0.1.17-x64.dmg",
+            "sha512": "WnuaQoIs6AqeurNa7DhEKeGjVQZXmFPPkTfosoQOs/Ci1gTmZUtuA502EhYNg2+cgaM1RQ4DXcPbrWSaXEyD0Q==",
+            "size": 245488860
+          }
+        ],
+        "releaseDate": "2026-11-28T02:08:47.780Z"
+      },
+      "latest-linux.yml": {
+        "version": "0.1.17",
+        "files": [
+          {
+            "url": "Sail-x86_64.AppImage",
+            "sha512": "7r5/0OXLY7L8ELV0RPL/LqTdit7iJaKKLU3bvQtp/up4qdpkSdtKWjSsVlU/O9m18VYiNRDyiJw+Qrx8qFqm+g==",
+            "size": 257278137,
+            "blockMapSize": 267965
+          },
+          {
+            "url": "Sail-0.1.17-x64.deb",
+            "sha512": "VRclu/T7EdvOEI10UvV6nMIe/sjYRC9MTZZ64qrnm6b4BqGmZVcTChUIiuCS3P+GCvlHeH2P3RvqB5NIsfsYyw==",
+            "size": 211402028
+          }
+        ],
+        "path": "Sail-x86_64.AppImage",
+        "sha512": "7r5/0OXLY7L8ELV0RPL/LqTdit7iJaKKLU3bvQtp/up4qdpkSdtKWjSsVlU/O9m18VYiNRDyiJw+Qrx8qFqm+g==",
+        "releaseDate": "2026-11-28T02:02:04.617Z"
+      },
+      "latest-linux-arm64.yml": {
+        "version": "0.1.17",
+        "files": [
+          {
+            "url": "Sail-arm64.AppImage",
+            "sha512": "tSQsj/hYrY6hT9xm+ScB3zwcxAR8aYiHs5m/0i+Tb7FYeckaMgDJCn0VwzCOAPbRG6mglhed4EIJ+jojRzHMcA==",
+            "size": 248762685,
+            "blockMapSize": 259889
+          },
+          {
+            "url": "Sail-0.1.17-arm64.deb",
+            "sha512": "Rh9CGFXx2IJtlZl+G8TaIhOnoCuCk0Nb3Dvs7STAYNdzOALB9rckHNxxmJ7iXQm+f3akgmb0ifnNNCWYeR3iTg==",
+            "size": 197995236
+          }
+        ],
+        "path": "Sail-arm64.AppImage",
+        "sha512": "tSQsj/hYrY6hT9xm+ScB3zwcxAR8aYiHs5m/0i+Tb7FYeckaMgDJCn0VwzCOAPbRG6mglhed4EIJ+jojRzHMcA==",
+        "releaseDate": "2026-11-28T02:02:10.075Z"
+      }
+    },
+    "supportWindow": {
+      "status": "unspecified",
+      "minimumSupportedPredecessor": null,
+      "durationDays": null,
+      "qualifiedUpgradePairs": []
+    },
+    "limits": {
+      "macos": "Ad-hoc signed. The pinned install script extracts Sail.app into ~/Applications by default and attempts to strip quarantine. The archive updater selects the architecture-specific ZIP, including arm64 under Rosetta, and checks its SHA-512 and size. DMGs are manual install media. Updating requires access to replace the existing app bundle.",
+      "linux": "Packaged in-app update requires AppImage or the .deb package. The shell desktop installer uses AppImage. The .deb update requires package installation privileges and may need a usable password prompt.",
+      "cli": "install.sh uses SHA256SUMS and selects the platform archive. This release publishes Linux x64 and arm64 archives. No standalone macOS or Windows archive is published. The desktop shell script installs sail, separately from the standalone t3 CLI.",
+      "policy": "Desktop update availability depends on the configured feed, production packaging, managed policy and T3CODE_DISABLE_AUTO_UPDATE.",
+      "fly": "The Fly deployment uses the published OCI image. Upgrading is a redeploy with the existing volume. Source docs describe a possible brief disconnection.",
+      "unpublished": "No Windows binary, native mobile build, separate web bundle, or WASM client release asset appears in this release. Upstream T3 Code distribution instructions do not establish Sail distribution."
+    },
+    "sourcePaths": [
+      ".github/workflows/release.yml",
+      "scripts/build-desktop-installers.ts",
+      "scripts/install.sh",
+      "apps/desktop/src/electron/ElectronUpdater.ts",
+      "apps/desktop/src/updates/MacArchiveUpdater.ts",
+      "apps/desktop/src/updates/DesktopUpdates.ts",
+      "apps/server/src/cli/update.ts",
+      "docs/user/updating.md",
+      "docs/user/self-host-fly.md"
+    ]
+  },
+  "web": {
+    "officialHostedStatic": {
+      "status": "unspecified",
+      "origin": null,
+      "deployedRevision": null,
+      "buildVariables": ["VITE_HOSTED_APP_URL", "VITE_HOSTED_APP_CHANNEL"],
+      "serverTrustSetting": "T3CODE_HOSTED_APP_URL",
+      "note": "The Sail release workflow packages the server-served web client. It does not publish an independent hosted alias. Upstream T3 Code hosting references do not identify an official Sail origin."
+    },
+    "serverServed": {
+      "origin": "deployment-specific",
+      "publicOriginSetting": "--public-url / SAIL_PUBLIC_URL",
+      "examples": ["local loopback", "user-configured HTTPS host", "https://<app>.fly.dev"],
+      "packaging": ["desktop-bundled server", "standalone Linux CLI archive", "OCI server image"]
+    },
+    "browsers": {
+      "chromium": {
+        "supportedVersions": "unspecified",
+        "qualifyingVersion": null
+      },
+      "firefox": {
+        "supportedVersions": "unspecified",
+        "qualifyingVersion": null
+      },
+      "safari": {
+        "supportedVersions": "unspecified",
+        "qualifyingVersion": null
+      }
+    },
+    "electronVersionInPinnedManifest": "44.10.1",
+    "sourcePaths": [
+      ".github/workflows/release.yml",
+      "Dockerfile",
+      "README.md",
+      "docs/user/self-host-fly.md",
+      "apps/web/vite.config.ts",
+      "apps/web/src/hostedPairing.ts",
+      "apps/server/src/cloud/publicConfig.ts",
+      "apps/server/src/cli/config.ts",
+      "apps/desktop/package.json"
+    ]
+  },
+  "providers": {
+    "registrySource": "apps/server/src/provider/builtInDrivers.ts",
+    "builtIn": [
+      {
+        "kind": "codex",
+        "driver": "CodexDriver",
+        "sourcePath": "apps/server/src/provider/Drivers/CodexDriver.ts"
+      },
+      {
+        "kind": "claude",
+        "driver": "ClaudeDriver",
+        "sourcePath": "apps/server/src/provider/Drivers/ClaudeDriver.ts"
+      },
+      {
+        "kind": "cursor",
+        "driver": "CursorDriver",
+        "sourcePath": "packages/provider-cursor/src/server/driver.ts"
+      },
+      {
+        "kind": "grok",
+        "driver": "GrokDriver",
+        "sourcePath": "packages/provider-grok/src/server/driver.ts"
+      },
+      {
+        "kind": "fx",
+        "driver": "FxDriver",
+        "sourcePath": "packages/provider-fx/src/server/driver.ts"
+      },
+      {
+        "kind": "opencode",
+        "driver": "OpenCodeDriver",
+        "sourcePath": "packages/provider-opencode/src/server/driver.ts"
+      },
+      {
+        "kind": "antigravity",
+        "driver": "AntigravityDriver",
+        "sourcePath": "apps/server/src/provider/Drivers/AntigravityDriver.ts"
+      },
+      {
+        "kind": "kiro",
+        "driver": "KiroDriver",
+        "sourcePath": "packages/provider-kiro/src/server/driver.ts"
+      },
+      {
+        "kind": "pi",
+        "driver": "PiDriver",
+        "sourcePath": "packages/provider-pi/src/server/driver.ts"
+      },
+      {
+        "kind": "muse",
+        "driver": "MuseDriver",
+        "sourcePath": "packages/provider-muse/src/server/driver.ts"
+      },
+      {
+        "kind": "acpRegistry",
+        "driver": "AcpRegistryDriver",
+        "sourcePath": "packages/provider-acp-registry/src/server/driver.ts"
+      }
+    ],
+    "runtimeAvailability": "Installed, enabled, authenticated and compatible instances depend on the environment. No installed provider instance inventory was observed.",
+    "replayFixture": {
+      "driverKind": "acpRegistry",
+      "devInstanceId": "devReplay",
+      "sourcePath": "apps/server/src/provider/ProviderInstanceRegistryHydration.ts",
+      "note": "Source dev server can seed Replay (dev) when the script exists. Configure a deterministic fixture explicitly for packaged runs."
+    }
+  },
+  "verification": {
+    "github": "Release, latest stable, tag ref and Actions run queried read-only with gh. All 20 uploaded asset digests came from the release API.",
+    "downloadedAssetCheck": "Checked downloaded release scripts, updater manifests, blockmaps and SHA256SUMS against the API byte lengths and SHA-256 values. All 11 entries in SHA256SUMS agree with API values.",
+    "updaterDigestCheck": "Recorded SHA-512 values from the three published YAML files and checked their payload names and sizes against release metadata. These expected SHA-512 values were not recomputed from installer payloads.",
+    "ociCheck": "The raw registry index SHA-256 agrees with the release job and with the revision and latest tags at observation time. Runtime image layers were not pulled or run.",
+    "runtimeQualification": "missing"
+  }
+}

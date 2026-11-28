@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "captureRunId": "37e78b24-4be4-4f84-87f8-664c00b5dda1",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+  "arch": "arm64",
+  "osVersion": "Debian 12.15",
+  "runtimeOwnerSha256": "888ff64ef4fc53f71134747d095e1ae4c8627916ff3fae78106bb5d3e6d0fa37",
+  "browser": "Google Chrome for Testing 158.0.8127.88",
+  "pairing": "browser-session-cookie",
+  "chatStates": {
+    "empty": {
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "locale": "en",
+        "theme": "light",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+        ],
+        "viewport": {
+          "width": 640,
+          "height": 600,
+          "scale": 2,
+          "zoom": 1
+        }
+      },
+      "observed": {
+        "heading": "New thread",
+        "composer": "Message New thread",
+        "focusedElement": "BODY",
+        "mainBranch": true,
+        "emptyHint": true,
+        "submitDisabled": true,
+        "loadingLabel": null,
+        "loadingRole": null,
+        "loadingSubmitDisabled": false,
+        "replayReply": false,
+        "unavailable": false,
+        "unpairedMessage": false,
+        "recoveryHref": null
+      },
+      "screenshotSha256": "1636a2d20c0b0d73e999606916a1b3814fd3cce29fa0d49c2462ed2ecee47223"
+    },
+    "initial-loading": {
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "locale": "en",
+        "theme": "light",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+        ],
+        "viewport": {
+          "width": 640,
+          "height": 600,
+          "scale": 2,
+          "zoom": 1
+        }
+      },
+      "observed": {
+        "heading": "Compatibility replay",
+        "composer": "Message Compatibility replay",
+        "focusedElement": "BODY",
+        "mainBranch": false,
+        "emptyHint": false,
+        "submitDisabled": false,
+        "loadingLabel": "Loading messages...",
+        "loadingRole": "status",
+        "loadingSubmitDisabled": true,
+        "replayReply": false,
+        "unavailable": false,
+        "unpairedMessage": false,
+        "recoveryHref": null,
+        "heldThreadRpc": true
+      },
+      "screenshotSha256": "6840241f06f1f8809a4a2a1fca931824b4de1a62ac2fb27020d22c0222b35afe"
+    },
+    "error": {
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "locale": "en",
+        "theme": "light",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+        ],
+        "viewport": {
+          "width": 640,
+          "height": 600,
+          "scale": 2,
+          "zoom": 1
+        }
+      },
+      "observed": {
+        "heading": null,
+        "composer": null,
+        "focusedElement": "BODY",
+        "mainBranch": false,
+        "emptyHint": false,
+        "submitDisabled": false,
+        "loadingLabel": null,
+        "loadingRole": null,
+        "loadingSubmitDisabled": false,
+        "replayReply": false,
+        "unavailable": true,
+        "unpairedMessage": true,
+        "recoveryHref": "/settings/connections"
+      },
+      "screenshotSha256": "578a4300f0c51364e16150fa070c9c6c955ee1b2ddc9d560f375f66629fd2ff1"
+    }
+  },
+  "afterRelease": {
+    "title": "Compatibility replay",
+    "reply": true,
+    "table": [
+      ["Step", "Tool", "Result"],
+      ["Read", "read", "1 file"],
+      ["Edit", "edit", "+4 lines"],
+      ["Test", "execute", "12 passed"]
+    ],
+    "openedExpectedThread": true
+  },
+  "afterRecovery": {
+    "path": "/settings/connections"
+  }
+}

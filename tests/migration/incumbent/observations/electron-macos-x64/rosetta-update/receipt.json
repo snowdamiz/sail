@@ -1,0 +1,145 @@
+{
+  "scope": "Published Intel v0.1.17 under Rosetta to arm64 v0.1.18 on macOS using the configured public GitHub update feed and packaged desktop bridge.",
+  "assets": {
+    "0.1.17": {
+      "tag": "v0.1.17",
+      "releaseId": 461234370,
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "assets": {
+        "SHA256SUMS": {
+          "sha256": "c298f6aab51e71845cbbe3c8e08807cb095e04bcccbefb0df1bd6c55f5be99cc",
+          "size": 960,
+          "assetId": 802852660
+        },
+        "latest-mac.yml": {
+          "sha256": "bec2826e8578cb368babb738f6162adab4e6b039d55540b8779374060aa17709",
+          "size": 669,
+          "assetId": 802852973
+        },
+        "Sail-0.1.17-x64.zip": {
+          "sha256": "4d3e316726f929c66d4466863c20c5826e2ac4cfda5f38986c2bdb381edcd75b",
+          "size": 237838737,
+          "assetId": 802852925,
+          "sha512": "xX9AF5jSdfm+bcMqCmYRtE+pHJ6JRZXCKbu7J6mCgIyid6BlEx9jxS3lKGZdwqtxXKXdGtN3npaB5PH7F+cpnQ=="
+        }
+      }
+    },
+    "0.1.18": {
+      "tag": "v0.1.18",
+      "releaseId": 461311569,
+      "sourceSha": "8337252d5112501cc06bae39921b84c807c662fc",
+      "assets": {
+        "SHA256SUMS": {
+          "sha256": "b5516d5771ea470e555ce80fb77949a3ab54256b04133a8e0d254246c2b8dc5f",
+          "size": 960,
+          "assetId": 803290142
+        },
+        "latest-mac.yml": {
+          "sha256": "1f687f6bc0d23e5bcb5dc709aca66cdf02e9a7464936c7578ad9df746dde30d2",
+          "size": 669,
+          "assetId": 803290681
+        },
+        "Sail-0.1.18-arm64.zip": {
+          "sha256": "915c9e7c3384b4d4c0a020e42cdd92a2ddb730b966ebc3edde43644116663a0f",
+          "size": 230870809,
+          "assetId": 803290141,
+          "sha512": "beNGEc64bD1sgSKDbeDnjQyhykpEwGSa6FqbHh3HwXIf9li0KpHFiSEf4deT9drPCevRksi1XprhvkZCzLPxww=="
+        }
+      }
+    }
+  },
+  "steps": {
+    "translatedPredecessor": {
+      "appArch": "x64",
+      "hostArch": "arm64",
+      "translated": true
+    },
+    "available": {
+      "enabled": true,
+      "status": "available",
+      "channel": "latest",
+      "currentVersion": "0.1.17",
+      "availableVersion": "0.1.18",
+      "downloadedVersion": null,
+      "message": null,
+      "errorContext": null,
+      "canRetry": false
+    },
+    "downloaded": {
+      "enabled": true,
+      "status": "downloaded",
+      "channel": "latest",
+      "currentVersion": "0.1.17",
+      "availableVersion": "0.1.18",
+      "downloadedVersion": "0.1.18",
+      "message": null,
+      "errorContext": null,
+      "canRetry": true
+    }
+  },
+  "screenshots": {
+    "translated": {
+      "height": 780,
+      "width": 1100,
+      "pixelHeight": 1560,
+      "pixelWidth": 2200,
+      "name": "translated-still-connecting.png",
+      "sha256": "ce3cb691fa0d76f4e93041c5d4b4ca2609d5712ab6ba5b96e3322c21b91b347b",
+      "state": "The translated renderer showed Still connecting while its desktop child answered the environment descriptor."
+    },
+    "reopened": {
+      "pixelWidth": 2200,
+      "pixelHeight": 1560,
+      "width": 1100,
+      "height": 780,
+      "name": "native-reopened.png",
+      "sha256": "5d5012acb70423c8a3c893215338e7ceecd20e2e725d0052868445124a42834b",
+      "state": "The relaunched arm64 window opened the saved Replay thread from a Launch Services thread link."
+    }
+  },
+  "launch": {
+    "initialVersion": "0.1.17",
+    "restartedVersion": "0.1.18",
+    "automaticRelaunch": true,
+    "initialBackendArchitecture": "x64",
+    "restartedBackendArchitecture": "arm64",
+    "sameEnvironment": true,
+    "samePort": true,
+    "newPid": true,
+    "protocol": 2,
+    "sqliteMigration": 118,
+    "bundleEntriesMatched": 327,
+    "installRecord": "pending cleanup on next update check",
+    "predecessorBundleEntriesMatched": 326,
+    "installedBundleDirectoryMode": "0700",
+    "reopened": {
+      "action": "Send the saved Sail thread link through Launch Services",
+      "samePid": true,
+      "finalReplyVisible": true,
+      "highlightedCodeVisible": true,
+      "tableRowsIncludingHeader": 4
+    }
+  },
+  "state": {
+    "messages": 3,
+    "runs": 1,
+    "unchangedAfterRelaunch": true,
+    "fingerprints": {
+      "messages": "f43a5141ecb019bc1e7cb6a32925600c5414a3d2d0310fb68aa228c1420433f5",
+      "runs": "47828771de717dca1fd8a0d75397dc09f74f73f5cf57a5e6ba7e8e410129e5f4"
+    }
+  },
+  "schemaVersion": 1,
+  "platform": "macOS 27.0.1 (26A434) arm64",
+  "feed": {
+    "provider": "github",
+    "repository": "snowdamiz/sail",
+    "channel": "latest",
+    "loopbackOverridesUsed": false
+  },
+  "desktopBridgeActions": ["getUpdateState", "downloadUpdate", "installUpdate(\"0.1.18\")"],
+  "translatedSettingsAttempt": {
+    "result": "open",
+    "detail": "A separate scratch attempt reported v0.1.18 as available. The Settings probe timed out waiting for the enabled Download control."
+  }
+}

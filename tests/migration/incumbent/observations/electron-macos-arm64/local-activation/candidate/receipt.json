@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "local-pair",
+  "sourceSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+  "client": "Sail 0.1.18 Electron 44.10.1",
+  "server": "Bundled Node 0.1.18",
+  "profile": {
+    "surface": "desktop",
+    "platform": "macOS 27.0.1 (26A434) arm64",
+    "browser": null,
+    "origin": "desktop local",
+    "locale": "en",
+    "theme": "dark",
+    "motion": "standard",
+    "fonts": [
+      "-apple-system, \"system-ui\", \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+      "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace"
+    ],
+    "viewport": {
+      "width": 1100,
+      "height": 780,
+      "scale": 2,
+      "zoom": 1
+    }
+  },
+  "package": {
+    "artifact": "Sail-0.1.18-arm64.zip",
+    "sha256": "139921c785019bd432b8582c26eb8c5fc5c80c4e9b2b4e4d9df98e8323cc98b7",
+    "bundleId": "com.sail.desktop"
+  },
+  "seed": {
+    "databaseSha256": "84b10b976c546179059ed6200c7e6e5ef2c883ee9cbf6795c0c85c2995f1adbd",
+    "migration": 118,
+    "activeSessions": 0
+  },
+  "serverContract": {
+    "protocol": 2,
+    "databaseMigration": 119
+  },
+  "captureGeometry": {
+    "height": 780,
+    "width": 1100,
+    "pixelWidth": 2200,
+    "pixelHeight": 1560
+  },
+  "screenshotSha256": "ba06a4afebee5a559dac0d0d3d7404515e29bbe0fb2055dae9598199668bd072",
+  "trace": [
+    {
+      "action": "launchInstalledAppWithThreadLink",
+      "observed": {
+        "link": "sail://threads/836486f7-78b1-40ac-a99e-708a20d76966/mcp%3A7d7ee59c-00de-40dd-926e-8545e1a207d4"
+      }
+    },
+    {
+      "action": "connectToBundledServer",
+      "observed": {
+        "isDesktopChild": true,
+        "capability": "desktop-managed",
+        "bootstrapId": "primary",
+        "httpAndWebSocketMatchLoopbackListener": true,
+        "sessions": [
+          {
+            "method": "bearer-access-token",
+            "scopes": [
+              "orchestration:read",
+              "orchestration:operate",
+              "settings:write",
+              "providers:manage",
+              "environment:maintain",
+              "preview:operate",
+              "diagnostics:read",
+              "terminal:read",
+              "terminal:operate",
+              "source-control:write",
+              "filesystem:read",
+              "filesystem:write",
+              "relay:read",
+              "access:read",
+              "access:write",
+              "relay:write",
+              "relay:configure"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "action": "openSeededThread",
+      "observed": {
+        "scheme": "sail:",
+        "host": "app",
+        "route": "#/836486f7-78b1-40ac-a99e-708a20d76966/mcp%3A7d7ee59c-00de-40dd-926e-8545e1a207d4",
+        "title": "Compatibility replay",
+        "visibleReply": true,
+        "code": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "tableRows": 4,
+        "prompt": "Message Compatibility replay",
+        "focus": "Message Compatibility replay",
+        "windowFocused": true,
+        "dialogVisible": false,
+        "completedRuns": 1,
+        "savedMessages": 3,
+        "originalRunAndMessagesPreserved": true
+      }
+    }
+  ]
+}

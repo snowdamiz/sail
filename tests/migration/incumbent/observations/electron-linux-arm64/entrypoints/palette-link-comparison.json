@@ -1,0 +1,20 @@
+{
+  "fixtureId": "palette-link",
+  "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "changedSteps": [],
+  "pixels": {
+    "baseline": "tests/migration/incumbent/observations/electron-linux-arm64/entrypoints/a/palette-link/capture.png",
+    "candidate": "tests/migration/incumbent/observations/electron-linux-arm64/entrypoints/b/palette-link/capture.png",
+    "diff": "tests/migration/incumbent/observations/electron-linux-arm64/entrypoints/palette-link-diff.png",
+    "baselineSize": [1100, 780],
+    "candidateSize": [1100, 780],
+    "differentPixels": 0,
+    "bounds": null
+  },
+  "artifactSha256": {
+    "baselineReceipt": "edf8414d0d8a2c1378f6e9b2ee6b5215b65ed04611dd282bf10e4fe02dbb284b",
+    "candidateReceipt": "65517a61c16ed5e5854340726e5c35416025a7bcfec3f89ac4d3f7264f2320fb",
+    "diff": "4e8c2851cc2a639b9f0f06efb15296b25722bbddd41e6bb7c0270f20f0e04a1c"
+  }
+}

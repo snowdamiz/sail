@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "chat-turn",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "client": "Firefox ESR 153.8.0",
+  "server": "Sail v0.1.17 Linux arm64 CLI server",
+  "profile": {
+    "surface": "server-served-web",
+    "platform": "Debian 12.15 Linux arm64/Xvfb",
+    "origin": "server-served loopback",
+    "browser": "Firefox/153.0",
+    "fonts": [
+      "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+      "ui-monospace, \"SF Mono\", \"SFMono-Regular\", Menlo, Consolas, \"Liberation Mono\", monospace"
+    ],
+    "locale": "en",
+    "motion": "standard",
+    "theme": "light",
+    "viewport": {
+      "height": 600,
+      "scale": 2,
+      "width": 640,
+      "zoom": 1
+    }
+  },
+  "trace": [
+    {
+      "action": "openDirectThreadUrl",
+      "observed": {
+        "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+        "replyVisible": true,
+        "stopVisible": false,
+        "tableRows": 4,
+        "threadTitle": "Compatibility replay"
+      }
+    },
+    {
+      "action": "tabToAttachFiles",
+      "observed": {
+        "composerName": "Message Compatibility replay",
+        "focusName": "Attach files",
+        "focusRole": "button",
+        "menuCount": 0
+      }
+    }
+  ],
+  "screenshotSha256": "9a6291d7429a59cbcb7f915e32f292f45456afa80dd8004373a2d3e745f7b3e7",
+  "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+  "coverage": {
+    "caseId": "chat-turn",
+    "platformId": "served-firefox-linux",
+    "state": "settled",
+    "entrypoint": "chat",
+    "configurationId": "firefox-esr-153.8.0-debian-arm64-en-light-640x600-2x"
+  },
+  "captureRunId": "firefox-esr-153.8.0-debian-arm64-en-light-640x600-2x-b"
+}

@@ -1,0 +1,20 @@
+{
+  "fixtureId": "browser-preview",
+  "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "changedSteps": [],
+  "pixels": {
+    "baseline": "tests/migration/incumbent/observations/served-chromium-linux/browser-panel/a/tool-result/capture.png",
+    "candidate": "tests/migration/incumbent/observations/served-chromium-linux/browser-panel/b/tool-result/capture.png",
+    "diff": "tests/migration/incumbent/observations/served-chromium-linux/browser-panel/tool-result-diff.png",
+    "baselineSize": [1280, 1200],
+    "candidateSize": [1280, 1200],
+    "differentPixels": 0,
+    "bounds": null
+  },
+  "artifactSha256": {
+    "baselineReceipt": "958d32823bd51e6100af0de36b9b661ac42ae1a52432d3e2efe2ff584977fe6e",
+    "candidateReceipt": "aed4191b8966d345331ff18803117ebe6298c583577cc40925b6c2b5918a12f2",
+    "diff": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+  }
+}

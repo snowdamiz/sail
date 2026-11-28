@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "chat-turn",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "comparatorSha256": "7040d7c8d145174cb2d74d2067ecba3722127b05ad94968d61338fd4921bfaa5",
+  "pixelComparatorSha256": "810df04669d7b0c5ba6f4db6671c35bcfe833db69cffb2a11ecd0455b86c7907",
+  "referenceDirectories": [
+    "incumbent/observations/served-chromium-macos/settled/a",
+    "incumbent/observations/served-chromium-macos/settled/b"
+  ],
+  "mutations": [
+    {
+      "name": "pixel-changed",
+      "change": {
+        "x": 0,
+        "y": 0,
+        "channel": "red",
+        "before": 252,
+        "after": 253
+      },
+      "receiptSha256": "68e11341e405aae4d00b0500edfbbacbbd0f6d874489219d7311b41e6fc589b3"
+    },
+    {
+      "name": "replay-result-changed",
+      "change": {
+        "step": 1,
+        "field": "replyVisible",
+        "before": true,
+        "after": false
+      },
+      "receiptSha256": "96ff968cecfab3f2eb277e2be75c33c2323c9b4ddd0893b5341d0781e3c4d5af"
+    },
+    {
+      "name": "widget-state-missing",
+      "change": {
+        "step": 1,
+        "field": "stopVisible",
+        "before": false,
+        "removed": true
+      },
+      "receiptSha256": "6d8ef8b8bc6a4b184a7c70f972298a426ca435c7c6cd782895bfcb29859836b4"
+    }
+  ]
+}

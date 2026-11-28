@@ -1,0 +1,53 @@
+{
+  "fixtureId": "browser-preview",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "tag": "v0.1.17",
+  "profile": {
+    "os": "macOS 27.0.1 (26A434) arm64",
+    "browser": "Chrome/154.0.0.0",
+    "locale": "en",
+    "theme": "light",
+    "viewport": {
+      "width": 960,
+      "height": 720,
+      "scale": 2,
+      "zoom": 1
+    },
+    "screenshotPixels": [1280, 960],
+    "capture": "The Browser panel saves wider viewport screenshots at a maximum of 1280 pixels across."
+  },
+  "fixtureSource": "scripts/scenarios/browser-tab-follows-page-title.e2e.ts",
+  "actions": [
+    "Open the Browser panel from the seeded thread and navigate to the fixture page.",
+    "Click the page canvas and wait for the tab title to change at the same address.",
+    "Release control and call preview_status and preview_evaluate from the packaged thread provider session."
+  ],
+  "before": {
+    "tabTitle": "Original title",
+    "url": "http://127.0.0.1:57969/",
+    "screenshot": {
+      "path": "original-title.png",
+      "sha256": "4ac2a988a39cfddaa35a70db9441a5196f26d8132a8cfb8097392474b16e32e4"
+    }
+  },
+  "after": {
+    "tabTitle": "Updated title",
+    "url": "http://127.0.0.1:57969/",
+    "screenshot": {
+      "path": "ref-preview.png",
+      "sha256": "4dd163bceadaa876cc7c981213deacf1eb864e1e6c7773cd0efa4d070455c0f5"
+    }
+  },
+  "tool": {
+    "name": "preview_evaluate",
+    "arguments": {
+      "expression": "({title: document.title, body: document.body.textContent.trim()})"
+    },
+    "value": {
+      "title": "Updated title",
+      "body": "Click to rename"
+    },
+    "execution": "published Sail provider session",
+    "turnStatus": "completed"
+  }
+}

@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "from": {
+    "release": "v0.1.17",
+    "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16"
+  },
+  "to": {
+    "release": "v0.1.18",
+    "sourceSha": "8337252d5112501cc06bae39921b84c807c662fc"
+  },
+  "archives": {
+    "0.1.17": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+    "0.1.18": "fde0ac091d545e9bfa2a8dd31ceacbe4b3ef9fbf66cbde0643435986af478e35"
+  },
+  "platform": "linux/arm64",
+  "distribution": "Debian 12.15",
+  "launcher": {
+    "version": "0.1.17",
+    "entrypoint": "__service-launcher",
+    "protocol": 4,
+    "supervisor": "Docker init"
+  },
+  "server": {
+    "protocol": 2,
+    "protocol1HttpStatus": 426,
+    "databaseMigration": 118,
+    "updateCapability": "boot-service"
+  },
+  "scopeDenial": {
+    "_tag": "EnvironmentAuthorizationError",
+    "message": "The authenticated token is missing required scope: environment:maintain.",
+    "requiredScope": "orchestration:operate",
+    "requiredPermission": "environment:maintain"
+  },
+  "checksumRejection": {
+    "_tag": "ServerSelfUpdateError",
+    "reason": "Could not prepare t3@0.1.18 while verifying the t3 release archive checksum.",
+    "cause": {
+      "name": "PinnedRuntimeInstallError",
+      "message": "Pinned runtime install failed while verifying the t3 release archive checksum."
+    }
+  },
+  "selectionAfterRejection": {
+    "protocol": 4,
+    "activeVersion": "0.1.17"
+  },
+  "acceptance": {
+    "targetVersion": "0.1.18",
+    "method": "boot-service",
+    "idMatchesCommit": true
+  },
+  "committedSelection": {
+    "protocol": 4,
+    "activeVersion": "0.1.18",
+    "update": {
+      "fromVersion": "0.1.17",
+      "targetVersion": "0.1.18",
+      "status": "committed"
+    }
+  },
+  "activation": {
+    "originalLauncherStayedAlive": true,
+    "newChildServed": true
+  },
+  "restart": {
+    "originalLauncherSelectedCommittedVersion": true,
+    "sameEnvironment": true,
+    "sessionsPreserved": 2
+  },
+  "bearerGrants": [
+    {
+      "scopes": ["orchestration:read"],
+      "permissions": ["orchestration:read"]
+    },
+    {
+      "scopes": [],
+      "permissions": ["environment:maintain"]
+    }
+  ],
+  "savedThread": {
+    "messageCount": 3,
+    "runCount": 1,
+    "payloadSha256": {
+      "messages": "575ae62e5027b648775dcb0ab7eada7005d996a4c71223daff6948d104b6d4d6",
+      "runs": "a543ae94a7af7d28ce23d8149c516a62fd9fb4e1da3ce6ebfe152550aac6ef47"
+    }
+  },
+  "bothShutdownsClearedListenerAndRuntimeRecord": true
+}

@@ -1,0 +1,37 @@
+{
+  "platform": "macOS 27.0.1 (26A434) arm64",
+  "intendedRelease": "v0.1.17",
+  "attempts": [
+    {
+      "browser": "Safari 27.0.1",
+      "driver": "safaridriver",
+      "step": "POST /session",
+      "result": "blocked",
+      "error": "Could not create a session: You must enable 'Allow remote automation' in the Developer section of Safari Settings to control Safari via WebDriver."
+    },
+    {
+      "browser": "Firefox 161.0",
+      "driver": "GeckoDriver 0.36.0",
+      "step": "POST /session with a fresh isolated profile",
+      "result": "blocked",
+      "attempts": 2,
+      "error": "Process unexpectedly closed with status 1",
+      "browserLog": "Could not find profile folder."
+    },
+    {
+      "browser": "Playwright Firefox 157.0",
+      "driver": "playwright-core 1.64.1",
+      "step": "Launch headless with a fresh isolated profile",
+      "result": "blocked",
+      "browserLog": "Could not find profile folder."
+    },
+    {
+      "browser": "Firefox 161.0",
+      "driver": "GeckoDriver 0.36.0",
+      "step": "Start an isolated headless profile and capture the packaged Replay thread",
+      "result": "pass",
+      "setup": "Set MOZ_APP_DATA to a scratch directory for each Firefox instance.",
+      "receipt": "served-firefox-macos/settled/capture-timings.json"
+    }
+  ]
+}

@@ -1,0 +1,605 @@
+use anyhow::{Context, Result, ensure};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env, fs,
+    io::{self, Cursor, Write},
+    path::{Path, PathBuf},
+    thread,
+    time::{Duration, Instant},
+};
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct CaptureRequest {
+    host: String,
+    round: usize,
+    sequence: usize,
+    warmup: bool,
+    representative: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+enum TimingScope {
+    FullTraceAndScreenshot,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct Sample {
+    #[serde(flatten)]
+    request: CaptureRequest,
+    elapsed_ns: u64,
+    timing_scope: TimingScope,
+    stages_ns: BTreeMap<String, u64>,
+    profile: Value,
+    trace: Value,
+    screenshot_sha256: String,
+    source_sha: String,
+    package_sha256: String,
+    runtime_sha256: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct Timing {
+    samples: usize,
+    min_ns: u64,
+    median_ns: u64,
+    p95_ns: u64,
+    max_ns: u64,
+    p95_sequence: usize,
+    png_digests: usize,
+    traces: usize,
+    source_sha: String,
+    package_sha256: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EarlierReport {
+    schema_version: usize,
+    warmup_rounds: usize,
+    measured_rounds: usize,
+    rotation: Vec<String>,
+    samples: Vec<Sample>,
+    timings: BTreeMap<String, Timing>,
+}
+
+#[derive(Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct CaptureSource {
+    source_sha: String,
+    archive_sha256: String,
+    runtime_sha256: String,
+}
+
+fn await_file(host: &Path, expected: &Path, budget: Duration) -> Result<()> {
+    let started = Instant::now();
+    while !expected.is_file() {
+        ensure!(
+            !host.join("provider-error.private").exists(),
+            "capture provider failed in {}",
+            host.display()
+        );
+        ensure!(
+            started.elapsed() < budget,
+            "timed out waiting for {}",
+            expected.display()
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    Ok(())
+}
+
+fn validate_sample(
+    sample: &Sample,
+    request: &CaptureRequest,
+    source: &CaptureSource,
+) -> Result<()> {
+    ensure!(
+        sample.request == *request,
+        "sample does not match its capture request"
+    );
+    ensure!(
+        sample.source_sha == source.source_sha
+            && sample.package_sha256 == source.archive_sha256
+            && sample.runtime_sha256 == source.runtime_sha256,
+        "sample does not match the declared source and package"
+    );
+    ensure!(
+        sample.elapsed_ns > 0
+            && sample.stages_ns.keys().map(String::as_str).eq([
+                "composer",
+                "focus",
+                "highlight",
+                "navigate",
+                "screenshot",
+                "trace",
+            ])
+            && sample.stages_ns.values().all(|time| *time > 0)
+            && sample
+                .stages_ns
+                .values()
+                .map(|time| u128::from(*time))
+                .sum::<u128>()
+                == u128::from(sample.elapsed_ns),
+        "invalid capture stage durations"
+    );
+    ensure!(
+        sample.profile
+            == json!({
+                "browser": "Chrome/158.0.0.0",
+                "fonts": [
+                    "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif",
+                    "ui-monospace, \"SF Mono\", SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace",
+                ],
+                "locale": "en",
+                "motion": "standard",
+                "theme": "light",
+                "viewport": {"height": 600, "scale": 2, "width": 640, "zoom": 1},
+            }),
+        "sample does not match the pinned capture profile"
+    );
+    let trace = sample
+        .trace
+        .as_array()
+        .context("sample has no action trace")?;
+    ensure!(
+        trace.iter().map(|event| event["action"].as_str()).eq([
+            Some("openDirectThreadUrl"),
+            Some("tabToAttachFiles"),
+            Some("readComposerControls"),
+        ]) && trace[0]["observed"]
+            == json!({
+                "availableModel": true,
+                "codeText": "clamp(12, 0, 10); // 10\nclamp(-3, 0, 10); // 0",
+                "replyVisible": true,
+                "stopVisible": false,
+                "table": [
+                    ["Step", "Tool", "Result"],
+                    ["Read", "read", "1 file"],
+                    ["Edit", "edit", "+4 lines"],
+                    ["Test", "execute", "12 passed"],
+                ],
+                "tableRows": 4,
+                "threadTitle": "Compatibility replay",
+            })
+            && trace[1]["observed"]
+                == json!({
+                    "composerName": "Message Compatibility replay",
+                    "focusName": "Attach files",
+                    "focusRole": "button",
+                    "menuCount": 0,
+                }),
+        "sample did not record the settled thread and composer focus"
+    );
+    let controls = trace[2]["observed"]["controls"]
+        .as_array()
+        .context("sample has no observed composer controls")?;
+    ensure!(
+        controls.iter().all(|control| {
+            control["name"]
+                .as_str()
+                .is_some_and(|name| !name.is_empty())
+                && control.get("pressed").is_some_and(|pressed| {
+                    pressed.is_null() || matches!(pressed.as_str(), Some("true" | "false"))
+                })
+        }) && ["Attach files", "Showcase", "Submit message"]
+            .iter()
+            .all(|name| { controls.iter().any(|control| control["name"] == *name) }),
+        "sample has incomplete composer controls"
+    );
+    Ok(())
+}
+
+fn validate_png(sample: &Sample, path: &Path) -> Result<()> {
+    let bytes = fs::read(path)?;
+    ensure!(
+        format!("{:x}", Sha256::digest(&bytes)) == sample.screenshot_sha256,
+        "sample screenshot has a different digest"
+    );
+    let mut png = png::Decoder::new(Cursor::new(bytes)).read_info()?;
+    let info = png.info();
+    ensure!(
+        (info.width, info.height) == (1280, 1200)
+            && info.animation_control.is_none()
+            && info.bit_depth != png::BitDepth::Sixteen,
+        "sample screenshot has the wrong geometry or format"
+    );
+    let mut pixels = vec![
+        0;
+        png.output_buffer_size()
+            .context("PNG output size overflow")?
+    ];
+    png.next_frame(&mut pixels)?;
+    png.finish()?;
+    Ok(())
+}
+
+fn assign(host: &Path, request: &CaptureRequest, source: &CaptureSource) -> Result<Sample> {
+    let path = host.join(format!("capture-{}.request", request.round));
+    let staging = path.with_extension("pending");
+    ensure!(
+        !path.exists(),
+        "capture directory already used: {}",
+        path.display()
+    );
+    let mut writer = fs::File::create_new(&staging)?;
+    serde_json::to_writer(&mut writer, request)?;
+    drop(writer);
+    fs::rename(staging, path)?;
+    let result = host.join(format!("samples/{:02}.json", request.round));
+    await_file(host, &result, Duration::from_secs(90))?;
+    let sample: Sample = serde_json::from_reader(fs::File::open(&result)?)?;
+    validate_sample(&sample, request, source)?;
+    validate_png(&sample, &result.with_extension("png"))?;
+    Ok(sample)
+}
+
+fn summarize<'a>(samples: impl Iterator<Item = &'a Sample>) -> Result<Timing> {
+    let mut values: Vec<_> = samples.collect();
+    values.sort_by_key(|sample| sample.elapsed_ns);
+    let first = values.first().context("empty timing cohort")?;
+    ensure!(
+        values
+            .iter()
+            .all(|sample| sample.source_sha == first.source_sha
+                && sample.package_sha256 == first.package_sha256),
+        "archive changed within a timing cohort"
+    );
+    let count = values.len();
+    let lower = values[(count - 1) / 2].elapsed_ns;
+    let upper = values[count / 2].elapsed_ns;
+    let p95 = values[(count * 95).div_ceil(100) - 1];
+    Ok(Timing {
+        samples: count,
+        min_ns: first.elapsed_ns,
+        median_ns: lower + (upper - lower) / 2,
+        p95_ns: p95.elapsed_ns,
+        max_ns: values[count - 1].elapsed_ns,
+        p95_sequence: p95.request.sequence,
+        png_digests: values
+            .iter()
+            .map(|sample| &sample.screenshot_sha256)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        traces: values
+            .iter()
+            .map(|sample| serde_json::to_string(&sample.trace))
+            .collect::<serde_json::Result<BTreeSet<_>>>()?
+            .len(),
+        source_sha: first.source_sha.clone(),
+        package_sha256: first.package_sha256.clone(),
+    })
+}
+
+fn request_at(hosts: &[&str], sequence: usize, warmups: usize) -> CaptureRequest {
+    let round = sequence / hosts.len();
+    CaptureRequest {
+        host: hosts[(round + sequence % hosts.len()) % hosts.len()].to_owned(),
+        round,
+        sequence,
+        warmup: round < warmups,
+        representative: round == warmups,
+    }
+}
+
+fn by_host(hosts: &[&str], samples: &[Sample]) -> Result<BTreeMap<String, Timing>> {
+    hosts
+        .iter()
+        .map(|host| {
+            summarize(
+                samples
+                    .iter()
+                    .filter(|sample| sample.request.host == *host && !sample.request.warmup),
+            )
+            .map(|timing| ((*host).to_owned(), timing))
+        })
+        .collect()
+}
+
+fn earlier_baselines(
+    path: &Path,
+    source: &CaptureSource,
+    warmups: usize,
+    measured: usize,
+) -> Result<(BTreeMap<String, Timing>, String)> {
+    let bytes = fs::read(path)?;
+    let report: EarlierReport = serde_json::from_slice(&bytes)?;
+    let hosts = ["a", "b"];
+    ensure!(
+        report.schema_version == 2
+            && report.rotation == hosts
+            && report.warmup_rounds == warmups
+            && report.measured_rounds == measured
+            && report.samples.len() == hosts.len() * (warmups + measured),
+        "expected an earlier two-install report with matching rounds and full trace timing"
+    );
+    let runs = path
+        .parent()
+        .context("earlier report has no run directory")?
+        .join("runs");
+    for (sequence, sample) in report.samples.iter().enumerate() {
+        let request = request_at(&hosts, sequence, warmups);
+        validate_sample(sample, &request, source)?;
+        let path = runs.join(format!(
+            "{}/samples/{:02}.json",
+            request.host, request.round
+        ));
+        let raw: Sample = serde_json::from_reader(fs::File::open(&path)?)?;
+        ensure!(
+            *sample == raw,
+            "earlier report disagrees with its raw sample"
+        );
+        validate_png(sample, &path.with_extension("png"))?;
+    }
+    let timings = by_host(&hosts, &report.samples)?;
+    ensure!(
+        timings == report.timings,
+        "earlier report summary disagrees with its samples"
+    );
+    Ok((timings, format!("{:x}", Sha256::digest(bytes))))
+}
+
+fn compare(baselines: &BTreeMap<String, Timing>, head: u64) -> BTreeMap<&str, Value> {
+    ["a", "b"]
+        .into_iter()
+        .map(|host| {
+            let incumbent = baselines[host].p95_ns;
+            let delta = i128::from(head) - i128::from(incumbent);
+            let within_relative = u128::from(head) * 100 <= u128::from(incumbent) * 115;
+            let within_absolute = delta <= 2_000_000_000;
+            (
+                host,
+                json!({
+                    "baselineP95Ns": incumbent,
+                    "deltaNs": delta,
+                    "withinRelativeBudget": within_relative,
+                    "withinAbsoluteBudget": within_absolute,
+                    "pass": within_relative && within_absolute,
+                }),
+            )
+        })
+        .collect()
+}
+
+fn qualify(
+    paired: &BTreeMap<String, Timing>,
+    earlier: &BTreeMap<String, Timing>,
+    digest: &str,
+    warmups: usize,
+    measured: usize,
+) -> Value {
+    let candidate = paired["head"].p95_ns;
+    let paired = compare(paired, candidate);
+    let incumbent_first = compare(earlier, candidate);
+    let pass = (warmups > 0 && measured >= 12).then(|| {
+        paired
+            .values()
+            .chain(incumbent_first.values())
+            .all(|result| result["pass"] == true)
+    });
+    json!({"earlierReportSha256": digest, "paired": paired, "incumbentFirst": incumbent_first, "pass": pass})
+}
+
+fn main() -> Result<()> {
+    let mut args = env::args_os().skip(1);
+    let root = PathBuf::from(args.next().context(
+        "usage: capture-timings CAPTURE_ROOT WARMUPS MEASURED [--candidate EARLIER_TIMINGS]",
+    )?);
+    let warmups: usize = args
+        .next()
+        .context("missing warmup count")?
+        .to_string_lossy()
+        .parse()?;
+    let measured: usize = args
+        .next()
+        .context("missing measured count")?
+        .to_string_lossy()
+        .parse()?;
+    let earlier_path = match args.next().as_deref() {
+        None => None,
+        Some(flag) if flag == "--candidate" => Some(PathBuf::from(
+            args.next().context("missing earlier timings")?,
+        )),
+        Some(_) => anyhow::bail!("unknown capture-timings option"),
+    };
+    ensure!(
+        args.next().is_none() && measured > 0 && measured <= 100 && warmups <= 10,
+        "invalid sample counts"
+    );
+    let source_dir = root
+        .parent()
+        .context("capture root has no source directory")?
+        .join("sources");
+    let load_source = |name: &str| -> Result<CaptureSource> {
+        Ok(serde_json::from_reader(fs::File::open(
+            source_dir.join(format!("{name}.json")),
+        )?)?)
+    };
+    let published = load_source("published")?;
+    let (hosts, head, earlier): (&[&str], _, _) = if let Some(path) = earlier_path {
+        let head = load_source("head")?;
+        ensure!(
+            head.source_sha != published.source_sha
+                && head.archive_sha256 != published.archive_sha256
+                && head.runtime_sha256 != published.runtime_sha256,
+            "candidate source, archive and runtime must differ from the published package"
+        );
+        let earlier = earlier_baselines(&path, &published, warmups, measured)?;
+        (&["a", "head", "b"], Some(head), Some(earlier))
+    } else {
+        (&["a", "b"], None, None)
+    };
+    for label in hosts {
+        let path = root.join(label);
+        await_file(&path, &path.join("ready"), Duration::from_secs(180))?;
+    }
+    let mut samples = Vec::new();
+    for round in 0..warmups + measured {
+        for _ in hosts {
+            let request = request_at(hosts, samples.len(), warmups);
+            let source = if request.host == "head" {
+                head.as_ref().context("missing candidate source")?
+            } else {
+                &published
+            };
+            samples.push(assign(&root.join(&request.host), &request, source)?);
+        }
+        eprintln!("Captured round {} of {}", round + 1, warmups + measured);
+    }
+    let timings = by_host(hosts, &samples)?;
+    let qualification =
+        earlier.map(|(earlier, digest)| qualify(&timings, &earlier, &digest, warmups, measured));
+    let mut stdout = io::stdout().lock();
+    serde_json::to_writer_pretty(
+        &mut stdout,
+        &json!({
+            "schemaVersion": 2,
+            "rotation": hosts,
+            "warmupRounds": warmups,
+            "measuredRounds": measured,
+            "timings": timings,
+            "timingQualification": qualification,
+            "samples": samples,
+        }),
+    )?;
+    stdout.write_all(b"\n")?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PAIRED: &str = include_str!(
+        "../../../incumbent/observations/served-chromium-linux/migration-head-87ca7814/capture-timings.json"
+    );
+    const INCUMBENT: &str = include_str!(
+        "../../../incumbent/observations/served-chromium-linux/migration-head-87ca7814/incumbent-timings.json"
+    );
+
+    fn timings(report: &str) -> Result<BTreeMap<String, Timing>> {
+        let report: Value = serde_json::from_str(report)?;
+        Ok(serde_json::from_value(report["timings"].clone())?)
+    }
+
+    fn relabeled_historical_row() -> Result<Sample> {
+        let mut report: Value = serde_json::from_str(PAIRED)?;
+        let row = &mut report["samples"][0];
+        row["timingScope"] = json!("fullTraceAndScreenshot");
+        row["runtimeSha256"] =
+            json!("7da1cd42672d5e4fbb83c50179cf694441e3eef2d1cf6cf2e98f359c94bdec8e");
+        Ok(serde_json::from_value(row.take())?)
+    }
+
+    fn sample_for_validation() -> Result<Sample> {
+        let mut sample = relabeled_historical_row()?;
+        *sample.stages_ns.get_mut("trace").unwrap() -= 1;
+        sample.stages_ns.insert("composer".into(), 1);
+        Ok(sample)
+    }
+
+    #[test]
+    fn a_paired_pass_cannot_override_the_incumbent_first_failure() -> Result<()> {
+        let result = qualify(
+            &timings(PAIRED)?,
+            &timings(INCUMBENT)?,
+            "example-digest",
+            2,
+            12,
+        );
+        for host in ["a", "b"] {
+            assert_eq!(result["paired"][host]["pass"], true);
+            assert_eq!(result["incumbentFirst"][host]["pass"], false);
+        }
+        assert_eq!(result["pass"], false);
+        Ok(())
+    }
+
+    #[test]
+    fn smoke_and_unwarmed_samples_have_no_qualification_verdict() -> Result<()> {
+        let mut paired = timings(PAIRED)?;
+        let earlier = timings(INCUMBENT)?;
+        paired.get_mut("head").unwrap().p95_ns = earlier["a"].p95_ns;
+        let value = qualify(&paired, &earlier, "example-digest", 2, 12);
+        assert_eq!(value["pass"], true);
+        for (warmups, measured) in [(0, 12), (2, 11), (0, 1)] {
+            assert!(
+                qualify(&paired, &earlier, "example-digest", warmups, measured)["pass"].is_null()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_edited_report_version_cannot_qualify_historical_sample_rows() -> Result<()> {
+        let mut historical: Value = serde_json::from_str(INCUMBENT)?;
+        historical["schemaVersion"] = json!(2);
+        let error = serde_json::from_value::<EarlierReport>(historical)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("timingScope"));
+        Ok(())
+    }
+
+    #[test]
+    fn relabeling_a_historical_row_cannot_supply_a_composer_measurement() -> Result<()> {
+        let old = relabeled_historical_row()?;
+        let source = CaptureSource {
+            source_sha: old.source_sha.clone(),
+            archive_sha256: old.package_sha256.clone(),
+            runtime_sha256: old.runtime_sha256.clone(),
+        };
+        let error = validate_sample(&old, &old.request, &source).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid capture stage durations")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_missing_profile_or_composer_observation() -> Result<()> {
+        let original = &sample_for_validation()?;
+        let source = CaptureSource {
+            source_sha: original.source_sha.clone(),
+            archive_sha256: original.package_sha256.clone(),
+            runtime_sha256: original.runtime_sha256.clone(),
+        };
+        validate_sample(original, &original.request, &source)?;
+        let mut missing_profile: Sample = serde_json::from_value(serde_json::to_value(original)?)?;
+        missing_profile.profile = Value::Null;
+        assert!(validate_sample(&missing_profile, &original.request, &source).is_err());
+
+        let mut missing_observation: Sample =
+            serde_json::from_value(serde_json::to_value(original)?)?;
+        missing_observation.trace[2]
+            .as_object_mut()
+            .unwrap()
+            .remove("observed");
+        assert!(validate_sample(&missing_observation, &original.request, &source).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_checksummed_truncated_png() -> Result<()> {
+        let sample = &mut sample_for_validation()?;
+        let png = include_bytes!(
+            "../../../incumbent/observations/served-chromium-linux/migration-head-87ca7814/a/capture.png"
+        );
+        let mut image = tempfile::NamedTempFile::new()?;
+        image.write_all(png)?;
+        validate_png(sample, image.path())?;
+
+        fs::write(image.path(), &png[..24])?;
+        sample.screenshot_sha256 = format!("{:x}", Sha256::digest(&png[..24]));
+        assert!(validate_png(sample, image.path()).is_err());
+        Ok(())
+    }
+}

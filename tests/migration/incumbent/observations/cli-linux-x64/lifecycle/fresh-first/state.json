@@ -1,0 +1,8 @@
+{
+  "bootId": "adb19ddb-56aa-4329-a997-297d8cc6f4dc",
+  "homeMode": "fresh",
+  "fixtureId": "linux-cli-lifecycle",
+  "database": "userdata/statev2.sqlite",
+  "databaseAbsentBeforeStart": true,
+  "runtimeOwnerSha256": "7b46b03bba7b4cacffcf71e7d1510f367b8ad4cbaff2efa09a426cc7deccccb0"
+}

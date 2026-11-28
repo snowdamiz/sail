@@ -1,0 +1,25 @@
+{
+  "fixtureId": "installer-home",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "version": "0.1.17",
+  "installer": "Sail-0.1.17-arm64.zip",
+  "installerSha256": "d02554b8199904fb2b3b36b3dd938571cca2a24760225e0d9711b5158011f372",
+  "actions": [
+    "Use SQLite backup to copy the populated isolated statev2.sqlite to a new home.",
+    "Copy the synthetic Replay provider settings and launch the installed app with the new fixture home and a unique loopback port.",
+    "Select Compatibility replay in the project sidebar and inspect the displayed thread and code."
+  ],
+  "observed": {
+    "bundleId": "com.sail.desktop",
+    "windowPoints": [1100, 780],
+    "screenshotPixels": [2200, 1560],
+    "thread": "Compatibility replay",
+    "visibleReply": "This turn is a replay.",
+    "database": "statev2.sqlite",
+    "threads": 1,
+    "messages": 3,
+    "latestMigration": 118
+  },
+  "screenshotSha256": "2b7232147c51edfedf3eebc73cc63d2e5f17a96e010dca58efc2546271ffa566",
+  "originArtifact": "Published installer-generated app with the verified contents recorded by the runtime probe."
+}

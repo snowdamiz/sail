@@ -1,0 +1,15 @@
+{
+  "fixtureId": "local-pair",
+  "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "candidateSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+  "changedSteps": [],
+  "pixels": {
+    "baseline": "tests/migration/incumbent/observations/electron-macos-arm64/local-activation/published/capture.png",
+    "candidate": "tests/migration/incumbent/observations/electron-macos-arm64/local-activation/candidate/capture.png",
+    "diff": "tests/migration/incumbent/observations/electron-macos-arm64/local-activation/activation-diff.png",
+    "baselineSize": [2200, 1560],
+    "candidateSize": [2200, 1560],
+    "differentPixels": 3485,
+    "bounds": [116, 1337, 1903, 1504]
+  }
+}
