@@ -10,18 +10,23 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  canAddAnyProviderInWelcome,
+  canAddProviderAccountInWelcome,
   cliTerminalStep,
   codexCardProvider,
   codexNeedsSetup,
   groupWelcomeAgents,
+  inlineAuthCardProvider,
   turnedOnInstance,
+  welcomeNeedsInlineAuth,
   welcomeOffersPhone,
 } from "./welcomePage.logic";
 
 function provider(name: string, overrides: Partial<ServerProvider> = {}): ServerProvider {
+  const defaultId = name.toLowerCase().replaceAll(/\s+/g, "_");
   return {
-    instanceId: ProviderInstanceId.make(name.toLowerCase()),
-    driver: ProviderDriverKind.make(name.toLowerCase()),
+    instanceId: overrides.instanceId ?? ProviderInstanceId.make(defaultId),
+    driver: overrides.driver ?? ProviderDriverKind.make(defaultId),
     displayName: name,
     enabled: true,
     installed: true,
@@ -135,6 +140,31 @@ describe("groupWelcomeAgents", () => {
       available: [],
     });
   });
+
+  it("groups multiple accounts of the same provider cleanly by state and name", () => {
+    const claudeDriver = ProviderDriverKind.make("claudeAgent");
+    const groups = groupWelcomeAgents(
+      [
+        provider("Claude 2", {
+          instanceId: ProviderInstanceId.make("claudeAgent_2"),
+          driver: claudeDriver,
+          auth: { status: "unauthenticated" },
+          status: "error",
+        }),
+        provider("Claude", {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          driver: claudeDriver,
+          auth: { status: "authenticated", email: "personal@example.com" },
+        }),
+      ],
+      undefined,
+      nameOf,
+      allowAll,
+    );
+
+    expect(names(groups.found)).toEqual(["Claude", "Claude 2"]);
+    expect(groups.readyCount).toBe(1);
+  });
 });
 
 describe("cliTerminalStep", () => {
@@ -213,6 +243,81 @@ describe("codexNeedsSetup", () => {
     expect(setup({})).toBe(false);
     const claude = provider("Claude", { auth: { status: "unauthenticated" } });
     expect(codexNeedsSetup(claude, undefined)).toBe(false);
+  });
+});
+
+describe("welcomeNeedsInlineAuth & inlineAuthCardProvider", () => {
+  it("handles non-Codex auth-capable providers inline in onboarding", () => {
+    const cursorSignedOut = provider("Cursor", {
+      setup: { canAuthenticate: true, canInstall: false },
+      auth: { status: "unauthenticated" },
+      status: "error",
+    });
+    expect(welcomeNeedsInlineAuth(cursorSignedOut, undefined)).toBe(true);
+
+    const antigravityNeedsInstall = provider("Antigravity", {
+      setup: { canAuthenticate: true, canInstall: true },
+      installed: false,
+      auth: { status: "unknown" },
+      status: "error",
+    });
+    expect(welcomeNeedsInlineAuth(antigravityNeedsInstall, undefined)).toBe(true);
+
+    // Codex keeps its dedicated OnboardingCodexSetup card.
+    const codexSignedOut = provider("Codex", {
+      setup: { canAuthenticate: true, canInstall: true },
+      auth: { status: "unauthenticated" },
+      status: "error",
+    });
+    expect(welcomeNeedsInlineAuth(codexSignedOut, undefined)).toBe(false);
+
+    // Authenticated providers do not open inline auth.
+    expect(
+      welcomeNeedsInlineAuth(
+        { ...cursorSignedOut, auth: { status: "authenticated" }, status: "ready" },
+        undefined,
+      ),
+    ).toBe(false);
+
+    // Keeps card open across transient missing snapshot and closes once authenticated.
+    expect(
+      inlineAuthCardProvider({
+        providers: [],
+        instanceId: cursorSignedOut.instanceId,
+        last: cursorSignedOut,
+        settings: undefined,
+      }),
+    ).toBe(cursorSignedOut);
+    expect(
+      inlineAuthCardProvider({
+        providers: [{ ...cursorSignedOut, auth: { status: "authenticated" }, status: "ready" }],
+        instanceId: cursorSignedOut.instanceId,
+        last: cursorSignedOut,
+        settings: undefined,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("canAddProviderAccountInWelcome & canAddAnyProviderInWelcome", () => {
+  it("allows adding accounts for non-ACP allowed drivers and respects policy limits", () => {
+    const claude = provider("Claude", { driver: ProviderDriverKind.make("claudeAgent") });
+    const codex = provider("Codex", { driver: ProviderDriverKind.make("codex") });
+    const acp = provider("Kilo", { driver: ProviderDriverKind.make("acpRegistry") });
+
+    expect(canAddProviderAccountInWelcome(claude, undefined)).toBe(true);
+    expect(canAddProviderAccountInWelcome(codex, undefined)).toBe(true);
+    expect(canAddProviderAccountInWelcome(acp, undefined)).toBe(false);
+    expect(canAddAnyProviderInWelcome(undefined)).toBe(true);
+
+    const allowCodexOnly: ManagedPolicySummary = {
+      organization: "Acme",
+      lockedSettings: [],
+      limits: { providers: { allowedDrivers: [ProviderDriverKind.make("codex")] } },
+    };
+    expect(canAddProviderAccountInWelcome(codex, allowCodexOnly)).toBe(true);
+    expect(canAddProviderAccountInWelcome(claude, allowCodexOnly)).toBe(false);
+    expect(canAddAnyProviderInWelcome(allowCodexOnly)).toBe(true);
   });
 });
 

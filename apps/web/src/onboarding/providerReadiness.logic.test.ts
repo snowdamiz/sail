@@ -184,4 +184,26 @@ describe("resolveOnboardingProviderLoginCommand", () => {
       ),
     ).toBe("codex login");
   });
+  it("falls back to default binary for isolated secondary instances without a custom binaryPath", () => {
+    const claudeSecondary: ServerProvider = {
+      ...readyCodex,
+      driver: ProviderDriverKind.make("claudeAgent"),
+      instanceId: ProviderInstanceId.make("claudeAgent_2"),
+    };
+    expect(
+      resolveOnboardingProviderLoginCommand(
+        claudeSecondary,
+        {
+          ...DEFAULT_SERVER_SETTINGS,
+          providerInstances: {
+            [claudeSecondary.instanceId]: {
+              driver: claudeSecondary.driver,
+              config: { binaryPath: "   ", homePath: "/state/providers/claude/abc" },
+            },
+          },
+        },
+        "darwin",
+      ),
+    ).toBe("claude auth login");
+  });
 });
