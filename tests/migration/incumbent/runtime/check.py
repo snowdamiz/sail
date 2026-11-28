@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import hmac
 import http.client
+from http.cookies import SimpleCookie
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,7 @@ from zipfile import ZipFile
 HERE = Path(__file__).resolve().parent
 DESCRIPTOR = "/.well-known/t3/environment"
 BROWSER_SESSION = "/api/auth/browser-session"
+SESSION = "/api/auth/session"
 READINESS = "/.well-known/t3/desktop-readiness?challenge=p01"
 HOST = "127.0.0.1"
 LABEL = "P01 launcher fixture"
@@ -109,15 +111,17 @@ def cli(command, env, cwd):
     return result.stdout.decode()
 
 
-def call(port, path, payload=None):
+def call(port, path, payload=None, headers=None):
     connection = http.client.HTTPConnection(HOST, port, timeout=5)
     try:
+        request_headers = {} if headers is None else dict(headers)
         if payload is None:
-            connection.request("GET", path)
+            connection.request("GET", path, headers=request_headers)
         else:
-            connection.request("POST", path, json.dumps(payload), {"Content-Type": "application/json"})
+            request_headers["Content-Type"] = "application/json"
+            connection.request("POST", path, json.dumps(payload), request_headers)
         response = connection.getresponse()
-        return response.status, response.read()
+        return response.status, response.read(), response.headers.get_all("Set-Cookie", [])
     finally:
         connection.close()
 
@@ -187,14 +191,30 @@ def pair_credential(output, port):
 
 def redeem(port, credential, one_time):
     payload = {"credential": credential}
-    status, body = call(port, BROWSER_SESSION, payload)
+    status, body, cookie_headers = call(port, BROWSER_SESSION, payload)
     session = json.loads(body)
     require(status == 200 and session["authenticated"] is True
             and session["sessionMethod"] == "browser-session-cookie",
             f"Browser session was not issued as expected (HTTP {status})")
-    result = {"path": BROWSER_SESSION, "status": status, "sessionMethod": session["sessionMethod"]}
+    cookies = SimpleCookie()
+    for header in cookie_headers:
+        cookies.load(header)
+    cookie = "; ".join(f"{name}={value.coded_value}" for name, value in cookies.items() if value.value)
+    require(cookie, "Browser session response did not set a session cookie")
+
+    anonymous_status, anonymous_body, _ = call(port, SESSION)
+    require(anonymous_status == 200 and json.loads(anonymous_body).get("authenticated") is False,
+            "Session endpoint did not distinguish the anonymous request")
+    session_status, session_body, _ = call(port, SESSION, headers={"Cookie": cookie})
+    authenticated = json.loads(session_body)
+    require(session_status == 200 and authenticated.get("authenticated") is True
+            and authenticated.get("sessionMethod") == session["sessionMethod"],
+            "Browser session cookie did not authenticate a follow-up request")
+    result = {"path": BROWSER_SESSION, "status": status, "sessionMethod": session["sessionMethod"],
+              "cookieCheck": {"path": SESSION, "anonymousAuthenticated": False,
+                              "authenticated": True, "status": session_status}}
     if one_time:
-        reused, _ = call(port, BROWSER_SESSION, payload)
+        reused, _, _ = call(port, BROWSER_SESSION, payload)
         require(reused == 401, "A consumed pairing credential was not rejected")
         result["reuseStatus"] = reused
     return result
@@ -276,7 +296,7 @@ def probe(command, scratch, spec):
             require(record["pid"] == process.pid and record["origin"] == f"http://{HOST}:{port}"
                     and record["host"] == HOST and record["port"] == port,
                     "Scratch runtime record does not match the owned loopback process")
-            status, body = call(port, DESCRIPTOR)
+            status, body, _ = call(port, DESCRIPTOR)
             require(status == 200, "Environment descriptor unavailable")
             descriptor = public_descriptor(body, base)
             require(descriptor["serverVersion"] == record["serverVersion"] == "0.1.17"
@@ -293,7 +313,7 @@ def probe(command, scratch, spec):
             })
 
             if desktop:
-                status, proof = call(port, READINESS)
+                status, proof, _ = call(port, READINESS)
                 expected = hmac.digest(readiness_secret.encode(), b"t3-desktop-readiness:p01", "sha256")
                 require(status == 200 and hmac.compare_digest(proof.strip(), expected.hex().encode()),
                         "Desktop backend did not prove receipt of the fd 3 envelope")
@@ -314,7 +334,7 @@ def probe(command, scratch, spec):
                 result["browserSession"] = redeem(port, envelope["desktopBootstrapToken"], False)
             if pairing == "cli":
                 path = "/ws?orchestrationProtocol=1"
-                status, body = call(port, path)
+                status, body, _ = call(port, path)
                 rejection = json.loads(body)
                 require(status == 426
                         and rejection["code"] == "orchestration_protocol_incompatible"

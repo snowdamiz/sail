@@ -38,6 +38,12 @@
       },
       "pair": {
         "browserSession": {
+          "cookieCheck": {
+            "anonymousAuthenticated": false,
+            "authenticated": true,
+            "path": "/api/auth/session",
+            "status": 200
+          },
           "path": "/api/auth/browser-session",
           "reuseStatus": 401,
           "sessionMethod": "browser-session-cookie",
@@ -128,6 +134,12 @@
       "selectedHome": "legacy",
       "startupPairing": {
         "browserSession": {
+          "cookieCheck": {
+            "anonymousAuthenticated": false,
+            "authenticated": true,
+            "path": "/api/auth/session",
+            "status": 200
+          },
           "path": "/api/auth/browser-session",
           "reuseStatus": 401,
           "sessionMethod": "browser-session-cookie",
@@ -192,6 +204,12 @@
         "readinessStatus": 200
       },
       "browserSession": {
+        "cookieCheck": {
+          "anonymousAuthenticated": false,
+          "authenticated": true,
+          "path": "/api/auth/session",
+          "status": 200
+        },
         "path": "/api/auth/browser-session",
         "sessionMethod": "browser-session-cookie",
         "status": 200
