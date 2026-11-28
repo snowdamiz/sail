@@ -580,6 +580,11 @@
       "states": ["copied-home-boots"],
       "check": "Boot the installed artifact with an isolated copy of the seeded home and open the expected thread. Record the artifact digest, command and application result.",
       "evidenceProfile": "process",
+      "supplementalReceipts": [
+        "observations/electron-macos-arm64/copied-home/receipt.json",
+        "runtime/v0.1.17-linux-arm64.json",
+        "runtime/v0.1.17-linux-x64.json"
+      ],
       "sourceReferences": ["scripts/install.sh", ".github/workflows/release.yml"]
     },
     {
@@ -590,6 +595,10 @@
       "states": ["fresh-install", "existing-home"],
       "check": "Exercise every published desktop install format and the shell install route using the matching architecture. Check installed version, boot and state preservation.",
       "evidenceProfile": "process",
+      "supplementalReceipts": [
+        "runtime/v0.1.17-linux-arm64.json",
+        "runtime/v0.1.17-linux-x64.json"
+      ],
       "sourceReferences": ["scripts/build-desktop-installers.ts"],
       "configurationAxes": {
         "installMethodByTarget": {

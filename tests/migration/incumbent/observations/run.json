@@ -98,6 +98,11 @@
     "result": "pass",
     "receipt": "../runtime/v0.1.17-macos-arm64.json"
   },
+  "linuxInstallers": {
+    "arm64Receipt": "../runtime/v0.1.17-linux-arm64.json",
+    "x64Receipt": "../runtime/v0.1.17-linux-x64.json",
+    "scope": "Published CLI shell installer, desktop shell installer and Debian package on both Linux architectures. The arm64 AppImage booted in extract-and-run mode. The emulated x64 AppImage runtime exited 127 and its extracted AppRun booted. The installed CLI and all four tested desktop payloads opened the copied Replay thread."
+  },
   "negativeControls": {
     "result": "pass",
     "receipt": "harness-controls/receipt.json"
