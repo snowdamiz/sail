@@ -1,0 +1,186 @@
+{
+  "fixtureId": "chat-turn",
+  "captureDriver": "../../../../capture-macos-session.swift",
+  "earlierRun": "../migration-head-9982ba07/capture-timings.json",
+  "candidatePackage": "../migration-head-9982ba07/package-receipt.json",
+  "scope": "Four already-loaded packaged Electron installations on the same macOS arm64 host. Activation and hover, renderer trace, frame capture, PNG encoding and window geometry are timed. App startup, persistent driver startup and receipt hashing are outside the timed interval.",
+  "order": "a, head-a, b, head-b rotated by one position each round",
+  "statistic": "Nearest-rank p95 per host",
+  "warmupsPerHost": 2,
+  "measuredRunsPerHost": 48,
+  "hosts": {
+    "a": {
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "version": "0.1.17",
+      "databaseMigration": 118,
+      "controls": {
+        "buttons": [
+          {
+            "name": "Attach files",
+            "pressed": null
+          },
+          {
+            "name": "Showcase",
+            "pressed": null
+          },
+          {
+            "name": "Submit message",
+            "pressed": null
+          }
+        ]
+      },
+      "rgbaSha256": "8c371cdd24a287ddd13567371fcbdf1e935b95ded2192b68213e2200399c92a5",
+      "traceSha256": "6357ae78d1fdfaa380391920f909f539dbef142dbe8300790b748d7e2c6a303a",
+      "timing": {
+        "medianMs": 353.058167,
+        "p95Ms": 564.281916,
+        "p95Round": 28,
+        "p95StagesMs": {
+          "activateAndHover": 118.748041,
+          "trace": 335.322209,
+          "screenshotAndGeometry": 110.211666
+        },
+        "maxMs": 931.127333
+      }
+    },
+    "head-a": {
+      "sourceSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+      "version": "0.1.18",
+      "databaseMigration": 119,
+      "controls": {
+        "buttons": [
+          {
+            "name": "Attach files",
+            "pressed": null
+          },
+          {
+            "name": "Showcase",
+            "pressed": null
+          },
+          {
+            "name": "Enable Poteto mode for this session",
+            "pressed": "false"
+          },
+          {
+            "name": "Submit message",
+            "pressed": null
+          }
+        ]
+      },
+      "rgbaSha256": "d41988552805e978942ec5c391a8a1b17426b615d89f0b05c70b47b5a0ec02fb",
+      "traceSha256": "6357ae78d1fdfaa380391920f909f539dbef142dbe8300790b748d7e2c6a303a",
+      "timing": {
+        "medianMs": 346.300792,
+        "p95Ms": 514.258625,
+        "p95Round": 21,
+        "p95StagesMs": {
+          "activateAndHover": 198.47025,
+          "trace": 207.775208,
+          "screenshotAndGeometry": 108.013167
+        },
+        "maxMs": 595.928667
+      }
+    },
+    "b": {
+      "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+      "version": "0.1.17",
+      "databaseMigration": 118,
+      "controls": {
+        "buttons": [
+          {
+            "name": "Attach files",
+            "pressed": null
+          },
+          {
+            "name": "Showcase",
+            "pressed": null
+          },
+          {
+            "name": "Submit message",
+            "pressed": null
+          }
+        ]
+      },
+      "rgbaSha256": "8c371cdd24a287ddd13567371fcbdf1e935b95ded2192b68213e2200399c92a5",
+      "traceSha256": "6357ae78d1fdfaa380391920f909f539dbef142dbe8300790b748d7e2c6a303a",
+      "timing": {
+        "medianMs": 350.884708,
+        "p95Ms": 520.610416,
+        "p95Round": 8,
+        "p95StagesMs": {
+          "activateAndHover": 99.575125,
+          "trace": 363.986375,
+          "screenshotAndGeometry": 57.048916
+        },
+        "maxMs": 2139.177125
+      }
+    },
+    "head-b": {
+      "sourceSha": "9982ba07c7563a3042970eedd6cb8609c27a50e8",
+      "version": "0.1.18",
+      "databaseMigration": 119,
+      "controls": {
+        "buttons": [
+          {
+            "name": "Attach files",
+            "pressed": null
+          },
+          {
+            "name": "Showcase",
+            "pressed": null
+          },
+          {
+            "name": "Enable Poteto mode for this session",
+            "pressed": "false"
+          },
+          {
+            "name": "Submit message",
+            "pressed": null
+          }
+        ]
+      },
+      "rgbaSha256": "d41988552805e978942ec5c391a8a1b17426b615d89f0b05c70b47b5a0ec02fb",
+      "traceSha256": "6357ae78d1fdfaa380391920f909f539dbef142dbe8300790b748d7e2c6a303a",
+      "timing": {
+        "medianMs": 351.00483299999996,
+        "p95Ms": 512.315166,
+        "p95Round": 26,
+        "p95StagesMs": {
+          "activateAndHover": 188.13575,
+          "trace": 228.297541,
+          "screenshotAndGeometry": 95.881875
+        },
+        "maxMs": 1409.082208
+      }
+    }
+  },
+  "p95Comparisons": {
+    "head-a-vs-a": {
+      "baselineP95Ms": 564.281916,
+      "candidateP95Ms": 514.258625,
+      "allowedP95Ms": 648.9242034,
+      "result": "pass"
+    },
+    "head-a-vs-b": {
+      "baselineP95Ms": 520.610416,
+      "candidateP95Ms": 514.258625,
+      "allowedP95Ms": 598.7019783999999,
+      "result": "pass"
+    },
+    "head-b-vs-a": {
+      "baselineP95Ms": 564.281916,
+      "candidateP95Ms": 512.315166,
+      "allowedP95Ms": 648.9242034,
+      "result": "pass"
+    },
+    "head-b-vs-b": {
+      "baselineP95Ms": 520.610416,
+      "candidateP95Ms": 512.315166,
+      "allowedP95Ms": 598.7019783999999,
+      "result": "pass"
+    }
+  },
+  "rawSamples": "capture-samples.ndjson",
+  "rawSamplesSha256": "448001d9b8d7b91134ba898cc396d62c4b78859ad0914aa3ab213544a62bf229",
+  "traceDigestEncoding": "UTF-8 JSON with sorted keys and no insignificant whitespace"
+}

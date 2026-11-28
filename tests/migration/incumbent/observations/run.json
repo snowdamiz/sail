@@ -118,6 +118,14 @@
       "changedSteps": [2],
       "scope": "The two incumbent installations and the two migration-head installations each matched within their build. The cross-source difference remains confined to the composer. One migration-head installation exceeded the 15% limit against both incumbents and stayed within the 2 s absolute limit."
     },
+    "electronPersistentCapture": {
+      "captureOnlyPilot": "electron-macos-arm64/native-capture-session/capture-only-pilot.json",
+      "timing": "electron-macos-arm64/native-capture-session/capture-timings.json",
+      "comparison": "electron-macos-arm64/native-capture-session/comparisons.json",
+      "timingBudget": "pass",
+      "crossBuildParity": "fail",
+      "scope": "One macOS dark Electron profile with 48 measured rounds per installation. Both copies of the package built at 9982ba07 met the capture timing limits against both published copies. Each build reproduced its earlier decoded pixels. The cross-build composer difference remained."
+    },
     "chromiumMigrationHead": {
       "result": "fail",
       "sourceSha": "4807bdae945354ade96b40ad7d5116483ff0d308",

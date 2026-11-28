@@ -27,3 +27,19 @@ python3 tests/migration/compare.py compare "$reference" "$candidate" \
 The command reports pixel differences and the positions of changed, added, or missing trace steps. Exit code `1` means a difference. Exit code `2` means the inputs could not be compared. The diff path must be new, so each check can retain its result. Compare a capture against its own surface and display profile.
 
 Run the negative controls with `python3 -m unittest discover -s tests/migration -p 'test_*.py'`.
+
+## Reuse the macOS capture process
+
+For repeated native captures on macOS 14.2 or later, compile the
+[ScreenCaptureKit driver](capture-macos-session.swift) with
+`swiftc -parse-as-library -O tests/migration/capture-macos-session.swift -o "$scratch/capture-macos-session"`.
+Start it once and wait for `ready` on stdout. For each capture, send one line of JSON
+with the owned app's PID in `processID` and an unused absolute PNG path in `output`.
+Read one JSON line after each request. It contains the window size in points and pixels
+and the elapsed frame and PNG encoding times. Keep one request in flight and close stdin
+after the last capture.
+
+Use the same capture driver for every installation compared in a timing run. Verify
+geometry and decoded pixels against the existing reference before changing the driver
+for a profile. Record which processes start inside the timed interval and retain
+separate durations for activation, trace, and screenshot.
