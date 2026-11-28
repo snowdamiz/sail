@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Result, ensure};
 use serde_json::json;
 
-use super::{Capture, Evidence, desktop_capture};
+use super::{Capture, Evidence, capture_witness};
 use crate::catalog::{Observation, Run};
 
 pub(super) fn verify(
@@ -13,7 +13,7 @@ pub(super) fn verify(
     capture: &Capture,
     image: &Path,
 ) -> Result<()> {
-    let state = desktop_capture::observed_state(evidence, observation, run, capture)?;
+    let state = capture_witness::observed_state(evidence, observation, run, capture)?;
     let cell = &observation.cell;
     let (action_name, action) = match (
         cell.case_id.as_str(),
@@ -84,5 +84,5 @@ pub(super) fn verify(
             && serde_json::to_value(&arrived.observed)? == *destination,
         "navigation trace disagrees with the observed action or destination"
     );
-    desktop_capture::verify_png(image, 1100, 780)
+    capture_witness::verify_png(image, 1100, 780)
 }

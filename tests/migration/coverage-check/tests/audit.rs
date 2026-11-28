@@ -339,7 +339,7 @@ fn rejects_a_display_receipt_with_a_rehashed_fabricated_locale_observation() {
     fixture.edit_process_json(0, "capture-receipt", |capture| {
         capture["stateReceiptSha256"] = digest;
     });
-    fixture.rejects("desktop state bytes disagree with the observed capture witness");
+    fixture.rejects("state bytes disagree with the observed capture witness");
 }
 
 #[test]
@@ -366,7 +366,7 @@ fn rejects_a_desktop_repeat_with_an_invented_capture_id() {
         capture["captureRunId"] = json!("invented-repeat");
         capture["stateReceiptSha256"] = digest;
     });
-    fixture.rejects("missing observed desktop capture witness");
+    fixture.rejects("missing observed capture witness");
 }
 
 #[test]
@@ -413,7 +413,7 @@ fn rejects_rehashing_dark_pixels_into_a_light_display_reference() {
             capture["screenshotSha256"] = screenshot;
         });
     }
-    light.rejects("desktop state bytes disagree with the observed capture witness");
+    light.rejects("state bytes disagree with the observed capture witness");
 }
 
 #[test]
@@ -432,6 +432,93 @@ fn verifies_both_witnessed_linux_navigation_entrypoints() {
         let report: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(report["verifiedVisualReferenceObservations"], 1);
     }
+}
+
+#[test]
+fn verifies_the_published_linux_chromium_chat_states() {
+    for state in ["empty", "initial-loading", "error"] {
+        let fixture = Fixture::visual("chat-view-states", state, "served-chromium-linux");
+        let output = fixture.run();
+        assert!(
+            output.status.success(),
+            "{state}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["verifiedVisualReferenceObservations"], 1);
+    }
+}
+
+#[test]
+fn rejects_a_rehashed_loading_trace_with_a_different_restored_table() {
+    let mut fixture = Fixture::visual(
+        "chat-view-states",
+        "initial-loading",
+        "served-chromium-linux",
+    );
+    fixture.edit_process_json(0, "capture-receipt", |capture| {
+        capture["trace"][1]["observed"]["table"][3][2] = json!("0 passed");
+    });
+    fixture.rejects("loading trace disagrees with the observed release of the held RPC");
+}
+
+#[test]
+fn uses_generic_visual_checks_for_non_linux_display_references() {
+    let mut fixture = Fixture::visual("chat-turn", "settled", "electron-macos-arm64");
+    fixture.catalog["cases"][0]["id"] = json!("chat-display");
+    fixture.catalog["cases"][0]["states"] = json!(["dark"]);
+    fixture.catalog["observations"][0]["caseId"] = json!("chat-display");
+    fixture.catalog["observations"][0]["state"] = json!("dark");
+    let mut receipts = Vec::new();
+    for run in 0..2 {
+        fixture.catalog["observations"][0]["runs"][run]["fixtureId"] = json!("chat-display");
+        fixture.edit_process_json(run, "capture-receipt", |capture| {
+            capture["fixtureId"] = json!("chat-display");
+            capture["coverage"]["caseId"] = json!("chat-display");
+            capture["coverage"]["state"] = json!("dark");
+        });
+        receipts.push(
+            fixture.catalog["observations"][0]["runs"][run]["artifacts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|artifact| artifact["kind"] == "capture-receipt")
+                .unwrap()["sha256"]
+                .clone(),
+        );
+    }
+    let artifact = fixture.catalog["observations"][0]["comparisonArtifacts"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|artifact| artifact["kind"] == "action-and-state")
+        .unwrap();
+    let path = fixture
+        .directory
+        .path()
+        .join(artifact["path"].as_str().unwrap());
+    let mut comparison: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    comparison["fixtureId"] = json!("chat-display");
+    comparison["artifactSha256"]["baselineReceipt"] = receipts[0].clone();
+    comparison["artifactSha256"]["candidateReceipt"] = receipts[1].clone();
+    let bytes = serde_json::to_vec(&comparison).unwrap();
+    fs::write(path, &bytes).unwrap();
+    artifact["sha256"] = json!(format!("{:x}", Sha256::digest(bytes)));
+    let output = fixture.run();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let state = fixture
+        .repo
+        .join("tests/migration/incumbent/observations/electron-linux-arm64/display/a/state.json");
+    let state: Value = serde_json::from_slice(&fs::read(state).unwrap()).unwrap();
+    fixture.edit_process_json(0, "capture-receipt", |capture| {
+        capture["captureRunId"] = state["captureRunId"].clone();
+    });
+    fixture.rejects("observed capture witness belongs to a different platform");
 }
 
 #[test]

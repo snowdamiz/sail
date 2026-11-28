@@ -127,11 +127,12 @@ def preview_session():
             bridge.stdout.close()
 
 
-def pair(call, tab):
+def pair(call, tab, origin=ORIGIN):
     output = command([ROOT / "runtime/t3", "pair", "--base-dir", ROOT / "state"])
     link = urlsplit(re.search(r"^Pairing URL: (.+)$", output, re.MULTILINE)[1])
     assert link.path == "/pair" and link.fragment.startswith("token=")
-    call("preview_navigate", **tab, url=f"{ORIGIN}/pair#{link.fragment}")
+    call("preview_navigate", **tab, url=f"{origin}/pair#{link.fragment}")
+    call("preview_wait_for", **tab, selector='main [contenteditable="true"]')
     expression = """(async () => {
         if (location.pathname === '/pair' || location.hash) return false;
         const auth = await (await fetch('/api/auth/session')).json();
@@ -208,7 +209,7 @@ def record_capture(profile, trace, state, source):
     (ROOT / "state.json").write_text(json.dumps(state, indent=2) + "\n")
 
 
-def prepare(call, source):
+def prepare(call, source, origin=ORIGIN):
     descriptor = json.loads((ROOT / "descriptor.private.json").read_text())
     assert descriptor["serverVersion"] == source["version"]
     assert descriptor["orchestrationProtocolVersion"] == 2
@@ -221,7 +222,7 @@ def prepare(call, source):
     tab = {"tabId": opened["tabId"]}
     call("preview_resize", **tab, mode="freeform", width=640, height=600)
     call("preview_set_appearance", **tab, colorScheme="light")
-    pair(call, tab)
+    pair(call, tab, origin)
     return tab, path, {
         "platform": descriptor["platform"],
         "version": descriptor["serverVersion"],
@@ -355,6 +356,12 @@ def sample_series(call, source, probe):
 
 def capture():
     source = capture_source()
+    if (ROOT / "chat-states").is_file():
+        from chat_states import capture_states
+
+        with preview_session() as call:
+            capture_states(ROOT, source, call, prepare)
+        return
     probe = Path("/fixture/settled-replay-browser.js").read_text().strip()
     if "captureRounds" in source:
         with preview_session() as call:

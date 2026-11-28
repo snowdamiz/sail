@@ -456,5 +456,26 @@
       }
     },
     "scope": "Two independent published v0.1.17 Debian installations per architecture, with x64 under Rosetta. Both the rendered chat link and the command palette opened the same saved Replay thread from a separate source thread and focused its composer. Captures use the full 1100 \u00d7 780 X11 window after clearing focus. Candidate comparisons and timing remain open."
+  },
+  "linuxChromiumChatStates": {
+    "directory": "served-chromium-linux/chat-states",
+    "comparisons": {
+      "empty": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "initial-loading": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      },
+      "error": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": []
+      }
+    },
+    "scope": "Two isolated published v0.1.17 installations and Browser panel sessions on Debian 12.15 arm64. Captures show the empty draft after Git resolves main, a held thread subscription, and the unavailable thread on an unpaired environment. Both runs verified cleared focus, the saved Replay reply and all four table rows after release, and the Environments recovery link. Candidate comparisons and timing remain open."
   }
 }

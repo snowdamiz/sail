@@ -10,7 +10,8 @@ use std::{
 
 use crate::catalog::{Artifact, Cell, Observation, Run};
 
-mod desktop_capture;
+mod capture_witness;
+mod chat_states;
 mod display;
 mod linux_cli;
 mod navigation;
@@ -273,12 +274,23 @@ fn load_capture(
         );
     }
     let image_path = evidence.resolve(&image.path)?;
-    match observation.cell.case_id.as_str() {
-        "chat-display" => display::verify(evidence, observation, run, &capture, &image_path)?,
-        "chat-link" | "palette-link" => {
-            navigation::verify(evidence, observation, run, &capture, &image_path)?;
+    capture_witness::verify_known_platform(&capture, &observation.cell)?;
+    if matches!(
+        observation.cell.platform_id.as_str(),
+        "electron-linux-arm64" | "electron-linux-x64"
+    ) {
+        match observation.cell.case_id.as_str() {
+            "chat-display" => display::verify(evidence, observation, run, &capture, &image_path)?,
+            "chat-link" | "palette-link" => {
+                navigation::verify(evidence, observation, run, &capture, &image_path)?;
+            }
+            _ => {}
         }
-        _ => {}
+    }
+    if observation.cell.case_id == "chat-view-states"
+        && observation.cell.platform_id == "served-chromium-linux"
+    {
+        chat_states::verify(evidence, observation, run, &capture, &image_path)?;
     }
     Ok((capture, image_path, receipt_path))
 }

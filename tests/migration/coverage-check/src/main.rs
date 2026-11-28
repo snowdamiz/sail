@@ -165,7 +165,9 @@ fn audit(repo: &Path, path: &Path, list_missing: bool) -> Result<Report> {
             "cli-open" | "installer-home" | "installer-formats" | "updater" | "host-upgrade" => {
                 Some("process")
             }
-            "chat-display" | "chat-link" | "palette-link" => Some("interaction"),
+            "chat-display" | "chat-link" | "palette-link" | "chat-view-states" => {
+                Some("interaction")
+            }
             _ => None,
         };
         if let Some(profile) = required_profile {

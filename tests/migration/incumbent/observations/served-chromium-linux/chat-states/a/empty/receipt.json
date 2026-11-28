@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "chat-view-states",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "client": "Sail 0.1.17 in Google Chrome for Testing 158.0.8127.88",
+  "server": "Node 0.1.17",
+  "profile": {
+    "surface": "server-served-web",
+    "platform": "Debian 12.15 arm64",
+    "origin": "server-served loopback",
+    "browser": "Chrome/158.0.0.0",
+    "locale": "en",
+    "theme": "light",
+    "motion": "standard",
+    "fonts": [
+      "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+    ],
+    "viewport": {
+      "width": 640,
+      "height": 600,
+      "scale": 2,
+      "zoom": 1
+    }
+  },
+  "coverage": {
+    "caseId": "chat-view-states",
+    "platformId": "served-chromium-linux",
+    "state": "empty",
+    "entrypoint": "chat",
+    "configurationId": "chrome-158.0.8127.88-debian-arm64-en-light-640x600-2x"
+  },
+  "captureRunId": "37e78b24-4be4-4f84-87f8-664c00b5dda1",
+  "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+  "screenshotSha256": "1636a2d20c0b0d73e999606916a1b3814fd3cce29fa0d49c2462ed2ecee47223",
+  "stateReceiptSha256": "60aec9f521cbca20ec463b3ad6d7a7a6a3ef260a2c708542440294decb507cd8",
+  "trace": [
+    {
+      "action": "openEmptyDraft",
+      "observed": {
+        "heading": "New thread",
+        "composer": "Message New thread",
+        "focusedElement": "BODY",
+        "mainBranch": true,
+        "emptyHint": true,
+        "submitDisabled": true,
+        "loadingLabel": null,
+        "loadingRole": null,
+        "loadingSubmitDisabled": false,
+        "replayReply": false,
+        "unavailable": false,
+        "unpairedMessage": false,
+        "recoveryHref": null
+      }
+    }
+  ]
+}

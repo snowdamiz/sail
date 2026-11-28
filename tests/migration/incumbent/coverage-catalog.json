@@ -7211,6 +7211,345 @@
           "sha256": "d2e3e10c4d463a7d1d740368dc3b35ed8bd890350615bdcffb8462c88f7a358b"
         }
       ]
+    },
+    {
+      "caseId": "chat-view-states",
+      "platformId": "served-chromium-linux",
+      "state": "empty",
+      "entrypoint": "chat",
+      "configurationId": "chrome-158.0.8127.88-debian-arm64-en-light-640x600-2x",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-view-states",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Google Chrome for Testing 158.0.8127.88",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "server-served loopback",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/served-chromium-linux/chat-states/a/empty/capture.png",
+              "sha256": "1636a2d20c0b0d73e999606916a1b3814fd3cce29fa0d49c2462ed2ecee47223"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/served-chromium-linux/chat-states/a/empty/receipt.json",
+              "sha256": "86f30ae3d8d7e0ef993076c06d46dfe8e3c2b8832d902ab2d9ed376121da92e5"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/served-chromium-linux/chat-states/a/state.json",
+              "sha256": "60aec9f521cbca20ec463b3ad6d7a7a6a3ef260a2c708542440294decb507cd8"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-view-states",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Google Chrome for Testing 158.0.8127.88",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "server-served loopback",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/served-chromium-linux/chat-states/b/empty/capture.png",
+              "sha256": "1636a2d20c0b0d73e999606916a1b3814fd3cce29fa0d49c2462ed2ecee47223"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/served-chromium-linux/chat-states/b/empty/receipt.json",
+              "sha256": "3a15dc05fec7962a8885af598cf6437229d99abed09b399214f8e62276223e50"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/served-chromium-linux/chat-states/b/state.json",
+              "sha256": "3e01e2cd6a82b7bcec8b4da0dd9fb26fd4bf3d3d7797129206053f5167b32e20"
+            }
+          ]
+        }
+      ],
+      "comparisonArtifacts": [
+        {
+          "kind": "pixel-diff",
+          "path": "observations/served-chromium-linux/chat-states/empty-diff.png",
+          "sha256": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+        },
+        {
+          "kind": "action-and-state",
+          "path": "observations/served-chromium-linux/chat-states/empty-comparison.json",
+          "sha256": "02334fc76c82cd9c53031456e781acb9b54bfdb3e38ba6a4975ee366592d1305"
+        }
+      ]
+    },
+    {
+      "caseId": "chat-view-states",
+      "platformId": "served-chromium-linux",
+      "state": "initial-loading",
+      "entrypoint": "chat",
+      "configurationId": "chrome-158.0.8127.88-debian-arm64-en-light-640x600-2x",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-view-states",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Google Chrome for Testing 158.0.8127.88",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "server-served loopback",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/served-chromium-linux/chat-states/a/initial-loading/capture.png",
+              "sha256": "6840241f06f1f8809a4a2a1fca931824b4de1a62ac2fb27020d22c0222b35afe"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/served-chromium-linux/chat-states/a/initial-loading/receipt.json",
+              "sha256": "4c7f868313e6bbdac54d5cc4415c14a3211a98f2b4e36db3421d8a394a4df7d9"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/served-chromium-linux/chat-states/a/state.json",
+              "sha256": "60aec9f521cbca20ec463b3ad6d7a7a6a3ef260a2c708542440294decb507cd8"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-view-states",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Google Chrome for Testing 158.0.8127.88",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "server-served loopback",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/served-chromium-linux/chat-states/b/initial-loading/capture.png",
+              "sha256": "6840241f06f1f8809a4a2a1fca931824b4de1a62ac2fb27020d22c0222b35afe"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/served-chromium-linux/chat-states/b/initial-loading/receipt.json",
+              "sha256": "9723d70c3f113937f195a6cd62693df212d166b25cf2f4998ec11ed8de6084a1"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/served-chromium-linux/chat-states/b/state.json",
+              "sha256": "3e01e2cd6a82b7bcec8b4da0dd9fb26fd4bf3d3d7797129206053f5167b32e20"
+            }
+          ]
+        }
+      ],
+      "comparisonArtifacts": [
+        {
+          "kind": "pixel-diff",
+          "path": "observations/served-chromium-linux/chat-states/initial-loading-diff.png",
+          "sha256": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+        },
+        {
+          "kind": "action-and-state",
+          "path": "observations/served-chromium-linux/chat-states/initial-loading-comparison.json",
+          "sha256": "40fd6594bc04b78662278fe5c8480929a55d65244393082c38e18383fec7bb44"
+        }
+      ]
+    },
+    {
+      "caseId": "chat-view-states",
+      "platformId": "served-chromium-linux",
+      "state": "error",
+      "entrypoint": "chat",
+      "configurationId": "chrome-158.0.8127.88-debian-arm64-en-light-640x600-2x",
+      "stage": "p01-release-reference",
+      "result": "pass",
+      "runs": [
+        {
+          "role": "incumbent-first",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-view-states",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Google Chrome for Testing 158.0.8127.88",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "server-served loopback",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/served-chromium-linux/chat-states/a/error/capture.png",
+              "sha256": "578a4300f0c51364e16150fa070c9c6c955ee1b2ddc9d560f375f66629fd2ff1"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/served-chromium-linux/chat-states/a/error/receipt.json",
+              "sha256": "97fc2ec2761cb6fc193920619b0178b372db987303cb20ea1b263d7cbbc8afcb"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/served-chromium-linux/chat-states/a/state.json",
+              "sha256": "60aec9f521cbca20ec463b3ad6d7a7a6a3ef260a2c708542440294decb507cd8"
+            }
+          ]
+        },
+        {
+          "role": "incumbent-repeat",
+          "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "serverImplementation": "Node",
+          "serverSourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+          "fixtureId": "chat-view-states",
+          "environment": {
+            "osVersion": "Debian 12.15",
+            "arch": "arm64",
+            "clientVersion": "0.1.17",
+            "browserVersion": "Google Chrome for Testing 158.0.8127.88",
+            "installerAssetDigest": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+            "origin": "server-served loopback",
+            "connectionMode": "loopback",
+            "displayProfile": {
+              "viewportWidth": 640,
+              "viewportHeight": 600,
+              "deviceScale": 2,
+              "zoom": 1,
+              "theme": "light",
+              "locale": "en",
+              "motion": "standard",
+              "fonts": [
+                "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "kind": "screenshot",
+              "path": "observations/served-chromium-linux/chat-states/b/error/capture.png",
+              "sha256": "578a4300f0c51364e16150fa070c9c6c955ee1b2ddc9d560f375f66629fd2ff1"
+            },
+            {
+              "kind": "capture-receipt",
+              "path": "observations/served-chromium-linux/chat-states/b/error/receipt.json",
+              "sha256": "a93a4a88501bd418168704c6d2f9ffc39e87497ae3d653b685a0f11f94ef9fe5"
+            },
+            {
+              "kind": "state-receipt",
+              "path": "observations/served-chromium-linux/chat-states/b/state.json",
+              "sha256": "3e01e2cd6a82b7bcec8b4da0dd9fb26fd4bf3d3d7797129206053f5167b32e20"
+            }
+          ]
+        }
+      ],
+      "comparisonArtifacts": [
+        {
+          "kind": "pixel-diff",
+          "path": "observations/served-chromium-linux/chat-states/error-diff.png",
+          "sha256": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+        },
+        {
+          "kind": "action-and-state",
+          "path": "observations/served-chromium-linux/chat-states/error-comparison.json",
+          "sha256": "bb46a95529e5fdd92b024d6d063c625684d504df31f685914e2e0aad323efa12"
+        }
+      ]
     }
   ],
   "platformScope": {

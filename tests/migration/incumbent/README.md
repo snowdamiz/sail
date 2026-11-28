@@ -208,9 +208,11 @@ python3 tests/migration/incumbent/linux-electron/seed-entrypoints.py "$input" "$
 
 The seed script adds a second Replay thread through the packaged CLI. Its isolated Replay recording replies with an internal link to the existing `Compatibility replay` thread. Put the published Debian packages in `$navigation_input` and use it as the `/input` mount. Append `--entrypoints` to the Linux capture command. The probe opens the source thread before each action, clicks the rendered link chip, and then uses Ctrl+K, search, and Enter for the palette. It checks the saved destination and composer focus before clearing focus for each full-window capture.
 
-The Rust verifier binds each capture to the observed route and raw state digest in the [Linux desktop witness ledger](runtime/linux-desktop-witnesses.json). The same ledger pins the display captures to their observed pixels and independent runs.
+The Rust verifier binds each capture to the observed route and raw state digest in the [Linux capture witness ledger](runtime/linux-capture-witnesses.json). The same ledger pins the display captures to their observed pixels and independent runs.
 
 ## Capture chat loading and reconnect
+
+Append `--chat-states` to the [Linux Chromium capture command](#linux) for two new output directories. Each run pairs at its own gate, waits for the empty draft to resolve the fixture's `main` branch, and captures the loading view while the gate holds its thread subscription. The probe clears focus before each screenshot and checks the saved reply and exact table after release. After capturing the unavailable-thread view, it clicks **Open Environments** and verifies the Settings route. Each run writes three full-viewport PNGs and one state receipt. [Linux Chromium chat states](observations/served-chromium-linux/chat-states)
 
 Run the packaged server with the seeded home. Put [the loopback gate](thread-load-gate.mjs) in front of it and pair the browser at the gate's port. Use a fresh origin or browser profile so the client has no saved transcript for the thread.
 

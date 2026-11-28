@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 
-use super::{Capture, Evidence, desktop_capture};
+use super::{Capture, Evidence, capture_witness};
 use crate::catalog::{Observation, Run};
 
 pub(super) fn verify(
@@ -13,7 +13,7 @@ pub(super) fn verify(
     capture: &Capture,
     image: &Path,
 ) -> Result<()> {
-    let state = desktop_capture::observed_state(evidence, observation, run, capture)?;
+    let state = capture_witness::observed_state(evidence, observation, run, capture)?;
     let variant = observation.cell.state.as_str();
     let display = &state["displayCaptures"][variant];
     ensure!(
@@ -127,7 +127,7 @@ pub(super) fn verify(
             && serde_json::to_value(&recorded.observed)? == Value::Object(observed),
         "display trace disagrees with the observed action or runtime state"
     );
-    desktop_capture::verify_png(image, width, 780)
+    capture_witness::verify_png(image, width, 780)
 }
 
 fn renderer_size_matches(viewport: &Value, width: u32, height: u32, scale: f64) -> bool {

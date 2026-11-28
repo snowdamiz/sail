@@ -5,6 +5,11 @@ root=$1
 fixture=/fixture
 umask 077
 mkdir "$root"
+case "${2:-}" in
+  --chat-states) touch "$root/chat-states" ;;
+  "") ;;
+  *) exit 2 ;;
+esac
 mkdir -p "$root"/{runtime,home,state/userdata,project,replay}
 edition=0.1.17
 archive_sha=207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df
@@ -97,6 +102,12 @@ test -s "$root/descriptor.private.json"
 "$cli" thread start --base-dir "$root/state" --provider captureProbe --model default \
   --title 'Capture fixture' --wait --json "$root/project" 'Capture the saved Replay thread' \
   > "$root/capture-run.private.json"
-test -s "$root/receipt.json"
 test -s "$root/state.json"
-test -s "$root/capture.png"
+if [ -f "$root/chat-states" ]; then
+  for state in empty initial-loading error; do
+    test -s "$root/$state/capture.png"
+  done
+else
+  test -s "$root/receipt.json"
+  test -s "$root/capture.png"
+fi

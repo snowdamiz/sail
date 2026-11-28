@@ -4,9 +4,9 @@ import * as NodeModule from "node:module";
 const serverRequire = NodeModule.createRequire(
   new URL("../../../apps/server/package.json", import.meta.url),
 );
-const { WebSocket, WebSocketServer } = NodeModule.createRequire(
-  serverRequire.resolve("@effect/platform-node/NodeSocket"),
-)("ws");
+const { WebSocket, WebSocketServer } = process.env.SAIL_MIGRATION_WS_MODULE
+  ? serverRequire(process.env.SAIL_MIGRATION_WS_MODULE)
+  : NodeModule.createRequire(serverRequire.resolve("@effect/platform-node/NodeSocket"))("ws");
 const loopback = "127.0.0.1";
 
 export function startLoopbackWireProxy({ port, upstreamPort, onHttp, onSocket }) {
