@@ -101,6 +101,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     usesAttachmentUploads,
     readFileBlockReason,
     buildOutgoingMessageContext,
+    potetoMode = false,
     isCurrentSend,
     draftChangedDuringPreparation,
   }: {
@@ -117,6 +118,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     readonly buildOutgoingMessageContext: (
       attachmentIds: ReadonlyArray<string>,
     ) => ReturnType<typeof buildMessageContext>;
+    readonly potetoMode?: boolean;
     /** False once a newer send from this composer started. */
     readonly isCurrentSend: () => boolean;
     readonly draftChangedDuringPreparation: () => boolean;
@@ -189,6 +191,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                   titleSeed: title,
                   runtimeMode,
                   interactionMode: DEFAULT_INTERACTION_MODE,
+                  ...(potetoMode ? { potetoMode: true } : {}),
                   bootstrap: {
                     createThread: {
                       projectId: project.id,

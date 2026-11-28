@@ -307,6 +307,12 @@ import { ComposerControlsBar } from "./ComposerControlsBar";
 import { composerCommandKeyHandler } from "./composerCommandKey";
 import { promptSuggestionToAccept, usePromptSuggestion } from "./usePromptSuggestion";
 import { useFreshSessionArmed } from "./freshSessionArms";
+import {
+  isPotetoModeActiveInSession,
+  resolveComposerPotetoModeState,
+  togglePotetoModeArm,
+  usePotetoModeArmed,
+} from "./potetoModeArms";
 
 function consumePasteAsTextShortcut(deadline: { current: number }): boolean {
   const armed = Date.now() <= deadline.current;
@@ -2552,7 +2558,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadRuns,
   );
   // After /clear the next message starts a fresh session that cannot see what the suggestion refers to.
-  const freshSessionArmed = useFreshSessionArmed(scopedThreadKey(routeThreadRef));
+  const routeThreadKey = scopedThreadKey(routeThreadRef);
+  const freshSessionArmed = useFreshSessionArmed(routeThreadKey);
+  const potetoModeArmed = usePotetoModeArmed(routeThreadKey);
+  const potetoModeActiveInSession = isPotetoModeActiveInSession(
+    activeThreadRuns,
+    freshSessionArmed,
+  );
+  const potetoModeState = resolveComposerPotetoModeState({
+    activeInSession: potetoModeActiveInSession,
+    armed: potetoModeArmed,
+  });
+  const handleTogglePotetoMode = useStableCallback(() => {
+    if (potetoModeActiveInSession) return;
+    togglePotetoModeArm(routeThreadKey);
+  });
   // Offered only where the default placeholder would show, so it never hides a pending question.
   const offeredPromptSuggestion =
     phase !== "running" &&
@@ -2709,6 +2729,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       defaultRuntimeMode={props.defaultRuntimeMode}
       compatibleRuntimeModeOptions={compatibleRuntimeModeOptions}
       handleRuntimeModeChange={handleRuntimeModeChange}
+      potetoModeState={potetoModeState}
+      onTogglePotetoMode={handleTogglePotetoMode}
       composerControlsCollapsed={composerControlsCollapsed}
       effortDisplay={settings.effortDisplay}
       permissionsShownInStrip={props.permissionsShownInStrip}

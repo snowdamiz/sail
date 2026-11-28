@@ -1409,6 +1409,17 @@ describe("planComposerTurn", () => {
       turnDispatchMode: "queue",
       shouldQueueBehindActiveRun: true,
     });
+    // Triggering Poteto mode cannot steer an active turn and queues cleanly instead.
+    expect(
+      planComposerTurn({
+        ...running,
+        dispatchMode: "steer",
+        potetoMode: true,
+      }),
+    ).toMatchObject({
+      turnDispatchMode: "queue",
+      shouldQueueBehindActiveRun: true,
+    });
   });
 });
 

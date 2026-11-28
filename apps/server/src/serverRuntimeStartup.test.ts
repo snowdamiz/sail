@@ -46,7 +46,6 @@ import { ServerActivation } from "./serverActivation.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
-import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 
 it.effect.each([
   "disabled-codex",
@@ -210,8 +209,6 @@ it.effect.each([
         prepareTrial: () => Effect.undefined,
       }),
       Layer.mock(GitVcsDriver.GitVcsDriver)({}),
-      Layer.mock(AnalyticsService.AnalyticsService)({}),
-      // No provider logins or Connect link, so startup records no owners.
       FileSystem.layerNoop({}),
       Layer.mock(ServerSecretStore.ServerSecretStore)({ get: () => Effect.succeedNone }),
       Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),

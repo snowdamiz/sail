@@ -87,7 +87,6 @@ import {
 } from "./webhookDedupe.ts";
 import { describeFailedWebhookFilter, findFailedWebhookFilter } from "./webhookFilter.ts";
 import { constantTimeEquals, verifyWebhookSignature } from "./webhookVerification.ts";
-import { withLocalTracing } from "@t3tools/shared/relayTracing";
 
 export const WEBHOOK_ROUTE_PREFIX = "/api/hooks";
 
@@ -2611,7 +2610,6 @@ export const layer = Layer.effect(
             Effect.ensuring(release),
             // A relay-delivered webhook is traced to the relay; the run it starts is local work
             // whose spans carry workspace paths.
-            withLocalTracing,
             forkAccepted(serviceScope),
           );
           // Dispatch owns the accepted delivery now; retries must keep its claim.

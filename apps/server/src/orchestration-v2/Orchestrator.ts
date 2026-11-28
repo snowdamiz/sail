@@ -732,7 +732,6 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
       return command.parentThreadId;
     case "secret_request.record":
     case "link_request.record":
-    case "feedback_request.record":
       return command.threadId;
     case "thread.fork":
     case "thread.merge_back":
@@ -7806,6 +7805,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       dispatchMode = { type: "start_immediately" };
     }
     const freshContext = command.freshContext === true;
+    const potetoMode = command.potetoMode === true;
     // A result is asked of one whole turn, so a send that declares one never joins a running turn.
     // A run that continues one cut short still owes that run's result.
     const continuedRunId =
@@ -7831,7 +7831,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     const output = outputSchema === undefined ? {} : { outputSchema };
     if (
-      (freshContext || command.outputSchema !== undefined) &&
+      (freshContext || potetoMode || command.outputSchema !== undefined) &&
       (dispatchMode.type === "steer_active" || dispatchMode.type === "restart_active")
     ) {
       dispatchMode = { type: "queue_after_active" };
@@ -8430,6 +8430,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.failoverNotice === undefined ? {} : { failoverNotice: command.failoverNotice }),
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
         ...(freshContext ? { freshContext: true } : {}),
+        ...(potetoMode ? { potetoMode: true } : {}),
         ...output,
       };
       const attempt: OrchestrationV2RunAttempt = {
@@ -8864,6 +8865,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
         ...wakeWorkStartedAt(projection, command),
         ...(freshContext ? { freshContext: true } : {}),
+        ...(potetoMode ? { potetoMode: true } : {}),
         ...output,
       };
       const attempt: OrchestrationV2RunAttempt = {
@@ -11417,98 +11419,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerInstanceId: run.providerInstanceId,
         occurredAt: now,
         payload: turnItem,
-      });
-    },
-  );
-
-  /** Records or updates the card for a feedback report the user asked the agent to send. */
-  const dispatchFeedbackRequestRecord = Effect.fn("orchestrationV2.dispatch.feedbackRequestRecord")(
-    function* (
-      command: Extract<
-        OrchestrationV2InternalCommand,
-        { readonly type: "feedback_request.record" }
-      >,
-      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
-    ) {
-      const projection = yield* projectionStore
-        .getThreadRecords(
-          command.threadId,
-          ["runs", "nodes", "turnItems", "attempts", "providerTurns"],
-          { turnItemTypes: ["feedback_request"], messageRoles: [] },
-        )
-        .pipe(
-          Effect.mapError(
-            (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
-          ),
-        );
-      const fail = (cause: string) =>
-        new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause,
-        });
-      const run = projection.runs.find((candidate) => candidate.id === command.runId);
-      const existing = projection.turnItems.find((item) => item.id === command.turnItemId);
-      if (
-        existing !== undefined &&
-        (existing.type !== "feedback_request" || existing.runId !== command.runId)
-      ) {
-        return yield* fail(
-          `Turn item ${command.turnItemId} is not a feedback report of run ${command.runId}.`,
-        );
-      }
-      // A decided card stays decided, so a late close cannot reopen or relabel it.
-      if (existing !== undefined && existing.feedbackStatus !== "pending") return;
-      if (existing !== undefined && command.feedbackStatus === "pending") return;
-      if (run === undefined) return yield* fail(`Run ${command.runId} does not exist.`);
-      // Only a new card must sit on the run's current root. A steering restart can replace the
-      // root before the user answers, and the answer must still close the card.
-      if (existing === undefined && run.rootNodeId !== command.nodeId) {
-        return yield* fail(`Node ${command.nodeId} is not the root of run ${command.runId}.`);
-      }
-      const nodeId = existing?.nodeId ?? command.nodeId;
-      const now = yield* DateTime.now;
-      const pending = command.feedbackStatus === "pending";
-      yield* emit(
-        events,
-        command,
-      )({
-        type: "turn-item.updated",
-        threadId: command.threadId,
-        runId: command.runId,
-        ...(nodeId === null ? {} : { nodeId }),
-        providerInstanceId: run.providerInstanceId,
-        occurredAt: now,
-        payload: {
-          id: command.turnItemId,
-          threadId: command.threadId,
-          runId: command.runId,
-          nodeId,
-          providerThreadId: existing?.providerThreadId ?? run.providerThreadId,
-          providerTurnId:
-            existing === undefined
-              ? (providerTurnForRun(projection, run)?.id ?? null)
-              : existing.providerTurnId,
-          nativeItemRef: null,
-          parentItemId: null,
-          ordinal: existing?.ordinal ?? (yield* nextTurnItemOrdinal(projection)),
-          status: pending
-            ? "waiting"
-            : command.feedbackStatus === "sent"
-              ? "completed"
-              : "cancelled",
-          title: "Feedback for the T3 team",
-          startedAt: existing?.startedAt ?? now,
-          completedAt: pending ? null : now,
-          updatedAt: now,
-          type: "feedback_request",
-          preview: command.preview,
-          // An answered card keeps only what was sent, so its answer drops the unsent text.
-          ...(command.conversationTrace === undefined
-            ? {}
-            : { conversationTrace: command.conversationTrace }),
-          feedbackStatus: command.feedbackStatus,
-        },
       });
     },
   );
@@ -16693,9 +16603,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "secret_request.record":
         yield* dispatchSecretRequestRecord(command, events);
-        break;
-      case "feedback_request.record":
-        yield* dispatchFeedbackRequestRecord(command, events);
         break;
       case "link_request.record":
         yield* dispatchLinkRequestRecord(command, events, effects);

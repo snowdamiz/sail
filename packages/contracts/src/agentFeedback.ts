@@ -1,7 +1,5 @@
 import * as Schema from "effect/Schema";
 
-import { ThreadId, TurnItemId } from "./baseSchemas.ts";
-
 export const AgentFeedbackKind = Schema.Literals([
   "bug",
   "confusing",
@@ -31,7 +29,7 @@ export const AgentFeedbackTrace = Schema.Struct({
 });
 export type AgentFeedbackTrace = typeof AgentFeedbackTrace.Type;
 
-/** Exactly what a requested report sends once the user approves it, already scrubbed. */
+/** Read-only schema retained for historical feedback_request turn items. */
 export const AgentFeedbackPreview = Schema.Struct({
   kind: AgentFeedbackKind,
   subject: Schema.String,
@@ -49,37 +47,3 @@ export const AgentFeedbackRequestStatus = Schema.Literals([
   "cancelled",
 ]);
 export type AgentFeedbackRequestStatus = typeof AgentFeedbackRequestStatus.Type;
-
-export const AgentFeedbackAnswerInput = Schema.Struct({
-  threadId: ThreadId,
-  turnItemId: TurnItemId,
-  answer: Schema.Literals(["send", "decline"]),
-  /** Send the card's conversation trace instead of its outline. */
-  includeConversation: Schema.optionalKey(Schema.Boolean),
-});
-export type AgentFeedbackAnswerInput = typeof AgentFeedbackAnswerInput.Type;
-
-const AGENT_FEEDBACK_REQUEST_FAILURE_MESSAGES = {
-  load_failed: "Could not load the feedback report.",
-  not_found: "This feedback report no longer exists.",
-  already_answered: "This feedback report was already answered.",
-  feedback_off: "Agent feedback is off, so this report was not sent.",
-  record_failed: "Could not record your answer.",
-  maintenance: "Server maintenance is in progress. Retry the same answer.",
-} as const;
-
-export class AgentFeedbackRequestError extends Schema.TaggedError<AgentFeedbackRequestError>()(
-  "AgentFeedbackRequestError",
-  {
-    reason: Schema.Literals(
-      Object.keys(AGENT_FEEDBACK_REQUEST_FAILURE_MESSAGES) as Array<
-        keyof typeof AGENT_FEEDBACK_REQUEST_FAILURE_MESSAGES
-      >,
-    ),
-    cause: Schema.optionalKey(Schema.Defect()),
-  },
-) {
-  override get message(): string {
-    return AGENT_FEEDBACK_REQUEST_FAILURE_MESSAGES[this.reason];
-  }
-}

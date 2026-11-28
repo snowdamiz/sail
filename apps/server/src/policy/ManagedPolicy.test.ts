@@ -92,6 +92,23 @@ it.layer(NodeServices.layer)("ManagedPolicy.load", (it) => {
     }),
   );
 
+  it.effect("ignores retired agentFeedback settings in legacy enterprise policies", () =>
+    Effect.gen(function* () {
+      const policy = yield* loadFrom(
+        JSON.stringify({
+          schemaVersion: 1,
+          organization: "Example Corp",
+          settings: {
+            "agentFeedback.mode": { value: "off", locked: true },
+            agentFeedback: { value: { mode: "off" }, locked: true },
+            "storageCleanup.logsAfterDays": { value: 30, locked: true },
+          },
+        }),
+      );
+      assert.deepEqual(policy.summary?.lockedSettings, ["storageCleanup.logsAfterDays"]);
+    }),
+  );
+
   it.effect("refuses files it cannot fully enforce", () =>
     Effect.gen(function* () {
       const base = { schemaVersion: 1, organization: "Example Corp" };

@@ -85,7 +85,6 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
-import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 
@@ -101,10 +100,16 @@ const normalize = (target: string) => {
   }
   return `/${parts.join("/")}`;
 };
-const layerWorktreeLocation = (worktreesDir = managedWorktreesDir) =>
+const layerWorktreeLocation = (
+  worktreesDir = managedWorktreesDir,
+  extraServerConfig?: Partial<ServerConfig.ServerConfig["Service"]>,
+) =>
   Layer.mergeAll(
     Path.layer,
-    Layer.mock(ServerConfig.ServerConfig)({ worktreesDir } as ServerConfig.ServerConfig["Service"]),
+    Layer.mock(ServerConfig.ServerConfig)({
+      worktreesDir,
+      ...extraServerConfig,
+    } as ServerConfig.ServerConfig["Service"]),
     ServerSettings.layerTest(),
   );
 
@@ -480,6 +485,16 @@ function makeLocalCommandHarness(input: {
   readonly canForkWhileSourceRunning?: boolean;
   readonly exposesNativeTurnId?: boolean;
   readonly goalDriver?: "opencode" | "antigravity";
+  readonly potetoMode?: {
+    readonly enabled: boolean;
+    readonly driver?: "codex" | "claudeAgent";
+    readonly freshContext?: boolean;
+    readonly previousRun?: {
+      readonly potetoMode?: boolean;
+      readonly freshContext?: boolean;
+    };
+    readonly builtinSkillsDir: string;
+  };
   readonly worktreePath?: string;
   readonly worktreesDir?: string;
   readonly workspaceRoot?: string;
@@ -530,7 +545,6 @@ function makeLocalCommandHarness(input: {
     readonly threadRuntimeMode?: OrchestrationV2ThreadProjection["thread"]["runtimeMode"];
   };
 }) {
-  const settledRuns: Array<string> = [];
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
   const threadId = ThreadId.make("thread-native-account-command");
   const runId = RunId.make("run-native-account-command");
@@ -545,6 +559,8 @@ function makeLocalCommandHarness(input: {
   const messageId = MessageId.make("message-native-account-command");
   const run: OrchestrationV2ThreadProjection["runs"][number] = {
     ...(input.manualContinuation ? { manualContinuationOfRunId: RunId.make("stopped-run") } : {}),
+    ...(input.potetoMode?.enabled ? { potetoMode: true } : {}),
+    ...(input.potetoMode?.freshContext ? { freshContext: true } : {}),
     id: runId,
     threadId,
     ordinal: 2,
@@ -564,7 +580,8 @@ function makeLocalCommandHarness(input: {
   const providerThread: OrchestrationV2ThreadProjection["providerThreads"][number] = {
     id: providerThreadId,
     driver: ProviderDriverKind.make(
-      input.nativeGoals === undefined ? "codex" : (input.goalDriver ?? "opencode"),
+      input.potetoMode?.driver ??
+        (input.nativeGoals === undefined ? "codex" : (input.goalDriver ?? "opencode")),
     ),
     providerInstanceId: newInstanceId,
     providerSessionId: input.missingProviderSession === true ? null : providerSessionId,
@@ -616,6 +633,20 @@ function makeLocalCommandHarness(input: {
               status: "completed" as const,
               providerInstanceId: oldInstanceId,
               providerThreadId: oldProviderThreadId,
+            },
+          ]
+        : []),
+      ...(input.potetoMode?.previousRun
+        ? [
+            {
+              ...run,
+              id: RunId.make("previous-poteto-run"),
+              ordinal: 1,
+              status: "completed" as const,
+              startedAt: now,
+              completedAt: now,
+              potetoMode: input.potetoMode.previousRun.potetoMode,
+              freshContext: input.potetoMode.previousRun.freshContext,
             },
           ]
         : []),
@@ -1193,7 +1224,7 @@ function makeLocalCommandHarness(input: {
           startTurn(ProviderAdapter.resumeTurnInput(input)),
   };
   const open = vi.fn(() =>
-    input.sideChat !== undefined
+    input.sideChat !== undefined || input.potetoMode !== undefined
       ? Effect.succeed(sideChatSession as never)
       : input.interruptOpen === true
         ? Effect.interrupt
@@ -1229,7 +1260,7 @@ function makeLocalCommandHarness(input: {
       input: RunExecutionService.RunExecutionServiceV2StartRootRunInput,
     ) => Effect.Effect<void, RunExecutionService.RunExecutionServiceV2Error>
   >((runInput) =>
-    input.sideChat !== undefined
+    input.sideChat !== undefined || input.potetoMode !== undefined
       ? (runInput.resume
           ? runInput.session.resumeTurn!({
               ...runInput,
@@ -1386,7 +1417,16 @@ function makeLocalCommandHarness(input: {
               };
             }),
         }),
-        layerWorktreeLocation(input.worktreesDir),
+        layerWorktreeLocation(
+          input.worktreesDir,
+          input.potetoMode === undefined
+            ? undefined
+            : {
+                stateDir: input.potetoMode.builtinSkillsDir,
+                builtinSkillsDir: input.potetoMode.builtinSkillsDir,
+                builtinSkillsEnabled: true,
+              },
+        ),
         layerNoTaskFolders,
         input.fileSystem === undefined
           ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
@@ -1438,11 +1478,6 @@ function makeLocalCommandHarness(input: {
           startRootRun,
           forkBaseline: () => Effect.succeed(Effect.void),
         }),
-        Layer.succeed(ProviderUsageAnalytics.ProviderTurnAnalytics, {
-          runStarted: () => Effect.void,
-          turnCompleted: () => Effect.void,
-          runSettled: (report) => Effect.sync(() => void settledRuns.push(report.status)),
-        }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
           resolve: resolveRuntimePolicy,
         }),
@@ -1452,7 +1487,6 @@ function makeLocalCommandHarness(input: {
   return {
     layer,
     interruptRun,
-    settledRuns,
     getThreadRecords,
     getTurnStartContext,
     getRuntimeRecoveryProjection,
@@ -2402,7 +2436,6 @@ effectIt.effect("refuses unsupported resume instead of manufacturing a user prom
     yield* harness.start;
     expect(harness.startTurn).not.toHaveBeenCalled();
     expect(harness.startRootRun).not.toHaveBeenCalled();
-    expect(harness.settledRuns).toEqual(["failed"]);
     expect(harness.projection().turnItems).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -2431,7 +2464,6 @@ effectIt.effect.each([
         sideChat,
       });
       yield* harness.start;
-      expect(harness.settledRuns).toEqual([]);
       expect(harness.startTurn.mock.calls.map(([turn]) => turn.message.text)).toEqual([
         withInlineContext("SIDE_CHAT_CONTEXT", "Continue where you left off."),
       ]);
@@ -2798,7 +2830,6 @@ effectIt.effect.each(["before-start", "during-fork"] as const)(
       expect(harness.projection().providerThreads[0]?.handoffIds).toEqual([
         "side-chat-fork-context",
       ]);
-      expect(harness.settledRuns).toEqual([]);
       expect(
         harness.prepareProviderHandoff.mock.calls[0]?.[0].items.map((item) => item.id),
       ).toEqual([items[0]!.id]);
@@ -3260,7 +3291,6 @@ effectIt.effect("terminalizes a starting run when its provider session cannot op
     );
     const projection = harness.projection();
     expect(projection.runs.at(-1)).toMatchObject({ status: "failed", startedAt: null });
-    expect(harness.settledRuns).toEqual(["failed"]);
     expect(projection.attempts[0]).toMatchObject({ status: "failed", startedAt: null });
     expect(projection.nodes[0]).toMatchObject({ status: "failed", startedAt: null });
     expect(projection.turnItems).toMatchObject([
@@ -3384,7 +3414,6 @@ effectIt.effect("does not overwrite a run interrupted while its provider session
     expect(harness.startRootRun).not.toHaveBeenCalled();
     const projection = harness.projection();
     expect(projection.runs.at(-1)?.status).toBe("interrupted");
-    expect(harness.settledRuns).toEqual([]);
     expect(projection.attempts[0]?.status).toBe("pending");
     expect(projection.nodes[0]?.status).toBe("pending");
     expect(projection.turnItems).toEqual([]);
@@ -3589,4 +3618,92 @@ effectIt.effect("rejects citation expansion before opening a provider session", 
     ]);
     expect(harness.projection().messages[0]?.text).toBe(text);
   }),
+);
+
+effectIt.effect(
+  "triggers pstack poteto-mode once per session across non-Claude and Claude drivers and resets on freshContext",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const builtinSkillsDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "sail-poteto-turn-start-",
+      });
+
+      // 1. Mid-session activation on a non-Claude driver (Codex): previous run had no potetoMode.
+      const codexMidSession = makeLocalCommandHarness({
+        text: "Build the toggle",
+        potetoMode: {
+          enabled: true,
+          driver: "codex",
+          previousRun: {},
+          builtinSkillsDir,
+        },
+      });
+      yield* codexMidSession.start;
+      expect(codexMidSession.startTurn).toHaveBeenCalledTimes(1);
+      const codexMidTurn = codexMidSession.startTurn.mock.calls[0]?.[0];
+      expect(codexMidTurn?.message.text).toContain("Poteto mode is enabled for this session.");
+      expect(codexMidTurn?.message.text).toContain("poteto-mode/SKILL.md");
+      expect(codexMidTurn?.message.text).toContain("Build the toggle");
+
+      // 2. Follow-up turn in the same session when an earlier started run already triggered potetoMode.
+      const codexFollowUp = makeLocalCommandHarness({
+        text: "Polish the styles",
+        potetoMode: {
+          enabled: true,
+          driver: "codex",
+          previousRun: { potetoMode: true },
+          builtinSkillsDir,
+        },
+      });
+      yield* codexFollowUp.start;
+      expect(codexFollowUp.startTurn).toHaveBeenCalledTimes(1);
+      expect(codexFollowUp.startTurn.mock.calls[0]?.[0]?.message.text).toBe("Polish the styles");
+
+      // 3. Fresh session (/clear -> freshContext: true) resets the once-per-session latch.
+      const codexFresh = makeLocalCommandHarness({
+        text: "Start fresh task",
+        potetoMode: {
+          enabled: true,
+          driver: "codex",
+          freshContext: true,
+          previousRun: { potetoMode: true },
+          builtinSkillsDir,
+        },
+      });
+      yield* codexFresh.start;
+      expect(codexFresh.startTurn).toHaveBeenCalledTimes(1);
+      expect(codexFresh.startTurn.mock.calls[0]?.[0]?.message.text).toContain(
+        "Poteto mode is enabled for this session.",
+      );
+
+      // 4. Claude driver prepends $poteto-mode on first activation and suppresses on follow-up.
+      const claudeFirst = makeLocalCommandHarness({
+        text: "Build the toggle",
+        potetoMode: {
+          enabled: true,
+          driver: "claudeAgent",
+          previousRun: {},
+          builtinSkillsDir,
+        },
+      });
+      yield* claudeFirst.start;
+      expect(claudeFirst.startTurn).toHaveBeenCalledTimes(1);
+      expect(claudeFirst.startTurn.mock.calls[0]?.[0]?.message.text).toBe(
+        "$poteto-mode\n\nBuild the toggle",
+      );
+
+      const claudeFollowUp = makeLocalCommandHarness({
+        text: "Next prompt",
+        potetoMode: {
+          enabled: true,
+          driver: "claudeAgent",
+          previousRun: { potetoMode: true },
+          builtinSkillsDir,
+        },
+      });
+      yield* claudeFollowUp.start;
+      expect(claudeFollowUp.startTurn).toHaveBeenCalledTimes(1);
+      expect(claudeFollowUp.startTurn.mock.calls[0]?.[0]?.message.text).toBe("Next prompt");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
