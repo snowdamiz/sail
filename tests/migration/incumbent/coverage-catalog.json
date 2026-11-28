@@ -618,6 +618,7 @@
       "check": "Exercise the applicable feed and package format. Record predecessor and target digests, restart, expected thread and recovery result.",
       "evidenceProfile": "process",
       "sourceReferences": ["apps/desktop/src/updates/DesktopUpdates.ts"],
+      "supplementalReceipts": ["observations/electron-linux-arm64/appimage-update/receipt.json"],
       "configurationAxes": {
         "updateAssetByTarget": {
           "macos-arm64": ["Sail-0.1.17-arm64.zip"],

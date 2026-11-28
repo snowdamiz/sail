@@ -182,6 +182,11 @@
     "receipt": "../runtime/v0.1.17-to-v0.1.18-cli.json",
     "scope": "Published Linux foreground CLI upgrade on arm64 and emulated x64. The restarted host preserved the Replay transcript, environment identity, and scoped browser and bearer sessions. Both launchers rejected a deliberately invalid checksum."
   },
+  "linuxArm64AppImageUpdate": {
+    "result": "observed",
+    "receipt": "electron-linux-arm64/appimage-update/receipt.json",
+    "scope": "Published v0.1.17 to v0.1.18 on Debian 13.8 arm64 under Xvfb. The packaged updater rejected an invalid SHA-512, retried with the published manifest, and relaunched automatically with the same environment and Replay run. The mirror served full downloads on loopback."
+  },
   "negativeControls": {
     "result": "pass",
     "receipt": "harness-controls/receipt.json"
