@@ -223,4 +223,46 @@ describe("providerAuthSync.logic", () => {
     expect(retry).toHaveLength(1);
     expect(retry[0]).toMatchObject({ sourceId: DESKTOP, targetId: WEB });
   });
+
+  it("treats enabling a default-disabled provider like Antigravity as syncable without extra config", () => {
+    const tracker = createProviderAuthSyncTracker();
+    const enabledAntigravity = makeSettings({
+      providerInstances: {
+        antigravity: {
+          driver: "antigravity",
+          enabled: true,
+        },
+      },
+    });
+    const enabledCodex = makeSettings({
+      providerInstances: {
+        codex: {
+          driver: "codex",
+          enabled: true,
+        },
+      },
+    });
+    const emptySettings = makeSettings();
+
+    expect(summarizeProviderAuthEnvironment(DESKTOP, enabledCodex, [], 0).hasSyncableData).toBe(
+      false,
+    );
+    expect(
+      summarizeProviderAuthEnvironment(DESKTOP, enabledAntigravity, [], 0).hasSyncableData,
+    ).toBe(true);
+
+    const actions = planProviderAuthSync(
+      [
+        summarizeProviderAuthEnvironment(DESKTOP, enabledAntigravity, [], 0),
+        summarizeProviderAuthEnvironment(WEB, emptySettings, [], 0),
+      ],
+      tracker,
+    );
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      sourceId: DESKTOP,
+      targetId: WEB,
+      preferExistingNewer: true,
+    });
+  });
 });

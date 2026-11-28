@@ -2,6 +2,7 @@ import * as NodeUtil from "node:util";
 import {
   defaultInstanceIdForDriver,
   isSecretReference,
+  isUnconfiguredDefaultInstanceEnabled,
   type ProviderAuthExportBundleInput,
   type ProviderAuthExportBundleResult,
   type ProviderAuthImportBundleInput,
@@ -54,6 +55,9 @@ import {
   resolveIsolatedClaudeHomePath,
   resolveIsolatedCodexShadowHomePath,
 } from "./ProviderIsolatedHomes.ts";
+import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
+import { deriveProviderInstanceConfigMap } from "./ProviderInstanceRegistryHydration.ts";
+import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
 import * as ProviderRegistry from "./ProviderRegistry.ts";
 
 const MAX_AUTH_FILE_BYTES = 512 * 1024;
@@ -286,6 +290,9 @@ function hasMeaningfulInstanceData(
   isDefaultInstance: boolean,
 ): boolean {
   if (!isDefaultInstance) return true;
+  if (instance.enabled === true && !isUnconfiguredDefaultInstanceEnabled(instance.instanceId)) {
+    return true;
+  }
   if (instance.environment !== undefined && instance.environment.length > 0) return true;
   if (instance.portableConfig !== undefined && Object.keys(instance.portableConfig).length > 0) {
     return true;
@@ -315,6 +322,12 @@ const make = Effect.gen(function* () {
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const resolverOption = yield* Effect.serviceOption(SecretResolver.SecretResolver);
   const providerRegistryOption = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
+  const providerInstanceRegistryOption = yield* Effect.serviceOption(
+    ProviderInstanceRegistry.ProviderInstanceRegistry,
+  );
+  const providerInstanceRegistryMutatorOption = yield* Effect.serviceOption(
+    ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator,
+  );
   const spawnerOption = yield* Effect.serviceOption(ChildProcessSpawner.ChildProcessSpawner);
   const lock = yield* Semaphore.make(1);
 
@@ -1054,6 +1067,7 @@ const make = Effect.gen(function* () {
       let changed = false;
       let importedInstances = 0;
       let importedCredentials = 0;
+      const changedAntigravityInstanceIds = new Set<ProviderInstanceId>();
 
       // 1. Merge portable provider instances, config secrets, and environment variables.
       const nextInstances: Record<string, ProviderInstanceConfig> = {
@@ -1151,6 +1165,9 @@ const make = Effect.gen(function* () {
           nextInstances[incoming.instanceId] = merged;
           settingsChanged = true;
           importedInstances += 1;
+          if (incoming.driver === "antigravity") {
+            changedAntigravityInstanceIds.add(incoming.instanceId);
+          }
         }
       }
 
@@ -1205,6 +1222,7 @@ const make = Effect.gen(function* () {
         );
         changed = true;
         importedCredentials += 1;
+        changedAntigravityInstanceIds.add(file.instanceId);
       }
 
       // 4. Import vendor CLI auth files (Claude, Codex, OpenCode, Grok, Pi).
@@ -1407,9 +1425,50 @@ const make = Effect.gen(function* () {
       }
 
       if (changed && Option.isSome(providerRegistryOption)) {
-        yield* providerRegistryOption.value
-          .reloadSecretsAndRefresh()
-          .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach);
+        const providerRegistry = providerRegistryOption.value;
+        const antigravityRefreshIds = Array.from(changedAntigravityInstanceIds);
+        const reconcileSettings =
+          settingsChanged && Option.isSome(providerInstanceRegistryMutatorOption)
+            ? settingsService.getSettings.pipe(
+                Effect.flatMap((latest) =>
+                  providerInstanceRegistryMutatorOption.value.reconcile(
+                    deriveProviderInstanceConfigMap(latest),
+                  ),
+                ),
+              )
+            : Effect.void;
+        const refreshAntigravityModels =
+          antigravityRefreshIds.length > 0 && Option.isSome(providerInstanceRegistryOption)
+            ? Effect.forEach(
+                antigravityRefreshIds,
+                (instanceId) =>
+                  providerInstanceRegistryOption.value.getInstance(instanceId).pipe(
+                    Effect.flatMap((instance) => {
+                      if (
+                        instance === undefined ||
+                        instance.driverKind !== ProviderDriverKind.make("antigravity") ||
+                        !instance.enabled ||
+                        !instance.refreshModels
+                      ) {
+                        return Effect.void;
+                      }
+                      return instance
+                        .refreshModels()
+                        .pipe(
+                          Effect.andThen(providerRegistry.refreshInstance(instanceId)),
+                          Effect.ignore({ log: true }),
+                        );
+                    }),
+                  ),
+                { discard: true },
+              )
+            : Effect.void;
+        yield* reconcileSettings.pipe(
+          Effect.andThen(providerRegistry.reloadSecretsAndRefresh()),
+          Effect.andThen(refreshAntigravityModels),
+          Effect.ignoreCause({ log: true }),
+          Effect.forkDetach,
+        );
       }
 
       return {

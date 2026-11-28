@@ -23,10 +23,12 @@ import * as ServerConfig from "../config.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import {
+  ANTIGRAVITY_DEFAULT_INSTANCE_ID,
   DEV_REPLAY_INSTANCE_ID,
   deriveProviderInstanceConfigMap,
   layerSettingsWatcher,
   providerHostLayer,
+  seedBoatAntigravityInstance,
   seedDevReplayInstance,
 } from "./ProviderInstanceRegistryHydration.ts";
 import * as ProviderHostLive from "./ProviderHostLive.ts";
@@ -152,6 +154,77 @@ describe("seedDevReplayInstance", () => {
         });
       }),
     ),
+  );
+});
+
+describe("seedBoatAntigravityInstance", () => {
+  const seed = (
+    isBoat: boolean,
+    initialProviderInstances: ServerSettings["providerInstances"] = {},
+  ) =>
+    Effect.gen(function* () {
+      yield* seedBoatAntigravityInstance(() => isBoat);
+      const settings = yield* ServerSettingsService;
+      return (yield* settings.getSettings).providerInstances[ANTIGRAVITY_DEFAULT_INSTANCE_ID];
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-boat-antigravity-seed-" }),
+          ServerSettingsService.layerTest({
+            providerInstances: initialProviderInstances,
+          }),
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    );
+
+  effectIt.effect("leaves settings alone outside Boat", () =>
+    seed(false).pipe(Effect.map((instance) => expect(instance).toBeUndefined())),
+  );
+
+  effectIt.effect("enables Antigravity by default on Boat when absent", () =>
+    seed(true).pipe(
+      Effect.map((instance) =>
+        expect(instance).toEqual({
+          driver: ProviderDriverKind.make("antigravity"),
+          enabled: true,
+        }),
+      ),
+    ),
+  );
+
+  effectIt.effect("respects an explicit user disable on Boat", () =>
+    seed(true, {
+      [ANTIGRAVITY_DEFAULT_INSTANCE_ID]: {
+        driver: ProviderDriverKind.make("antigravity"),
+        enabled: false,
+      },
+    }).pipe(
+      Effect.map((instance) =>
+        expect(instance).toEqual({
+          driver: ProviderDriverKind.make("antigravity"),
+          enabled: false,
+        }),
+      ),
+    ),
+  );
+
+  effectIt.effect(
+    "preserves existing config when enabling an unflagged Boat Antigravity entry",
+    () =>
+      seed(true, {
+        [ANTIGRAVITY_DEFAULT_INSTANCE_ID]: {
+          driver: ProviderDriverKind.make("antigravity"),
+          config: { authMethod: "oauth-personal" },
+        },
+      }).pipe(
+        Effect.map((instance) =>
+          expect(instance).toEqual({
+            driver: ProviderDriverKind.make("antigravity"),
+            enabled: true,
+            config: { authMethod: "oauth-personal" },
+          }),
+        ),
+      ),
   );
 });
 

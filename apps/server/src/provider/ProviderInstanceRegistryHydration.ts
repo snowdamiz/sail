@@ -19,6 +19,7 @@ import type * as SqlClient from "effect/sql/SqlClient";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 
+import { boatRuntime } from "../cloud/boatLifecycle.ts";
 import * as ManagedProviders from "../policy/managedProviders.ts";
 import * as Settings from "../serverSettings.ts";
 import * as SecretResolver from "../secrets/SecretResolver.ts";
@@ -87,6 +88,16 @@ export const deriveProviderInstanceConfigMap = (
 };
 
 export const DEV_REPLAY_INSTANCE_ID = ProviderInstanceId.make("devReplay");
+const ANTIGRAVITY_DRIVER = ProviderDriverKind.make("antigravity");
+export const ANTIGRAVITY_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(ANTIGRAVITY_DRIVER);
+
+const isBoatHost = (baseDir: string): boolean => {
+  try {
+    return boatRuntime(baseDir) !== undefined;
+  } catch {
+    return false;
+  }
+};
 
 /**
  * Dev servers run from source keep a free ACP agent that replays recorded turns, so UI checks
@@ -124,6 +135,42 @@ export const seedDevReplayInstance = Effect.fn(
     operation: "upsert",
     instanceId: DEV_REPLAY_INSTANCE_ID,
     instance,
+  });
+});
+
+// Boat machines auto-enable Antigravity once unless managed policy blocks it or the user set enabled explicitly.
+export const seedBoatAntigravityInstance = Effect.fn(
+  "ProviderInstanceRegistryHydration.seedBoatAntigravityInstance",
+)(function* (isBoatServer: (baseDir: string) => boolean = isBoatHost) {
+  const config = yield* ServerConfig.ServerConfig;
+  if (!isBoatServer(config.baseDir)) return;
+  const serverSettings = yield* Settings.ServerSettingsService;
+  if (
+    ManagedProviders.disallowedDriverReason(serverSettings.managedPolicy, ANTIGRAVITY_DRIVER) !==
+    undefined
+  ) {
+    return;
+  }
+  const existing = (yield* serverSettings.getSettings).providerInstances[
+    ANTIGRAVITY_DEFAULT_INSTANCE_ID
+  ];
+  if (existing !== undefined) {
+    if (
+      existing.driver !== ANTIGRAVITY_DRIVER ||
+      existing.enabled !== undefined ||
+      providerInstanceConfigEnabledFlag(existing.config) !== undefined
+    ) {
+      return;
+    }
+  }
+  yield* serverSettings.updateProviderInstance({
+    operation: "upsert",
+    instanceId: ANTIGRAVITY_DEFAULT_INSTANCE_ID,
+    instance: {
+      ...existing,
+      driver: ANTIGRAVITY_DRIVER,
+      enabled: true,
+    },
   });
 });
 
@@ -181,6 +228,11 @@ export const layer: Layer.Layer<
     const serverSettings = yield* Settings.ServerSettingsService;
     yield* seedDevReplayInstance().pipe(
       Effect.catchCause((cause) => Effect.logWarning("Dev replay agent unavailable", cause)),
+    );
+    yield* seedBoatAntigravityInstance().pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Boat Antigravity default unavailable", cause),
+      ),
     );
     // Subscribe before the seed read so saves during registry construction are queued.
     const settingsChanges = yield* serverSettings.subscribeChanges;
