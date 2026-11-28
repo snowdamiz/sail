@@ -1,3 +1,8 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Direct Node HTTP/socket streaming keeps 35 MiB transfer RSS bounded.
+import * as NodeHttp from "node:http";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Direct Node HTTPS fallback with write-callback backpressure.
+import * as NodeHttps from "node:https";
+import * as NodeNet from "node:net";
 import {
   ChatAttachmentId,
   CommandId,
@@ -5,6 +10,8 @@ import {
   type GitRefName as GitRefNameSchema,
   IsoDateTime,
   type ModelSelection,
+  ORCHESTRATION_PROTOCOL_HEADER,
+  ORCHESTRATION_PROTOCOL_VERSION_TEXT,
   type OrchestrationV2Run,
   ProjectId,
   type ProviderDriverKind,
@@ -39,6 +46,7 @@ import {
   type SessionTransferStageImportInput,
   SessionTransferStageImportResult,
   type SessionTransferStartInput,
+  type SessionTransferThreadOrigin,
   ThreadId,
   TrimmedNonEmptyString,
   WS_METHODS,
@@ -48,6 +56,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -94,8 +103,9 @@ const KEEP_AWAKE_WINDOW_MINUTES = 10;
 const RPC_TIMEOUT_MS = 120_000;
 const CLONE_POLL_INTERVAL = Duration.millis(500);
 const CLONE_WAIT_TIMEOUT_MS = 15 * 60_000;
-
-const isSessionTransferError = Schema.is(SessionTransferError);
+const STREAM_HIGH_WATER_MARK = 64 * 1024;
+const MAX_ERROR_BODY_BYTES = 1024;
+const MAX_RESPONSE_HEADER_BYTES = 32 * 1024;
 
 export interface BoatRemoteEndpoint {
   readonly localUrl: string;
@@ -118,6 +128,7 @@ export interface RemoteThreadSummary {
   readonly providerDriverKind?: ProviderDriverKind;
   readonly branch: GitRefName | null;
   readonly worktreePath: string | null;
+  readonly transferOrigin?: SessionTransferThreadOrigin | null;
   readonly wasRunning: boolean;
   readonly pendingRuntimeRequests: ReadonlyArray<SessionTransferPendingRuntimeRequest>;
   readonly activeSubagentCount: number;
@@ -236,6 +247,133 @@ function nowIso(): Effect.Effect<IsoDateTime> {
   return Effect.map(DateTime.now, (now) => IsoDateTime.make(DateTime.formatIso(now)));
 }
 
+function sanitizeUrlForError(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    const queryIndex = rawUrl.indexOf("?");
+    const hashIndex = rawUrl.indexOf("#");
+    const cut =
+      queryIndex >= 0 && hashIndex >= 0
+        ? Math.min(queryIndex, hashIndex)
+        : queryIndex >= 0
+          ? queryIndex
+          : hashIndex;
+    return cut >= 0 ? rawUrl.slice(0, cut) : rawUrl;
+  }
+}
+
+function redactSignedUrlsInMessage(message: string): string {
+  return message.replace(
+    /(https?:\/\/[^\s)'"]+?|\/api\/session-transfers\/[^\s)'"]+?)(\?[^\s)'"]+)/g,
+    "$1",
+  );
+}
+
+function normalizeCanonicalWorkspaceRoot(workspaceRoot: string): string {
+  const forward = workspaceRoot.trim().replaceAll("\\", "/");
+  if (forward.length === 0) return "";
+  const segments = forward.split("/");
+  const isAbsolute = forward.startsWith("/");
+  const resolved: string[] = [];
+  for (const segment of segments) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      if (resolved.length > 0 && resolved[resolved.length - 1] !== "..") {
+        resolved.pop();
+      } else if (!isAbsolute) {
+        resolved.push("..");
+      }
+      continue;
+    }
+    resolved.push(segment);
+  }
+  return (isAbsolute ? "/" : "") + resolved.join("/");
+}
+
+function readBoundedErrorBody(
+  res: NodeHttp.IncomingMessage,
+  maxBytes = MAX_ERROR_BODY_BYTES,
+): Promise<string> {
+  return new Promise<string>((resolve) => {
+    const chunks: Buffer[] = [];
+    let collected = 0;
+    let done = false;
+
+    const finish = () => {
+      if (done) return;
+      done = true;
+      res.removeListener("data", onData);
+      res.removeListener("end", onEnd);
+      res.removeListener("close", onEnd);
+      res.removeListener("error", onEnd);
+      resolve(
+        collected === 0
+          ? ""
+          : Buffer.concat(chunks, Math.min(collected, maxBytes)).toString("utf8"),
+      );
+    };
+
+    const onData = (chunk: Buffer | string) => {
+      if (done) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const remaining = maxBytes - collected;
+      if (remaining > 0) {
+        chunks.push(buf.byteLength <= remaining ? buf : buf.subarray(0, remaining));
+        collected += Math.min(buf.byteLength, remaining);
+      }
+      if (collected >= maxBytes) {
+        finish();
+        res.destroy();
+      }
+    };
+
+    const onEnd = () => {
+      finish();
+    };
+
+    res.on("data", onData);
+    res.once("end", onEnd);
+    res.once("close", onEnd);
+    res.once("error", onEnd);
+  });
+}
+
+function parseAddProjectResult(data: unknown): {
+  readonly projectId: ProjectId | null;
+  readonly workspaceRoot: string | null;
+} {
+  if (typeof data !== "object" || data === null) {
+    return { projectId: null, workspaceRoot: null };
+  }
+  const obj = data as Record<string, unknown>;
+  const nested =
+    typeof obj.project === "object" && obj.project !== null
+      ? (obj.project as Record<string, unknown>)
+      : null;
+  const rawProjectId =
+    typeof obj.projectId === "string"
+      ? obj.projectId
+      : typeof nested?.id === "string"
+        ? nested.id
+        : null;
+  const rawWorkspaceRoot =
+    typeof obj.workspaceRoot === "string"
+      ? obj.workspaceRoot
+      : typeof obj.cwd === "string"
+        ? obj.cwd
+        : typeof nested?.workspaceRoot === "string"
+          ? nested.workspaceRoot
+          : null;
+  const trimmedId = rawProjectId?.trim();
+  const trimmedRoot = rawWorkspaceRoot?.trim();
+  return {
+    projectId: trimmedId && trimmedId.length > 0 ? ProjectId.make(trimmedId) : null,
+    workspaceRoot: trimmedRoot && trimmedRoot.length > 0 ? trimmedRoot : null,
+  };
+}
+
 const decodePrepareSourceResult = Schema.decodeUnknownEffect(SessionTransferPrepareSourceResult);
 const decodeStageImportResult = Schema.decodeUnknownEffect(SessionTransferStageImportResult);
 const decodeCommitImportResult = Schema.decodeUnknownEffect(SessionTransferCommitImportResult);
@@ -250,7 +388,7 @@ function toSessionTransferError(
 ): SessionTransferError {
   return new SessionTransferError({
     code,
-    message,
+    message: redactSignedUrlsInMessage(message),
     ...(transferId !== undefined ? { transferId } : {}),
     ...(cause !== undefined ? { cause } : {}),
   });
@@ -298,6 +436,34 @@ function extractRpcFailure(exit: unknown): {
     }
   }
   return { code: "internal", message: "Remote Boat RPC failed." };
+}
+
+interface WireThreadSnapshotBody {
+  readonly thread?: {
+    readonly id: ThreadId;
+    readonly projectId: ProjectId;
+    readonly title: string;
+    readonly modelSelection: ModelSelection;
+    readonly providerInstanceId?: ProviderInstanceId;
+    readonly branch?: GitRefName | null;
+    readonly worktreePath?: string | null;
+    readonly transferOrigin?: SessionTransferThreadOrigin | null;
+  };
+  readonly runs?: ReadonlyArray<{ readonly status?: string }>;
+  readonly runtimeRequests?: ReadonlyArray<{
+    readonly id: RuntimeRequestId;
+    readonly kind: SessionTransferPendingRuntimeRequest["kind"];
+    readonly status?: string;
+    readonly createdAt: IsoDateTime;
+    readonly summary?: string | null;
+    readonly blocking?: boolean;
+    readonly userOnly?: boolean;
+  }>;
+  readonly subagents?: ReadonlyArray<{ readonly status?: string }>;
+}
+
+interface WireThreadBoundedSnapshot extends WireThreadSnapshotBody {
+  readonly projection?: WireThreadSnapshotBody;
 }
 
 export function makeLiveBoatRemoteClient(
@@ -477,41 +643,44 @@ export function makeLiveBoatRemoteClient(
   const fetchJson = Effect.fn("BoatRemoteClient.fetchJson")(function* <A>(
     endpoint: BoatRemoteEndpoint,
     relativePath: string,
+    extraHeaders?: Readonly<Record<string, string>>,
   ) {
     const httpClient = yield* requireHttpClient();
+    const safePath = sanitizeUrlForError(relativePath);
+    let request = HttpClientRequest.get(`${endpoint.localUrl}${relativePath}`).pipe(
+      HttpClientRequest.setHeader("authorization", `Bearer ${endpoint.bearerToken}`),
+    );
+    if (extraHeaders !== undefined) {
+      for (const [key, value] of Object.entries(extraHeaders)) {
+        request = HttpClientRequest.setHeader(key, value)(request);
+      }
+    }
     const response = yield* httpClient
-      .execute(
-        HttpClientRequest.get(`${endpoint.localUrl}${relativePath}`).pipe(
-          HttpClientRequest.setHeader("authorization", `Bearer ${endpoint.bearerToken}`),
-        ),
-      )
+      .execute(request)
       .pipe(
         Effect.mapError((error) =>
           toSessionTransferError(
             "target_unavailable",
-            `Boat HTTP request ${relativePath} failed: ${error.message}`,
+            `Boat HTTP request ${safePath} failed: ${error.message}`,
             undefined,
             error,
           ),
         ),
       );
     if (response.status === 404) {
-      return yield* toSessionTransferError(
-        "not_found",
-        `Remote resource not found: ${relativePath}`,
-      );
+      return yield* toSessionTransferError("not_found", `Remote resource not found: ${safePath}`);
     }
     if (response.status < 200 || response.status >= 300) {
       return yield* toSessionTransferError(
         "target_unavailable",
-        `Boat HTTP request ${relativePath} failed with HTTP ${response.status}.`,
+        `Boat HTTP request ${safePath} failed with HTTP ${response.status}.`,
       );
     }
     return (yield* response.json.pipe(
       Effect.mapError((error) =>
         toSessionTransferError(
           "internal",
-          `Boat HTTP response ${relativePath} could not be decoded as JSON.`,
+          `Boat HTTP response ${safePath} could not be decoded as JSON.`,
           undefined,
           error,
         ),
@@ -549,7 +718,9 @@ export function makeLiveBoatRemoteClient(
           readonly branch?: GitRefName | null;
           readonly worktreePath?: string | null;
         }>;
-      }>(endpoint, "/api/orchestration/shell").pipe(
+      }>(endpoint, "/api/orchestration/shell", {
+        [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
+      }).pipe(
         Effect.map((snapshot) => ({
           projects: (snapshot.projects ?? []).map((p) => ({
             id: p.id,
@@ -570,36 +741,22 @@ export function makeLiveBoatRemoteClient(
       ),
 
     getThreadSummary: (endpoint, threadId) =>
-      fetchJson<{
-        readonly thread?: {
-          readonly id: ThreadId;
-          readonly projectId: ProjectId;
-          readonly title: string;
-          readonly modelSelection: ModelSelection;
-          readonly providerInstanceId?: ProviderInstanceId;
-          readonly branch?: GitRefName | null;
-          readonly worktreePath?: string | null;
-        };
-        readonly runs?: ReadonlyArray<{ readonly status?: string }>;
-        readonly runtimeRequests?: ReadonlyArray<{
-          readonly id: RuntimeRequestId;
-          readonly kind: SessionTransferPendingRuntimeRequest["kind"];
-          readonly status?: string;
-          readonly createdAt: IsoDateTime;
-          readonly summary?: string | null;
-          readonly blocking?: boolean;
-          readonly userOnly?: boolean;
-        }>;
-        readonly subagents?: ReadonlyArray<{ readonly status?: string }>;
-      }>(endpoint, `/api/orchestration/threads/${encodeURIComponent(threadId)}/bounded`).pipe(
+      fetchJson<WireThreadBoundedSnapshot>(
+        endpoint,
+        `/api/orchestration/threads/${encodeURIComponent(threadId)}/bounded`,
+        {
+          [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
+        },
+      ).pipe(
         Effect.flatMap((snapshot) => {
-          const thread = snapshot.thread;
+          const body: WireThreadSnapshotBody = snapshot.projection ?? snapshot;
+          const thread = body.thread;
           if (!thread) {
             return Effect.fail(
               toSessionTransferError("not_found", `Thread ${threadId} was not found on Boat.`),
             );
           }
-          const runs = snapshot.runs ?? [];
+          const runs = body.runs ?? [];
           const wasRunning = runs.some(
             (run) =>
               run.status !== undefined &&
@@ -607,7 +764,7 @@ export function makeLiveBoatRemoteClient(
           );
           const heldQueuedRunCount = runs.filter((run) => run.status === "queued").length;
           const pendingRuntimeRequests: SessionTransferPendingRuntimeRequest[] = (
-            snapshot.runtimeRequests ?? []
+            body.runtimeRequests ?? []
           )
             .filter((req) => req.status === "pending")
             .map((req) => ({
@@ -618,7 +775,7 @@ export function makeLiveBoatRemoteClient(
               ...(req.blocking !== undefined ? { blocking: req.blocking } : {}),
               ...(req.userOnly !== undefined ? { userOnly: req.userOnly } : {}),
             }));
-          const activeSubagentCount = (snapshot.subagents ?? []).filter(
+          const activeSubagentCount = (body.subagents ?? []).filter(
             (sub) => sub.status !== undefined && ACTIVE_SUBAGENT_STATUSES.has(sub.status),
           ).length;
 
@@ -632,6 +789,9 @@ export function makeLiveBoatRemoteClient(
               : {}),
             branch: thread.branch ?? null,
             worktreePath: thread.worktreePath ?? null,
+            ...(thread.transferOrigin !== undefined
+              ? { transferOrigin: thread.transferOrigin }
+              : {}),
             wasRunning,
             pendingRuntimeRequests,
             activeSubagentCount,
@@ -741,101 +901,829 @@ export function makeLiveBoatRemoteClient(
       ),
 
     streamHttpTransfer: (input) =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const httpClient = yield* requireHttpClient();
-          const scopedClient = HttpClient.withScope(httpClient);
-          const sourceReq = HttpClientRequest.get(input.sourceUrl).pipe(
-            input.sourceBearerToken !== undefined
-              ? HttpClientRequest.setHeader("authorization", `Bearer ${input.sourceBearerToken}`)
-              : (req) => req,
+      Effect.callback<
+        { readonly bytesTransferred: number; readonly status: number },
+        SessionTransferError
+      >((resume) => {
+        let sourceUrl: URL;
+        let targetUrl: URL;
+        try {
+          sourceUrl = new URL(input.sourceUrl);
+          targetUrl = new URL(input.targetUrl);
+        } catch (error) {
+          resume(
+            Effect.fail(
+              toSessionTransferError(
+                "workspace_error",
+                "Invalid source or target URL for transfer stream.",
+                undefined,
+                error,
+              ),
+            ),
           );
-          const sourceResponse = yield* scopedClient
-            .execute(sourceReq)
-            .pipe(
-              Effect.mapError((error) =>
+          return;
+        }
+
+        if (
+          (sourceUrl.protocol !== "http:" && sourceUrl.protocol !== "https:") ||
+          (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:")
+        ) {
+          resume(
+            Effect.fail(
+              toSessionTransferError(
+                "workspace_error",
+                "Transfer URLs must use http or NodeHttps.",
+              ),
+            ),
+          );
+          return;
+        }
+
+        const hasCrLf = (value: string | undefined): boolean =>
+          value !== undefined && /[\r\n]/.test(value);
+        if (
+          hasCrLf(input.sourceBearerToken) ||
+          hasCrLf(input.targetBearerToken) ||
+          hasCrLf(input.contentType) ||
+          hasCrLf(sourceUrl.host) ||
+          hasCrLf(`${sourceUrl.pathname}${sourceUrl.search}`)
+        ) {
+          resume(
+            Effect.fail(
+              toSessionTransferError(
+                "workspace_error",
+                "Invalid control characters in transfer request metadata.",
+              ),
+            ),
+          );
+          return;
+        }
+
+        const safeSourceUrl = sanitizeUrlForError(input.sourceUrl);
+        let settled = false;
+        let sourceSocket: NodeNet.Socket | null = null;
+        let sourceReq: NodeHttp.ClientRequest | null = null;
+        let sourceRes: NodeHttp.IncomingMessage | null = null;
+        let targetReq: NodeHttp.ClientRequest | null = null;
+        let targetRes: NodeHttp.IncomingMessage | null = null;
+        let bytesTransferred = 0;
+
+        const destroySource = () => {
+          try {
+            sourceSocket?.destroy();
+          } catch {
+            // ignore destroy errors
+          }
+          try {
+            sourceRes?.destroy();
+          } catch {
+            // ignore destroy errors
+          }
+          try {
+            sourceReq?.destroy();
+          } catch {
+            // ignore destroy errors
+          }
+        };
+
+        const destroyAll = () => {
+          destroySource();
+          try {
+            targetRes?.destroy();
+          } catch {
+            // ignore destroy errors
+          }
+          try {
+            targetReq?.destroy();
+          } catch {
+            // ignore destroy errors
+          }
+        };
+
+        const finish = (
+          effect: Effect.Effect<
+            { readonly bytesTransferred: number; readonly status: number },
+            SessionTransferError
+          >,
+        ) => {
+          if (settled) return;
+          settled = true;
+          resume(effect);
+        };
+
+        const failAndDestroy = (error: SessionTransferError) => {
+          if (settled) return;
+          settled = true;
+          destroyAll();
+          resume(Effect.fail(error));
+        };
+
+        const startTargetUpload = (
+          contentType: string,
+          contentLength: number | undefined,
+        ): NodeHttp.ClientRequest => {
+          const targetHeaders: NodeHttp.OutgoingHttpHeaders = {
+            "content-type": contentType,
+          };
+          if (contentLength !== undefined) {
+            targetHeaders["content-length"] = String(contentLength);
+          }
+          if (input.targetBearerToken !== undefined) {
+            targetHeaders.authorization = `Bearer ${input.targetBearerToken}`;
+          }
+
+          const uploadReq = (
+            targetUrl.protocol === "https:" ? NodeHttps.request : NodeHttp.request
+          )(targetUrl, {
+            method: "POST",
+            headers: targetHeaders,
+          });
+          targetReq = uploadReq;
+
+          uploadReq.on("error", (error) => {
+            failAndDestroy(
+              toSessionTransferError(
+                "workspace_error",
+                `Failed to upload transfer payload: ${error.message}`,
+                undefined,
+                error,
+              ),
+            );
+          });
+
+          uploadReq.on("response", (uploadRes) => {
+            targetRes = uploadRes;
+            if (settled) {
+              uploadRes.destroy();
+              return;
+            }
+            const targetStatus = uploadRes.statusCode ?? 0;
+            if (targetStatus < 200 || targetStatus >= 300) {
+              // Stop pulling from source immediately if target rejects early.
+              destroySource();
+              void readBoundedErrorBody(uploadRes, MAX_ERROR_BODY_BYTES).then((detail) => {
+                const trimmed = redactSignedUrlsInMessage(detail.trim());
+                failAndDestroy(
+                  toSessionTransferError(
+                    targetStatus === 413 ? "bundle_too_large" : "workspace_error",
+                    `Failed to upload transfer payload (HTTP ${targetStatus})${trimmed ? `: ${trimmed.slice(0, 200)}` : ""}.`,
+                  ),
+                );
+              });
+              return;
+            }
+
+            uploadRes.on("error", (error) => {
+              failAndDestroy(
                 toSessionTransferError(
                   "workspace_error",
-                  `Failed to download transfer payload: ${error.message}`,
+                  `Failed reading upload confirmation: ${error.message}`,
                   undefined,
                   error,
                 ),
+              );
+            });
+            uploadRes.once("end", () => {
+              finish(Effect.succeed({ bytesTransferred, status: targetStatus }));
+            });
+            uploadRes.resume();
+          });
+
+          return uploadReq;
+        };
+
+        if (sourceUrl.protocol === "http:") {
+          // Use a fixed reusable 64 KiB read buffer via NodeNet.connect({ onread }) so
+          // high-throughput loopback transfers do not allocate per-read ArrayBuffers
+          // that inflate V8 external memory / RSS before GC catches up.
+          const readBuf = Buffer.allocUnsafe(STREAM_HIGH_WATER_MARK);
+          const host =
+            sourceUrl.hostname.startsWith("[") && sourceUrl.hostname.endsWith("]")
+              ? sourceUrl.hostname.slice(1, -1)
+              : sourceUrl.hostname;
+          const port = sourceUrl.port ? Number(sourceUrl.port) : 80;
+          const requestLines = [
+            `GET ${sourceUrl.pathname}${sourceUrl.search} HTTP/1.1`,
+            `Host: ${sourceUrl.host}`,
+            "Connection: close",
+          ];
+          if (input.sourceBearerToken !== undefined) {
+            requestLines.push(`Authorization: Bearer ${input.sourceBearerToken}`);
+          }
+          requestLines.push("", "");
+          const rawRequest = requestLines.join("\r\n");
+
+          let phase: "headers" | "body" | "error-body" | "done" = "headers";
+          const headerChunks: Buffer[] = [];
+          let headerBytes = 0;
+          let framing: "content-length" | "chunked" | "eof" = "eof";
+          let remainingBodyBytes = 0;
+          let chunkState: "size-line" | "chunk-data" | "chunk-crlf" | "done" = "size-line";
+          let chunkLine = "";
+          let chunkRemaining = 0;
+          let crlfRemaining = 0;
+          let errorStatus = 0;
+          const errorBodyBufs: Buffer[] = [];
+          let errorCollected = 0;
+          let errorLimit = MAX_ERROR_BODY_BYTES;
+          let uploadReq: NodeHttp.ClientRequest | null = null;
+          let inFlightWrite = false;
+          let sourceEnded = false;
+          let sourceBodyComplete = false;
+
+          const finishErrorBody = () => {
+            if (settled) return;
+            phase = "done";
+            const detail =
+              errorCollected === 0
+                ? ""
+                : Buffer.concat(
+                    errorBodyBufs,
+                    Math.min(errorCollected, MAX_ERROR_BODY_BYTES),
+                  ).toString("utf8");
+            const trimmed = redactSignedUrlsInMessage(detail.trim());
+            failAndDestroy(
+              toSessionTransferError(
+                "workspace_error",
+                `Failed to download transfer payload (HTTP ${errorStatus})${trimmed ? `: ${trimmed.slice(0, 200)}` : ""}.`,
               ),
             );
+          };
 
-          if (sourceResponse.status === 404) {
-            return yield* toSessionTransferError(
-              "not_found",
-              `Transfer payload not found at source (${input.sourceUrl}).`,
-            );
-          }
-          if (sourceResponse.status < 200 || sourceResponse.status >= 300) {
-            return yield* toSessionTransferError(
-              "workspace_error",
-              `Failed to download transfer payload (HTTP ${sourceResponse.status}).`,
-            );
-          }
+          const finishSourceBody = () => {
+            if (sourceBodyComplete || settled) return;
+            sourceBodyComplete = true;
+            phase = "done";
+            uploadReq?.end();
+            destroySource();
+          };
 
-          let bytesTransferred = 0;
-          const countedStream = sourceResponse.stream.pipe(
-            Stream.tap((chunk) =>
-              Effect.sync(() => {
-                bytesTransferred += chunk.byteLength;
+          const handleSourceEofIfIdle = () => {
+            if (settled || sourceBodyComplete || inFlightWrite) return;
+            if (phase === "headers") {
+              failAndDestroy(
+                toSessionTransferError(
+                  "workspace_error",
+                  `Source closed connection before sending response headers (${safeSourceUrl}).`,
+                ),
+              );
+              return;
+            }
+            if (phase === "error-body") {
+              finishErrorBody();
+              return;
+            }
+            if (phase === "body") {
+              if (framing === "eof") {
+                finishSourceBody();
+              } else {
+                failAndDestroy(
+                  toSessionTransferError(
+                    "workspace_error",
+                    "Source transfer stream ended prematurely.",
+                  ),
+                );
+              }
+            }
+          };
+
+          const pumpChunked = (data: Buffer, startPos: number): void => {
+            let pos = startPos;
+            while (pos < data.byteLength) {
+              if (settled || sourceBodyComplete) return;
+              if (chunkState === "done") {
+                if (phase === "error-body") {
+                  finishErrorBody();
+                } else {
+                  finishSourceBody();
+                }
+                return;
+              }
+              if (chunkState === "size-line") {
+                let foundNewline = false;
+                while (pos < data.byteLength) {
+                  const byte = data[pos++]!;
+                  if (byte === 0x0a) {
+                    foundNewline = true;
+                    break;
+                  }
+                  if (chunkLine.length >= 128) {
+                    failAndDestroy(
+                      toSessionTransferError(
+                        "workspace_error",
+                        "Malformed chunked transfer encoding from source.",
+                      ),
+                    );
+                    return;
+                  }
+                  chunkLine += String.fromCharCode(byte);
+                }
+                if (!foundNewline) {
+                  break;
+                }
+                const cleaned = chunkLine.replace(/\r$/, "").split(";")[0]?.trim() ?? "";
+                chunkLine = "";
+                if (!/^[0-9a-fA-F]+$/.test(cleaned)) {
+                  failAndDestroy(
+                    toSessionTransferError(
+                      "workspace_error",
+                      "Invalid chunk size in source transfer response.",
+                    ),
+                  );
+                  return;
+                }
+                const parsedSize = Number.parseInt(cleaned, 16);
+                if (!Number.isSafeInteger(parsedSize) || parsedSize < 0) {
+                  failAndDestroy(
+                    toSessionTransferError(
+                      "workspace_error",
+                      "Out-of-range chunk size in source transfer response.",
+                    ),
+                  );
+                  return;
+                }
+                if (parsedSize === 0) {
+                  chunkState = "done";
+                  if (phase === "error-body") {
+                    finishErrorBody();
+                  } else {
+                    finishSourceBody();
+                  }
+                  return;
+                }
+                chunkRemaining = parsedSize;
+                chunkState = "chunk-data";
+                continue;
+              }
+              if (chunkState === "chunk-data") {
+                const take = Math.min(chunkRemaining, data.byteLength - pos);
+                const slice = data.subarray(pos, pos + take);
+                pos += take;
+                chunkRemaining -= take;
+                if (chunkRemaining === 0) {
+                  chunkState = "chunk-crlf";
+                  crlfRemaining = 2;
+                }
+                if (phase === "error-body") {
+                  const copyLen = Math.min(slice.byteLength, errorLimit - errorCollected);
+                  if (copyLen > 0) {
+                    errorBodyBufs.push(Buffer.from(slice.subarray(0, copyLen)));
+                    errorCollected += copyLen;
+                  }
+                  if (errorCollected >= errorLimit) {
+                    finishErrorBody();
+                    return;
+                  }
+                  continue;
+                }
+                bytesTransferred += slice.byteLength;
                 input.onProgress?.(bytesTransferred);
-              }),
+                inFlightWrite = true;
+                sourceSocket?.pause();
+                uploadReq!.write(slice, (err) => {
+                  inFlightWrite = false;
+                  if (settled) return;
+                  if (err) {
+                    failAndDestroy(
+                      toSessionTransferError(
+                        "workspace_error",
+                        `Failed to upload transfer payload: ${err.message}`,
+                        undefined,
+                        err,
+                      ),
+                    );
+                    return;
+                  }
+                  pumpChunked(data, pos);
+                });
+                return;
+              }
+              if (chunkState === "chunk-crlf") {
+                const skip = Math.min(crlfRemaining, data.byteLength - pos);
+                pos += skip;
+                crlfRemaining -= skip;
+                if (crlfRemaining === 0) {
+                  chunkState = "size-line";
+                  chunkLine = "";
+                }
+              }
+            }
+
+            if (settled || sourceBodyComplete) return;
+            if (sourceEnded) {
+              handleSourceEofIfIdle();
+              return;
+            }
+            sourceSocket?.resume();
+          };
+
+          const processBodySlice = (data: Buffer): void => {
+            if (settled || sourceBodyComplete) return;
+            if (framing === "chunked") {
+              if (data.byteLength > 0) {
+                pumpChunked(data, 0);
+              } else if (sourceEnded) {
+                handleSourceEofIfIdle();
+              }
+              return;
+            }
+            if (phase === "error-body") {
+              const avail =
+                framing === "content-length"
+                  ? Math.min(data.byteLength, remainingBodyBytes)
+                  : data.byteLength;
+              const take = Math.min(avail, errorLimit - errorCollected);
+              if (take > 0) {
+                errorBodyBufs.push(Buffer.from(data.subarray(0, take)));
+                errorCollected += take;
+              }
+              if (framing === "content-length") {
+                remainingBodyBytes -= avail;
+              }
+              if (
+                errorCollected >= errorLimit ||
+                (framing === "content-length" && remainingBodyBytes <= 0)
+              ) {
+                finishErrorBody();
+              }
+              return;
+            }
+
+            const toWrite =
+              framing === "content-length"
+                ? data.subarray(0, Math.min(data.byteLength, remainingBodyBytes))
+                : data;
+            if (toWrite.byteLength === 0) {
+              if (framing === "content-length" && remainingBodyBytes <= 0) {
+                finishSourceBody();
+              }
+              return;
+            }
+            if (framing === "content-length") {
+              remainingBodyBytes -= toWrite.byteLength;
+            }
+            bytesTransferred += toWrite.byteLength;
+            input.onProgress?.(bytesTransferred);
+            inFlightWrite = true;
+            sourceSocket?.pause();
+            uploadReq!.write(toWrite, (err) => {
+              inFlightWrite = false;
+              if (settled) return;
+              if (err) {
+                failAndDestroy(
+                  toSessionTransferError(
+                    "workspace_error",
+                    `Failed to upload transfer payload: ${err.message}`,
+                    undefined,
+                    err,
+                  ),
+                );
+                return;
+              }
+              if (framing === "content-length" && remainingBodyBytes <= 0) {
+                finishSourceBody();
+                return;
+              }
+              if (sourceEnded) {
+                handleSourceEofIfIdle();
+                return;
+              }
+              sourceSocket?.resume();
+            });
+          };
+
+          sourceSocket = NodeNet.connect({
+            host,
+            port,
+            onread: {
+              buffer: readBuf,
+              callback(nread, buf) {
+                if (settled || sourceBodyComplete || nread <= 0) {
+                  return true;
+                }
+                const view = Buffer.from(buf.buffer, buf.byteOffset, nread);
+                if (phase === "headers") {
+                  headerChunks.push(Buffer.from(view));
+                  headerBytes += view.byteLength;
+                  const combined =
+                    headerChunks.length === 1
+                      ? headerChunks[0]!
+                      : Buffer.concat(headerChunks, headerBytes);
+                  const headerEnd = combined.indexOf("\r\n\r\n");
+                  if (headerEnd < 0) {
+                    if (headerBytes > MAX_RESPONSE_HEADER_BYTES) {
+                      failAndDestroy(
+                        toSessionTransferError(
+                          "workspace_error",
+                          `Source response headers exceeded ${MAX_RESPONSE_HEADER_BYTES} bytes (${safeSourceUrl}).`,
+                        ),
+                      );
+                    }
+                    return true;
+                  }
+
+                  headerChunks.length = 0;
+                  const headerText = combined.subarray(0, headerEnd).toString("latin1");
+                  const leftover = combined.subarray(headerEnd + 4);
+                  const lines = headerText.split("\r\n");
+                  const statusLine = lines[0] ?? "";
+                  const statusMatch = /^HTTP\/\d+\.\d+\s+(\d{3})\b/.exec(statusLine);
+                  if (!statusMatch) {
+                    failAndDestroy(
+                      toSessionTransferError(
+                        "workspace_error",
+                        `Malformed HTTP status line from source (${safeSourceUrl}).`,
+                      ),
+                    );
+                    return true;
+                  }
+                  const sourceStatus = Number(statusMatch[1]);
+                  const responseHeaders = new Map<string, string>();
+                  for (let idx = 1; idx < lines.length; idx += 1) {
+                    const line = lines[idx]!;
+                    const colon = line.indexOf(":");
+                    if (colon <= 0) continue;
+                    const name = line.slice(0, colon).trim().toLowerCase();
+                    const value = line.slice(colon + 1).trim();
+                    const existing = responseHeaders.get(name);
+                    responseHeaders.set(name, existing ? `${existing}, ${value}` : value);
+                  }
+
+                  if (sourceStatus === 404) {
+                    failAndDestroy(
+                      toSessionTransferError(
+                        "not_found",
+                        `Transfer payload not found at source (${safeSourceUrl}).`,
+                      ),
+                    );
+                    return true;
+                  }
+
+                  const rawTransferEncoding = responseHeaders.get("transfer-encoding") ?? "";
+                  const rawContentLength = responseHeaders.get("content-length");
+                  const parsedHeaderLength =
+                    rawContentLength !== undefined && /^\d+$/.test(rawContentLength)
+                      ? Number(rawContentLength)
+                      : undefined;
+
+                  if (/\bchunked\b/i.test(rawTransferEncoding)) {
+                    framing = "chunked";
+                  } else if (parsedHeaderLength !== undefined) {
+                    framing = "content-length";
+                    remainingBodyBytes = parsedHeaderLength;
+                  } else {
+                    framing = "eof";
+                  }
+
+                  if (sourceStatus < 200 || sourceStatus >= 300) {
+                    phase = "error-body";
+                    errorStatus = sourceStatus;
+                    errorLimit =
+                      framing === "content-length"
+                        ? Math.min(MAX_ERROR_BODY_BYTES, remainingBodyBytes)
+                        : MAX_ERROR_BODY_BYTES;
+                    if (errorLimit === 0) {
+                      finishErrorBody();
+                      return true;
+                    }
+                    if (leftover.byteLength > 0) {
+                      processBodySlice(leftover);
+                    }
+                    return true;
+                  }
+
+                  const contentType =
+                    input.contentType ??
+                    responseHeaders.get("content-type") ??
+                    "application/octet-stream";
+                  const contentLength =
+                    parsedHeaderLength ??
+                    (input.expectedSizeBytes !== undefined && input.expectedSizeBytes !== null
+                      ? input.expectedSizeBytes
+                      : undefined);
+
+                  uploadReq = startTargetUpload(contentType, contentLength);
+                  phase = "body";
+                  if (framing === "content-length" && remainingBodyBytes === 0) {
+                    finishSourceBody();
+                    return true;
+                  }
+                  if (leftover.byteLength > 0) {
+                    processBodySlice(leftover);
+                  }
+                  return true;
+                }
+
+                processBodySlice(view);
+                return true;
+              },
+            },
+          });
+
+          sourceSocket.on("connect", () => {
+            if (settled) {
+              sourceSocket?.destroy();
+              return;
+            }
+            sourceSocket?.write(rawRequest);
+          });
+
+          sourceSocket.on("error", (error) => {
+            if (sourceBodyComplete) return;
+            failAndDestroy(
+              toSessionTransferError(
+                "workspace_error",
+                `Failed to download transfer payload from ${safeSourceUrl}: ${error.message}`,
+                undefined,
+                error,
+              ),
+            );
+          });
+
+          sourceSocket.once("end", () => {
+            sourceEnded = true;
+            handleSourceEofIfIdle();
+          });
+
+          sourceSocket.once("close", () => {
+            if (settled || sourceBodyComplete || inFlightWrite) return;
+            if (phase === "error-body") {
+              finishErrorBody();
+              return;
+            }
+            if (phase === "body" && framing === "eof" && sourceEnded) {
+              finishSourceBody();
+              return;
+            }
+            failAndDestroy(
+              toSessionTransferError(
+                "workspace_error",
+                "Source transfer stream was aborted before completing.",
+              ),
+            );
+          });
+
+          return Effect.sync(() => {
+            settled = true;
+            destroyAll();
+          });
+        }
+
+        // HTTPS fallback using node:https with explicit write-callback backpressure.
+        const sourceHeaders: NodeHttp.OutgoingHttpHeaders = {};
+        if (input.sourceBearerToken !== undefined) {
+          sourceHeaders.authorization = `Bearer ${input.sourceBearerToken}`;
+        }
+
+        sourceReq = NodeHttps.request(sourceUrl, {
+          method: "GET",
+          headers: sourceHeaders,
+        });
+
+        sourceReq.on("error", (error) => {
+          failAndDestroy(
+            toSessionTransferError(
+              "workspace_error",
+              `Failed to download transfer payload from ${safeSourceUrl}: ${error.message}`,
+              undefined,
+              error,
             ),
           );
+        });
 
-          const contentType =
-            input.contentType ??
-            sourceResponse.headers["content-type"] ??
-            "application/octet-stream";
-          const headerContentLength = sourceResponse.headers["content-length"];
-          const parsedHeaderLength =
-            headerContentLength !== undefined && /^\d+$/.test(headerContentLength)
-              ? Number(headerContentLength)
-              : undefined;
-          const contentLength =
-            input.expectedSizeBytes !== undefined && input.expectedSizeBytes !== null
-              ? input.expectedSizeBytes
-              : parsedHeaderLength;
-
-          const targetReq = HttpClientRequest.post(input.targetUrl).pipe(
-            input.targetBearerToken !== undefined
-              ? HttpClientRequest.setHeader("authorization", `Bearer ${input.targetBearerToken}`)
-              : (req) => req,
-            HttpClientRequest.bodyStream(countedStream, {
-              contentType,
-              ...(contentLength !== undefined ? { contentLength } : {}),
-            }),
-          );
-
-          const targetResponse = yield* scopedClient
-            .execute(targetReq)
-            .pipe(
-              Effect.mapError((error) =>
-                isSessionTransferError(error)
-                  ? error
-                  : toSessionTransferError(
-                      "workspace_error",
-                      `Failed to upload transfer payload: ${error.message}`,
-                      undefined,
-                      error,
-                    ),
-              ),
-            );
-
-          if (targetResponse.status < 200 || targetResponse.status >= 300) {
-            const detail = yield* targetResponse.text.pipe(Effect.orElseSucceed(() => ""));
-            return yield* toSessionTransferError(
-              targetResponse.status === 413 ? "bundle_too_large" : "workspace_error",
-              `Failed to upload transfer payload (HTTP ${targetResponse.status})${detail ? `: ${detail.slice(0, 200)}` : ""}.`,
-            );
+        sourceReq.on("response", (res) => {
+          sourceRes = res;
+          if (settled) {
+            res.destroy();
+            return;
           }
 
-          return { bytesTransferred, status: targetResponse.status };
-        }),
-      ),
+          const sourceStatus = res.statusCode ?? 0;
+          if (sourceStatus === 404) {
+            res.destroy();
+            failAndDestroy(
+              toSessionTransferError(
+                "not_found",
+                `Transfer payload not found at source (${safeSourceUrl}).`,
+              ),
+            );
+            return;
+          }
+          if (sourceStatus < 200 || sourceStatus >= 300) {
+            void readBoundedErrorBody(res, MAX_ERROR_BODY_BYTES).then((detail) => {
+              const trimmed = redactSignedUrlsInMessage(detail.trim());
+              failAndDestroy(
+                toSessionTransferError(
+                  "workspace_error",
+                  `Failed to download transfer payload (HTTP ${sourceStatus})${trimmed ? `: ${trimmed.slice(0, 200)}` : ""}.`,
+                ),
+              );
+            });
+            return;
+          }
+
+          const rawContentType = res.headers["content-type"];
+          const contentType =
+            input.contentType ??
+            (typeof rawContentType === "string" ? rawContentType : undefined) ??
+            "application/octet-stream";
+
+          const rawContentLength = res.headers["content-length"];
+          const parsedHeaderLength =
+            typeof rawContentLength === "string" && /^\d+$/.test(rawContentLength)
+              ? Number(rawContentLength)
+              : undefined;
+          const contentLength =
+            parsedHeaderLength ??
+            (input.expectedSizeBytes !== undefined && input.expectedSizeBytes !== null
+              ? input.expectedSizeBytes
+              : undefined);
+
+          const uploadReq = startTargetUpload(contentType, contentLength);
+          let inFlightWrite = false;
+          let sourceEnded = false;
+
+          const finishHttpsSource = () => {
+            if (settled) return;
+            if (!res.complete) {
+              failAndDestroy(
+                toSessionTransferError(
+                  "workspace_error",
+                  "Source transfer stream ended prematurely.",
+                ),
+              );
+              return;
+            }
+            uploadReq.end();
+          };
+
+          res.on("data", (chunk: Buffer | string) => {
+            if (settled) {
+              res.destroy();
+              return;
+            }
+            const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            bytesTransferred += buf.byteLength;
+            input.onProgress?.(bytesTransferred);
+            inFlightWrite = true;
+            res.pause();
+            uploadReq.write(buf, (err) => {
+              inFlightWrite = false;
+              if (settled) return;
+              if (err) {
+                failAndDestroy(
+                  toSessionTransferError(
+                    "workspace_error",
+                    `Failed to upload transfer payload: ${err.message}`,
+                    undefined,
+                    err,
+                  ),
+                );
+                return;
+              }
+              if (sourceEnded) {
+                finishHttpsSource();
+                return;
+              }
+              res.resume();
+            });
+          });
+
+          res.once("end", () => {
+            sourceEnded = true;
+            if (!inFlightWrite) {
+              finishHttpsSource();
+            }
+          });
+
+          res.once("aborted", () => {
+            failAndDestroy(
+              toSessionTransferError(
+                "workspace_error",
+                "Source transfer stream was aborted before completing.",
+              ),
+            );
+          });
+
+          res.on("error", (error) => {
+            failAndDestroy(
+              toSessionTransferError(
+                "workspace_error",
+                `Failed to download transfer payload: ${error.message}`,
+                undefined,
+                error,
+              ),
+            );
+          });
+        });
+
+        sourceReq.end();
+
+        return Effect.sync(() => {
+          settled = true;
+          destroyAll();
+        });
+      }),
   };
 }
 
@@ -955,6 +1843,51 @@ function resolveModelSelectionOnDestination(
   };
 }
 
+function validateModelSelectionForDestination(input: {
+  readonly desiredModel: ModelSelection;
+  readonly isOverride: boolean;
+  readonly destinationProviders: ReadonlyArray<ServerProvider>;
+  readonly sourceDriverKind?: ProviderDriverKind | undefined;
+  readonly transferId?: SessionTransferId | undefined;
+}): Effect.Effect<ModelSelection, SessionTransferError> {
+  const resolution = resolveModelSelectionOnDestination(
+    input.desiredModel,
+    input.destinationProviders,
+    input.isOverride ? undefined : input.sourceDriverKind,
+  );
+  if (resolution.needsModelSelection || resolution.resolved === null) {
+    return Effect.fail(
+      toSessionTransferError(
+        "preflight_required",
+        `Model "${input.desiredModel.model}" on provider "${input.desiredModel.instanceId}" is not available on the destination.`,
+        input.transferId,
+      ),
+    );
+  }
+  return Effect.succeed(resolution.resolved);
+}
+
+function enforceRunningConfirmation(input: {
+  readonly wasRunning: boolean;
+  readonly hasPendingRuntimeRequest: boolean;
+  readonly activeSubagentCount: number;
+  readonly confirmedRunningPause: boolean | undefined;
+  readonly transferId?: SessionTransferId | undefined;
+}): Effect.Effect<void, SessionTransferError> {
+  const needsConfirmation =
+    input.wasRunning || input.hasPendingRuntimeRequest || input.activeSubagentCount > 0;
+  if (needsConfirmation && input.confirmedRunningPause !== true) {
+    return Effect.fail(
+      toSessionTransferError(
+        "preflight_required",
+        "Source thread has active work, pending runtime requests, or active subagents; set confirmedRunningPause=true to pause and transfer.",
+        input.transferId,
+      ),
+    );
+  }
+  return Effect.void;
+}
+
 function normalizeRepoKey(identity: RepositoryIdentity | null | undefined): string | null {
   if (!identity) return null;
   return repositoryGroupingKeyOf(identity).trim().toLowerCase();
@@ -997,6 +1930,10 @@ const make = Effect.gen(function* () {
 
   const progressPubSub = yield* PubSub.unbounded<SessionTransferProgressEvent>();
   const activeTransfers = new Map<SessionTransferId, ActiveTransferEntry>();
+  const startingTransfers = new Map<
+    SessionTransferId,
+    Deferred.Deferred<SessionTransferRecord, SessionTransferError>
+  >();
 
   const randomHex = (byteLength: number): Effect.Effect<string> =>
     Option.match(secureRandomOption, {
@@ -1160,9 +2097,14 @@ const make = Effect.gen(function* () {
     > = {},
   ) {
     const updatedAt = yield* nowIso();
+    const sanitizedErrorMessage =
+      typeof fields.errorMessage === "string"
+        ? redactSignedUrlsInMessage(fields.errorMessage)
+        : fields.errorMessage;
     const updated = yield* repository
       .transitionPhase({
         ...fields,
+        ...(sanitizedErrorMessage !== undefined ? { errorMessage: sanitizedErrorMessage } : {}),
         transferId,
         phase,
         updatedAt,
@@ -1180,6 +2122,214 @@ const make = Effect.gen(function* () {
       );
     yield* publishRecord(updated);
     return updated;
+  });
+
+  const inspectDestinationCommitOutcome = Effect.fn(
+    "SessionTransferCoordinator.inspectDestinationCommitOutcome",
+  )(function* (input: {
+    readonly transferId: SessionTransferId;
+    readonly direction: SessionTransferDirection;
+    readonly destinationThreadId: ThreadId | null;
+    readonly destinationMachineId: string | null;
+    readonly destinationEnvironmentId: EnvironmentId | null;
+    readonly boatEndpoint?: BoatRemoteEndpoint | null | undefined;
+  }): Effect.fn.Return<"committed" | "not_committed" | "unknown"> {
+    if (input.destinationThreadId === null) {
+      return "not_committed";
+    }
+    if (input.direction === "boat_to_local") {
+      return yield* projectionStore.getThread(input.destinationThreadId).pipe(
+        Effect.map((thread) =>
+          thread.transferOrigin?.transferId === input.transferId
+            ? ("committed" as const)
+            : ("not_committed" as const),
+        ),
+        Effect.catch((error) =>
+          Effect.succeed(
+            error._tag === "ProjectionStoreThreadNotFoundError"
+              ? ("not_committed" as const)
+              : ("unknown" as const),
+          ),
+        ),
+      );
+    }
+
+    // Destination is Boat (`local_to_boat`).
+    let endpoint = input.boatEndpoint ?? null;
+    if (endpoint === null) {
+      if (input.destinationMachineId === null && input.destinationEnvironmentId === null) {
+        return "unknown";
+      }
+      const accessOption = yield* getMachineProxyAccess({
+        ...(input.destinationMachineId !== null ? { machineId: input.destinationMachineId } : {}),
+        ...(input.destinationEnvironmentId !== null
+          ? { environmentId: input.destinationEnvironmentId }
+          : {}),
+      }).pipe(Effect.option);
+      if (Option.isNone(accessOption)) {
+        return "unknown";
+      }
+      if (!RUNNING_BOAT_STATES.has(accessOption.value.state)) {
+        return "unknown";
+      }
+      endpoint = {
+        localUrl: accessOption.value.localUrl,
+        bearerToken: accessOption.value.bearerToken,
+      };
+    }
+
+    return yield* remoteClient.getThreadSummary(endpoint, input.destinationThreadId).pipe(
+      Effect.map((summary) =>
+        summary.transferOrigin?.transferId === input.transferId
+          ? ("committed" as const)
+          : ("not_committed" as const),
+      ),
+      Effect.catch((error) =>
+        Effect.succeed(
+          error.code === "not_found" ? ("not_committed" as const) : ("unknown" as const),
+        ),
+      ),
+    );
+  });
+
+  const abortRemoteSideBestEffort = Effect.fn(
+    "SessionTransferCoordinator.abortRemoteSideBestEffort",
+  )(function* (input: {
+    readonly transferId: SessionTransferId;
+    readonly direction: SessionTransferDirection;
+    readonly sourceEnvironmentId: EnvironmentId;
+    readonly sourceMachineId: string | null;
+    readonly sourceThreadId: ThreadId;
+    readonly destinationEnvironmentId: EnvironmentId | null;
+    readonly destinationMachineId: string | null;
+    readonly destinationThreadId: ThreadId | null;
+    readonly reason: string;
+  }) {
+    const accessInput =
+      input.direction === "local_to_boat"
+        ? input.destinationMachineId !== null || input.destinationEnvironmentId !== null
+          ? {
+              ...(input.destinationMachineId !== null
+                ? { machineId: input.destinationMachineId }
+                : {}),
+              ...(input.destinationEnvironmentId !== null
+                ? { environmentId: input.destinationEnvironmentId }
+                : {}),
+            }
+          : null
+        : {
+            ...(input.sourceMachineId !== null ? { machineId: input.sourceMachineId } : {}),
+            environmentId: input.sourceEnvironmentId,
+          };
+    if (accessInput === null) return;
+
+    const accessOption = yield* getMachineProxyAccess(accessInput).pipe(Effect.option);
+    if (Option.isNone(accessOption)) return;
+    const endpoint: BoatRemoteEndpoint = {
+      localUrl: accessOption.value.localUrl,
+      bearerToken: accessOption.value.bearerToken,
+    };
+    const abortInput: SessionTransferAbortInput =
+      input.direction === "local_to_boat"
+        ? {
+            transferId: input.transferId,
+            role: "destination",
+            ...(input.destinationThreadId !== null ? { threadId: input.destinationThreadId } : {}),
+            reason: input.reason,
+          }
+        : {
+            transferId: input.transferId,
+            role: "source",
+            threadId: input.sourceThreadId,
+            reason: input.reason,
+          };
+    yield* remoteClient.abort(endpoint, abortInput).pipe(Effect.ignore);
+  });
+
+  const finalizeSourceAndComplete = Effect.fn(
+    "SessionTransferCoordinator.finalizeSourceAndComplete",
+  )(function* (input: {
+    readonly transferId: SessionTransferId;
+    readonly direction: SessionTransferDirection;
+    readonly sourceEnvironmentId: EnvironmentId;
+    readonly sourceMachineId: string | null;
+    readonly sourceThreadId: ThreadId;
+    readonly destinationEnvironmentId: EnvironmentId;
+    readonly destinationEnvironmentName: typeof TrimmedNonEmptyString.Type | null;
+    readonly destinationMachineId: typeof TrimmedNonEmptyString.Type | null;
+    readonly destinationProjectId: ProjectId;
+    readonly destinationThreadId: ThreadId;
+    readonly warnings?: ReadonlyArray<string> | undefined;
+    readonly currentPhase?: SessionTransferPhase | undefined;
+    readonly boatEndpoint?: BoatRemoteEndpoint | null | undefined;
+  }): Effect.fn.Return<"completed" | "pending_finalization"> {
+    if (input.currentPhase !== "finalizing_source") {
+      yield* transition(input.transferId, "finalizing_source", {
+        phaseDetail: "Archiving source thread...",
+        destinationEnvironmentId: input.destinationEnvironmentId,
+        destinationEnvironmentName: input.destinationEnvironmentName,
+        destinationMachineId: input.destinationMachineId,
+        destinationProjectId: input.destinationProjectId,
+        destinationThreadId: input.destinationThreadId,
+        ...(input.warnings !== undefined ? { warnings: [...input.warnings] } : {}),
+      }).pipe(Effect.ignore);
+    }
+
+    const finalizedAt = yield* nowIso();
+    const finalizeInput: SessionTransferFinalizeSourceInput = {
+      transferId: input.transferId,
+      threadId: input.sourceThreadId,
+      destination: {
+        transferId: input.transferId,
+        environmentId: input.destinationEnvironmentId,
+        environmentName: input.destinationEnvironmentName,
+        machineId: input.destinationMachineId,
+        projectId: input.destinationProjectId,
+        threadId: input.destinationThreadId,
+        transferredAt: finalizedAt,
+      },
+    };
+
+    const finalized = yield* Effect.gen(function* () {
+      if (input.direction === "local_to_boat") {
+        yield* localEndpoints.finalizeSource(finalizeInput);
+      } else {
+        let endpoint = input.boatEndpoint ?? null;
+        if (endpoint === null) {
+          const access = yield* getMachineProxyAccess({
+            ...(input.sourceMachineId !== null ? { machineId: input.sourceMachineId } : {}),
+            environmentId: input.sourceEnvironmentId,
+          });
+          endpoint = { localUrl: access.localUrl, bearerToken: access.bearerToken };
+        }
+        yield* remoteClient.finalizeSource(endpoint, finalizeInput);
+      }
+    }).pipe(
+      Effect.as(true),
+      Effect.catch((error) =>
+        Effect.logWarning("Failed to finalize source; keeping transfer in finalizing_source", {
+          transferId: input.transferId,
+          error: error.message,
+        }).pipe(Effect.as(false)),
+      ),
+    );
+
+    if (finalized) {
+      const completedAt = yield* nowIso();
+      yield* transition(input.transferId, "completed", {
+        phaseDetail: null,
+        errorMessage: null,
+        ...(input.warnings !== undefined ? { warnings: [...input.warnings] } : {}),
+        completedAt,
+      }).pipe(Effect.ignore);
+      return "completed";
+    }
+
+    yield* transition(input.transferId, "finalizing_source", {
+      phaseDetail: "Destination committed; awaiting source archival retry...",
+      ...(input.warnings !== undefined ? { warnings: [...input.warnings] } : {}),
+    }).pipe(Effect.ignore);
+    return "pending_finalization";
   });
 
   const preflight: SessionTransferCoordinatorShape["preflight"] = Effect.fn(
@@ -1215,6 +2365,202 @@ const make = Effect.gen(function* () {
       bearerToken: boatAccess.bearerToken,
     };
 
+    const boatMachineMeta = yield* getBoatDaemonMachineMeta({
+      machineId: boatAccess.machineId,
+      environmentId: boatAccess.environmentId,
+    });
+
+    // Read-scoped preflight must NEVER wake a sleeping/stopped Boat via authenticated HTTP/WS calls.
+    if (!RUNNING_BOAT_STATES.has(boatAccess.state)) {
+      warnings.push(
+        `Boat machine "${boatAccess.machineName}" is currently ${boatAccess.state} and will wake when the transfer starts.`,
+      );
+
+      if (input.direction === "local_to_boat") {
+        const projection = yield* projectionStore
+          .getThreadProjection(input.sourceThreadId)
+          .pipe(
+            Effect.mapError((error) =>
+              toSessionTransferError(
+                error._tag === "ProjectionStoreThreadNotFoundError" ? "not_found" : "internal",
+                error.message,
+                undefined,
+                error,
+              ),
+            ),
+          );
+        const localProjectOption = yield* projectService
+          .getById(projection.thread.projectId)
+          .pipe(
+            Effect.mapError((error) =>
+              toSessionTransferError("internal", error.message, undefined, error),
+            ),
+          );
+        if (Option.isNone(localProjectOption)) {
+          return yield* toSessionTransferError(
+            "not_found",
+            `Source project ${projection.thread.projectId} was not found.`,
+          );
+        }
+        const localProject = localProjectOption.value;
+        const sourceCwd = projection.thread.worktreePath ?? localProject.workspaceRoot;
+        const gitProbe = yield* probeLocalGitState(sourceCwd);
+        const localRepoIdentity =
+          localProject.repositoryIdentity ??
+          (yield* repositoryIdentityResolver.resolve(localProject.workspaceRoot));
+
+        const wasRunning = projection.runs.some((run) => WORKING_RUN_STATUSES.has(run.status));
+        const heldQueuedRunCount = projection.runs.filter((run) => run.status === "queued").length;
+        const pendingRuntimeRequests: SessionTransferPendingRuntimeRequest[] =
+          projection.runtimeRequests
+            .filter((req) => req.status === "pending")
+            .map((req) => ({
+              id: req.id,
+              kind: req.kind,
+              createdAt: IsoDateTime.make(DateTime.formatIso(req.createdAt)),
+            }));
+        const activeSubagentCount = projection.subagents.filter((sub) =>
+          ACTIVE_SUBAGENT_STATUSES.has(sub.status),
+        ).length;
+
+        const sourceState: SessionTransferSourceState = {
+          wasRunning,
+          hadPendingRuntimeRequest: pendingRuntimeRequests.length > 0,
+          pendingRuntimeRequests,
+          heldQueuedRunCount,
+          activeSubagentCount,
+          branch: projection.thread.branch,
+          headSha: gitProbe.headSha,
+          isDirty: gitProbe.isDirty,
+          isGitRepo: gitProbe.isGitRepo,
+        };
+
+        let unsupportedReason: string | null = null;
+        let resolvedTargetProjectId: ProjectId | null = input.targetProjectId ?? null;
+        let needsProjectSelection = false;
+        let willAutoCloneProject = false;
+        const daemonProjects = boatMachineMeta?.projects ?? [];
+
+        if (!gitProbe.isGitRepo) {
+          unsupportedReason = "Only git repositories can be transferred between Local and Boat.";
+        } else if (resolvedTargetProjectId === null) {
+          const originMatches = daemonProjects.filter(
+            (dp) => dp.originProjectId === localProject.id,
+          );
+          if (originMatches.length === 1 && originMatches[0]) {
+            resolvedTargetProjectId = ProjectId.make(originMatches[0].id);
+          } else {
+            const localKey = normalizeRepoKey(localRepoIdentity);
+            const repoMatches =
+              localKey === null
+                ? []
+                : daemonProjects.filter((dp) => repoKeysMatch(localKey, dp.repoKey));
+            if (repoMatches.length === 1 && repoMatches[0]) {
+              resolvedTargetProjectId = ProjectId.make(repoMatches[0].id);
+            } else if (repoMatches.length > 1) {
+              needsProjectSelection = true;
+            } else {
+              willAutoCloneProject = true;
+            }
+          }
+        }
+
+        let needsRunningConfirmation = false;
+        if (sourceState.wasRunning) {
+          needsRunningConfirmation = true;
+          warnings.push("The active agent turn will be paused before transferring.");
+        }
+        if (sourceState.hadPendingRuntimeRequest) {
+          needsRunningConfirmation = true;
+          warnings.push(
+            "This thread has pending approval or input requests that will not carry over automatically.",
+          );
+        }
+        if (sourceState.activeSubagentCount > 0) {
+          needsRunningConfirmation = true;
+          warnings.push("This thread has active subagents; only the parent session will transfer.");
+        }
+
+        return {
+          ready: unsupportedReason === null && !needsProjectSelection && !needsRunningConfirmation,
+          warnings,
+          needsProjectSelection,
+          candidateProjects: [],
+          needsCloneDestination: false,
+          needsModelSelection: false,
+          availableModels: [],
+          needsRunningConfirmation,
+          unsupportedReason,
+          sourceState,
+          resolvedTargetProjectId,
+          resolvedModelSelection: input.modelSelectionOverride ?? null,
+          willAutoCloneProject,
+        } satisfies SessionTransferPreflightResult;
+      }
+
+      // boat_to_local while Boat is asleep: inspect only local state, issue zero Boat HTTP calls.
+      const [localProjects, localProviders] = yield* Effect.all([
+        listAllLocalProjects(),
+        providerRegistry.getProviders,
+      ]);
+
+      let resolvedTargetProjectId: ProjectId | null = null;
+      let candidateProjects: SessionTransferCandidateProject[] = [];
+      if (input.targetProjectId !== undefined) {
+        const explicit = localProjects.find((p) => p.id === input.targetProjectId);
+        if (!explicit) {
+          return yield* toSessionTransferError(
+            "not_found",
+            `Target local project ${input.targetProjectId} was not found.`,
+          );
+        }
+        resolvedTargetProjectId = explicit.id;
+        candidateProjects = [
+          {
+            projectId: explicit.id,
+            name: explicit.title,
+            workspaceRoot: explicit.workspaceRoot,
+            ...(explicit.repositoryIdentity !== undefined
+              ? { repositoryIdentity: explicit.repositoryIdentity }
+              : {}),
+            matchReason: "manual",
+          },
+        ];
+      }
+
+      const availableModels = collectAvailableModels(localProviders);
+      let needsModelSelection = false;
+      let resolvedModelSelection: ModelSelection | null = null;
+      if (input.modelSelectionOverride !== undefined) {
+        const modelRes = resolveModelSelectionOnDestination(
+          input.modelSelectionOverride,
+          localProviders,
+        );
+        needsModelSelection = modelRes.needsModelSelection;
+        resolvedModelSelection = modelRes.resolved;
+        if (needsModelSelection) {
+          warnings.push(
+            `Model "${input.modelSelectionOverride.model}" on provider "${input.modelSelectionOverride.instanceId}" is not available on the destination; select a replacement model.`,
+          );
+        }
+      }
+
+      return {
+        ready: !needsModelSelection,
+        warnings,
+        needsProjectSelection: false,
+        candidateProjects,
+        needsCloneDestination: false,
+        needsModelSelection,
+        availableModels,
+        needsRunningConfirmation: false,
+        unsupportedReason: null,
+        resolvedTargetProjectId,
+        resolvedModelSelection,
+        willAutoCloneProject: false,
+      } satisfies SessionTransferPreflightResult;
+    }
+
     const remoteConfig = yield* remoteClient.getServerConfig(boatEndpoint);
     if (!remoteConfig.sessionTransferSupported) {
       return {
@@ -1230,11 +2576,6 @@ const make = Effect.gen(function* () {
           "This Boat machine runs an older Sail server that does not support session transfer yet. Update the Boat machine and try again.",
       } satisfies SessionTransferPreflightResult;
     }
-
-    const boatMachineMeta = yield* getBoatDaemonMachineMeta({
-      machineId: boatAccess.machineId,
-      environmentId: boatAccess.environmentId,
-    });
 
     let sourceState: SessionTransferSourceState;
     let sourceModelSelection: ModelSelection;
@@ -1320,20 +2661,24 @@ const make = Effect.gen(function* () {
 
         if (input.targetProjectId !== undefined) {
           const explicit = boatShell.projects.find((p) => p.id === input.targetProjectId);
-          if (explicit) {
-            resolvedTargetProjectId = explicit.id;
-            candidateProjects = [
-              {
-                projectId: explicit.id,
-                name: TrimmedNonEmptyString.make(explicit.title),
-                workspaceRoot: TrimmedNonEmptyString.make(explicit.workspaceRoot),
-                ...(explicit.repositoryIdentity !== undefined
-                  ? { repositoryIdentity: explicit.repositoryIdentity }
-                  : {}),
-                matchReason: "manual",
-              },
-            ];
+          if (!explicit) {
+            return yield* toSessionTransferError(
+              "not_found",
+              `Target Boat project ${input.targetProjectId} was not found on ${boatAccess.machineName}.`,
+            );
           }
+          resolvedTargetProjectId = explicit.id;
+          candidateProjects = [
+            {
+              projectId: explicit.id,
+              name: TrimmedNonEmptyString.make(explicit.title),
+              workspaceRoot: TrimmedNonEmptyString.make(explicit.workspaceRoot),
+              ...(explicit.repositoryIdentity !== undefined
+                ? { repositoryIdentity: explicit.repositoryIdentity }
+                : {}),
+              matchReason: "manual",
+            },
+          ];
         }
 
         if (resolvedTargetProjectId === null) {
@@ -1357,6 +2702,17 @@ const make = Effect.gen(function* () {
                 matchReason: "origin_project_id",
               },
             ];
+          } else if (originMatches.length > 1) {
+            needsProjectSelection = true;
+            candidateProjects = originMatches.map((match) => ({
+              projectId: match.id,
+              name: TrimmedNonEmptyString.make(match.title),
+              workspaceRoot: TrimmedNonEmptyString.make(match.workspaceRoot),
+              ...(match.repositoryIdentity !== undefined
+                ? { repositoryIdentity: match.repositoryIdentity }
+                : {}),
+              matchReason: "origin_project_id",
+            }));
           } else {
             // 2. Match by repositoryGroupingKeyOf.
             const localKey = normalizeRepoKey(localRepoIdentity);
@@ -1450,20 +2806,24 @@ const make = Effect.gen(function* () {
         unsupportedReason = "Only git repositories can be transferred between Local and Boat.";
       } else if (input.targetProjectId !== undefined) {
         const explicit = localProjects.find((p) => p.id === input.targetProjectId);
-        if (explicit) {
-          resolvedTargetProjectId = explicit.id;
-          candidateProjects = [
-            {
-              projectId: explicit.id,
-              name: explicit.title,
-              workspaceRoot: explicit.workspaceRoot,
-              ...(explicit.repositoryIdentity !== undefined
-                ? { repositoryIdentity: explicit.repositoryIdentity }
-                : {}),
-              matchReason: "manual",
-            },
-          ];
+        if (!explicit) {
+          return yield* toSessionTransferError(
+            "not_found",
+            `Target local project ${input.targetProjectId} was not found.`,
+          );
         }
+        resolvedTargetProjectId = explicit.id;
+        candidateProjects = [
+          {
+            projectId: explicit.id,
+            name: explicit.title,
+            workspaceRoot: explicit.workspaceRoot,
+            ...(explicit.repositoryIdentity !== undefined
+              ? { repositoryIdentity: explicit.repositoryIdentity }
+              : {}),
+            matchReason: "manual",
+          },
+        ];
       }
 
       if (unsupportedReason === null && resolvedTargetProjectId === null) {
@@ -1552,7 +2912,7 @@ const make = Effect.gen(function* () {
     const modelResolution = resolveModelSelectionOnDestination(
       desiredModel,
       destinationProviders,
-      sourceDriverKind,
+      input.modelSelectionOverride !== undefined ? undefined : sourceDriverKind,
     );
     if (modelResolution.needsModelSelection) {
       warnings.push(
@@ -1602,9 +2962,14 @@ const make = Effect.gen(function* () {
             toSessionTransferError("internal", error.message, input.transferId, error),
           ),
         );
-      if (Option.isSome(existing)) {
-        return existing.value.id;
+      if (Option.isNone(existing)) {
+        return yield* toSessionTransferError(
+          "not_found",
+          `Target local project ${input.explicitTargetProjectId} was not found.`,
+          input.transferId,
+        );
       }
+      return existing.value.id;
     }
 
     const localProjects = yield* listAllLocalProjects();
@@ -1649,6 +3014,7 @@ const make = Effect.gen(function* () {
       );
     }
 
+    const canonicalCloneDest = normalizeCanonicalWorkspaceRoot(cloneDest);
     const existingByRoot = yield* projectService
       .getByWorkspaceRoot(cloneDest)
       .pipe(
@@ -1658,6 +3024,12 @@ const make = Effect.gen(function* () {
       );
     if (Option.isSome(existingByRoot)) {
       return existingByRoot.value.id;
+    }
+    const existingByCanonical = localProjects.find(
+      (lp) => normalizeCanonicalWorkspaceRoot(lp.workspaceRoot) === canonicalCloneDest,
+    );
+    if (existingByCanonical) {
+      return existingByCanonical.id;
     }
 
     const projectTitle =
@@ -1798,7 +3170,14 @@ const make = Effect.gen(function* () {
     const boatShell = yield* remoteClient.getShellSnapshot(input.boatEndpoint);
     if (input.explicitTargetProjectId) {
       const match = boatShell.projects.find((p) => p.id === input.explicitTargetProjectId);
-      if (match) return match.id;
+      if (!match) {
+        return yield* toSessionTransferError(
+          "not_found",
+          `Target Boat project ${input.explicitTargetProjectId} was not found on ${input.boatAccess.machineName}.`,
+          input.transferId,
+        );
+      }
+      return match.id;
     }
 
     const machineMeta = yield* getBoatDaemonMachineMeta({
@@ -1807,12 +3186,19 @@ const make = Effect.gen(function* () {
     });
     const daemonProjects = machineMeta?.projects ?? [];
 
-    const byOrigin = daemonProjects.find(
-      (dp) => dp.originProjectId === input.manifest.sourceProjectId,
-    );
-    if (byOrigin) {
-      const match = boatShell.projects.find((p) => p.id === byOrigin.id);
-      if (match) return match.id;
+    const originMatches = daemonProjects
+      .filter((dp) => dp.originProjectId === input.manifest.sourceProjectId)
+      .map((dp) => boatShell.projects.find((p) => p.id === dp.id))
+      .filter((bp): bp is RemoteShellProject => bp !== undefined);
+    if (originMatches.length === 1 && originMatches[0]) {
+      return originMatches[0].id;
+    }
+    if (originMatches.length > 1) {
+      return yield* toSessionTransferError(
+        "preflight_required",
+        `Multiple projects on Boat machine ${input.boatAccess.machineName} match source project ${input.manifest.sourceProjectId}; specify targetProjectId.`,
+        input.transferId,
+      );
     }
 
     const localKey = normalizeRepoKey(input.manifest.workspace.repositoryIdentity);
@@ -1827,11 +3213,19 @@ const make = Effect.gen(function* () {
       if (matches.length === 1 && matches[0]) {
         return matches[0].id;
       }
+      if (matches.length > 1) {
+        return yield* toSessionTransferError(
+          "preflight_required",
+          `Multiple projects on Boat machine ${input.boatAccess.machineName} match this repository; specify targetProjectId.`,
+          input.transferId,
+        );
+      }
     }
 
     // Project is missing on Boat: clone via sail-boatd `add_project` if remote exists, else init fresh project.
     if (localKey !== null) {
-      yield* boatSupervisor
+      const previousProjectIds = new Set(boatShell.projects.map((p) => p.id));
+      const addResult = yield* boatSupervisor
         .invoke({
           command: "add_project",
           args: {
@@ -1857,25 +3251,66 @@ const make = Effect.gen(function* () {
       }
 
       const refreshedShell = yield* remoteClient.getShellSnapshot(input.boatEndpoint);
+      const parsedAdd = parseAddProjectResult(addResult.data);
+
+      // 1. Identify strictly by returned projectId.
+      if (parsedAdd.projectId !== null) {
+        const foundById = refreshedShell.projects.find((p) => p.id === parsedAdd.projectId);
+        if (foundById) return foundById.id;
+        return yield* toSessionTransferError(
+          "workspace_error",
+          `Cloned project ${parsedAdd.projectId} was not found on Boat machine ${input.boatAccess.machineName} after add_project.`,
+          input.transferId,
+        );
+      }
+
+      // 2. Identify strictly by canonical normalized workspaceRoot path.
+      if (parsedAdd.workspaceRoot !== null) {
+        const targetCanonical = normalizeCanonicalWorkspaceRoot(parsedAdd.workspaceRoot);
+        const foundByRoot = refreshedShell.projects.find(
+          (p) => normalizeCanonicalWorkspaceRoot(p.workspaceRoot) === targetCanonical,
+        );
+        if (foundByRoot) return foundByRoot.id;
+        return yield* toSessionTransferError(
+          "workspace_error",
+          `Cloned project at ${parsedAdd.workspaceRoot} was not found on Boat machine ${input.boatAccess.machineName} after add_project.`,
+          input.transferId,
+        );
+      }
+
+      // 3. Identify by daemon originProjectId recorded by add_project.
       const refreshedMeta = yield* getBoatDaemonMachineMeta({
         machineId: input.boatAccess.machineId,
         environmentId: input.boatAccess.environmentId,
       });
-      const refreshedOrigin = refreshedMeta?.projects?.find(
-        (dp) => dp.originProjectId === input.manifest.sourceProjectId,
-      );
-      if (refreshedOrigin) {
-        const found = refreshedShell.projects.find((p) => p.id === refreshedOrigin.id);
-        if (found) return found.id;
+      const refreshedOriginMatches = (refreshedMeta?.projects ?? [])
+        .filter((dp) => dp.originProjectId === input.manifest.sourceProjectId)
+        .map((dp) => refreshedShell.projects.find((p) => p.id === dp.id))
+        .filter((bp): bp is RemoteShellProject => bp !== undefined);
+      if (refreshedOriginMatches.length === 1 && refreshedOriginMatches[0]) {
+        return refreshedOriginMatches[0].id;
       }
-      const foundByRepo = refreshedShell.projects.find((bp) =>
-        repoKeysMatch(normalizeRepoKey(bp.repositoryIdentity), localKey),
+
+      // 4. Identify strictly by unique newly-added repository-identity match (never by title).
+      const newlyAddedByRepo = refreshedShell.projects.filter(
+        (bp) =>
+          !previousProjectIds.has(bp.id) &&
+          repoKeysMatch(
+            normalizeRepoKey(bp.repositoryIdentity) ??
+              refreshedMeta?.projects?.find((dp) => dp.id === bp.id)?.repoKey ??
+              null,
+            localKey,
+          ),
       );
-      if (foundByRepo) return foundByRepo.id;
-      const foundByTitle = refreshedShell.projects.find(
-        (bp) => bp.title === input.manifest.sourceProjectName,
+      if (newlyAddedByRepo.length === 1 && newlyAddedByRepo[0]) {
+        return newlyAddedByRepo[0].id;
+      }
+
+      return yield* toSessionTransferError(
+        "workspace_error",
+        `Could not strictly identify the cloned project on Boat machine ${input.boatAccess.machineName} after add_project.`,
+        input.transferId,
       );
-      if (foundByTitle) return foundByTitle.id;
     }
 
     if (remoteClient.createRemoteProject !== undefined) {
@@ -1905,6 +3340,7 @@ const make = Effect.gen(function* () {
       readonly cloneDestinationPath?: string | null | undefined;
       readonly modelSelectionOverride?: ModelSelection | null | undefined;
       readonly autoResume: boolean;
+      readonly confirmedRunningPause: boolean;
       readonly entry: ActiveTransferEntry;
     }) {
       const { transferId, direction, entry } = params;
@@ -1912,8 +3348,13 @@ const make = Effect.gen(function* () {
 
       let boatAccess: BoatSupervisor.BoatMachineProxyAccess | null = null;
       let boatEndpoint: BoatRemoteEndpoint | null = null;
-      let sourcePrepared = false;
-      let destinationStaged = false;
+      let localEnvDescriptor: Effect.Success<typeof serverEnvironment.getDescriptor> | null = null;
+      let prepareAttempted = false;
+      let stageAttempted = false;
+      let commitAttempted = false;
+      let commitConfirmed = false;
+      let stagedDestinationProjectId: ProjectId | null = null;
+      let stagedDestinationThreadId: ThreadId | null = null;
 
       const checkCancelled = (): Effect.Effect<void, SessionTransferError> =>
         entry.cancelled
@@ -1922,20 +3363,25 @@ const make = Effect.gen(function* () {
 
       const cleanupBeforeCommit = Effect.fn("SessionTransferCoordinator.cleanupBeforeCommit")(
         function* (reason: string) {
-          if (entry.committed) return;
-          if (destinationStaged) {
+          if (commitConfirmed || entry.committed) return;
+          if (stageAttempted) {
             const abortInput: SessionTransferAbortInput = {
               transferId,
               role: "destination",
+              ...(stagedDestinationThreadId !== null
+                ? { threadId: stagedDestinationThreadId }
+                : {}),
               reason,
             };
             yield* (
               direction === "local_to_boat" && boatEndpoint !== null
                 ? remoteClient.abort(boatEndpoint, abortInput)
-                : localEndpoints.abort(abortInput)
+                : direction === "boat_to_local"
+                  ? localEndpoints.abort(abortInput)
+                  : Effect.void
             ).pipe(Effect.ignore);
           }
-          if (sourcePrepared) {
+          if (prepareAttempted) {
             const abortInput: SessionTransferAbortInput = {
               transferId,
               role: "source",
@@ -1953,9 +3399,67 @@ const make = Effect.gen(function* () {
         },
       );
 
+      const handleUncertainCommit = Effect.fn("SessionTransferCoordinator.handleUncertainCommit")(
+        function* (): Effect.fn.Return<"resolved_committed" | "not_committed" | "unknown"> {
+          if (!commitAttempted || commitConfirmed) {
+            return commitConfirmed ? "resolved_committed" : "not_committed";
+          }
+          const outcome = yield* inspectDestinationCommitOutcome({
+            transferId,
+            direction,
+            destinationThreadId: stagedDestinationThreadId,
+            destinationMachineId:
+              direction === "local_to_boat"
+                ? (boatAccess?.machineId ?? params.targetMachineId ?? null)
+                : null,
+            destinationEnvironmentId:
+              direction === "local_to_boat"
+                ? (boatAccess?.environmentId ?? params.targetEnvironmentId ?? null)
+                : (localEnvDescriptor?.environmentId ?? null),
+            boatEndpoint,
+          });
+          if (outcome === "committed") {
+            commitConfirmed = true;
+            entry.committed = true;
+            const destEnvId =
+              direction === "local_to_boat"
+                ? (boatAccess?.environmentId ?? params.targetEnvironmentId ?? null)
+                : (localEnvDescriptor?.environmentId ?? null);
+            if (
+              destEnvId !== null &&
+              stagedDestinationProjectId !== null &&
+              stagedDestinationThreadId !== null
+            ) {
+              yield* finalizeSourceAndComplete({
+                transferId,
+                direction,
+                sourceEnvironmentId: params.sourceEnvironmentId,
+                sourceMachineId:
+                  direction === "boat_to_local" ? (boatAccess?.machineId ?? null) : null,
+                sourceThreadId: params.sourceThreadId,
+                destinationEnvironmentId: destEnvId,
+                destinationEnvironmentName:
+                  direction === "local_to_boat"
+                    ? toNonEmptyTrimmed(boatAccess?.machineName)
+                    : toNonEmptyTrimmed(localEnvDescriptor?.label),
+                destinationMachineId:
+                  direction === "local_to_boat" ? toNonEmptyTrimmed(boatAccess?.machineId) : null,
+                destinationProjectId: stagedDestinationProjectId,
+                destinationThreadId: stagedDestinationThreadId,
+                warnings,
+                boatEndpoint,
+              });
+            }
+            return "resolved_committed";
+          }
+          return outcome;
+        },
+      );
+
       const run = Effect.gen(function* () {
         yield* checkCancelled();
         const localEnv = yield* serverEnvironment.getDescriptor;
+        localEnvDescriptor = localEnv;
 
         // Step 1: Resolve Boat access & wake machine if sleeping.
         boatAccess = yield* direction === "local_to_boat"
@@ -2014,6 +3518,85 @@ const make = Effect.gen(function* () {
 
         yield* checkCancelled();
 
+        // Validate running confirmation and destination model availability BEFORE calling prepareSource.
+        if (direction === "local_to_boat") {
+          const [projection, localProviders, remoteConfig] = yield* Effect.all([
+            projectionStore
+              .getThreadProjection(params.sourceThreadId)
+              .pipe(
+                Effect.mapError((error) =>
+                  toSessionTransferError(
+                    error._tag === "ProjectionStoreThreadNotFoundError" ? "not_found" : "internal",
+                    error.message,
+                    transferId,
+                    error,
+                  ),
+                ),
+              ),
+            providerRegistry.getProviders,
+            remoteClient.getServerConfig(boatEndpoint),
+          ]);
+          if (!remoteConfig.sessionTransferSupported) {
+            return yield* toSessionTransferError(
+              "unsupported",
+              "This Boat machine runs an older Sail server that does not support session transfer yet.",
+              transferId,
+            );
+          }
+          yield* enforceRunningConfirmation({
+            wasRunning: projection.runs.some((run) => WORKING_RUN_STATUSES.has(run.status)),
+            hasPendingRuntimeRequest: projection.runtimeRequests.some(
+              (req) => req.status === "pending",
+            ),
+            activeSubagentCount: projection.subagents.filter((sub) =>
+              ACTIVE_SUBAGENT_STATUSES.has(sub.status),
+            ).length,
+            confirmedRunningPause: params.confirmedRunningPause,
+            transferId,
+          });
+          const desiredModel = params.modelSelectionOverride ?? projection.thread.modelSelection;
+          const sourceDriverKind = localProviders.find(
+            (p) => p.instanceId === projection.thread.modelSelection.instanceId,
+          )?.driver;
+          yield* validateModelSelectionForDestination({
+            desiredModel,
+            isOverride: params.modelSelectionOverride != null,
+            destinationProviders: remoteConfig.providers,
+            sourceDriverKind,
+            transferId,
+          });
+        } else {
+          const [remoteThread, localProviders, remoteConfigOption] = yield* Effect.all([
+            remoteClient.getThreadSummary(boatEndpoint, params.sourceThreadId),
+            providerRegistry.getProviders,
+            remoteClient.getServerConfig(boatEndpoint).pipe(Effect.option),
+          ]);
+          yield* enforceRunningConfirmation({
+            wasRunning: remoteThread.wasRunning,
+            hasPendingRuntimeRequest: remoteThread.pendingRuntimeRequests.length > 0,
+            activeSubagentCount: remoteThread.activeSubagentCount,
+            confirmedRunningPause: params.confirmedRunningPause,
+            transferId,
+          });
+          const desiredModel = params.modelSelectionOverride ?? remoteThread.modelSelection;
+          const sourceDriverKind =
+            remoteThread.providerDriverKind ??
+            (Option.isSome(remoteConfigOption)
+              ? remoteConfigOption.value.providers.find(
+                  (p) => p.instanceId === remoteThread.modelSelection.instanceId,
+                )?.driver
+              : undefined);
+          yield* validateModelSelectionForDestination({
+            desiredModel,
+            isOverride: params.modelSelectionOverride != null,
+            destinationProviders: localProviders,
+            sourceDriverKind,
+            transferId,
+          });
+        }
+
+        yield* checkCancelled();
+
         // Step 2: Pause & export source thread.
         yield* transition(transferId, "pausing_source", {
           phaseDetail: "Pausing active work on source thread...",
@@ -2034,10 +3617,11 @@ const make = Effect.gen(function* () {
             direction === "local_to_boat" ? toNonEmptyTrimmed(boatAccess.machineName) : null,
         };
 
+        // Mark attempted BEFORE invoking RPC so interruption/drop still calls idempotent abort.
+        prepareAttempted = true;
         const prepared = yield* direction === "local_to_boat"
           ? localEndpoints.prepareSource(prepareInput)
           : remoteClient.prepareSource(boatEndpoint, prepareInput);
-        sourcePrepared = true;
         warnings.push(...prepared.manifest.workspace.warnings);
 
         yield* checkCancelled();
@@ -2092,10 +3676,13 @@ const make = Effect.gen(function* () {
             : {}),
         };
 
+        // Mark attempted BEFORE invoking RPC so interruption/drop still calls idempotent abort.
+        stageAttempted = true;
         const staged = yield* direction === "local_to_boat"
           ? remoteClient.stageImport(boatEndpoint, stageInput)
           : localEndpoints.stageImport(stageInput);
-        destinationStaged = true;
+        stagedDestinationProjectId = staged.destinationProjectId;
+        stagedDestinationThreadId = staged.destinationThreadId;
         warnings.push(...staged.warnings);
 
         const localBaseUrl = getLocalHttpBaseUrl();
@@ -2194,7 +3781,7 @@ const make = Effect.gen(function* () {
             yield* checkCancelled();
 
             // Step 6: Commit & optionally resume on destination.
-            entry.committed = true;
+            // Do NOT mark entry.committed until commitImport actually succeeds.
             yield* transition(transferId, "committing_target", {
               phaseDetail: "Importing workspace and history on destination...",
               destinationProjectId: staged.destinationProjectId,
@@ -2215,9 +3802,12 @@ const make = Effect.gen(function* () {
               autoResume: params.autoResume,
               attachmentIdMap,
             };
+            commitAttempted = true;
             const committed = yield* direction === "local_to_boat"
               ? remoteClient.commitImport(boatEndpoint!, commitInput)
               : localEndpoints.commitImport(commitInput);
+            commitConfirmed = true;
+            entry.committed = true;
             warnings.push(...committed.warnings);
 
             if (committed.resumed) {
@@ -2287,12 +3877,40 @@ const make = Effect.gen(function* () {
         Effect.catch((error) =>
           Effect.uninterruptible(
             Effect.gen(function* () {
-              const cancelled = !entry.committed && (entry.cancelled || error.code === "cancelled");
-              yield* cleanupBeforeCommit(cancelled ? "Transfer cancelled" : error.message);
+              if (commitConfirmed || entry.committed) {
+                // Destination already committed; keep transfer in finalizing_source on transient errors
+                // instead of aborting or losing finalization state.
+                if (error.code === "target_unavailable") {
+                  yield* transition(transferId, "finalizing_source", {
+                    phaseDetail: "Destination committed; awaiting source archival retry...",
+                    warnings: [...warnings],
+                  }).pipe(Effect.ignore);
+                  return;
+                }
+                const completedAt = yield* nowIso();
+                yield* transition(transferId, "failed", {
+                  phaseDetail: null,
+                  errorMessage: redactSignedUrlsInMessage(error.message),
+                  warnings: [...warnings],
+                  completedAt,
+                }).pipe(Effect.ignore);
+                return;
+              }
+
+              if (commitAttempted) {
+                const outcome = yield* handleUncertainCommit();
+                if (outcome === "resolved_committed" || outcome === "unknown") {
+                  return;
+                }
+              }
+
+              const cancelled = entry.cancelled || error.code === "cancelled";
+              const safeMessage = redactSignedUrlsInMessage(error.message);
+              yield* cleanupBeforeCommit(cancelled ? "Transfer cancelled" : safeMessage);
               const completedAt = yield* nowIso();
               yield* transition(transferId, cancelled ? "cancelled" : "failed", {
                 phaseDetail: null,
-                errorMessage: cancelled ? null : error.message,
+                errorMessage: cancelled ? null : safeMessage,
                 warnings: [...warnings],
                 completedAt,
               }).pipe(Effect.ignore);
@@ -2301,7 +3919,13 @@ const make = Effect.gen(function* () {
         ),
         Effect.onInterrupt(() =>
           Effect.gen(function* () {
-            if (entry.committed) return;
+            if (commitConfirmed || entry.committed) return;
+            if (commitAttempted) {
+              const outcome = yield* handleUncertainCommit();
+              if (outcome === "resolved_committed" || outcome === "unknown") {
+                return;
+              }
+            }
             yield* cleanupBeforeCommit("Transfer cancelled");
             const completedAt = yield* nowIso();
             yield* transition(transferId, "cancelled", {
@@ -2321,24 +3945,10 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const start: SessionTransferCoordinatorShape["start"] = Effect.fn(
-    "SessionTransferCoordinator.start",
-  )(function* (input) {
-    if (input.direction === "local_to_boat" && input.target.kind !== "boat") {
-      return yield* toSessionTransferError(
-        "unsupported",
-        "local_to_boat transfer requires a Boat target.",
-      );
-    }
-    if (input.direction === "boat_to_local" && input.target.kind !== "local") {
-      return yield* toSessionTransferError(
-        "unsupported",
-        "boat_to_local transfer requires a local target.",
-      );
-    }
-
-    const transferId = input.transferId ?? (yield* generateTransferId());
-
+  const startBody = Effect.fn("SessionTransferCoordinator.startBody")(function* (
+    input: SessionTransferStartInput,
+    transferId: SessionTransferId,
+  ) {
     // Idempotent retry by transferId.
     const existingById = yield* repository
       .getById(transferId)
@@ -2372,17 +3982,20 @@ const make = Effect.gen(function* () {
 
     const localEnv = yield* serverEnvironment.getDescriptor;
 
-    // Resolve initial source projectId & environment names for the durable record.
+    // Resolve initial source projectId & environment names, and enforce running confirmation +
+    // destination model validation BEFORE persisting / launching the worker or calling prepareSource.
     let sourceProjectId: ProjectId;
     let sourceEnvironmentName: typeof TrimmedNonEmptyString.Type | null;
     let sourceMachineId: typeof TrimmedNonEmptyString.Type | null = null;
     let destinationEnvironmentId: EnvironmentId | null = null;
     let destinationEnvironmentName: typeof TrimmedNonEmptyString.Type | null = null;
     let destinationMachineId: typeof TrimmedNonEmptyString.Type | null = null;
+    let sourceWasRunning = false;
+    let hadPendingRuntimeRequest = false;
 
     if (input.direction === "local_to_boat" && input.target.kind === "boat") {
-      const thread = yield* projectionStore
-        .getThread(input.sourceThreadId)
+      const projection = yield* projectionStore
+        .getThreadProjection(input.sourceThreadId)
         .pipe(
           Effect.mapError((error) =>
             toSessionTransferError(
@@ -2393,24 +4006,114 @@ const make = Effect.gen(function* () {
             ),
           ),
         );
-      sourceProjectId = thread.projectId;
+      sourceWasRunning = projection.runs.some((run) => WORKING_RUN_STATUSES.has(run.status));
+      hadPendingRuntimeRequest = projection.runtimeRequests.some((req) => req.status === "pending");
+      const activeSubagentCount = projection.subagents.filter((sub) =>
+        ACTIVE_SUBAGENT_STATUSES.has(sub.status),
+      ).length;
+      yield* enforceRunningConfirmation({
+        wasRunning: sourceWasRunning,
+        hasPendingRuntimeRequest: hadPendingRuntimeRequest,
+        activeSubagentCount,
+        confirmedRunningPause: input.confirmedRunningPause,
+        transferId,
+      });
+
+      const boatAccessOption = yield* getMachineProxyAccess({
+        machineId: input.target.machineId,
+        ...(input.target.environmentId !== undefined
+          ? { environmentId: input.target.environmentId }
+          : {}),
+      }).pipe(Effect.option);
+      if (
+        Option.isSome(boatAccessOption) &&
+        RUNNING_BOAT_STATES.has(boatAccessOption.value.state)
+      ) {
+        const boatEndpoint: BoatRemoteEndpoint = {
+          localUrl: boatAccessOption.value.localUrl,
+          bearerToken: boatAccessOption.value.bearerToken,
+        };
+        const [remoteConfig, localProviders] = yield* Effect.all([
+          remoteClient.getServerConfig(boatEndpoint),
+          providerRegistry.getProviders,
+        ]);
+        if (!remoteConfig.sessionTransferSupported) {
+          return yield* toSessionTransferError(
+            "unsupported",
+            "This Boat machine runs an older Sail server that does not support session transfer yet.",
+            transferId,
+          );
+        }
+        const desiredModel = input.modelSelectionOverride ?? projection.thread.modelSelection;
+        const sourceDriverKind = localProviders.find(
+          (p) => p.instanceId === projection.thread.modelSelection.instanceId,
+        )?.driver;
+        yield* validateModelSelectionForDestination({
+          desiredModel,
+          isOverride: input.modelSelectionOverride !== undefined,
+          destinationProviders: remoteConfig.providers,
+          sourceDriverKind,
+          transferId,
+        });
+      }
+
+      sourceProjectId = projection.thread.projectId;
       sourceEnvironmentName = toNonEmptyTrimmed(localEnv.label);
       destinationMachineId = toNonEmptyTrimmed(input.target.machineId);
       destinationEnvironmentId = input.target.environmentId ?? null;
       destinationEnvironmentName = input.target.machineName ?? null;
     } else {
-      const boatAccess = yield* getMachineProxyAccess({
-        environmentId: input.sourceEnvironmentId,
-      });
+      const [boatAccess, localProviders] = yield* Effect.all([
+        getMachineProxyAccess({
+          environmentId: input.sourceEnvironmentId,
+        }),
+        providerRegistry.getProviders,
+      ]);
       const boatEndpoint: BoatRemoteEndpoint = {
         localUrl: boatAccess.localUrl,
         bearerToken: boatAccess.bearerToken,
       };
-      const shell = yield* remoteClient.getShellSnapshot(boatEndpoint).pipe(Effect.option);
-      const threadShell = Option.isSome(shell)
-        ? shell.value.threads.find((t) => t.id === input.sourceThreadId)
-        : undefined;
-      sourceProjectId = threadShell?.projectId ?? ProjectId.make("unknown");
+      if (RUNNING_BOAT_STATES.has(boatAccess.state)) {
+        const [remoteThread, remoteConfigOption] = yield* Effect.all([
+          remoteClient.getThreadSummary(boatEndpoint, input.sourceThreadId),
+          remoteClient.getServerConfig(boatEndpoint).pipe(Effect.option),
+        ]);
+        sourceWasRunning = remoteThread.wasRunning;
+        hadPendingRuntimeRequest = remoteThread.pendingRuntimeRequests.length > 0;
+        yield* enforceRunningConfirmation({
+          wasRunning: sourceWasRunning,
+          hasPendingRuntimeRequest: hadPendingRuntimeRequest,
+          activeSubagentCount: remoteThread.activeSubagentCount,
+          confirmedRunningPause: input.confirmedRunningPause,
+          transferId,
+        });
+        const desiredModel = input.modelSelectionOverride ?? remoteThread.modelSelection;
+        const sourceDriverKind =
+          remoteThread.providerDriverKind ??
+          (Option.isSome(remoteConfigOption)
+            ? remoteConfigOption.value.providers.find(
+                (p) => p.instanceId === remoteThread.modelSelection.instanceId,
+              )?.driver
+            : undefined);
+        yield* validateModelSelectionForDestination({
+          desiredModel,
+          isOverride: input.modelSelectionOverride !== undefined,
+          destinationProviders: localProviders,
+          sourceDriverKind,
+          transferId,
+        });
+        sourceProjectId = remoteThread.projectId;
+      } else {
+        if (input.modelSelectionOverride !== undefined) {
+          yield* validateModelSelectionForDestination({
+            desiredModel: input.modelSelectionOverride,
+            isOverride: true,
+            destinationProviders: localProviders,
+            transferId,
+          });
+        }
+        sourceProjectId = ProjectId.make("unknown");
+      }
       sourceEnvironmentName = toNonEmptyTrimmed(boatAccess.machineName);
       sourceMachineId = toNonEmptyTrimmed(boatAccess.machineId);
       destinationEnvironmentId = localEnv.environmentId;
@@ -2433,9 +4136,9 @@ const make = Effect.gen(function* () {
       destinationThreadId: null,
       phase: "queued",
       phaseDetail: "Queued transfer...",
-      sourceWasRunning: false,
+      sourceWasRunning,
       autoResume: input.autoResume ?? true,
-      hadPendingRuntimeRequest: false,
+      hadPendingRuntimeRequest,
       destinationBranch: null,
       destinationWorktreePath: null,
       modelSelectionOverride: input.modelSelectionOverride ?? null,
@@ -2447,8 +4150,8 @@ const make = Effect.gen(function* () {
       completedAt: null,
     };
 
-    const persisted = yield* repository
-      .upsert(initialRecord)
+    const insertResult = yield* repository
+      .insertIfAbsent(initialRecord)
       .pipe(
         Effect.mapError((error) =>
           error._tag === "SessionTransferConflictError"
@@ -2456,14 +4159,22 @@ const make = Effect.gen(function* () {
             : toSessionTransferError("internal", error.message, transferId, error),
         ),
       );
-    yield* publishRecord(persisted);
+    if (!insertResult.created) {
+      return insertResult.record;
+    }
 
+    // Synchronous atomic guard so only the single winning creator registers and forks a worker.
+    if (activeTransfers.has(transferId)) {
+      return insertResult.record;
+    }
     const entry: ActiveTransferEntry = {
       cancelled: false,
       committed: false,
       fiber: null,
     };
     activeTransfers.set(transferId, entry);
+
+    yield* publishRecord(insertResult.record);
 
     const fiber = yield* Effect.forkIn(
       executeTransfer({
@@ -2483,13 +4194,54 @@ const make = Effect.gen(function* () {
         cloneDestinationPath: input.cloneDestinationPath ?? null,
         modelSelectionOverride: input.modelSelectionOverride ?? null,
         autoResume: input.autoResume ?? true,
+        confirmedRunningPause: input.confirmedRunningPause === true,
         entry,
       }),
       serviceScope,
     );
     entry.fiber = fiber;
 
-    return persisted;
+    return insertResult.record;
+  });
+
+  const start: SessionTransferCoordinatorShape["start"] = Effect.fn(
+    "SessionTransferCoordinator.start",
+  )(function* (input) {
+    if (input.direction === "local_to_boat" && input.target.kind !== "boat") {
+      return yield* toSessionTransferError(
+        "unsupported",
+        "local_to_boat transfer requires a Boat target.",
+      );
+    }
+    if (input.direction === "boat_to_local" && input.target.kind !== "local") {
+      return yield* toSessionTransferError(
+        "unsupported",
+        "boat_to_local transfer requires a local target.",
+      );
+    }
+
+    if (input.transferId !== undefined) {
+      // Synchronous deduplication BEFORE any yield* so concurrent callers with the same
+      // transferId wait for the single winning creator instead of racing to launch two workers.
+      const inFlightStart = startingTransfers.get(input.transferId);
+      if (inFlightStart !== undefined) {
+        return yield* Deferred.await(inFlightStart);
+      }
+      const gate = Deferred.makeUnsafe<SessionTransferRecord, SessionTransferError>();
+      startingTransfers.set(input.transferId, gate);
+      const exit = yield* Effect.exit(startBody(input, input.transferId)).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            startingTransfers.delete(input.transferId!);
+          }),
+        ),
+      );
+      yield* Deferred.done(gate, exit).pipe(Effect.ignore);
+      return yield* exit;
+    }
+
+    const generatedId = yield* generateTransferId();
+    return yield* startBody(input, generatedId);
   });
 
   const cancel: SessionTransferCoordinatorShape["cancel"] = Effect.fn(
@@ -2553,15 +4305,30 @@ const make = Effect.gen(function* () {
       }
     }
 
-    // Best-effort abort local side if no active fiber handled it.
+    // Best-effort abort both local and remote sides if no active fiber handled it.
     yield* localEndpoints
       .abort({
         transferId: input.transferId,
         role: existing.direction === "local_to_boat" ? "source" : "destination",
-        threadId: existing.sourceThreadId,
+        ...(existing.direction === "local_to_boat"
+          ? { threadId: existing.sourceThreadId }
+          : existing.destinationThreadId !== null
+            ? { threadId: existing.destinationThreadId }
+            : {}),
         reason: "Cancelled by user",
       })
       .pipe(Effect.ignore);
+    yield* abortRemoteSideBestEffort({
+      transferId: input.transferId,
+      direction: existing.direction,
+      sourceEnvironmentId: existing.sourceEnvironmentId,
+      sourceMachineId: existing.sourceMachineId,
+      sourceThreadId: existing.sourceThreadId,
+      destinationEnvironmentId: existing.destinationEnvironmentId,
+      destinationMachineId: existing.destinationMachineId,
+      destinationThreadId: existing.destinationThreadId,
+      reason: "Cancelled by user",
+    });
 
     const completedAt = yield* nowIso();
     return yield* transition(input.transferId, "cancelled", {
@@ -2574,6 +4341,14 @@ const make = Effect.gen(function* () {
   const retry: SessionTransferCoordinatorShape["retry"] = Effect.fn(
     "SessionTransferCoordinator.retry",
   )(function* (input) {
+    if (activeTransfers.has(input.transferId) || startingTransfers.has(input.transferId)) {
+      return yield* toSessionTransferError(
+        "already_in_flight",
+        `Session transfer ${input.transferId} is already running.`,
+        input.transferId,
+      );
+    }
+
     const existingOption = yield* repository
       .getById(input.transferId)
       .pipe(
@@ -2638,6 +4413,10 @@ const make = Effect.gen(function* () {
       warnings: [],
     });
 
+    if (activeTransfers.has(input.transferId)) {
+      return reset;
+    }
+
     const entry: ActiveTransferEntry = {
       cancelled: false,
       committed: false,
@@ -2665,6 +4444,7 @@ const make = Effect.gen(function* () {
         cloneDestinationPath: nextCloneDestinationPath,
         modelSelectionOverride: nextModelOverride,
         autoResume: nextAutoResume,
+        confirmedRunningPause: existing.sourceWasRunning || existing.hadPendingRuntimeRequest,
         entry,
       }),
       serviceScope,
@@ -2715,69 +4495,94 @@ const make = Effect.gen(function* () {
         record.destinationProjectId !== null &&
         record.destinationEnvironmentId !== null
       ) {
-        const finalizedAt = yield* nowIso();
-        const finalizeInput: SessionTransferFinalizeSourceInput = {
+        yield* finalizeSourceAndComplete({
           transferId: record.transferId,
-          threadId: record.sourceThreadId,
-          destination: {
-            transferId: record.transferId,
-            environmentId: record.destinationEnvironmentId,
-            environmentName: record.destinationEnvironmentName,
-            machineId: record.destinationMachineId,
-            projectId: record.destinationProjectId,
-            threadId: record.destinationThreadId,
-            transferredAt: finalizedAt,
-          },
-        };
-        const finalized = yield* Effect.gen(function* () {
-          if (record.direction === "local_to_boat") {
-            yield* localEndpoints.finalizeSource(finalizeInput);
-          } else {
-            const access = yield* getMachineProxyAccess({
-              environmentId: record.sourceEnvironmentId,
-            });
-            yield* remoteClient.finalizeSource(
-              { localUrl: access.localUrl, bearerToken: access.bearerToken },
-              finalizeInput,
-            );
-          }
-        }).pipe(
-          Effect.as(true),
-          Effect.catch((error) =>
-            Effect.logWarning("Failed to finalize source during startup reconciliation", {
-              transferId: record.transferId,
-              error: error.message,
-            }).pipe(Effect.as(false)),
-          ),
-        );
-
-        const completedAt = yield* nowIso();
-        if (finalized) {
-          yield* transition(record.transferId, "completed", {
-            phaseDetail: null,
-            errorMessage: null,
-            completedAt,
-          }).pipe(Effect.ignore);
-        } else {
-          yield* transition(record.transferId, "failed", {
-            phaseDetail: null,
-            errorMessage:
-              "Transfer committed on destination before restart, but archiving the source thread could not finish.",
-            completedAt,
-          }).pipe(Effect.ignore);
-        }
+          direction: record.direction,
+          sourceEnvironmentId: record.sourceEnvironmentId,
+          sourceMachineId: record.sourceMachineId,
+          sourceThreadId: record.sourceThreadId,
+          destinationEnvironmentId: record.destinationEnvironmentId,
+          destinationEnvironmentName: record.destinationEnvironmentName,
+          destinationMachineId: record.destinationMachineId,
+          destinationProjectId: record.destinationProjectId,
+          destinationThreadId: record.destinationThreadId,
+          currentPhase: record.phase,
+        });
         continue;
       }
 
-      // Crashed before commit: unlock local side best-effort and mark failed.
+      if (record.phase === "committing_target" || record.phase === "resuming_target") {
+        const outcome = yield* inspectDestinationCommitOutcome({
+          transferId: record.transferId,
+          direction: record.direction,
+          destinationThreadId: record.destinationThreadId,
+          destinationMachineId: record.destinationMachineId,
+          destinationEnvironmentId: record.destinationEnvironmentId,
+        });
+
+        if (outcome === "committed") {
+          const localEnv = yield* serverEnvironment.getDescriptor;
+          const destEnvId =
+            record.destinationEnvironmentId ??
+            (record.direction === "boat_to_local" ? localEnv.environmentId : null);
+          if (
+            destEnvId !== null &&
+            record.destinationProjectId !== null &&
+            record.destinationThreadId !== null
+          ) {
+            yield* finalizeSourceAndComplete({
+              transferId: record.transferId,
+              direction: record.direction,
+              sourceEnvironmentId: record.sourceEnvironmentId,
+              sourceMachineId: record.sourceMachineId,
+              sourceThreadId: record.sourceThreadId,
+              destinationEnvironmentId: destEnvId,
+              destinationEnvironmentName:
+                record.destinationEnvironmentName ??
+                (record.direction === "boat_to_local" ? toNonEmptyTrimmed(localEnv.label) : null),
+              destinationMachineId: record.destinationMachineId,
+              destinationProjectId: record.destinationProjectId,
+              destinationThreadId: record.destinationThreadId,
+              currentPhase: record.phase,
+            });
+            continue;
+          }
+        }
+
+        if (outcome === "unknown") {
+          yield* Effect.logWarning(
+            "Destination commit outcome could not be verified on startup; deferring reconciliation",
+            { transferId: record.transferId, phase: record.phase },
+          );
+          continue;
+        }
+      }
+
+      // Crashed before commit (or verified not committed): abort BOTH local and remote sides best-effort.
       yield* localEndpoints
         .abort({
           transferId: record.transferId,
           role: record.direction === "local_to_boat" ? "source" : "destination",
-          threadId: record.sourceThreadId,
+          ...(record.direction === "local_to_boat"
+            ? { threadId: record.sourceThreadId }
+            : record.destinationThreadId !== null
+              ? { threadId: record.destinationThreadId }
+              : {}),
           reason: "Interrupted by server restart",
         })
         .pipe(Effect.ignore);
+
+      yield* abortRemoteSideBestEffort({
+        transferId: record.transferId,
+        direction: record.direction,
+        sourceEnvironmentId: record.sourceEnvironmentId,
+        sourceMachineId: record.sourceMachineId,
+        sourceThreadId: record.sourceThreadId,
+        destinationEnvironmentId: record.destinationEnvironmentId,
+        destinationMachineId: record.destinationMachineId,
+        destinationThreadId: record.destinationThreadId,
+        reason: "Interrupted by server restart",
+      });
 
       const completedAt = yield* nowIso();
       yield* transition(record.transferId, "failed", {

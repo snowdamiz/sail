@@ -56,6 +56,11 @@ export type SessionTransferRepositoryError =
   | PersistenceSqlError
   | PersistenceDecodeError;
 
+export interface SessionTransferInsertIfAbsentResult {
+  readonly record: SessionTransferRecord;
+  readonly created: boolean;
+}
+
 export interface SessionTransferTransitionPhaseInput {
   readonly transferId: SessionTransferId;
   readonly phase: SessionTransferPhase;
@@ -149,6 +154,12 @@ export class SessionTransferRepository extends Context.Service<
       record: SessionTransferRecord,
     ) => Effect.Effect<
       SessionTransferRecord,
+      SessionTransferConflictError | PersistenceSqlError | PersistenceDecodeError
+    >;
+    readonly insertIfAbsent: (
+      record: SessionTransferRecord,
+    ) => Effect.Effect<
+      SessionTransferInsertIfAbsentResult,
       SessionTransferConflictError | PersistenceSqlError | PersistenceDecodeError
     >;
     readonly transitionPhase: (
@@ -267,7 +278,7 @@ const make = Effect.gen(function* () {
         PersistenceDecodeError.fromSchemaError("SessionTransferRecord", cause),
       ),
       Effect.flatMap((recordJson) =>
-        sql`
+        sql<{ readonly transferId: string }>`
           INSERT INTO boat_session_transfers (
             transfer_id,
             direction,
@@ -311,9 +322,12 @@ const make = Effect.gen(function* () {
             ${record.completedAt}
           )
           ON CONFLICT (transfer_id) DO NOTHING
-        `.pipe(Effect.mapError(toConflictOrSqlError(record, operation))),
+          RETURNING transfer_id AS "transferId"
+        `.pipe(
+          Effect.map((rows) => rows.length > 0),
+          Effect.mapError(toConflictOrSqlError(record, operation)),
+        ),
       ),
-      Effect.asVoid,
     );
 
   const updateRecord = (record: SessionTransferRecord, operation: string) =>
@@ -349,60 +363,77 @@ const make = Effect.gen(function* () {
       Effect.as(record),
     );
 
-  return SessionTransferRepository.of({
-    upsert: Effect.fn("SessionTransferRepository.upsert")(function* (record) {
-      return yield* sql
-        .withTransaction(
-          Effect.gen(function* () {
-            // Check transfer_id before inserting so replaying a stale queued record
-            // cannot trip the active-source unique index when another transfer is active.
-            const existingOption = yield* findByIdRow(record.transferId).pipe(
-              Effect.mapError(
-                toSqlOrDecodeError("upsertSessionTransfer.read", "SessionTransferRecord"),
-              ),
-            );
-            if (Option.isSome(existingOption)) {
-              return existingOption.value.record;
-            }
-            const racedExisting = yield* insertRecordIfAbsent(
-              record,
-              "upsertSessionTransfer.write",
-            ).pipe(
-              Effect.as(Option.none<SessionTransferRecord>()),
-              Effect.catchTags({
-                SessionTransferConflictError: (conflictError) =>
-                  findByIdRow(record.transferId).pipe(
-                    Effect.mapError(
-                      toSqlOrDecodeError(
-                        "upsertSessionTransfer.readAfterConflict",
-                        "SessionTransferRecord",
-                      ),
-                    ),
-                    Effect.flatMap((rowOption) =>
-                      Option.isSome(rowOption)
-                        ? Effect.succeedSome(rowOption.value.record)
-                        : Effect.fail(conflictError),
+  const insertIfAbsentImpl = Effect.fn("SessionTransferRepository.insertIfAbsent")(function* (
+    record: SessionTransferRecord,
+  ) {
+    return yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          // Check transfer_id before inserting so replaying a stale queued record
+          // cannot trip the active-source unique index when another transfer is active.
+          const existingOption = yield* findByIdRow(record.transferId).pipe(
+            Effect.mapError(
+              toSqlOrDecodeError("upsertSessionTransfer.read", "SessionTransferRecord"),
+            ),
+          );
+          if (Option.isSome(existingOption)) {
+            return { record: existingOption.value.record, created: false };
+          }
+          const insertOutcome = yield* insertRecordIfAbsent(
+            record,
+            "upsertSessionTransfer.write",
+          ).pipe(
+            Effect.map((inserted) => ({
+              inserted,
+              racedExisting: Option.none<SessionTransferRecord>(),
+            })),
+            Effect.catchTags({
+              SessionTransferConflictError: (conflictError) =>
+                findByIdRow(record.transferId).pipe(
+                  Effect.mapError(
+                    toSqlOrDecodeError(
+                      "upsertSessionTransfer.readAfterConflict",
+                      "SessionTransferRecord",
                     ),
                   ),
-              }),
-            );
-            if (Option.isSome(racedExisting)) {
-              return racedExisting.value;
-            }
-            const persistedOption = yield* findByIdRow(record.transferId).pipe(
-              Effect.mapError(
-                toSqlOrDecodeError("upsertSessionTransfer.readAfterWrite", "SessionTransferRecord"),
-              ),
-            );
-            return Option.isSome(persistedOption) ? persistedOption.value.record : record;
-          }),
-        )
-        .pipe(
-          Effect.catchTags({
-            SqlError: (cause) => Effect.fail(toPersistenceSqlError("upsertSessionTransfer")(cause)),
-          }),
-        );
+                  Effect.flatMap((rowOption) =>
+                    Option.isSome(rowOption)
+                      ? Effect.succeed({
+                          inserted: false,
+                          racedExisting: Option.some(rowOption.value.record),
+                        })
+                      : Effect.fail(conflictError),
+                  ),
+                ),
+            }),
+          );
+          if (Option.isSome(insertOutcome.racedExisting)) {
+            return { record: insertOutcome.racedExisting.value, created: false };
+          }
+          const persistedOption = yield* findByIdRow(record.transferId).pipe(
+            Effect.mapError(
+              toSqlOrDecodeError("upsertSessionTransfer.readAfterWrite", "SessionTransferRecord"),
+            ),
+          );
+          return {
+            record: Option.isSome(persistedOption) ? persistedOption.value.record : record,
+            created: insertOutcome.inserted,
+          };
+        }),
+      )
+      .pipe(
+        Effect.catchTags({
+          SqlError: (cause) => Effect.fail(toPersistenceSqlError("upsertSessionTransfer")(cause)),
+        }),
+      );
+  });
+
+  return SessionTransferRepository.of({
+    upsert: Effect.fn("SessionTransferRepository.upsert")(function* (record) {
+      const result = yield* insertIfAbsentImpl(record);
+      return result.record;
     }),
+    insertIfAbsent: insertIfAbsentImpl,
     transitionPhase: Effect.fn("SessionTransferRepository.transitionPhase")(function* (input) {
       return yield* sql
         .withTransaction(

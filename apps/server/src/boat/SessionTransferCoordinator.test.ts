@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Loopback HTTP fixture servers for live BoatRemoteClient tests.
+import * as NodeHttp from "node:http";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -8,6 +10,8 @@ import {
   MessageId,
   type ModelSelection,
   NonNegativeInt,
+  ORCHESTRATION_PROTOCOL_HEADER,
+  ORCHESTRATION_PROTOCOL_VERSION_TEXT,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -27,6 +31,7 @@ import {
   type SessionTransferRecord,
   type SessionTransferStageImportInput,
   type SessionTransferStageImportResult,
+  type SessionTransferThreadOrigin,
   ThreadId,
   TrimmedNonEmptyString,
   WS_METHODS,
@@ -47,6 +52,7 @@ import * as NodeWS from "@effect/platform-node/NodeWS";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProjectionStoreV2 from "../orchestration-v2/ProjectionStore.ts";
 import * as SessionTransferEndpointService from "../orchestration-v2/SessionTransferEndpointService.ts";
+import { PersistenceSqlError } from "../persistence/Errors.ts";
 import * as SessionTransferRepository from "../persistence/SessionTransferRepository.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -221,6 +227,31 @@ interface HarnessOptions {
     readonly projectId: ProjectId;
     readonly workspaceRoot: string;
   };
+  readonly onLocalPrepareSource?: (
+    input: SessionTransferPrepareSourceInput,
+  ) => Effect.Effect<SessionTransferPrepareSourceResult, SessionTransferError>;
+  readonly onRemoteStageImport?: (
+    input: SessionTransferStageImportInput,
+  ) => Effect.Effect<SessionTransferStageImportResult, SessionTransferError>;
+  readonly onRemoteFinalizeSource?: (
+    input: SessionTransferFinalizeSourceInput,
+  ) => Effect.Effect<{ readonly archived: boolean }, SessionTransferError>;
+  readonly onRemoteGetThreadSummary?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<SessionTransferCoordinator.RemoteThreadSummary, SessionTransferError>;
+  readonly onBoatAddProjectReturn?: (
+    boatProjects: Array<SessionTransferCoordinator.RemoteShellProject>,
+    daemonProjects: Array<{
+      readonly id: string;
+      readonly originProjectId?: string | null;
+      readonly title?: string;
+      readonly repoKey?: string | null;
+    }>,
+  ) => Record<string, unknown>;
+  readonly failTransitionPhase?: SessionTransferCoordinator.SessionTransferCoordinatorShape extends never
+    ? never
+    : string;
+  readonly localThreadTransferOrigin?: SessionTransferThreadOrigin | null;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -238,6 +269,9 @@ function makeHarness(options: HarnessOptions = {}) {
     remoteCommitImport: [] as SessionTransferCommitImportInput[],
     remoteFinalizeSource: [] as SessionTransferFinalizeSourceInput[],
     remoteAbort: [] as SessionTransferAbortInput[],
+    remoteGetServerConfigCount: 0,
+    remoteGetShellSnapshotCount: 0,
+    remoteGetThreadSummaryCount: 0,
     remoteCreateProject: [] as Array<{ readonly name: string; readonly initGit?: boolean }>,
     streamTransfers: [] as Array<{
       readonly sourceUrl: string;
@@ -307,6 +341,9 @@ function makeHarness(options: HarnessOptions = {}) {
           }
           if (input.command === "add_project") {
             options.onBoatAddProject?.();
+            if (options.onBoatAddProjectReturn) {
+              return { data: options.onBoatAddProjectReturn(boatProjects, daemonProjects) };
+            }
             boatProjects.push({
               id: BOAT_PROJECT_ID,
               title: "sail",
@@ -370,9 +407,12 @@ function makeHarness(options: HarnessOptions = {}) {
   const localEndpointsLayer = Layer.succeed(
     SessionTransferEndpointService.SessionTransferEndpointService,
     SessionTransferEndpointService.SessionTransferEndpointService.of({
-      prepareSource: (input) =>
-        Effect.sync(() => {
-          calls.localPrepareSource.push(input);
+      prepareSource: (input) => {
+        calls.localPrepareSource.push(input);
+        if (options.onLocalPrepareSource) {
+          return options.onLocalPrepareSource(input);
+        }
+        return Effect.sync(() => {
           const manifest = makeManifest({
             transferId: input.transferId,
             direction: input.direction,
@@ -393,7 +433,8 @@ function makeHarness(options: HarnessOptions = {}) {
             ),
             bundleExpiresAt: NOW_ISO,
           } satisfies SessionTransferPrepareSourceResult;
-        }),
+        });
+      },
       stageImport: (input) => {
         calls.localStageImport.push(input);
         if (options.onLocalStageImport) {
@@ -449,27 +490,37 @@ function makeHarness(options: HarnessOptions = {}) {
     SessionTransferCoordinator.BoatRemoteClient,
     SessionTransferCoordinator.BoatRemoteClient.of({
       getServerConfig: () =>
-        Effect.succeed({
-          environmentId: BOAT_ENV_ID,
-          environmentLabel: "dev-boat",
-          sessionTransferSupported: options.boatSessionTransferSupported ?? true,
-          providers: boatProviders,
+        Effect.sync(() => {
+          calls.remoteGetServerConfigCount += 1;
+          return {
+            environmentId: BOAT_ENV_ID,
+            environmentLabel: "dev-boat",
+            sessionTransferSupported: options.boatSessionTransferSupported ?? true,
+            providers: boatProviders,
+          };
         }),
       getShellSnapshot: () =>
-        Effect.succeed({
-          projects: [...boatProjects],
-          threads: [
-            {
-              id: BOAT_THREAD_ID,
-              projectId: BOAT_PROJECT_ID,
-              title: "Boat thread",
-              branch: GitRefName.make("feat/transfer"),
-              worktreePath: "/home/sail/sail/.worktrees/wt-boat",
-            },
-          ],
+        Effect.sync(() => {
+          calls.remoteGetShellSnapshotCount += 1;
+          return {
+            projects: [...boatProjects],
+            threads: [
+              {
+                id: BOAT_THREAD_ID,
+                projectId: BOAT_PROJECT_ID,
+                title: "Boat thread",
+                branch: GitRefName.make("feat/transfer"),
+                worktreePath: "/home/sail/sail/.worktrees/wt-boat",
+              },
+            ],
+          };
         }),
-      getThreadSummary: (_endpoint, threadId) =>
-        Effect.succeed({
+      getThreadSummary: (_endpoint, threadId) => {
+        calls.remoteGetThreadSummaryCount += 1;
+        if (options.onRemoteGetThreadSummary) {
+          return options.onRemoteGetThreadSummary(threadId);
+        }
+        return Effect.succeed({
           id: threadId,
           projectId: BOAT_PROJECT_ID,
           title: "Boat thread",
@@ -486,7 +537,8 @@ function makeHarness(options: HarnessOptions = {}) {
           isDirty: false,
           headSha: "deadbeef",
           ...options.remoteThreadSummary,
-        }),
+        });
+      },
       createRemoteProject: (_endpoint, input) =>
         Effect.sync(() => {
           calls.remoteCreateProject.push(input);
@@ -525,9 +577,12 @@ function makeHarness(options: HarnessOptions = {}) {
             bundleExpiresAt: NOW_ISO,
           };
         }),
-      stageImport: (_endpoint, input) =>
-        Effect.sync(() => {
-          calls.remoteStageImport.push(input);
+      stageImport: (_endpoint, input) => {
+        calls.remoteStageImport.push(input);
+        if (options.onRemoteStageImport) {
+          return options.onRemoteStageImport(input);
+        }
+        return Effect.sync(() => {
           return {
             destinationProjectId: input.targetProjectId ?? BOAT_PROJECT_ID,
             destinationThreadId: DEST_THREAD_ID,
@@ -548,7 +603,8 @@ function makeHarness(options: HarnessOptions = {}) {
             })),
             warnings: [],
           };
-        }),
+        });
+      },
       commitImport: (endpoint, input) => {
         calls.remoteCommitImport.push(input);
         if (options.onBoatCommitImport) {
@@ -563,11 +619,13 @@ function makeHarness(options: HarnessOptions = {}) {
           warnings: [],
         });
       },
-      finalizeSource: (_endpoint, input) =>
-        Effect.sync(() => {
-          calls.remoteFinalizeSource.push(input);
-          return { archived: true };
-        }),
+      finalizeSource: (_endpoint, input) => {
+        calls.remoteFinalizeSource.push(input);
+        if (options.onRemoteFinalizeSource) {
+          return options.onRemoteFinalizeSource(input);
+        }
+        return Effect.succeed({ archived: true });
+      },
       abort: (_endpoint, input) =>
         Effect.sync(() => {
           calls.remoteAbort.push(input);
@@ -687,6 +745,9 @@ function makeHarness(options: HarnessOptions = {}) {
         modelSelection: options.localThreadModelSelection ?? CLAUDE_MODEL,
         branch: GitRefName.make("feat/transfer"),
         worktreePath: "/Users/dev/sail",
+        ...(options.localThreadTransferOrigin !== undefined
+          ? { transferOrigin: options.localThreadTransferOrigin }
+          : {}),
       }),
     getThreadProjection: (threadId: ThreadId) =>
       Effect.succeed({
@@ -795,9 +856,30 @@ function makeHarness(options: HarnessOptions = {}) {
     }),
   );
 
-  const repoLayer = SessionTransferRepository.layer.pipe(
+  const baseRepoLayer = SessionTransferRepository.layer.pipe(
     Layer.provideMerge(SqlitePersistence.layerMemory),
   );
+  const repoLayer =
+    options.failTransitionPhase === undefined
+      ? baseRepoLayer
+      : Layer.effect(
+          SessionTransferRepository.SessionTransferRepository,
+          Effect.gen(function* () {
+            const inner = yield* SessionTransferRepository.SessionTransferRepository;
+            return {
+              ...inner,
+              transitionPhase: (input) =>
+                input.phase === options.failTransitionPhase
+                  ? Effect.fail(
+                      new PersistenceSqlError({
+                        operation: "transitionPhase",
+                        detail: `Simulated DB failure persisting phase ${input.phase}`,
+                      }),
+                    )
+                  : inner.transitionPhase(input),
+            };
+          }),
+        ).pipe(Layer.provide(baseRepoLayer));
 
   const depsLayer = Layer.mergeAll(
     repoLayer,
@@ -1331,6 +1413,10 @@ describe("SessionTransferCoordinator", () => {
         model: TrimmedNonEmptyString.make("gpt-5.4"),
       };
       const harness = makeHarness({
+        boatProviders: [
+          makeServerProvider("claudeAgent", "claudeAgent", ["claude-sonnet-4-6"]),
+          makeServerProvider("codex", "codex", ["gpt-5.4"]),
+        ],
         onStreamHttpTransfer: () => {
           streamAttempt += 1;
           if (streamAttempt === 1) {
@@ -1502,11 +1588,499 @@ describe("SessionTransferCoordinator", () => {
           "Interrupted by server restart",
         );
         expect(harness.calls.localAbort).toHaveLength(1);
+        expect(harness.calls.remoteAbort).toHaveLength(1);
       }).pipe(Effect.scoped, Effect.provide(harness.layer));
     },
   );
-});
 
+  it.effect(
+    "reconcileOnStartup finishes finalizing_source when committing_target already committed on destination, and preserves finalizing_source on transient Boat error",
+    () => {
+      const committedTxId = SessionTransferId.make("tx-commit-crash");
+      const transientTxId = SessionTransferId.make("tx-finalize-transient");
+      const harness = makeHarness({
+        onRemoteGetThreadSummary: (threadId) =>
+          Effect.succeed({
+            id: threadId,
+            projectId: BOAT_PROJECT_ID,
+            title: "Committed thread",
+            modelSelection: CLAUDE_MODEL,
+            branch: GitRefName.make("feat/transfer"),
+            worktreePath: "/home/sail/sail/.worktrees/wt-1",
+            transferOrigin: {
+              transferId: committedTxId,
+              environmentId: LOCAL_ENV_ID,
+              environmentName: TrimmedNonEmptyString.make("MacBook Pro"),
+              machineId: null,
+              projectId: LOCAL_PROJECT_ID,
+              threadId: ThreadId.make("thread-commit-src"),
+              transferredAt: NOW_ISO,
+            },
+            wasRunning: false,
+            pendingRuntimeRequests: [],
+            activeSubagentCount: 0,
+            heldQueuedRunCount: 0,
+            isGitRepo: true,
+          }),
+        onRemoteFinalizeSource: () =>
+          Effect.fail(
+            new SessionTransferError({
+              code: "target_unavailable",
+              message: "Boat temporarily unreachable",
+            }),
+          ),
+      });
+
+      return Effect.gen(function* () {
+        const repo = yield* SessionTransferRepository.SessionTransferRepository;
+        const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+
+        yield* repo.upsert({
+          transferId: committedTxId,
+          direction: "local_to_boat",
+          sourceEnvironmentId: LOCAL_ENV_ID,
+          sourceEnvironmentName: TrimmedNonEmptyString.make("MacBook Pro"),
+          sourceMachineId: null,
+          sourceProjectId: LOCAL_PROJECT_ID,
+          sourceThreadId: ThreadId.make("thread-commit-src"),
+          destinationEnvironmentId: BOAT_ENV_ID,
+          destinationEnvironmentName: TrimmedNonEmptyString.make("dev-boat"),
+          destinationMachineId: TrimmedNonEmptyString.make("machine-1"),
+          destinationProjectId: BOAT_PROJECT_ID,
+          destinationThreadId: DEST_THREAD_ID,
+          phase: "committing_target",
+          phaseDetail: "Importing workspace and history on destination...",
+          sourceWasRunning: false,
+          autoResume: false,
+          hadPendingRuntimeRequest: false,
+          destinationBranch: GitRefName.make("feat/transfer"),
+          destinationWorktreePath: TrimmedNonEmptyString.make("/home/sail/sail/.worktrees/wt-1"),
+          modelSelectionOverride: null,
+          cloneDestinationPath: null,
+          warnings: [],
+          errorMessage: null,
+          createdAt: NOW_ISO,
+          updatedAt: NOW_ISO,
+          completedAt: null,
+        });
+
+        yield* repo.upsert({
+          transferId: transientTxId,
+          direction: "boat_to_local",
+          sourceEnvironmentId: BOAT_ENV_ID,
+          sourceEnvironmentName: TrimmedNonEmptyString.make("dev-boat"),
+          sourceMachineId: TrimmedNonEmptyString.make("machine-1"),
+          sourceProjectId: BOAT_PROJECT_ID,
+          sourceThreadId: BOAT_THREAD_ID,
+          destinationEnvironmentId: LOCAL_ENV_ID,
+          destinationEnvironmentName: TrimmedNonEmptyString.make("MacBook Pro"),
+          destinationMachineId: null,
+          destinationProjectId: LOCAL_PROJECT_ID,
+          destinationThreadId: DEST_THREAD_ID,
+          phase: "finalizing_source",
+          phaseDetail: "Archiving source thread...",
+          sourceWasRunning: false,
+          autoResume: false,
+          hadPendingRuntimeRequest: false,
+          destinationBranch: GitRefName.make("feat/transfer"),
+          destinationWorktreePath: TrimmedNonEmptyString.make("/Users/dev/sail/.worktrees/wt-1"),
+          modelSelectionOverride: null,
+          cloneDestinationPath: null,
+          warnings: [],
+          errorMessage: null,
+          createdAt: NOW_ISO,
+          updatedAt: NOW_ISO,
+          completedAt: null,
+        });
+
+        yield* coordinator.reconcileOnStartup;
+
+        const recovered = yield* repo.getById(committedTxId);
+        expect(Option.isSome(recovered) && recovered.value.phase).toBe("completed");
+        expect(harness.calls.localFinalizeSource).toHaveLength(1);
+        expect(harness.calls.remoteAbort).toHaveLength(0);
+
+        const stillFinalizing = yield* repo.getById(transientTxId);
+        expect(Option.isSome(stillFinalizing) && stillFinalizing.value.phase).toBe(
+          "finalizing_source",
+        );
+        expect(harness.calls.remoteFinalizeSource).toHaveLength(1);
+      }).pipe(Effect.scoped, Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect(
+    "interruption mid-prepareSource and mid-stageImport and failure writing committing_target phase all abort attempted endpoints cleanly",
+    () =>
+      Effect.gen(function* () {
+        // (a) Mid-prepareSource cancel still calls localAbort
+        const prepStarted = Deferred.makeUnsafe<void>();
+        const prepHold = Deferred.makeUnsafe<void>();
+        const prepHarness = makeHarness({
+          onLocalPrepareSource: () =>
+            Deferred.succeed(prepStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(prepHold)),
+              Effect.andThen(
+                Effect.fail(new SessionTransferError({ code: "cancelled", message: "held" })),
+              ),
+            ),
+        });
+        yield* Effect.gen(function* () {
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const started = yield* coordinator.start({
+            transferId: SessionTransferId.make("tx-mid-prep"),
+            direction: "local_to_boat",
+            sourceEnvironmentId: LOCAL_ENV_ID,
+            sourceThreadId: LOCAL_THREAD_ID,
+            target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+          });
+          yield* Deferred.await(prepStarted);
+          const cancelled = yield* coordinator.cancel({ transferId: started.transferId });
+          expect(cancelled.phase).toBe("cancelled");
+          expect(prepHarness.calls.localAbort).toHaveLength(1);
+        }).pipe(Effect.scoped, Effect.provide(prepHarness.layer));
+
+        // (b) Mid-stageImport cancel still calls BOTH localAbort and remoteAbort
+        const stageStarted = Deferred.makeUnsafe<void>();
+        const stageHold = Deferred.makeUnsafe<void>();
+        const stageHarness = makeHarness({
+          onRemoteStageImport: () =>
+            Deferred.succeed(stageStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(stageHold)),
+              Effect.andThen(
+                Effect.fail(new SessionTransferError({ code: "cancelled", message: "held" })),
+              ),
+            ),
+        });
+        yield* Effect.gen(function* () {
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const started = yield* coordinator.start({
+            transferId: SessionTransferId.make("tx-mid-stage"),
+            direction: "local_to_boat",
+            sourceEnvironmentId: LOCAL_ENV_ID,
+            sourceThreadId: LOCAL_THREAD_ID,
+            target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+          });
+          yield* Deferred.await(stageStarted);
+          const cancelled = yield* coordinator.cancel({ transferId: started.transferId });
+          expect(cancelled.phase).toBe("cancelled");
+          expect(stageHarness.calls.localAbort).toHaveLength(1);
+          expect(stageHarness.calls.remoteAbort).toHaveLength(1);
+        }).pipe(Effect.scoped, Effect.provide(stageHarness.layer));
+
+        // (c) Failure writing committing_target phase does NOT mark committed and aborts both endpoints
+        const commitWriteHarness = makeHarness({
+          failTransitionPhase: "committing_target",
+        });
+        yield* Effect.gen(function* () {
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const result = yield* collectTransferEventsUntilTerminal(
+            coordinator,
+            coordinator.start({
+              transferId: SessionTransferId.make("tx-fail-commit-phase"),
+              direction: "local_to_boat",
+              sourceEnvironmentId: LOCAL_ENV_ID,
+              sourceThreadId: LOCAL_THREAD_ID,
+              target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+            }),
+          );
+          expect(result.final.phase).toBe("failed");
+          expect(commitWriteHarness.calls.remoteCommitImport).toHaveLength(0);
+          expect(commitWriteHarness.calls.localAbort).toHaveLength(1);
+          expect(commitWriteHarness.calls.remoteAbort).toHaveLength(1);
+        }).pipe(Effect.scoped, Effect.provide(commitWriteHarness.layer));
+      }),
+  );
+
+  it.effect(
+    "concurrent start calls with the same transferId launch exactly one worker and cancel cleanly interrupts it",
+    () => {
+      const prepStarted = Deferred.makeUnsafe<void>();
+      const prepHold = Deferred.makeUnsafe<void>();
+      const harness = makeHarness({
+        onLocalPrepareSource: () =>
+          Deferred.succeed(prepStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(prepHold)),
+            Effect.andThen(
+              Effect.fail(new SessionTransferError({ code: "cancelled", message: "held" })),
+            ),
+          ),
+      });
+
+      return Effect.gen(function* () {
+        const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+        const txId = SessionTransferId.make("tx-concurrent-same-id");
+        const startInput = {
+          transferId: txId,
+          direction: "local_to_boat" as const,
+          sourceEnvironmentId: LOCAL_ENV_ID,
+          sourceThreadId: LOCAL_THREAD_ID,
+          target: { kind: "boat" as const, machineId: TrimmedNonEmptyString.make("machine-1") },
+        };
+
+        const [first, second] = yield* Effect.all(
+          [coordinator.start(startInput), coordinator.start(startInput)],
+          { concurrency: "unbounded" },
+        );
+
+        expect(first.transferId).toBe(txId);
+        expect(second.transferId).toBe(txId);
+
+        yield* Deferred.await(prepStarted);
+        expect(harness.calls.localPrepareSource).toHaveLength(1);
+
+        const cancelled = yield* coordinator.cancel({ transferId: txId });
+        expect(cancelled.phase).toBe("cancelled");
+        expect(harness.calls.localPrepareSource).toHaveLength(1);
+        expect(harness.calls.localAbort).toHaveLength(1);
+      }).pipe(Effect.scoped, Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect(
+    "start rejects running thread without confirmedRunningPause and rejects unavailable modelSelectionOverride before prepareSource",
+    () =>
+      Effect.gen(function* () {
+        const runningHarness = makeHarness({
+          localThreadRuns: [{ status: "running" }],
+        });
+        yield* Effect.gen(function* () {
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const err = yield* Effect.flip(
+            coordinator.start({
+              transferId: SessionTransferId.make("tx-unconfirmed-run"),
+              direction: "local_to_boat",
+              sourceEnvironmentId: LOCAL_ENV_ID,
+              sourceThreadId: LOCAL_THREAD_ID,
+              target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+            }),
+          );
+          expect(err.code).toBe("preflight_required");
+          expect(runningHarness.calls.localPrepareSource).toHaveLength(0);
+        }).pipe(Effect.scoped, Effect.provide(runningHarness.layer));
+
+        const badModelHarness = makeHarness();
+        yield* Effect.gen(function* () {
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const err = yield* Effect.flip(
+            coordinator.start({
+              transferId: SessionTransferId.make("tx-bad-model"),
+              direction: "local_to_boat",
+              sourceEnvironmentId: LOCAL_ENV_ID,
+              sourceThreadId: LOCAL_THREAD_ID,
+              target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+              modelSelectionOverride: {
+                instanceId: ProviderInstanceId.make("nonexistent"),
+                model: TrimmedNonEmptyString.make("ghost-model"),
+              },
+            }),
+          );
+          expect(err.code).toBe("preflight_required");
+          expect(err.message).toContain("ghost-model");
+          expect(badModelHarness.calls.localPrepareSource).toHaveLength(0);
+          expect(badModelHarness.calls.remoteStageImport).toHaveLength(0);
+        }).pipe(Effect.scoped, Effect.provide(badModelHarness.layer));
+      }),
+  );
+
+  it.effect(
+    "strict destination project selection: fails missing explicit targetProjectId, fails ambiguous repo matches, and resolves post-clone strictly by projectId or canonical workspaceRoot (never by title)",
+    () =>
+      Effect.gen(function* () {
+        // 1. Missing explicit targetProjectId fails with no fallback
+        const missingExplicitHarness = makeHarness();
+        yield* Effect.gen(function* () {
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const preflightErr = yield* Effect.flip(
+            coordinator.preflight({
+              direction: "local_to_boat",
+              sourceEnvironmentId: LOCAL_ENV_ID,
+              sourceThreadId: LOCAL_THREAD_ID,
+              target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+              targetProjectId: ProjectId.make("proj-missing"),
+            }),
+          );
+          expect(preflightErr.code).toBe("not_found");
+
+          const startRes = yield* collectTransferEventsUntilTerminal(
+            coordinator,
+            coordinator.start({
+              transferId: SessionTransferId.make("tx-missing-explicit"),
+              direction: "local_to_boat",
+              sourceEnvironmentId: LOCAL_ENV_ID,
+              sourceThreadId: LOCAL_THREAD_ID,
+              target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+              targetProjectId: ProjectId.make("proj-missing"),
+            }),
+          );
+          expect(startRes.final.phase).toBe("failed");
+          expect(startRes.final.errorMessage).toContain("proj-missing");
+          expect(
+            missingExplicitHarness.calls.boatInvoke.some((c) => c.command === "add_project"),
+          ).toBe(false);
+        }).pipe(Effect.scoped, Effect.provide(missingExplicitHarness.layer));
+
+        // 2. Multiple matching repos fail instead of falling through to add_project
+        const ambiguousHarness = makeHarness({
+          boatDaemonProjects: [],
+          boatShellProjects: [
+            {
+              id: ProjectId.make("boat-dup-1"),
+              title: "sail-1",
+              workspaceRoot: "/home/sail/sail-1",
+              repositoryIdentity: SAMPLE_REPO_IDENTITY,
+            },
+            {
+              id: ProjectId.make("boat-dup-2"),
+              title: "sail-2",
+              workspaceRoot: "/home/sail/sail-2",
+              repositoryIdentity: SAMPLE_REPO_IDENTITY,
+            },
+          ],
+        });
+        yield* Effect.gen(function* () {
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const startRes = yield* collectTransferEventsUntilTerminal(
+            coordinator,
+            coordinator.start({
+              transferId: SessionTransferId.make("tx-ambiguous-boat"),
+              direction: "local_to_boat",
+              sourceEnvironmentId: LOCAL_ENV_ID,
+              sourceThreadId: LOCAL_THREAD_ID,
+              target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+            }),
+          );
+          expect(startRes.final.phase).toBe("failed");
+          expect(startRes.final.errorMessage).toContain("Multiple projects");
+          expect(ambiguousHarness.calls.boatInvoke.some((c) => c.command === "add_project")).toBe(
+            false,
+          );
+        }).pipe(Effect.scoped, Effect.provide(ambiguousHarness.layer));
+
+        // 3. Post-clone resolution resolves by canonical workspaceRoot and NEVER picks unrelated title-only project
+        const titleCollisionHarness = makeHarness({
+          boatDaemonProjects: [],
+          boatShellProjects: [
+            {
+              id: ProjectId.make("boat-unrelated-same-title"),
+              title: "sail",
+              workspaceRoot: "/home/sail/unrelated-sail",
+              repositoryIdentity: null,
+            },
+          ],
+          onBoatAddProjectReturn: () => {
+            // Simulate add_project returning without adding any matching project/root:
+            // must NOT pick boat-unrelated-same-title!
+            return { ok: true };
+          },
+        });
+        yield* Effect.gen(function* () {
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const startRes = yield* collectTransferEventsUntilTerminal(
+            coordinator,
+            coordinator.start({
+              transferId: SessionTransferId.make("tx-no-title-fallback"),
+              direction: "local_to_boat",
+              sourceEnvironmentId: LOCAL_ENV_ID,
+              sourceThreadId: LOCAL_THREAD_ID,
+              target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+            }),
+          );
+          expect(startRes.final.phase).toBe("failed");
+          expect(titleCollisionHarness.calls.remoteStageImport).toHaveLength(0);
+        }).pipe(Effect.scoped, Effect.provide(titleCollisionHarness.layer));
+
+        const canonicalRootHarness = makeHarness({
+          boatDaemonProjects: [],
+          boatShellProjects: [
+            {
+              id: ProjectId.make("boat-unrelated-same-title"),
+              title: "sail",
+              workspaceRoot: "/home/sail/unrelated-sail",
+              repositoryIdentity: null,
+            },
+          ],
+          onBoatAddProjectReturn: (boatProjects) => {
+            boatProjects.push({
+              id: ProjectId.make("boat-cloned-exact"),
+              title: "sail",
+              workspaceRoot: "/home/sail/repos/sail",
+              repositoryIdentity: null,
+            });
+            return { workspaceRoot: "/home/sail/repos/./sail/" };
+          },
+        });
+        yield* Effect.gen(function* () {
+          const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+          const startRes = yield* collectTransferEventsUntilTerminal(
+            coordinator,
+            coordinator.start({
+              transferId: SessionTransferId.make("tx-canonical-root"),
+              direction: "local_to_boat",
+              sourceEnvironmentId: LOCAL_ENV_ID,
+              sourceThreadId: LOCAL_THREAD_ID,
+              target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+            }),
+          );
+          expect(startRes.final.phase).toBe("completed");
+          expect(startRes.final.destinationProjectId).toBe(ProjectId.make("boat-cloned-exact"));
+        }).pipe(Effect.scoped, Effect.provide(canonicalRootHarness.layer));
+      }),
+  );
+
+  it.effect(
+    "read-scoped preflight on a sleeping Boat issues zero Boat HTTP/WS snapshot calls and does not wake the Boat",
+    () => {
+      const harness = makeHarness({ boatState: "asleep" });
+      return Effect.gen(function* () {
+        const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+        const preflight = yield* coordinator.preflight({
+          direction: "local_to_boat",
+          sourceEnvironmentId: LOCAL_ENV_ID,
+          sourceThreadId: LOCAL_THREAD_ID,
+          target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+        });
+
+        expect(preflight.ready).toBe(true);
+        expect(preflight.warnings.some((w) => w.includes("asleep"))).toBe(true);
+        expect(harness.calls.remoteGetServerConfigCount).toBe(0);
+        expect(harness.calls.remoteGetShellSnapshotCount).toBe(0);
+        expect(harness.calls.remoteGetThreadSummaryCount).toBe(0);
+        expect(harness.calls.boatInvoke.some((c) => c.command === "wake_machine")).toBe(false);
+      }).pipe(Effect.scoped, Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect("redacts signed transfer query tokens from persisted transfer errorMessage", () => {
+    const harness = makeHarness({
+      onStreamHttpTransfer: (input) =>
+        Effect.fail(
+          new SessionTransferError({
+            code: "workspace_error",
+            message: `Upload failed for ${input.sourceUrl} -> ${input.targetUrl}`,
+          }),
+        ),
+    });
+    return Effect.gen(function* () {
+      const coordinator = yield* SessionTransferCoordinator.SessionTransferCoordinator;
+      const res = yield* collectTransferEventsUntilTerminal(
+        coordinator,
+        coordinator.start({
+          transferId: SessionTransferId.make("tx-redact-err"),
+          direction: "local_to_boat",
+          sourceEnvironmentId: LOCAL_ENV_ID,
+          sourceThreadId: LOCAL_THREAD_ID,
+          target: { kind: "boat", machineId: TrimmedNonEmptyString.make("machine-1") },
+        }),
+      );
+      expect(res.final.phase).toBe("failed");
+      expect(res.final.errorMessage).toBeTruthy();
+      expect(res.final.errorMessage).not.toContain("token=");
+      expect(res.final.errorMessage).not.toContain("src-bundle");
+      expect(res.final.errorMessage).not.toContain("boat-upload");
+    }).pipe(Effect.scoped, Effect.provide(harness.layer));
+  });
+});
 describe("makeLiveBoatRemoteClient", () => {
   const mockTicketFetch: typeof fetch = async (input) => {
     const url =
@@ -1850,5 +2424,250 @@ describe("makeLiveBoatRemoteClient", () => {
         expect(abortErr.code).toBe("internal");
         expect(abortErr.transferId).toBe(txId);
       }).pipe(Effect.scoped, Effect.provide(mockHttpLayer)),
+  );
+
+  it.effect(
+    "getShellSnapshot and getThreadSummary send x-t3-orchestration-protocol header and read snapshot.projection.thread",
+    () =>
+      Effect.gen(function* () {
+        const seenHeaders: Array<{
+          readonly url: string;
+          readonly protocol: string | undefined;
+          readonly auth: string | undefined;
+        }> = [];
+
+        const server = yield* Effect.acquireRelease(
+          Effect.promise(async () => {
+            const srv = NodeHttp.createServer((req, res) => {
+              const protoHeader = req.headers[ORCHESTRATION_PROTOCOL_HEADER];
+              const authHeader = req.headers.authorization;
+              seenHeaders.push({
+                url: req.url ?? "",
+                protocol: typeof protoHeader === "string" ? protoHeader : undefined,
+                auth: typeof authHeader === "string" ? authHeader : undefined,
+              });
+              if (req.url === "/api/orchestration/shell") {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(
+                  JSON.stringify({
+                    snapshotSequence: 5,
+                    projects: [
+                      {
+                        id: BOAT_PROJECT_ID,
+                        title: "sail",
+                        workspaceRoot: "/home/sail/sail",
+                      },
+                    ],
+                    threads: [
+                      {
+                        id: BOAT_THREAD_ID,
+                        projectId: BOAT_PROJECT_ID,
+                        title: "Boat thread",
+                        branch: "feat/transfer",
+                        worktreePath: "/home/sail/sail/.worktrees/wt-boat",
+                      },
+                    ],
+                  }),
+                );
+                return;
+              }
+              if (req.url?.startsWith(`/api/orchestration/threads/${BOAT_THREAD_ID}/bounded`)) {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(
+                  JSON.stringify({
+                    snapshotSequence: 9,
+                    projection: {
+                      thread: {
+                        id: BOAT_THREAD_ID,
+                        projectId: BOAT_PROJECT_ID,
+                        title: "Projected Boat Thread",
+                        modelSelection: CLAUDE_MODEL,
+                        providerInstanceId: CLAUDE_MODEL.instanceId,
+                        branch: "feat/transfer",
+                        worktreePath: "/home/sail/sail/.worktrees/wt-boat",
+                        transferOrigin: {
+                          transferId: "tx-origin-1",
+                          environmentId: LOCAL_ENV_ID,
+                          environmentName: "MacBook Pro",
+                          machineId: null,
+                          projectId: LOCAL_PROJECT_ID,
+                          threadId: LOCAL_THREAD_ID,
+                          transferredAt: NOW_ISO,
+                        },
+                      },
+                      runs: [{ status: "running" }, { status: "queued" }],
+                      runtimeRequests: [
+                        {
+                          id: "req-live-1",
+                          kind: "command",
+                          status: "pending",
+                          createdAt: NOW_ISO,
+                        },
+                      ],
+                      subagents: [{ status: "running" }],
+                    },
+                  }),
+                );
+                return;
+              }
+              res.writeHead(404);
+              res.end("not found");
+            });
+            await new Promise<void>((resolve) => srv.listen(0, "127.0.0.1", () => resolve()));
+            const addr = srv.address();
+            if (!addr || typeof addr === "string") throw new Error("Expected numeric port");
+            return { srv, port: addr.port };
+          }),
+          ({ srv }) =>
+            Effect.promise(() => new Promise<void>((resolve) => srv.close(() => resolve()))),
+        );
+
+        const httpClient = yield* HttpClient.HttpClient;
+        const client = SessionTransferCoordinator.makeLiveBoatRemoteClient(Option.some(httpClient));
+        const endpoint: SessionTransferCoordinator.BoatRemoteEndpoint = {
+          localUrl: `http://127.0.0.1:${server.port}`,
+          bearerToken: "boat-secret-bearer",
+        };
+
+        const shell = yield* client.getShellSnapshot(endpoint);
+        expect(shell.projects).toHaveLength(1);
+        expect(shell.projects[0]?.id).toBe(BOAT_PROJECT_ID);
+
+        const summary = yield* client.getThreadSummary(endpoint, BOAT_THREAD_ID);
+        expect(summary.title).toBe("Projected Boat Thread");
+        expect(summary.wasRunning).toBe(true);
+        expect(summary.heldQueuedRunCount).toBe(1);
+        expect(summary.pendingRuntimeRequests).toHaveLength(1);
+        expect(summary.activeSubagentCount).toBe(1);
+        expect(summary.transferOrigin?.transferId).toBe(SessionTransferId.make("tx-origin-1"));
+
+        expect(seenHeaders).toHaveLength(2);
+        for (const h of seenHeaders) {
+          expect(h.protocol).toBe(ORCHESTRATION_PROTOCOL_VERSION_TEXT);
+          expect(h.auth).toBe("Bearer boat-secret-bearer");
+        }
+      }).pipe(Effect.scoped, Effect.provide(FetchHttpClient.layer)),
+  );
+
+  it.effect(
+    "streamHttpTransfer streams Content-Length and chunked payloads, redacts signed URLs on 404, and caps 500 error body reads at 1024 bytes",
+    () =>
+      Effect.gen(function* () {
+        const payload = Buffer.alloc(192 * 1024, 0xab);
+        let receivedChunks: Buffer[] = [];
+        let hugeBodyBytesWritten = 0;
+
+        const servers = yield* Effect.acquireRelease(
+          Effect.promise(async () => {
+            const srcSrv = NodeHttp.createServer((req, res) => {
+              if (req.url?.startsWith("/cl")) {
+                res.writeHead(200, {
+                  "content-type": "application/octet-stream",
+                  "content-length": String(payload.byteLength),
+                });
+                res.end(payload);
+                return;
+              }
+              if (req.url?.startsWith("/chunked")) {
+                res.writeHead(200, { "content-type": "application/octet-stream" });
+                for (let off = 0; off < payload.byteLength; off += 16 * 1024) {
+                  res.write(payload.subarray(off, Math.min(payload.byteLength, off + 16 * 1024)));
+                }
+                res.end();
+                return;
+              }
+              if (req.url?.startsWith("/missing")) {
+                res.writeHead(404);
+                res.end("not found");
+                return;
+              }
+              if (req.url?.startsWith("/huge-error")) {
+                res.writeHead(500, { "content-type": "text/plain" });
+                const prefix =
+                  "Failed at http://127.0.0.1/api/session-transfers/tx/bundle?token=super-secret-token ";
+                const huge = prefix + "E".repeat(128 * 1024);
+                hugeBodyBytesWritten = Buffer.byteLength(huge);
+                res.end(huge);
+                return;
+              }
+              res.writeHead(404);
+              res.end();
+            });
+
+            const dstSrv = NodeHttp.createServer((req, res) => {
+              receivedChunks = [];
+              req.on("data", (chunk: Buffer) => receivedChunks.push(chunk));
+              req.on("end", () => {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: true }));
+              });
+            });
+
+            await new Promise<void>((resolve) => srcSrv.listen(0, "127.0.0.1", () => resolve()));
+            await new Promise<void>((resolve) => dstSrv.listen(0, "127.0.0.1", () => resolve()));
+            const srcAddr = srcSrv.address();
+            const dstAddr = dstSrv.address();
+            if (
+              !srcAddr ||
+              typeof srcAddr === "string" ||
+              !dstAddr ||
+              typeof dstAddr === "string"
+            ) {
+              throw new Error("Expected numeric ports");
+            }
+            return { srcSrv, dstSrv, srcPort: srcAddr.port, dstPort: dstAddr.port };
+          }),
+          ({ srcSrv, dstSrv }) =>
+            Effect.promise(async () => {
+              await new Promise<void>((resolve) => srcSrv.close(() => resolve()));
+              await new Promise<void>((resolve) => dstSrv.close(() => resolve()));
+            }),
+        );
+
+        const client = SessionTransferCoordinator.makeLiveBoatRemoteClient(Option.none());
+
+        // 1. Content-Length transfer
+        const clRes = yield* client.streamHttpTransfer({
+          sourceUrl: `http://127.0.0.1:${servers.srcPort}/cl?token=signed-src`,
+          targetUrl: `http://127.0.0.1:${servers.dstPort}/upload?token=signed-dst`,
+          contentType: "application/octet-stream",
+        });
+        expect(clRes.bytesTransferred).toBe(payload.byteLength);
+        expect(Buffer.concat(receivedChunks).equals(payload)).toBe(true);
+
+        // 2. Chunked transfer
+        const chunkedRes = yield* client.streamHttpTransfer({
+          sourceUrl: `http://127.0.0.1:${servers.srcPort}/chunked?token=signed-src`,
+          targetUrl: `http://127.0.0.1:${servers.dstPort}/upload?token=signed-dst`,
+          contentType: "application/octet-stream",
+        });
+        expect(chunkedRes.bytesTransferred).toBe(payload.byteLength);
+        expect(Buffer.concat(receivedChunks).equals(payload)).toBe(true);
+
+        // 3. 404 redacts signed query string
+        const notFoundErr = yield* Effect.flip(
+          client.streamHttpTransfer({
+            sourceUrl: `http://127.0.0.1:${servers.srcPort}/missing?token=top-secret-404`,
+            targetUrl: `http://127.0.0.1:${servers.dstPort}/upload`,
+          }),
+        );
+        expect(notFoundErr.code).toBe("not_found");
+        expect(notFoundErr.message).toContain("/missing");
+        expect(notFoundErr.message).not.toContain("top-secret-404");
+        expect(notFoundErr.message).not.toContain("token=");
+
+        // 4. 500 caps error body read & redacts signed URLs inside body
+        const serverErr = yield* Effect.flip(
+          client.streamHttpTransfer({
+            sourceUrl: `http://127.0.0.1:${servers.srcPort}/huge-error?token=top-secret-500`,
+            targetUrl: `http://127.0.0.1:${servers.dstPort}/upload`,
+          }),
+        );
+        expect(serverErr.code).toBe("workspace_error");
+        expect(hugeBodyBytesWritten).toBeGreaterThan(100_000);
+        expect(serverErr.message.length).toBeLessThan(350);
+        expect(serverErr.message).not.toContain("top-secret-500");
+        expect(serverErr.message).not.toContain("super-secret-token");
+      }).pipe(Effect.scoped),
   );
 });
