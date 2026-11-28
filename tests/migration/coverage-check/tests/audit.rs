@@ -115,8 +115,8 @@ impl Fixture {
         fixture
     }
 
-    fn edit_first_cli_json(&mut self, kind: &str, edit: impl FnOnce(&mut Value)) {
-        let artifact = self.catalog["observations"][0]["runs"][0]["artifacts"]
+    fn edit_cli_json(&mut self, run: usize, kind: &str, edit: impl FnOnce(&mut Value)) {
+        let artifact = self.catalog["observations"][0]["runs"][run]["artifacts"]
             .as_array_mut()
             .unwrap()
             .iter_mut()
@@ -131,6 +131,28 @@ impl Fixture {
         let bytes = serde_json::to_vec(&data).unwrap();
         fs::write(path, &bytes).unwrap();
         artifact["sha256"] = json!(format!("{:x}", Sha256::digest(bytes)));
+    }
+
+    fn refresh_cli_terminal(&mut self, run: usize) {
+        let image = self.catalog["observations"][0]["runs"][run]["artifacts"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|artifact| artifact["kind"] == "terminal-screenshot")
+            .unwrap();
+        let path = self.directory.path().join(image["path"].as_str().unwrap());
+        fs::remove_file(&path).unwrap();
+        let result = Command::new(env!("CARGO_BIN_EXE_sail-migration-coverage"))
+            .arg("--render-cli")
+            .arg(path.parent().unwrap())
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        image["sha256"] = json!(format!("{:x}", Sha256::digest(fs::read(path).unwrap())));
     }
 
     fn run(&self) -> Output {
@@ -174,13 +196,13 @@ fn verifies_native_and_translated_cli_lifecycle_receipts() {
 #[test]
 fn rejects_a_rehashed_cli_transcript_named_for_a_different_package() {
     let mut fixture = Fixture::cli("cli-open", "version", "arm64");
-    fixture.edit_first_cli_json("process-transcript", |data| {
+    fixture.edit_cli_json(0, "process-transcript", |data| {
         data["package"]["archive"] = json!("Sail-0.1.17-arm64.deb");
     });
     fixture.rejects("CLI receipt does not match the installed release asset");
 
     let mut fixture = Fixture::cli("cli-open", "version", "arm64");
-    fixture.edit_first_cli_json("process-transcript", |data| {
+    fixture.edit_cli_json(0, "process-transcript", |data| {
         data["package"]["runtimeSha256"] = json!("f".repeat(64));
     });
     fixture.rejects("CLI receipt does not match the installed release asset");
@@ -189,7 +211,7 @@ fn rejects_a_rehashed_cli_transcript_named_for_a_different_package() {
 #[test]
 fn rejects_a_rehashed_cli_pairing_receipt_with_successful_reuse() {
     let mut fixture = Fixture::cli("cli-open", "pair", "arm64");
-    fixture.edit_first_cli_json("process-transcript", |data| {
+    fixture.edit_cli_json(0, "process-transcript", |data| {
         data["pair"]["browserSession"]["reuseStatus"] = json!(200);
     });
     fixture.rejects("incorrect one-time CLI pairing or cookie grants");
@@ -198,10 +220,45 @@ fn rejects_a_rehashed_cli_pairing_receipt_with_successful_reuse() {
 #[test]
 fn rejects_a_rehashed_copied_home_with_a_changed_saved_message_fingerprint() {
     let mut fixture = Fixture::cli("installer-home", "copied-home-boots", "x64");
-    fixture.edit_first_cli_json("state-receipt", |data| {
+    fixture.edit_cli_json(0, "state-receipt", |data| {
         data["afterStop"]["messages"] = json!("f".repeat(64));
     });
     fixture.rejects("copied CLI home did not preserve the pinned fixture payloads");
+}
+
+#[test]
+fn rejects_relabeling_both_witnessed_cli_boots_to_another_os_version() {
+    let mut fixture = Fixture::cli("cli-open", "start", "arm64");
+    fixture.catalog["observations"][0]["configurationId"] = json!("debian-13.0-arm64-native-fresh");
+    for run in 0..2 {
+        fixture.catalog["observations"][0]["runs"][run]["environment"]["osVersion"] =
+            json!("Debian 13.0");
+        fixture.edit_cli_json(run, "process-transcript", |data| {
+            data["platform"]["osVersion"] = json!("Debian 13.0");
+        });
+        fixture.refresh_cli_terminal(run);
+    }
+    fixture.rejects("CLI receipt bytes disagree with the recorded process witness");
+}
+
+#[test]
+fn rejects_a_fabricated_seed_and_both_copied_home_receipts() {
+    let mut fixture = Fixture::cli("installer-home", "copied-home-boots", "arm64");
+    let path = fixture
+        .directory
+        .path()
+        .join("runtime/cli-lifecycle-seed.json");
+    let mut seed: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    seed["fingerprint"]["messages"] = json!("f".repeat(64));
+    fs::write(path, serde_json::to_vec(&seed).unwrap()).unwrap();
+    for run in 0..2 {
+        fixture.edit_cli_json(run, "state-receipt", |data| {
+            data["beforeStart"]["messages"] = seed["fingerprint"]["messages"].clone();
+            data["afterStop"]["messages"] = seed["fingerprint"]["messages"].clone();
+        });
+        fixture.refresh_cli_terminal(run);
+    }
+    fixture.rejects("CLI receipt bytes disagree with the recorded process witness");
 }
 
 #[test]

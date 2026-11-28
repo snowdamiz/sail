@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{Evidence, is_hex, one_artifact, read_json};
-use crate::catalog::{Inventory, Observation, Platform, Run};
+use crate::catalog::{Artifact, Inventory, Observation, Platform, Run};
 
 mod terminal;
 pub(crate) use terminal::render_cli_terminal;
@@ -98,6 +98,8 @@ struct RuntimeWitness {
     runtime_sha256: String,
     runtime_identity: RuntimeIdentity,
     kernel_process_sha256: String,
+    process_sha256: String,
+    state_sha256: String,
 }
 
 struct VerifiedBoot {
@@ -310,7 +312,7 @@ fn verify_state(evidence: &Evidence, state: &SavedState, boot: &Boot) -> Result<
     }
 }
 
-fn verify_runtime_witness(boot: &Boot) -> Result<String> {
+fn verify_runtime_witness(boot: &Boot, process: &Artifact, state: &Artifact) -> Result<String> {
     let witnesses: BTreeMap<String, RuntimeWitness> = serde_json::from_str(include_str!(
         "../../../incumbent/runtime/cli-lifecycle-witnesses.json"
     ))?;
@@ -326,6 +328,10 @@ fn verify_runtime_witness(boot: &Boot) -> Result<String> {
             && is_hex(&witness.kernel_process_sha256, 64),
         "CLI receipt disagrees with the recorded process witness"
     );
+    ensure!(
+        witness.process_sha256 == process.sha256 && witness.state_sha256 == state.sha256,
+        "CLI receipt bytes disagree with the recorded process witness"
+    );
     Ok(witness.kernel_process_sha256.clone())
 }
 
@@ -337,9 +343,9 @@ fn verify_run(
     run: &Run,
 ) -> Result<VerifiedBoot> {
     let transcript = one_artifact(&run.artifacts, "process-transcript")?;
-    let state = one_artifact(&run.artifacts, "state-receipt")?;
+    let state_artifact = one_artifact(&run.artifacts, "state-receipt")?;
     let mut process: Value = read_json(&evidence.resolve(&transcript.path)?)?;
-    let mut state: Value = read_json(&evidence.resolve(&state.path)?)?;
+    let mut state: Value = read_json(&evidence.resolve(&state_artifact.path)?)?;
     let boot: Boot = serde_json::from_value(process.clone())?;
     let id = &boot.boot_id;
     let host = &boot.platform;
@@ -397,7 +403,7 @@ fn verify_run(
     let saved = serde_json::from_value(state.clone())?;
     verify_state(evidence, &saved, &boot)?;
     verify_image(evidence, run, &boot, &saved)?;
-    let kernel_process = verify_runtime_witness(&boot)?;
+    let kernel_process = verify_runtime_witness(&boot, transcript, state_artifact)?;
     process
         .as_object_mut()
         .context("expected a process object")?
