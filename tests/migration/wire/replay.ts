@@ -435,6 +435,8 @@ export async function checkReplay(
     NodeAssert.equal(attempt.id, run.activeAttemptId);
     NodeAssert.equal(attempt.runId, run.id);
   }
+  const attempt = attempts[0];
+  NodeAssert.ok(attempt, "Expected the completed run attempt");
   const activeProviderThreadId = object(
     settled.thread,
     "Expected a settled thread",
@@ -448,7 +450,17 @@ export async function checkReplay(
   NodeAssert.ok(providerTurns?.size, "Expected the completed provider turn");
   for (const turn of providerTurns.values()) {
     NodeAssert.equal(turn.providerThreadId, activeProviderThreadId);
-    NodeAssert.equal(turn.runAttemptId, run.activeAttemptId);
+    NodeAssert.equal(turn.runAttemptId, attempt.id);
+    NodeAssert.equal(turn.status, "completed", "Expected a completed provider turn");
+    NodeAssert.ok(
+      typeof turn.completedAt === "string" && Number.isFinite(Date.parse(turn.completedAt)),
+      "Expected the provider turn completion time",
+    );
+    NodeAssert.equal(
+      turn.nodeId,
+      attempt.rootNodeId,
+      "Provider turn must belong to the attempt root",
+    );
     NodeAssert.ok(
       typeof turn.nodeId === "string" && entities.get("nodes")?.has(turn.nodeId),
       "Provider turn points to a missing node",

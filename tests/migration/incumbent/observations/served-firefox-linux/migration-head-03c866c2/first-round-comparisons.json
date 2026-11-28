@@ -25,8 +25,8 @@
     "changedSteps": [],
     "pixels": {
       "baseline": "tests/migration/incumbent/observations/served-firefox-linux/settled/b/capture.png",
-      "candidate": "/tmp/sail-p01-firefox-head.Jg42JL/comparison-head-b/capture.png",
-      "diff": "/tmp/sail-p01-firefox-head.Jg42JL/comparison-head-b-diff.png",
+      "candidate": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/first-round-head-b/capture.png",
+      "diff": "tests/migration/incumbent/observations/served-firefox-linux/migration-head-03c866c2/first-round-diff.png",
       "baselineSize": [1280, 1200],
       "candidateSize": [1280, 1200],
       "differentPixels": 0,
