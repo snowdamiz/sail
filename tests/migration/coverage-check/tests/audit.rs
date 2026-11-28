@@ -535,6 +535,39 @@ fn rejects_a_rehashed_approval_trace_that_changes_the_pending_request() {
 }
 
 #[test]
+fn verifies_the_published_linux_chromium_version_rejection() {
+    let fixture = Fixture::visual(
+        "version-rejection",
+        "exact-version-rejected",
+        "served-chromium-linux",
+    );
+    let output = fixture.run();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["verifiedVisualReferenceObservations"], 1);
+}
+
+#[test]
+fn rejects_a_rehashed_version_trace_with_a_different_required_protocol() {
+    let mut fixture = Fixture::visual(
+        "version-rejection",
+        "exact-version-rejected",
+        "served-chromium-linux",
+    );
+    fixture.edit_process_json(0, "capture-receipt", |capture| {
+        capture["trace"][0]["observed"]["publishedHttp"][1]["body"]["orchestrationProtocolVersion"] =
+            json!(1);
+    });
+    fixture.rejects(
+        "version rejection trace disagrees with the observed rejectUnsupportedProtocols result",
+    );
+}
+
+#[test]
 fn uses_generic_visual_checks_for_non_linux_display_references() {
     let mut fixture = Fixture::visual("chat-turn", "settled", "electron-macos-arm64");
     fixture.catalog["cases"][0]["id"] = json!("chat-display");

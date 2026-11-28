@@ -540,5 +540,17 @@
       }
     },
     "scope": "Two isolated published v0.1.17 Browser panel runs on Debian 12.15 arm64. Both chose Supervised on two fresh Replay threads and captured the requested, approved, and declined views. A separately paired read-only cookie saw disabled controls and received a typed scope denial on the same pending request. The operate cookie approved or declined through the real UI and both server runs finished. Candidate comparisons and timing remain open."
+  },
+  "linuxChromiumVersionRejection": {
+    "directory": "served-chromium-linux/version-rejection",
+    "comparisons": {
+      "exact-version-rejected": {
+        "result": "pass",
+        "differentPixels": 0,
+        "changedSteps": [],
+        "retryScreenshotMatched": true
+      }
+    },
+    "scope": "Two isolated published v0.1.17 Linux Chromium runs verified HTTP 426 with required protocol 2 on the real server. A separate simulated protocol-1 boot service showed Client not supported, offered Update, and recorded the authenticated update socket and RPC after the click. Its deliberate refusal produced Retry update, with the simulator descriptor unchanged. Candidate comparisons and timing remain open."
   }
 }

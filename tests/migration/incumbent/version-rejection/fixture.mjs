@@ -9,9 +9,9 @@ import * as NodeURL from "node:url";
 const serverRequire = NodeModule.createRequire(
   new URL("../../../../apps/server/package.json", import.meta.url),
 );
-const { WebSocketServer } = NodeModule.createRequire(
-  serverRequire.resolve("@effect/platform-node/NodeSocket"),
-)("ws");
+const { WebSocketServer } = process.env.SAIL_MIGRATION_WS_MODULE
+  ? serverRequire(process.env.SAIL_MIGRATION_WS_MODULE)
+  : NodeModule.createRequire(serverRequire.resolve("@effect/platform-node/NodeSocket"))("ws");
 
 const HOST = "127.0.0.1";
 const DESCRIPTOR_PATH = "/.well-known/t3/environment";
@@ -52,7 +52,7 @@ async function exchangeForm(request) {
   return new URLSearchParams(body);
 }
 
-export async function startFixture({ clientOrigin, pairingCode, observe }) {
+export async function startFixture({ clientOrigin, pairingCode, observe, port = 0 }) {
   if (
     !/^(?:sail:\/\/app|http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?)$/.test(clientOrigin) ||
     !/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{12}$/.test(pairingCode)
@@ -60,6 +60,9 @@ export async function startFixture({ clientOrigin, pairingCode, observe }) {
     throw new Error(
       "Expected sail://app or a loopback HTTP origin, and a 12-character pairing code",
     );
+  }
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error("Expected a valid loopback port");
   }
   const descriptor = {
     environmentId: NodeCrypto.randomUUID(),
@@ -229,7 +232,7 @@ export async function startFixture({ clientOrigin, pairingCode, observe }) {
       });
     });
   });
-  server.listen(0, HOST);
+  server.listen(port, HOST);
   await NodeEvents.once(server, "listening");
   return {
     origin: `http://${HOST}:${server.address().port}`,
@@ -245,22 +248,23 @@ export async function startFixture({ clientOrigin, pairingCode, observe }) {
 
 if (process.argv[1] && import.meta.url === NodeURL.pathToFileURL(process.argv[1]).href) {
   try {
-    const [clientOrigin, codeFile, ...extra] = process.argv.slice(2);
+    const [clientOrigin, codeFile, port = "0", ...extra] = process.argv.slice(2);
     if (!clientOrigin || !codeFile || extra.length) {
-      throw new Error("Expected exactly a client origin and a code file");
+      throw new Error("Expected a client origin, code file, and optional port");
     }
     const observe = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
     const fixture = await startFixture({
       clientOrigin,
       pairingCode: (await NodeFSP.readFile(codeFile, "utf8")).trim(),
       observe,
+      port: Number(port),
     });
     observe({ event: "simulated-protocol-1-boot-service", origin: fixture.origin });
     process.once("SIGINT", () => void fixture.close());
     process.once("SIGTERM", () => void fixture.close());
   } catch {
     process.stderr.write(
-      "Usage: node fixture.mjs <sail://app or loopback HTTP browser origin> <pairing code file>\n",
+      "Usage: node fixture.mjs <sail://app or loopback HTTP browser origin> <pairing code file> [port]\n",
     );
     process.exitCode = 1;
   }

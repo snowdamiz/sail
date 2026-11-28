@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "captureRunId": "e6131f6d-c211-4f86-be7c-beb7cff420b7",
+  "sourceSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "packageSha256": "207e0ad49666c4f1f71ddbeae944bc7f6db304350055e0a49ed40f27bfdc42df",
+  "arch": "arm64",
+  "osVersion": "Debian 12.15",
+  "browser": "Google Chrome for Testing 158.0.8127.88",
+  "pairing": "browser-session-cookie",
+  "browserOnline": true,
+  "runtimeOwnerSha256": "9f872c4cb3a7448b0683290aff6e1ddc26dab74cedfe0f9468f428b0e7678c90",
+  "publishedHttp": [
+    {
+      "requested": null,
+      "status": 426,
+      "body": {
+        "code": "orchestration_protocol_incompatible",
+        "message": "Update this client to one that supports orchestration protocol 2.",
+        "orchestrationProtocolVersion": 2
+      }
+    },
+    {
+      "requested": 1,
+      "status": 426,
+      "body": {
+        "code": "orchestration_protocol_incompatible",
+        "message": "Update this client to one that supports orchestration protocol 2.",
+        "orchestrationProtocolVersion": 2
+      }
+    },
+    {
+      "requested": 3,
+      "status": 426,
+      "body": {
+        "code": "orchestration_protocol_incompatible",
+        "message": "Update this client to one that supports orchestration protocol 2.",
+        "orchestrationProtocolVersion": 2
+      }
+    }
+  ],
+  "simulatedHost": {
+    "protocol": 1,
+    "mode": "boot-service",
+    "version": "0.0.0-p01",
+    "label": "P01 simulated older boot service",
+    "descriptorUnchanged": true
+  },
+  "beforeUpdateEvents": [
+    {
+      "event": "simulated-protocol-1-boot-service",
+      "origin": "http://127.0.0.1:47722"
+    },
+    {
+      "event": "pairing-exchanged"
+    }
+  ],
+  "afterUpdateEvents": [
+    {
+      "event": "simulated-protocol-1-boot-service",
+      "origin": "http://127.0.0.1:47722"
+    },
+    {
+      "event": "pairing-exchanged"
+    },
+    {
+      "event": "authenticated-bare-update-socket"
+    },
+    {
+      "event": "simulated-update-refused",
+      "method": "server.updateServer",
+      "targetVersion": "0.1.17"
+    }
+  ],
+  "versionStates": {
+    "exact-version-rejected": {
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "locale": "en",
+        "theme": "light",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+        ],
+        "viewport": {
+          "width": 640,
+          "height": 600,
+          "scale": 2,
+          "zoom": 1
+        }
+      },
+      "observed": {
+        "route": "/settings/connections",
+        "label": "P01 simulated older boot service",
+        "diagnosis": "Client not supported",
+        "action": "Update",
+        "actionEnabled": true,
+        "actionVisible": true,
+        "refusal": false,
+        "focusedControl": "Routes"
+      },
+      "screenshotSha256": "5b5a9ec097ebf2ca8499f508b438a7b59c3c7e7ee49d64c0c47042371abc66e6"
+    },
+    "retry-update": {
+      "profile": {
+        "browser": "Chrome/158.0.0.0",
+        "locale": "en",
+        "theme": "light",
+        "motion": "standard",
+        "fonts": [
+          "-apple-system, BlinkMacSystemFont, \"Inter Variable\", \"Segoe UI\", system-ui, sans-serif"
+        ],
+        "viewport": {
+          "width": 640,
+          "height": 600,
+          "scale": 2,
+          "zoom": 1
+        }
+      },
+      "observed": {
+        "route": "/settings/connections",
+        "label": "P01 simulated older boot service",
+        "diagnosis": "Client not supported",
+        "action": "Retry update",
+        "actionEnabled": true,
+        "actionVisible": true,
+        "refusal": true,
+        "focusedControl": "Routes"
+      },
+      "screenshotSha256": "34430fc64bca4c8cdbde9849270cf7cb33db1d60eb2ce4d4e95f6e6bb29c9bb9"
+    }
+  }
+}

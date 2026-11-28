@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 
-use super::{Capture, Evidence, capture_witness, is_hex};
+use super::{Capture, Evidence, capture_witness, is_hex, one_artifact};
 use crate::catalog::{Observation, Run};
 
 pub(super) fn verify(
@@ -21,10 +21,16 @@ pub(super) fn verify(
         "browser-preview" => "previewStates",
         "disconnect-recover" => "reconnectStates",
         "chat-view-states" => "chatStates",
+        "version-rejection" => "versionStates",
         _ => anyhow::bail!("unknown Linux Chromium capture case {case}"),
     }];
     let record = &records[name];
     let profile = &record["profile"];
+    let entrypoint = if case == "version-rejection" {
+        "settings"
+    } else {
+        "chat"
+    };
     ensure!(
         state["browser"] == "Google Chrome for Testing 158.0.8127.88"
             && state["browser"].as_str() == run.environment.browser_version.as_deref()
@@ -33,7 +39,7 @@ pub(super) fn verify(
             && state["arch"] == "arm64"
             && observation.configuration_id
                 == "chrome-158.0.8127.88-debian-arm64-en-light-640x600-2x"
-            && observation.cell.entrypoint == "chat"
+            && observation.cell.entrypoint == entrypoint
             && capture.profile["surface"] == "server-served-web"
             && capture.profile["origin"] == "server-served loopback"
             && profile["browser"] == "Chrome/158.0.0.0"
@@ -50,6 +56,15 @@ pub(super) fn verify(
         );
     }
     match case {
+        "version-rejection" => {
+            verify_version_rejection(&state, records, name, capture)?;
+            let retry = one_artifact(&run.artifacts, "retry-screenshot")?;
+            ensure!(
+                records["retry-update"]["screenshotSha256"] == retry.sha256,
+                "update retry screenshot disagrees with the observed update response"
+            );
+            capture_witness::verify_png(&evidence.resolve(&retry.path)?, 1280, 1200)?;
+        }
         "approval" => verify_approval(&state, records, name, capture)?,
         "browser-preview" => verify_browser_preview(&state, &record["observed"], name, capture)?,
         "disconnect-recover" => {
@@ -400,6 +415,85 @@ fn verify_approval(state: &Value, records: &Value, name: &str, capture: &Capture
         ensure!(
             step.action == action && serde_json::to_value(&step.observed)? == expected,
             "approval trace disagrees with the observed {action} result"
+        );
+    }
+    Ok(())
+}
+
+fn verify_version_rejection(
+    state: &Value,
+    records: &Value,
+    name: &str,
+    capture: &Capture,
+) -> Result<()> {
+    let body = json!({
+        "code": "orchestration_protocol_incompatible",
+        "message": "Update this client to one that supports orchestration protocol 2.",
+        "orchestrationProtocolVersion": 2,
+    });
+    let published = json!([
+        {"requested": null, "status": 426, "body": body},
+        {"requested": 1, "status": 426, "body": body},
+        {"requested": 3, "status": 426, "body": body},
+    ]);
+    ensure!(
+        state["publishedHttp"] == published,
+        "published host did not return the pinned HTTP 426 protocol response"
+    );
+    const LABEL: &str = "P01 simulated older boot service";
+    let descriptor = json!({
+        "protocol": 1, "mode": "boot-service", "version": "0.0.0-p01",
+        "label": LABEL, "descriptorUnchanged": true,
+    });
+    let started =
+        json!({"event": "simulated-protocol-1-boot-service", "origin": "http://127.0.0.1:47722"});
+    let paired = json!({"event": "pairing-exchanged"});
+    let before = json!([started, paired]);
+    let after = json!([
+        started, paired, {"event": "authenticated-bare-update-socket"},
+        {"event": "simulated-update-refused", "method": "server.updateServer", "targetVersion": "0.1.17"},
+    ]);
+    ensure!(
+        state["browserOnline"] == true
+            && state["simulatedHost"] == descriptor
+            && state["beforeUpdateEvents"] == before
+            && state["afterUpdateEvents"] == after,
+        "simulated older host did not preserve the pre-update boundary and update failure"
+    );
+    let view = |action, refusal| {
+        json!({
+            "route": "/settings/connections", "label": LABEL, "diagnosis": "Client not supported", "action": action,
+            "actionEnabled": true, "actionVisible": true, "refusal": refusal, "focusedControl": "Routes",
+        })
+    };
+    let unsupported = view("Update", false);
+    let retry = view("Retry update", true);
+    ensure!(
+        name == "exact-version-rejected"
+            && records[name]["observed"] == unsupported
+            && records["retry-update"]["observed"] == retry
+            && records[name]["profile"] == records["retry-update"]["profile"],
+        "incorrect version rejection or update retry view"
+    );
+    let steps = [
+        (
+            "rejectUnsupportedProtocols",
+            json!({"publishedHttp": published}),
+        ),
+        (
+            "pairSimulatedOlderService",
+            json!({"simulatedHost": descriptor, "events": before, "panel": unsupported}),
+        ),
+        ("requestUpdate", json!({"events": after, "panel": retry})),
+    ];
+    ensure!(
+        capture.trace.len() == steps.len(),
+        "wrong version rejection action trace length"
+    );
+    for ((action, expected), step) in steps.into_iter().zip(&capture.trace) {
+        ensure!(
+            step.action == action && serde_json::to_value(&step.observed)? == expected,
+            "version rejection trace disagrees with the observed {action} result"
         );
     }
     Ok(())

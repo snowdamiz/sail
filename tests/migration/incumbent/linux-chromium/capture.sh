@@ -10,6 +10,7 @@ case "${2:-}" in
   --reconnect) touch "$root/reconnect" ;;
   --browser-preview) touch "$root/browser-preview" ;;
   --approval) touch "$root/approval" ;;
+  --version-rejection) touch "$root/version-rejection" ;;
   "") ;;
   *) exit 2 ;;
 esac
@@ -95,6 +96,9 @@ export SAIL_HOME="$root/state"
 export T3CODE_HOME="$root/state"
 export T3CODE_TELEMETRY_ENABLED=false
 export T3CODE_SERVER_BROWSER_SANDBOX=0
+if [ -f "$root/version-rejection" ]; then
+  export T3CODE_ENVIRONMENT_LABEL="Compatibility fixture"
+fi
 cli="$root/runtime/t3"
 test "$("$cli" --version)" = "t3 v$edition"
 "$cli" serve --base-dir "$root/state" --host 127.0.0.1 --port 47717 --startup-pairing off \
@@ -129,6 +133,10 @@ elif [ -f "$root/browser-preview" ]; then
   python3 "$fixture/linux-chromium/browser_preview.py" "$root"
 elif [ -f "$root/approval" ]; then
   for state in requested approved denied; do
+    test -s "$root/$state/capture.png"
+  done
+elif [ -f "$root/version-rejection" ]; then
+  for state in exact-version-rejected retry-update; do
     test -s "$root/$state/capture.png"
   done
 else

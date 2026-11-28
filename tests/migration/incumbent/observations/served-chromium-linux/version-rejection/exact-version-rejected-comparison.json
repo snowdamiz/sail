@@ -1,0 +1,20 @@
+{
+  "fixtureId": "version-rejection",
+  "baselineSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "candidateSha": "18fd0e5d66291fc007163512d783d7268218db16",
+  "changedSteps": [],
+  "pixels": {
+    "baseline": "tests/migration/incumbent/observations/served-chromium-linux/version-rejection/a/exact-version-rejected/capture.png",
+    "candidate": "tests/migration/incumbent/observations/served-chromium-linux/version-rejection/b/exact-version-rejected/capture.png",
+    "diff": "tests/migration/incumbent/observations/served-chromium-linux/version-rejection/exact-version-rejected-diff.png",
+    "baselineSize": [1280, 1200],
+    "candidateSize": [1280, 1200],
+    "differentPixels": 0,
+    "bounds": null
+  },
+  "artifactSha256": {
+    "baselineReceipt": "ba32890a59fb40e7501be0a365b1c7fcb4609c6e5b33830dd88164b56f30809c",
+    "candidateReceipt": "afef5161669ef01bbf2e3d6ac41b7b0d2083d40db78a1fcd4195fbc3761d82a0",
+    "diff": "60631a484e69445f948da01c3209bfeea81c5f68ca580f9c52f5010458a9f513"
+  }
+}

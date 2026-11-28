@@ -290,7 +290,11 @@ fn load_capture(
     if observation.cell.platform_id == "served-chromium-linux"
         && matches!(
             observation.cell.case_id.as_str(),
-            "chat-view-states" | "disconnect-recover" | "browser-preview" | "approval"
+            "chat-view-states"
+                | "disconnect-recover"
+                | "browser-preview"
+                | "approval"
+                | "version-rejection"
         )
     {
         chromium_chat::verify(evidence, observation, run, &capture, &image_path)?;
@@ -302,6 +306,15 @@ pub fn verify_reference_pair(evidence: &Evidence, observation: &Observation) -> 
     let [first, repeat] = observation.runs.as_slice() else {
         anyhow::bail!("expected two incumbent runs");
     };
+    if observation.cell.platform_id == "served-chromium-linux"
+        && observation.cell.case_id == "version-rejection"
+    {
+        ensure!(
+            one_artifact(&first.artifacts, "retry-screenshot")?.sha256
+                == one_artifact(&repeat.artifacts, "retry-screenshot")?.sha256,
+            "incumbent update retry screenshots differ"
+        );
+    }
     ensure!(
         first.role == "incumbent-first" && repeat.role == "incumbent-repeat",
         "expected incumbent-first followed by incumbent-repeat"

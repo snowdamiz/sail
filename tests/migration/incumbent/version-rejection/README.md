@@ -27,3 +27,11 @@ node --test --test-timeout=5000 tests/migration/incumbent/version-rejection/fixt
 ```
 
 The check exercises a real loopback HTTP listener and WebSocket handshake. It rejects an invalid or reused pairing code, unauthenticated ticket minting, an uncredentialed or versioned socket, a reused socket ticket, and an unapproved browser origin. It checks that the authenticated update request returns the simulated failure and leaves the advertised protocol at 1.
+
+## Repeat the Linux Chromium capture
+
+Use the [Linux capture command](../README.md#linux) with `--version-rejection` and two fresh output directories. Create a private network with `docker network create --internal "$network"` and use `--network "$network"` in place of `--network none`. Chromium needs a network interface to enter the online compatibility branch. The packaged host and the simulator still communicate over loopback. Remove the capture network after both containers exit.
+
+The probe records three real HTTP 426 responses from the published server. It then pairs the packaged browser with the simulator and checks that the authenticated update request appears only after clicking **Update**. Before each capture, it dismisses the notification and verifies that **Update** or **Retry update** is visible on the environment row. [Linux Chromium captures](../observations/served-chromium-linux/version-rejection)
+
+The compact viewport truncates the connection subtitle and inline error. The state receipt records the full diagnosis and checks the retry message on the row.
