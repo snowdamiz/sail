@@ -12,7 +12,9 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import {
   AuthAccessTokenResult,
   AuthBrowserSessionRequest,
+  AUTH_OWNER_PASSWORD_TOKEN_PATH,
   AuthOwnerPasswordRequest,
+  AuthOwnerPasswordTokenRequest,
   ServerAuthDescriptor,
   AuthBrowserSessionResult,
   AuthCreatePairingCredentialInput,
@@ -112,6 +114,7 @@ const OrchestrationProtocolHeaders = Schema.Struct({
   [ORCHESTRATION_PROTOCOL_HEADER]: Schema.Literal(ORCHESTRATION_PROTOCOL_VERSION_TEXT),
 });
 
+// Raw string so handlers distinguish an empty DPoP header from an omitted one.
 const OptionalDpopProofHeaders = Schema.Struct({
   dpop: Schema.optionalKey(Schema.String),
 });
@@ -639,6 +642,14 @@ class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
     HttpApiEndpoint.post("ownerPasswordSession", "/api/auth/owner-password/session", {
       payload: AuthOwnerPasswordRequest,
       success: AuthBrowserSessionResult,
+      error: EnvironmentSessionCreationErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("ownerPasswordToken", AUTH_OWNER_PASSWORD_TOKEN_PATH, {
+      headers: OptionalDpopProofHeaders,
+      payload: AuthOwnerPasswordTokenRequest,
+      success: AuthAccessTokenResult,
       error: EnvironmentSessionCreationErrors,
     }),
   )

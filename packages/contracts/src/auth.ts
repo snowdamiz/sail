@@ -224,6 +224,9 @@ export function isValidOwnerPassword(password: string): boolean {
   return length >= AuthOwnerPasswordMinLength && length <= AuthOwnerPasswordMaxLength;
 }
 
+export const AUTH_OWNER_PASSWORD_TOKEN_PATH = "/api/auth/owner-password/token" as const;
+export const AuthOwnerPasswordSubject = "owner-password" as const;
+
 export const AuthOwnerPasswordRequest = Schema.Struct({
   password: Schema.RedactedFromValue(Schema.String),
 });
@@ -275,6 +278,14 @@ export const AuthTokenExchangeRequest = Schema.Struct({
   client_os: Schema.optionalKey(TrimmedNonEmptyString),
 }).pipe(HttpApiSchema.asFormUrlEncoded());
 export type AuthTokenExchangeRequest = typeof AuthTokenExchangeRequest.Type;
+
+export const AuthOwnerPasswordTokenRequest = Schema.Struct({
+  password: Schema.RedactedFromValue(Schema.String),
+  client_label: Schema.optionalKey(TrimmedNonEmptyString),
+  client_device_type: Schema.optionalKey(AuthClientMetadataDeviceType),
+  client_os: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type AuthOwnerPasswordTokenRequest = typeof AuthOwnerPasswordTokenRequest.Type;
 
 export const AuthAccessTokenResult = Schema.Struct({
   access_token: TrimmedNonEmptyString,

@@ -37,7 +37,7 @@ import {
   injectMcpAppThemeBootstrap,
   MCP_APP_MAX_HTML_BYTES,
 } from "@t3tools/shared/mcpApp";
-import { ORCHESTRATION_PROTOCOL_HEADER } from "@t3tools/contracts";
+import { AUTH_OWNER_PASSWORD_TOKEN_PATH, ORCHESTRATION_PROTOCOL_HEADER } from "@t3tools/contracts";
 import {
   DESKTOP_READINESS_PROOF_PATH,
   isValidDesktopReadinessProof,
@@ -256,6 +256,130 @@ describe("browser API CORS", () => {
       expect(disallowed.headers.get("access-control-allow-origin")).toBeNull();
     } finally {
       await dispose();
+    }
+  });
+
+  it("enforces owner-password token CORS across originless, same-origin, loopback, and disallowed origins", async () => {
+    const serveCors = (overrides: Partial<ServerConfig.ServerConfig["Service"]>) => {
+      const layerRoute = Layer.effectDiscard(
+        Effect.gen(function* () {
+          const router = yield* HttpRouter.HttpRouter;
+          yield* router.add("POST", AUTH_OWNER_PASSWORD_TOKEN_PATH, HttpServerResponse.empty());
+        }),
+      );
+      const layerConfig = Layer.effect(
+        ServerConfig.ServerConfig,
+        Effect.map(ServerConfig.ServerConfig, (config) => ({ ...config, ...overrides })),
+      ).pipe(
+        Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "http-pw-cors-test-" })),
+      );
+      const layerApp = Layer.merge(layerRoute, ServerHttp.layerBrowserApiCors).pipe(
+        Layer.provide(layerConfig),
+        Layer.provide(NodeServices.layer),
+      );
+      return HttpRouter.toWebHandler(layerApp, { disableLogger: true });
+    };
+
+    const prod = serveCors({ publicUrl: new URL("https://sail.example") });
+    try {
+      const originlessPost = await prod.handler(
+        new Request(`https://sail.example${AUTH_OWNER_PASSWORD_TOKEN_PATH}`, { method: "POST" }),
+      );
+      expect(originlessPost.headers.get("access-control-allow-origin")).toBe("*");
+      expect(originlessPost.headers.get("vary")).toBe("Origin");
+      expect(originlessPost.headers.get("access-control-allow-credentials")).toBeNull();
+
+      const sameOriginPreflight = await prod.handler(
+        new Request(`https://sail.example${AUTH_OWNER_PASSWORD_TOKEN_PATH}`, {
+          method: "OPTIONS",
+          headers: { origin: "https://sail.example" },
+        }),
+      );
+      expect(sameOriginPreflight.status).toBe(204);
+      expect(sameOriginPreflight.headers.get("access-control-allow-origin")).toBe(
+        "https://sail.example",
+      );
+      expect(sameOriginPreflight.headers.get("vary")).toBe("Origin");
+      expect(sameOriginPreflight.headers.get("access-control-allow-credentials")).toBeNull();
+
+      for (const origin of ["https://evil.example", "sail-dev://app", "null", ""]) {
+        const preflight = await prod.handler(
+          new Request(`https://sail.example${AUTH_OWNER_PASSWORD_TOKEN_PATH}`, {
+            method: "OPTIONS",
+            headers: { origin },
+          }),
+        );
+        expect(preflight.headers.get("access-control-allow-origin")).toBeNull();
+        const post = await prod.handler(
+          new Request(`https://sail.example${AUTH_OWNER_PASSWORD_TOKEN_PATH}`, {
+            method: "POST",
+            headers: { origin },
+          }),
+        );
+        expect(post.headers.get("access-control-allow-origin")).toBeNull();
+      }
+    } finally {
+      await prod.dispose();
+    }
+
+    const loopbackNoDev = serveCors({ publicUrl: new URL("https://127.0.0.1:8443") });
+    try {
+      const devDesktopPreflight = await loopbackNoDev.handler(
+        new Request(`https://127.0.0.1:8443${AUTH_OWNER_PASSWORD_TOKEN_PATH}`, {
+          method: "OPTIONS",
+          headers: { origin: "sail-dev://app" },
+        }),
+      );
+      expect(devDesktopPreflight.status).toBe(204);
+      expect(devDesktopPreflight.headers.get("access-control-allow-origin")).toBe("sail-dev://app");
+      expect(devDesktopPreflight.headers.get("vary")).toBe("Origin");
+      expect(devDesktopPreflight.headers.get("access-control-allow-credentials")).toBeNull();
+
+      const disallowedPreflight = await loopbackNoDev.handler(
+        new Request(`https://127.0.0.1:8443${AUTH_OWNER_PASSWORD_TOKEN_PATH}`, {
+          method: "OPTIONS",
+          headers: { origin: "https://evil.example" },
+        }),
+      );
+      expect(disallowedPreflight.headers.get("access-control-allow-origin")).toBeNull();
+    } finally {
+      await loopbackNoDev.dispose();
+    }
+
+    const withDevUrl = serveCors({
+      publicUrl: new URL("https://sail.example"),
+      devUrl: new URL("http://127.0.0.1:5733"),
+    });
+    try {
+      const devDesktopPreflight = await withDevUrl.handler(
+        new Request(`https://sail.example${AUTH_OWNER_PASSWORD_TOKEN_PATH}`, {
+          method: "OPTIONS",
+          headers: { origin: "sail-dev://app" },
+        }),
+      );
+      expect(devDesktopPreflight.status).toBe(204);
+      expect(devDesktopPreflight.headers.get("access-control-allow-origin")).toBe("sail-dev://app");
+
+      const sameOriginWithDev = await withDevUrl.handler(
+        new Request(`https://sail.example${AUTH_OWNER_PASSWORD_TOKEN_PATH}`, {
+          method: "OPTIONS",
+          headers: { origin: "https://sail.example" },
+        }),
+      );
+      expect(sameOriginWithDev.status).toBe(204);
+      expect(sameOriginWithDev.headers.get("access-control-allow-origin")).toBe(
+        "https://sail.example",
+      );
+
+      const disallowedPreflight = await withDevUrl.handler(
+        new Request(`https://sail.example${AUTH_OWNER_PASSWORD_TOKEN_PATH}`, {
+          method: "OPTIONS",
+          headers: { origin: "https://evil.example" },
+        }),
+      );
+      expect(disallowedPreflight.headers.get("access-control-allow-origin")).toBeNull();
+    } finally {
+      await withDevUrl.dispose();
     }
   });
 });

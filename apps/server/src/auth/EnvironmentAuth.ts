@@ -10,6 +10,7 @@ import {
   AuthAdministrativeClientScopes,
   AuthStandardClientScopes,
   isValidOwnerPassword,
+  AuthOwnerPasswordSubject,
   AuthOwnerPasswordV1Scopes,
   type AuthAccessTokenResult,
   type AuthBrowserSessionResult,
@@ -54,8 +55,8 @@ import * as PairingGrantStore from "./PairingGrantStore.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 import * as SessionStore from "./SessionStore.ts";
 import { REUSABLE_DEV_SESSION_EXPIRES_AT, resolveReusableDevAuth } from "./ReusableDevAuth.ts";
-import { verifyRequestDpopProof } from "./dpop.ts";
-import { DESKTOP_RENDERER_ORIGINS } from "../httpCors.ts";
+import { checkRequestDpopProof, verifyRequestDpopProof } from "./dpop.ts";
+import { DESKTOP_RENDERER_ORIGINS, isAllowedOwnerPasswordTokenOrigin } from "../httpCors.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedLimits from "../policy/managedLimits.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
@@ -531,6 +532,14 @@ export class EnvironmentAuth extends Context.Service<
       requestMetadata: AuthClientMetadata,
     ) => Effect.Effect<
       BootstrapExchangeResult,
+      ServerAuthInvalidCredentialError | ServerAuthInternalError
+    >;
+    readonly createOwnerPasswordAccessToken: (
+      password: Redacted.Redacted<string>,
+      request: HttpServerRequest.HttpServerRequest,
+      requestMetadata: AuthClientMetadata,
+    ) => Effect.Effect<
+      AuthAccessTokenResult,
       ServerAuthInvalidCredentialError | ServerAuthInternalError
     >;
     readonly setOwnerPassword: (
@@ -1085,11 +1094,7 @@ export const make = Effect.gen(function* () {
           .pipe(Effect.mapError((cause) => new ServerAuthSessionsListError({ cause })));
         // Retire existing password sessions before publishing the new verifier. If persistence fails, pairing remains available.
         yield* Effect.forEach(
-          activeSessions.filter(
-            (session) =>
-              session.subject === LINK_PAIRED_SUBJECTS.password &&
-              session.method === "browser-session-cookie",
-          ),
+          activeSessions.filter((session) => session.subject === LINK_PAIRED_SUBJECTS.password),
           (session) =>
             sessions
               .revoke(session.sessionId)
@@ -1107,6 +1112,38 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  // Untraced: callers own the span and run onVerified inside passwordLock so rotation cannot interleave.
+  const withVerifiedOwnerPassword = Effect.fnUntraced(function* <A, E>(
+    password: Redacted.Redacted<string>,
+    onVerified: (revocationsAtStart: number) => Effect.Effect<A, E>,
+  ) {
+    if (!validPassword(password)) {
+      return yield* rejectPassword();
+    }
+    const revocationsAtStart = yield* Ref.get(otherSessionRevocations);
+    const result = yield* passwordLock.withPermitsIfAvailable(1)(
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        if (
+          now < nextPasswordAttempt ||
+          Option.isNone(passwordVerifier) ||
+          passwordVerifier.value.byteLength !== 48
+        ) {
+          return yield* rejectPassword();
+        }
+        nextPasswordAttempt = now + 1000;
+        const verifier = passwordVerifier.value;
+        const key = yield* derivePassword(password, verifier.subarray(0, 16));
+        if (!NodeCrypto.timingSafeEqual(key, verifier.subarray(16))) {
+          return yield* rejectPassword();
+        }
+        return yield* onVerified(revocationsAtStart);
+      }),
+    );
+    if (Option.isNone(result)) return yield* rejectPassword();
+    return result.value;
+  });
+
   const createOwnerPasswordSession: EnvironmentAuth["Service"]["createOwnerPasswordSession"] =
     Effect.fn("EnvironmentAuth.createOwnerPasswordSession")(
       function* (password, request, requestMetadata) {
@@ -1117,22 +1154,8 @@ export const make = Effect.gen(function* () {
         ) {
           return yield* rejectPassword();
         }
-        const revocationsAtStart = yield* Ref.get(otherSessionRevocations);
-        const result = yield* passwordLock.withPermitsIfAvailable(1)(
+        return yield* withVerifiedOwnerPassword(password, (revocationsAtStart) =>
           Effect.gen(function* () {
-            const now = yield* Clock.currentTimeMillis;
-            if (
-              now < nextPasswordAttempt ||
-              Option.isNone(passwordVerifier) ||
-              passwordVerifier.value.byteLength !== 48
-            ) {
-              return yield* rejectPassword();
-            }
-            nextPasswordAttempt = now + 1000;
-            const verifier = passwordVerifier.value;
-            const key = yield* derivePassword(password, verifier.subarray(0, 16));
-            if (!NodeCrypto.timingSafeEqual(key, verifier.subarray(16)))
-              return yield* rejectPassword();
             const previousCredential = selectRequestCredential(
               request,
               sessions.cookieName,
@@ -1176,8 +1199,64 @@ export const make = Effect.gen(function* () {
             } satisfies BootstrapExchangeResult;
           }),
         );
-        if (Option.isNone(result)) return yield* rejectPassword();
-        return result.value;
+      },
+    );
+
+  const createOwnerPasswordAccessToken: EnvironmentAuth["Service"]["createOwnerPasswordAccessToken"] =
+    Effect.fn("EnvironmentAuth.createOwnerPasswordAccessToken")(
+      function* (password, request, requestMetadata) {
+        if (
+          !isPasswordOrigin(request) ||
+          !isAllowedOwnerPasswordTokenOrigin({
+            requestOrigin: request.headers.origin,
+            publicUrl: config.publicUrl,
+            devUrl: config.devUrl,
+          }) ||
+          !validPassword(password) ||
+          !ManagedLimits.allowsRemoteClients(managedPolicy)
+        ) {
+          return yield* rejectPassword();
+        }
+        // Check a presented DPoP proof before taking passwordLock so clock skew does not burn cooldown.
+        const proof =
+          request.headers.dpop !== undefined
+            ? yield* checkRequestDpopProof({ request }).pipe(
+                Effect.provideService(ServerSecretStore.ServerSecretStore, secretStore),
+                Effect.provideService(Digest.Digest, digest),
+              )
+            : undefined;
+        return yield* withVerifiedOwnerPassword(password, (revocationsAtStart) =>
+          Effect.gen(function* () {
+            const session = yield* issueUnlessOthersRevokedSince(
+              revocationsAtStart,
+              Effect.gen(function* () {
+                if (proof) {
+                  yield* proof.consume;
+                }
+                return yield* sessions
+                  .issue({
+                    method: proof ? "dpop-access-token" : "bearer-access-token",
+                    subject: LINK_PAIRED_SUBJECTS.password,
+                    scopes: AuthOwnerPasswordV1Scopes,
+                    ...(proof
+                      ? {
+                          proofKeyThumbprint: proof.thumbprint,
+                          ttl: RENEWABLE_ACCESS_TOKEN_TTL,
+                          renewalWindow: RENEWABLE_SESSION_WINDOW,
+                        }
+                      : {}),
+                    client: requestMetadata,
+                  })
+                  .pipe(
+                    Effect.mapError(
+                      (cause) => new ServerAuthAuthenticatedAccessTokenIssueError({ cause }),
+                    ),
+                  );
+              }),
+            );
+            return yield* toAccessTokenResult(session);
+          }),
+        );
       },
     );
 
@@ -1986,6 +2065,7 @@ export const make = Effect.gen(function* () {
     getSessionState,
     createBrowserSession: admitMutation(createBrowserSession),
     createOwnerPasswordSession: admitMutation(createOwnerPasswordSession),
+    createOwnerPasswordAccessToken: admitMutation(createOwnerPasswordAccessToken),
     setOwnerPassword: admitMutation(setOwnerPassword),
     exchangeBootstrapCredentialForAccessToken: admitMutation(
       exchangeBootstrapCredentialForAccessToken,
@@ -2037,7 +2117,7 @@ const mcpApprovalLevel = (subject: string): AuthMcpClientAccess | undefined => {
 const LINK_PAIRED_SUBJECTS = {
   link: "one-time-token",
   connect: CLOUD_CONNECT_SUBJECT,
-  password: "owner-password",
+  password: AuthOwnerPasswordSubject,
 } as const;
 
 /**
